@@ -25,8 +25,8 @@ in text order:
    name two entities share is ``uncertain(ambiguous)`` with both listed.
 2. **First and second person**: ``I``/``me``/``my`` are the speaker (a narrator has none);
    ``you`` is the one other entity present (#137's scene; with no scene, the one other actor of
-   the context window), the narrator's ``you`` is the player character; none or several is
-   ``uncertain``.
+   the context window; the turn's input actor counts either way, #483), the narrator's ``you``
+   is the player character; none or several is ``uncertain``.
 3. **Pronouns** bind to the most recent compatible entity: earlier in the same sentence, then
    earlier sentences, then the context window's beats (most recent first; a beat's entities
    are its actor and the names it mentions). ``he``/``she`` need a compatible gender (an entity
@@ -390,6 +390,11 @@ class ResolutionContext:
     """#484 (owner's option (a)): on the composition path, the characters whose beats the
     message composes. The narrator's "other character" excludes them, so a weak texture claim
     about a render's own character is surfaced as on that render's beats."""
+    addressed: frozenset[str] = frozenset()
+    """#483: the actor of the turn's input, whom the turn's replies answer. The input's beat is
+    not in the context window while the turn is checked (the turn writes its beats at the
+    commit), so ``you`` counts the actor among the people a reply addresses, whatever the
+    window or the scene holds."""
 
 
 # -- tokens ----------------------------------------------------------------------------------
@@ -566,6 +571,7 @@ def _addressee(state: _State) -> tuple[str | None, tuple[str, ...], Reason | Non
         pool = set(context.present)
     else:
         pool = {b.actor for b in context.beats if b.actor is not None}
+    pool |= context.addressed
     others = sorted(
         e
         for e in pool - {state.speaker}

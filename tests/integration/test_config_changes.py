@@ -139,6 +139,7 @@ STORED: dict[str, Any] = {
     "neighborhood_max_facts": 40,
     "protected_index_max": 4_999,
     "thunks_max_open": 499,
+    "provider_allowed_hosts": ["api.game.test", "127.0.0.1:8080"],
 }
 """A non-default value of one setting or more in every section of the settings document
 (all of #315's three missing sections' settings among them)."""

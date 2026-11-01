@@ -31,17 +31,20 @@ call is counted in ``TurnBudget.embedding_calls``, apart from the call cap.
 
 **Named reservations** (#156, a structured turn; ``orchestrator.structured.planner`` plans
 them). Beside the held pool, ``named`` holds owner-only slots: ``extraction`` (B, one per
-planned render) and ``composed`` (C). Only their owner may spend one: a first attempt whose
-purpose maps to that kind (``kind_of``: ``extraction_backstop`` is ``extraction``, or
-``composed`` while ``charging(COMPOSED)``), and every other call sees them as spent
-(``can_afford``, ``can_afford_unreserved``). A named slot the turn did not use is released
-(``release_named``) and may then fund optional work. Optional work (``salience``,
-``entailment``, ``follow_up``, ``testimony`` (#162), ``repair``, ``polish``, in that
-priority) spends only what no reservation holds: the adapter refuses a first ``entailment``
-or ``salience_detection`` attempt that would dip below the line, and the pipeline asks
-``try_optional(kind, cost)`` before a follow-up render, a testimony adjudication, a model
-repair or the polish. ``pending`` pre-allocates the
-higher-priority salience calls so an earlier entailment call cannot starve them, and
+planned render), ``composed`` (C) and ``outcome`` (O, #214: a staged turn's outcome step, which
+no call spends directly: it is released, or ``draw``n into the outcome step's own slots).
+Only their owner may spend one: a first attempt whose purpose maps to that kind (``kind_of``:
+``extraction_backstop`` is ``extraction``, or ``composed`` while ``charging(COMPOSED)``), and
+every other call sees them as spent (``can_afford``, ``can_afford_unreserved``). A named slot
+the turn did not use is released (``release_named``) and may then fund optional work.
+Optional work (``salience``, ``time_estimation`` (#199), ``entailment``, ``follow_up``,
+``testimony`` (#162), ``repair``, ``polish``, in that priority) spends only what no
+reservation holds (O included): the adapter
+refuses a first ``entailment`` or ``salience_detection`` attempt that would dip below the
+line, and the pipeline asks ``try_optional(kind, cost)`` before a time estimation, a
+follow-up render, a testimony adjudication, a model repair or the polish. ``pending``
+pre-allocates the higher-priority salience (and #199's time estimation) calls so an earlier
+entailment call cannot starve them, and
 ``latency_estimate_s`` treats a call that could not start before ``deadline - estimate`` as
 unaffordable (``can_start``). Once an optional kind is refused, no less important kind runs
 after it in the turn (``denied``), so the degradation follows NFR-PERF-7's order. A Lite
@@ -74,13 +77,27 @@ EXTRACTION = "extraction"
 """B: the planned renders' extraction calls (owner: ``extraction_backstop``)."""
 COMPOSED = "composed"
 """C: the composed message's detection (owner: ``extraction_backstop`` while charging it)."""
+OUTCOME = "outcome"
+"""O (#214): a staged turn's outcome step (its render, its extraction and its output check),
+an owner-only named slot no call is charged to: nothing else may spend it (not the director,
+an escalation, a re-hold or any optional work). It is either released once the turn's last
+render has finished without a synchronous effect, or drawn (``draw``) into the outcome step's
+own slots when the turn is staged."""
 SALIENCE = "salience"
 DIRECTOR_ORDER = "director_order"
 """#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""
 DIRECTOR_TIEBREAK = "director_tiebreak"
 """#175: the director's judgment of a simultaneous turn's conflicting actions (one
 ``generation`` call)."""
+TIME_ESTIMATION = "time_estimation"
+"""#199 (FR-CLOCK-7): an undeclared narrated skip's ``time_estimation`` call, pre-allocated
+(``pending``) once the turn finds the skip; given up after entailment (NFR-PERF-7 (4) → (5)):
+an unestimated skip is removed deterministically (``unestimated_skip_removed``)."""
 ENTAILMENT = "entailment"
+NARRATOR_RENDER = "narrator"
+"""#456: the narrator's render in a structured turn (a ``generation`` call charged apart from the
+characters' ``render`` so ``model_calls[].stage`` and ``used_by_kind`` tell them apart; it holds
+and spends the same slots a render does)."""
 FOLLOW_UP = "follow_up"
 TESTIMONY = "testimony"
 """#162: a salient witness's ``belief_adjudication`` call."""
@@ -90,6 +107,7 @@ OPTIONAL_PRIORITY = (
     SALIENCE,
     DIRECTOR_ORDER,
     DIRECTOR_TIEBREAK,
+    TIME_ESTIMATION,
     ENTAILMENT,
     FOLLOW_UP,
     TESTIMONY,
@@ -97,7 +115,8 @@ OPTIONAL_PRIORITY = (
     POLISH,
 )
 """Optional work, most important first: the pool is spent in this order (NFR-PERF-7 gives
-polish up first, then repairs, then testimony adjudication, then entailment)."""
+polish up first, then repairs, then testimony adjudication, then entailment, then time
+estimation)."""
 ADAPTER_GATED = frozenset({SALIENCE, ENTAILMENT})
 """The optional kinds no ``try_optional`` grant precedes: the Model Access Layer's
 ``affordable`` check is their only gate, so it keeps them off every reserved slot (#182)."""
@@ -106,6 +125,7 @@ PURPOSE_KINDS = {
     "entailment": ENTAILMENT,
     "belief_adjudication": TESTIMONY,
     "salience_detection": SALIENCE,
+    "time_estimation": TIME_ESTIMATION,
     "regeneration": REPAIR,
     "guardrail_check": "guardrail",
     "generation": "render",
@@ -113,10 +133,16 @@ PURPOSE_KINDS = {
 """What kind of call a purpose's call is, unless the caller is ``charging`` another kind."""
 
 
-def lite_default_calls(guardrail_calls: int, primaries: int = 1) -> int:
-    """The default ``max_model_calls_per_turn``: ``4 + 5 per primary + G`` (O = 0; one primary
-    under Lite, #174's B under a sequential structured turn)."""
-    return LITE_BASE_CALLS + PER_PRIMARY_CALLS * (max(1, primaries) - 1) + guardrail_calls
+def lite_default_calls(guardrail_calls: int, primaries: int = 1, outcome: int = 0) -> int:
+    """The default ``max_model_calls_per_turn``: NFR-PERF-6's ``4 + 5 per primary + G + O``
+    (one primary under Lite, where O = 0; #174's P under a sequential structured turn; #214's
+    ``outcome`` O for a story whose turns may be staged)."""
+    return (
+        LITE_BASE_CALLS
+        + PER_PRIMARY_CALLS * (max(1, primaries) - 1)
+        + guardrail_calls
+        + max(0, outcome)
+    )
 
 
 @dataclass
@@ -152,6 +178,11 @@ class TurnBudget:
     """Optional kinds the budget or the deadline refused this turn: no less important kind
     runs after one (NFR-PERF-7's order: polish goes before repairs, repairs before
     entailment)."""
+    paused_s: float = 0.0
+    """#212 (NFR-PERF-6): the seconds the deadline clock stood still (a staged turn's wait on
+    its external outcome is excluded from ``turn_deadline``)."""
+    paused_at: float | None = None
+    """When the current pause began (``None``: the clock runs)."""
     _claims: list[str | None] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
@@ -303,6 +334,12 @@ class TurnBudget:
             self.released += dropped
         return dropped
 
+    def draw(self, kind: str) -> int:
+        """Take every unspent ``kind`` slot out of the named reservation to fund the work it was
+        reserved for (#214: the outcome step's render, extraction and output check, which then
+        hold them as any render's do); not counted as ``released``. Answers how many."""
+        return self.named.pop(kind, 0)
+
     def settle_optional(self, kind: str) -> None:
         """``kind``'s optional work is done (or skipped): its pre-allocation goes back."""
         self.pending.pop(kind, None)
@@ -331,10 +368,33 @@ class TurnBudget:
             self.stage = before
 
     def remaining_s(self) -> float | None:
-        """Seconds until the deadline (negative once passed); ``None`` when unbounded."""
+        """Seconds until the deadline (negative once passed); ``None`` when unbounded. The time
+        the clock was paused (``pause``) does not count."""
         if self.deadline_s is None:
             return None
-        return self.started + self.deadline_s - time.monotonic()
+        now = self.paused_at if self.paused_at is not None else time.monotonic()
+        return self.started + self.deadline_s + self.paused_s - now
+
+    def pause(self) -> None:
+        """#212 (NFR-PERF-6): stop the deadline clock (a staged turn's confirmation wait, from
+        its claim to its recorded outcome or the wait's expiry); a second pause is a no-op."""
+        if self.paused_at is None:
+            self.paused_at = time.monotonic()
+
+    def resume(self) -> None:
+        """Start the deadline clock again after ``pause``; the pause is not counted."""
+        if self.paused_at is not None:
+            self.paused_s += time.monotonic() - self.paused_at
+            self.paused_at = None
+
+    @contextmanager
+    def paused(self) -> Iterator[None]:
+        """The deadline clock stands still while the block runs (``pause``, then ``resume``)."""
+        self.pause()
+        try:
+            yield
+        finally:
+            self.resume()
 
     def expired(self) -> bool:
         remaining = self.remaining_s()
@@ -449,12 +509,15 @@ __all__ = [
     "MAX_CALLS_PER_TURN",
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",
+    "NARRATOR_RENDER",
     "OPTIONAL_PRIORITY",
+    "OUTCOME",
     "PER_PRIMARY_CALLS",
     "POLISH",
     "PURPOSE_KINDS",
     "REPAIR",
     "SALIENCE",
+    "TIME_ESTIMATION",
     "TurnBudget",
     "counted_embedder",
     "effective_max_calls",

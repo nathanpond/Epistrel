@@ -104,7 +104,7 @@ def policy_texts(draft: ScenarioDraft) -> list[TextAt]:
     start = draft.starting_state
     add("starting_state.opening.narration", start.opening.narration)
     for name in ("states", "clock", "scheduled_events", "predicates", "closed_sets", "rules"):
-        for field, text in strings_in(getattr(start, name), f"starting_state.{name}"):
+        for field, text in strings_in(start.stored(name), f"starting_state.{name}"):
             add(field, text)
     drivers = draft.drivers
     for name in ("plot_hooks", "objectives", "milestones", "endings"):

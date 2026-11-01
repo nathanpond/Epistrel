@@ -18,6 +18,7 @@ an operation without a route, or without a step here, fails ``test_c_03``.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -42,9 +43,24 @@ from epistrel.api.routes.admin.model_config import (
     ModelConfigItem,
     ModelConfigMutation,
 )
-from epistrel.api.routes.admin.mutation import FactListBody, FactWritten, MemoryWritten
+from epistrel.api.routes.admin.mutation import (
+    FactBody,
+    FactListBody,
+    FactWritten,
+    MemoryListBody,
+    MemoryWritten,
+)
 from epistrel.api.routes.admin.offboarding import OffboardingPlanBody, OffboardingQueuedBody
 from epistrel.api.routes.admin.policies import PolicyBody, PolicyList, PolicyMutation
+from epistrel.api.routes.admin.providers import (
+    BindingBody,
+    BindingList,
+    BindingMutation,
+    ProviderBody,
+    ProviderItem,
+    ProviderList,
+    ProviderMutation,
+)
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import (
@@ -68,6 +84,7 @@ from epistrel.api.routes.catalog_scenarios import (
     ScenarioStatusBody,
     ScenarioVersionsBody,
 )
+from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
     ProfileDeletedBody,
@@ -77,7 +94,13 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
-from epistrel.api.routes.inspect import BeliefsBody, DivergencesBody, ExposuresBody, LedgerBody
+from epistrel.api.routes.inspect import (
+    BeliefsBody,
+    DivergencesBody,
+    ExposuresBody,
+    ExternalFactsBody,
+    LedgerBody,
+)
 from epistrel.api.routes.media import (
     MediaListBody,
     MediaUploadedBody,
@@ -95,9 +118,24 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
+from epistrel.api.routes.reconciliation import CompensatedBody, SettledNowBody
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
+from epistrel.api.routes.scheduled_events import ScheduledEventsBody, ScheduledEventWrittenBody
+from epistrel.api.routes.state_proposals import (
+    AnalysisQueuedBody,
+    ProposalApprovedBody,
+    ProposalDismissedBody,
+    StateProposalsBody,
+)
+from epistrel.api.routes.states import (
+    StateDeclaredBody,
+    StateDefinitionWriteBody,
+    StatesBody,
+    StateViewBody,
+    StateWrittenBody,
+)
 from epistrel.api.routes.stories import (
     CharacterWeightedBody,
     IngestResponse,
@@ -148,18 +186,21 @@ from epistrel.core.config_changes import ConfigScope
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
 from epistrel.core.deployment import SettingsPatch
+from epistrel.core.enums import MemoryKind, StoryStatus
 from epistrel.core.epistemic.author import BeliefRequest
 from epistrel.core.errors import EpistrelError
 from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.feedback_export import FeedbackExportRequest
 from epistrel.core.feedback_reporting import FeedbackGroupBy, FeedbackReviewList
 from epistrel.core.fork import Forked, ForkRequest
+from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.mutation import FactRequest, QuarantineRequest, SanitizeRequest, SupersedeRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
+from epistrel.core.outbox import CompensateRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
@@ -170,11 +211,14 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Cardinality, Interval, Proposition
 from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
+from epistrel.core.providers import BindingRequest
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
 from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
+from epistrel.core.states.api import StateDefineRequest, StateSetRequest
+from epistrel.core.states.proposals import StateProposalApproveRequest
 from epistrel.core.stories import (
     AdHocCharacter,
     CharacterWeightRequest,
@@ -186,12 +230,15 @@ from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesR
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
+from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledEventReschedule
+from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
-from epistrel.orchestrator.lite.schemas import RegenerateRequest, RespondRequest
+from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RespondRequest
 from epistrel.orchestrator.models.config import ConfigReplacement
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
 from tests.character_support import complete as complete_character
@@ -204,6 +251,13 @@ from tests.story_support import story_body
 
 PRINCIPAL = "p-parity"
 CTX = RequestContext(principal=PRINCIPAL)
+GOLD = {"name": "gold", "type": "number", "initial_value": 10}
+"""A State the State steps declare (#186)."""
+PROMPT_ONLY = {"clock": {"level": "prompt_only"}, "states": {"level": "prompt_only"}}
+"""#203: the Lite story's overrides from the clock steps on: the world clock and States in their
+prompt-only Lite forms (FR-LITE-5), so the clock, scheduled-event and State calls run."""
+PROPOSED = ("arrows", "lanterns")
+"""#203: the two State proposals the approval and the dismissal decide (``_proposed``)."""
 REPLY = "The innkeeper sets down a mug and says nothing."
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 SIGNED = re.compile(r"([?&](?:exp|sig)=)[^&]*")
@@ -337,6 +391,77 @@ async def _structured_fork(engine: Engine, ids: Ids) -> None:
         )
 
 
+async def _prompt_only(engine: Engine, ids: Ids) -> None:
+    """#203: the Lite story runs the clock and States at ``prompt_only`` (``PROMPT_ONLY``)."""
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO story_profile_overrides (story_id, settings, revision) "
+                "VALUES (:s, CAST(:o AS jsonb), 1) ON CONFLICT (story_id) DO UPDATE "
+                "SET settings = story_profile_overrides.settings || excluded.settings, "
+                "revision = story_profile_overrides.revision + 1"
+            ),
+            {"s": ids["story"], "o": json.dumps(PROMPT_ONLY)},
+        )
+
+
+async def _proposed(engine: Engine, ids: Ids) -> None:
+    """#203: two ``proposed`` State proposals (``PROPOSED``) as the analysis files them, under
+    the analysis step's request operation: no public call writes one (the analysis is a job)."""
+    async with engine.db.begin() as conn:
+        for name in PROPOSED:
+            ids[f"proposal_{name}"] = new_ulid()
+            await conn.execute(
+                text(
+                    "INSERT INTO state_proposals (id, story_id, name, suggested_type, "
+                    "suggested_scope, suggested_unit, created_by_operation_id) VALUES "
+                    "(:i, :s, :n, 'number', 'story', :n, :o)"
+                ),
+                {
+                    "i": ids[f"proposal_{name}"],
+                    "s": ids["story"],
+                    "n": name,
+                    "o": ids["analysis"],
+                },
+            )
+
+
+async def _listed_effects(engine: Engine, ids: Ids) -> None:
+    """#218 (#203): a side story (``listed_story``, the canon world on ``Structured (M4)`` with
+    States on) whose gold a write-capable in-process provider owns, with two purchases listed
+    ``confirmed_discarded_origin`` (``listed``, ``refunded``): the explicit actions need a
+    listed effect, which no public call creates."""
+    from tests import canon_support as canon
+    from tests import late_settlement_support as ls
+    from tests import state_support as ss
+
+    world = await canon.world(engine.db)
+    story = world.story_id
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = 1 "
+                "WHERE id = :s"
+            ),
+            {"s": story, "p": STRUCTURED_M4_PROFILE_ID},
+        )
+    payer, seller = world.characters["Cal"], world.characters["Ann"]
+    bank = await ls.bank(engine.db, engine, story, "parity-bank")
+    bank.script_writes("gold", "confirmed")
+    await ls.swords(engine.db, story, seller)
+    ids["listed"] = await ls.discarded(engine.db, engine, story, bank.name, payer, seller)
+    await ss.change(engine.db, story, ss.set_to("sword", 1, scope_key=seller, reason="restock"))
+    ids["refunded"] = await ls.discarded(engine.db, engine, story, bank.name, payer, seller)
+    ids["listed_story"], ids["payer"] = story, payer
+
+
+def _compensation(ids: Ids) -> dict[str, Any]:
+    """#218: a refund of the listed purchase's payment, to its payer's external gold."""
+    return {
+        "effect": {"state": "gold", "delta": 5, "reason": "a refund", "scope_key": ids["payer"]}
+    }
+
+
 async def _consolidate(engine: Engine, story_id: str) -> dict[str, Any]:
     queued = await engine.consolidate(CTX, story_id, ConsolidateRequest(from_turn=1, to_turn=2))
     return dump(ConsolidationQueuedResponse.of(queued))
@@ -351,6 +476,8 @@ MUTATION_ANSWERS = [
     ("lock_fact", 200),
     ("unlock_fact", 200),
     ("list_facts", 200),
+    ("get_fact", 200),
+    ("list_memories", 200),
     ("inspect_ledger", 200),
     ("quarantine_memory", 200),
     ("unquarantine_memory", 200),
@@ -419,6 +546,17 @@ async def _fact_list(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(FactListBody.of(await engine.list_facts(CTX, story_id, viewpoint="omniscient")))
 
 
+async def _fact_body(engine: Engine, story_id: str, fact_id: str) -> dict[str, Any]:
+    return dump(FactBody.of(await engine.get_fact(CTX, story_id, fact_id, viewpoint="omniscient")))
+
+
+async def _memory_list(engine: Engine, story_id: str) -> dict[str, Any]:
+    page = await engine.list_memories(
+        CTX, story_id, viewpoint="omniscient", kind=MemoryKind.SEMANTIC
+    )
+    return dump(MemoryListBody.of(page))
+
+
 async def _ledger(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(LedgerBody.of(await engine.inspect_ledger(CTX, story_id, viewpoint="omniscient")))
 
@@ -440,6 +578,14 @@ async def _divergences(engine: Engine, story_id: str) -> dict[str, Any]:
 async def _exposures(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(
         ExposuresBody.of(await engine.inspect_exposures(CTX, story_id, viewpoint="omniscient"))
+    )
+
+
+async def _external_facts(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        ExternalFactsBody.of(
+            await engine.inspect_external_facts(CTX, story_id, viewpoint="omniscient")
+        )
     )
 
 
@@ -771,6 +917,15 @@ def _steps() -> list[Step]:
             lambda e, ids: _listed(e),
         ),
         Step(
+            "list_stories",
+            lambda ids: Rest(
+                "GET",
+                "/stories",
+                params={"status": "active", "engine_profile": LITE_PRESET_ID},
+            ),
+            lambda e, ids: _listed_by(e, status=StoryStatus.ACTIVE, engine_profile=LITE_PRESET_ID),
+        ),
+        Step(
             "get_story",
             lambda ids: Rest("GET", s, params={"viewpoint": "omniscient"}),
             lambda e, ids: _story_body(e, ids["story"], "omniscient"),
@@ -1055,6 +1210,16 @@ def _steps() -> list[Step]:
                 variant=ChainRef(turn=ids["last_turn"], variant=2),
             ),
         ),
+        # #598 (FR-RESP-14): the latest turn replaced with new input.
+        Step(
+            "correct",
+            lambda ids: Rest(
+                "POST",
+                f"{s}/correct",
+                {"turn": ids["last_turn"], "player_input": {"say": CORRECTION}},
+            ),
+            lambda e, ids: _correct(e, ids["story"], ids["last_turn"]),
+        ),
         Step(
             "fork",
             lambda ids: Rest("POST", f"{s}/fork", {"at_turn": 1, "name": "Parity fork"}),
@@ -1131,6 +1296,26 @@ def _steps() -> list[Step]:
                 "GET", "/admin/stories/{fork}/facts", params={"viewpoint": "omniscient"}
             ),
             lambda e, ids: _fact_list(e, ids["fork"]),
+            group=MUTATION_GROUP,
+        ),
+        # One version by id (#535): the unlocked version just written.
+        Step(
+            "get_fact",
+            lambda ids: Rest(
+                "GET", "/admin/stories/{fork}/facts/{fork_fact}", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _fact_body(e, ids["fork"], ids["fork_fact"]),
+            group=MUTATION_GROUP,
+        ),
+        # The story's memories (#531), omniscient: the fork's semantic ones (its author memory).
+        Step(
+            "list_memories",
+            lambda ids: Rest(
+                "GET",
+                "/admin/stories/{fork}/memories",
+                params={"viewpoint": "omniscient", "kind": "semantic"},
+            ),
+            lambda e, ids: _memory_list(e, ids["fork"]),
             group=MUTATION_GROUP,
         ),
         # The thunks and the promissory ledger (#146), omniscient, on the structured fork.
@@ -1299,6 +1484,14 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", f"{s}/inspect/exposures", params={"viewpoint": "omniscient"}),
             lambda e, ids: _exposures(e, ids["story"]),
         ),
+        # #207: the snapshotted external facts (no partitions gate: an empty page here).
+        Step(
+            "inspect_external_facts",
+            lambda ids: Rest(
+                "GET", f"{s}/inspect/external-facts", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _external_facts(e, ids["story"]),
+        ),
         Step(
             "promote_character",
             lambda ids: Rest("POST", f"{s}/characters/{{dale}}/promote", {"owner": "p-curator"}),
@@ -1331,6 +1524,164 @@ def _steps() -> list[Step]:
                 e.set_participation(
                     CTX, ids["story"], ids["dale"], ParticipationSpec(role="primary", fixed=True)
                 )
+            ),
+        ),
+        # #193: the world clock read, its settings changed, and an advance, on the Lite story
+        # running the clock and States at prompt_only from here on (#203).
+        Step(
+            "get_clock",
+            lambda ids: Rest("GET", f"{s}/clock"),
+            lambda e, ids: _clock(e.get_clock(CTX, ids["story"])),
+            prepare=_prompt_only,
+        ),
+        Step(
+            "update_clock",
+            lambda ids: Rest("PATCH", f"{s}/clock", {"mode": "manual"}),
+            lambda e, ids: _clock_settings(e.update_clock(CTX, ids["story"], {"mode": "manual"})),
+        ),
+        Step(
+            "advance_clock",
+            lambda ids: Rest("POST", f"{s}/clock/advance", {"minutes": 30, "reason": "they wait"}),
+            lambda e, ids: _clock_advanced(
+                e.advance_clock(
+                    CTX,
+                    ids["story"],
+                    ClockAdvanceRequest(minutes=30, reason="they wait"),
+                )
+            ),
+        ),
+        # #196: the scheduled events listed, one created, rescheduled and cancelled.
+        Step(
+            "list_scheduled_events",
+            lambda ids: Rest("GET", f"{s}/scheduled-events", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _scheduled_list(
+                e.list_scheduled_events(CTX, ids["story"], viewpoint="omniscient")
+            ),
+        ),
+        Step(
+            "create_scheduled_event",
+            lambda ids: Rest(
+                "POST", f"{s}/scheduled-events", {"proposition": "the delivery", "planned": 60}
+            ),
+            lambda e, ids: _scheduled_written(
+                e.create_scheduled_event(
+                    CTX,
+                    ids["story"],
+                    ScheduledEventCreate(proposition="the delivery", planned=60),
+                )
+            ),
+            _keep("event", "event", "event_id"),
+        ),
+        Step(
+            "reschedule_scheduled_event",
+            lambda ids: Rest("PATCH", f"{s}/scheduled-events/{{event}}", {"planned": 90}),
+            lambda e, ids: _scheduled_written(
+                e.reschedule_scheduled_event(
+                    CTX, ids["story"], ids["event"], ScheduledEventReschedule(planned=90)
+                )
+            ),
+        ),
+        Step(
+            "cancel_scheduled_event",
+            lambda ids: Rest("DELETE", f"{s}/scheduled-events/{{event}}"),
+            lambda e, ids: _scheduled_written(
+                e.cancel_scheduled_event(CTX, ids["story"], ids["event"])
+            ),
+        ),
+        # #186: the State API: a declaration, both reads, a set and a definition change.
+        Step(
+            "define_state",
+            lambda ids: Rest("POST", f"{s}/states", {"definition": GOLD}),
+            lambda e, ids: _state_declared(
+                e.define_state(
+                    CTX, ids["story"], StateDefineRequest.model_validate({"definition": GOLD})
+                )
+            ),
+        ),
+        Step(
+            "get_states",
+            lambda ids: Rest("GET", f"{s}/states", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _states(e.get_states(CTX, ids["story"], viewpoint="omniscient")),
+        ),
+        Step(
+            "get_state",
+            lambda ids: Rest("GET", f"{s}/states/gold", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _state(e.get_state(CTX, ids["story"], "gold", viewpoint="omniscient")),
+        ),
+        Step(
+            "set_state",
+            lambda ids: Rest("PUT", f"{s}/states/gold", {"delta": 5, "reason": "a purse"}),
+            lambda e, ids: _state_written(
+                e.set_state(CTX, ids["story"], "gold", StateSetRequest(delta=5, reason="a purse"))
+            ),
+        ),
+        Step(
+            "update_state_definition",
+            lambda ids: Rest("PATCH", f"{s}/states/gold/definition", {"unit": "coins"}),
+            lambda e, ids: _state_definition(
+                e.update_state_definition(CTX, ids["story"], "gold", {"unit": "coins"})
+            ),
+        ),
+        # #192: engine-proposed States: an analysis, the list, and an approval and a dismissal
+        # of two proposals filed under the analysis's request (``_proposed``).
+        Step(
+            "analyze_state_proposals",
+            lambda ids: Rest("POST", f"{s}/state-proposals/analyze"),
+            lambda e, ids: _analysis_queued(e.analyze_state_proposals(CTX, ids["story"])),
+            _keep("analysis", "operation_id"),
+        ),
+        Step(
+            "list_state_proposals",
+            lambda ids: Rest("GET", f"{s}/state-proposals"),
+            lambda e, ids: _state_proposals(e.list_state_proposals(CTX, ids["story"])),
+        ),
+        # #210: the reconciliation status of the story's external effects (none listed).
+        Step(
+            "reconciliation",
+            lambda ids: Rest("GET", f"{s}/reconciliation"),
+            lambda e, ids: _reconciliation(e.reconciliation(CTX, ids["story"])),
+        ),
+        # #218: the explicit actions on listed effects, on a side story whose purchases were
+        # confirmed after the player rewound past them (``_listed``).
+        Step(
+            "settle_now",
+            lambda ids: Rest("POST", "/stories/{listed_story}/reconciliation/{listed}/settle-now"),
+            lambda e, ids: _settled_now(e.settle_now(CTX, ids["listed_story"], ids["listed"])),
+            prepare=_listed_effects,
+        ),
+        Step(
+            "compensate",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{listed_story}/reconciliation/{refunded}/compensate",
+                _compensation(ids),
+            ),
+            lambda e, ids: _compensated(
+                e.compensate(
+                    CTX,
+                    ids["listed_story"],
+                    ids["refunded"],
+                    CompensateRequest.model_validate(_compensation(ids)),
+                )
+            ),
+        ),
+        Step(
+            "approve_state_proposal",
+            lambda ids: Rest(
+                "POST", f"{s}/state-proposals/{{proposal_arrows}}/approve", {"definition": {}}
+            ),
+            lambda e, ids: _proposal_approved(
+                e.approve_state_proposal(
+                    CTX, ids["story"], ids["proposal_arrows"], StateProposalApproveRequest()
+                )
+            ),
+            prepare=_proposed,
+        ),
+        Step(
+            "dismiss_state_proposal",
+            lambda ids: Rest("POST", f"{s}/state-proposals/{{proposal_lanterns}}/dismiss"),
+            lambda e, ids: _proposal_dismissed(
+                e.dismiss_state_proposal(CTX, ids["story"], ids["proposal_lanterns"])
             ),
         ),
         Step(
@@ -2254,6 +2605,53 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/admin/model-config/generation"),
             lambda e, ids: _model_remove(e),
         ),
+        # -- external-data providers (#204): registration and a story's binding
+        Step(
+            "register_external_provider",
+            lambda ids: Rest("POST", "/admin/external-providers", PROVIDER),
+            lambda e, ids: _provider_written(
+                e.register_external_provider(CTX, ProviderRegistration.model_validate(PROVIDER))
+            ),
+        ),
+        Step(
+            "list_external_providers",
+            lambda ids: Rest("GET", "/admin/external-providers"),
+            lambda e, ids: _providers(e),
+        ),
+        Step(
+            "get_external_provider",
+            lambda ids: Rest("GET", PROVIDER_PATH),
+            lambda e, ids: _provider(e),
+        ),
+        Step(
+            "replace_external_provider",
+            lambda ids: Rest("PUT", PROVIDER_PATH, PROVIDER_EDIT),
+            lambda e, ids: _provider_written(
+                e.replace_external_provider(
+                    CTX, PROVIDER_NAME, ProviderSpec.model_validate(PROVIDER_EDIT)
+                )
+            ),
+        ),
+        Step(
+            "bind_provider",
+            lambda ids: Rest("PUT", BINDING_PATH, BINDING),
+            lambda e, ids: _bound(e, ids["story"]),
+        ),
+        Step(
+            "provider_bindings",
+            lambda ids: Rest("GET", "/stories/{story}/providers"),
+            lambda e, ids: _bindings(e, ids["story"]),
+        ),
+        Step(
+            "provider_binding",
+            lambda ids: Rest("GET", BINDING_PATH),
+            lambda e, ids: _binding(e, ids["story"]),
+        ),
+        Step(
+            "delete_external_provider",
+            lambda ids: Rest("DELETE", PROVIDER_PATH),
+            lambda e, ids: _no_content(e.delete_external_provider(CTX, PROVIDER_NAME)),
+        ),
     ]
 
 
@@ -2266,7 +2664,6 @@ async def _created(engine: Engine) -> dict[str, Any]:
 
 
 async def _listed(engine: Engine) -> dict[str, Any]:
-    from epistrel.core.enums import StoryStatus
 
     return dump(StoryList.of(await engine.list_stories(CTX, status=StoryStatus.ACTIVE)))
 
@@ -2381,6 +2778,15 @@ async def _feedback_exports(engine: Engine) -> dict[str, Any]:
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
+    return dump(RegeneratedBody.of_regenerate(result))
+
+
+CORRECTION = "Again, then."
+
+
+async def _correct(engine: Engine, story_id: str, turn: int) -> dict[str, Any]:
+    request = CorrectRequest.model_validate({"turn": turn, "player_input": {"say": CORRECTION}})
+    result = await engine.correct(CTX, story_id, request)
     return dump(RegeneratedBody.of_regenerate(result))
 
 
@@ -2617,6 +3023,74 @@ async def _promoted(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _participation(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ParticipationSetBody.of(await call))
+
+
+async def _clock(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ClockBody.of(await call))
+
+
+async def _clock_settings(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ClockSettingsWriteBody.of(await call))
+
+
+async def _clock_advanced(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ClockAdvancedBody.of(await call))
+
+
+async def _scheduled_list(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScheduledEventsBody.of(await call))
+
+
+async def _scheduled_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ScheduledEventWrittenBody.of(await call))
+
+
+async def _states(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StatesBody.of(await call))
+
+
+async def _state(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateViewBody.of(await call))
+
+
+async def _state_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateWrittenBody.of(await call))
+
+
+async def _state_declared(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateDeclaredBody.of(await call))
+
+
+async def _state_definition(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateDefinitionWriteBody.of(await call))
+
+
+async def _analysis_queued(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(AnalysisQueuedBody.of(await call))
+
+
+async def _state_proposals(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateProposalsBody.of(await call))
+
+
+async def _reconciliation(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(await call)
+
+
+async def _settled_now(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(SettledNowBody.of(await call))
+
+
+async def _compensated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CompensatedBody.of(await call))
+
+
+async def _proposal_approved(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProposalApprovedBody.of(await call))
+
+
+async def _proposal_dismissed(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ProposalDismissedBody.of(await call))
 
 
 async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:
@@ -2888,6 +3362,58 @@ async def _model_replace(engine: Engine) -> dict[str, Any]:
 async def _model_remove(engine: Engine) -> dict[str, Any]:
     write = await engine.remove_model_override(CTX, "generation")
     return await _model_config_write(engine, "generation", write)
+
+
+PROVIDER_NAME = "parity-ledger"
+PROVIDER_PATH = f"/admin/external-providers/{PROVIDER_NAME}"
+BINDING_PATH = "/stories/{story}/providers/" + PROVIDER_NAME + "/binding"
+PROVIDER: dict[str, Any] = {
+    "name": PROVIDER_NAME,
+    "trust_tier": "authoritative",
+    "transport": "in_process",
+    "manifest": {"values": {"gold": {"type": "number", "writable": False}}},
+}
+PROVIDER_EDIT: dict[str, Any] = {
+    **{k: v for k, v in PROVIDER.items() if k != "name"},
+    "unavailability": "unknown",
+}
+BINDING: dict[str, Any] = {"external_ids": {"player": "p-1"}}
+
+
+async def _provider_written(call: Awaitable[Any]) -> dict[str, Any]:
+    write = await call
+    return dump(ProviderMutation.written(write.provider, write.config_revision))
+
+
+async def _providers(engine: Engine) -> dict[str, Any]:
+    return dump(ProviderList.of(*await engine.list_external_providers(CTX)))
+
+
+async def _provider(engine: Engine) -> dict[str, Any]:
+    revision, row = await engine.get_external_provider(CTX, PROVIDER_NAME)
+    return dump(ProviderItem(config_revision=revision, **ProviderBody.fields_of(row)))
+
+
+async def _bound(engine: Engine, story_id: str) -> dict[str, Any]:
+    write = await engine.bind_provider(
+        CTX, story_id, PROVIDER_NAME, BindingRequest.model_validate(BINDING)
+    )
+    return dump(
+        BindingMutation(
+            timeline_revision=write.timeline_revision,
+            activated_required_providers=write.activated,
+            **BindingBody.of(write.binding).model_dump(),
+        )
+    )
+
+
+async def _bindings(engine: Engine, story_id: str) -> dict[str, Any]:
+    found = await engine.provider_bindings(CTX, story_id)
+    return dump(BindingList(bindings=[BindingBody.of(b) for b in found]))
+
+
+async def _binding(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(BindingBody.of(await engine.provider_binding(CTX, story_id, PROVIDER_NAME)))
 
 
 # -- running the sequence --------------------------------------------------------------------------
@@ -3210,4 +3736,4 @@ def test_c_03_bites_on_a_method_without_a_route_or_step(dummy_dsn: str) -> None:
 
     app = create_app(auth_settings(dummy_dsn))
     assert parity_gaps(Wider, app, _steps()) == ["brand_new_operation"]
-    assert parity_gaps(Engine, app, _steps()[:-1]) == ["remove_model_override"]
+    assert parity_gaps(Engine, app, _steps()[:-1]) == ["delete_external_provider"]

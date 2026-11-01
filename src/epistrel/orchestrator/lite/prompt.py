@@ -5,8 +5,9 @@ the ``generation`` purpose's ``GenerationInputs``; the ``lite_generation.j2`` te
 them as one ``system`` message (rating guidance first, then custom instructions, a scenario
 story's scenario text (#122), the actor's and render characters' definitions as
 ``### Author notes: <name>`` in request order, each with its deflection style when it has one
-(FR-GUARD-7), a scenario story's director notes, pinned memories, the rolling summary, the
-preamble and the story's ``player_authority`` instruction, #180), the verbatim window as
+(FR-GUARD-7), a scenario story's director notes, pinned memories, the rolling summary, with
+the prompt-only clock and States ``## Time`` and ``## Tracked values`` (#203), the preamble and
+the story's ``player_authority`` instruction, #180), the verbatim window as
 alternating ``user``/``assistant`` messages, and the player input as the final ``user``
 message. Nothing from the request's scene context is an argument here, so it cannot reach the
 prompt (FR-RESP-4).
@@ -33,6 +34,7 @@ from epistrel.core.concurrency import hash_member
 from epistrel.core.settings_schema import ResolvedGeneration
 from epistrel.core.turns import TurnInputs, WindowRow
 from epistrel.orchestrator.lite.cast import ResolvedCast
+from epistrel.orchestrator.lite.context import LiteContext
 from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.registry import (
     CharacterDefinition,
@@ -67,12 +69,14 @@ def assemble(
     say: str | None,
     do: str | None,
     constraints: Sequence[str] = (),
+    context: LiteContext | None = None,
 ) -> GenerationInputs:
     """The ``generation`` inputs of one Lite turn, every section from the Engine's records.
 
     The author notes are the actor's and the render characters', in request order; the
     definitions are the ones read in the turn's snapshot (``inputs.cast``). ``constraints``
-    are the output gate's lines on a guardrail regeneration (#68)."""
+    are the output gate's lines on a guardrail regeneration (#68); ``context`` the prompt-only
+    clock and States (#203)."""
     names = {c.id: c.name for c in inputs.cast}
     current = {c.id: c for c in inputs.cast}
     return GenerationInputs(
@@ -93,6 +97,8 @@ def assemble(
         policy_constraints=list(constraints),
         player_input=PlayerInput(name=cast.actor.name, say=say, do=do),
         player_authority=inputs.player_authority,
+        lite_time=list(context.time_lines) if context is not None else [],
+        tracked_values=list(context.tracked_values) if context is not None else [],
     )
 
 

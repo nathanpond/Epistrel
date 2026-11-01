@@ -48,6 +48,7 @@ from epistrel.orchestrator.lite.schemas import RegenerateRequest, RespondRequest
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.rebase import output_passes
 from epistrel.orchestrator.policies.store import guard_context
+from tests import clock_support
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
@@ -514,13 +515,16 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "turn_concurrency": st.sampled_from(["reject", "queue"]),
         "allow_new_arrivals": st.none() | st.booleans(),
         "default_output_viewpoint": st.none() | st.sampled_from([f"character:{c}" for c in cast]),
-        # M5's multi-character settings (#174-#176); ``state:<name>`` is refused until M6.
+        # M5's multi-character settings (#174-#176); #188: ``state:<name>`` only for the
+        # numeric State the fixture defines (``_no_bypass_setup``).
         "interaction_mode": st.none() | st.sampled_from(["sequential", "simultaneous"]),
         "sequence_order": st.none() | st.sampled_from(["request", "director"]),
-        "simultaneous_tie_break": st.none() | st.sampled_from(["request_order", "director"]),
+        "simultaneous_tie_break": st.none()
+        | st.sampled_from(["request_order", "director", f"state:{TIE_BREAK_STATE}"]),
         "reactive_interjections": st.booleans(),
         "player_view": st.sampled_from(["character", "story"]),  # #177
         "player_authority": st.sampled_from(["own_character", "co_author"]),  # #180
+        "co_author_knowledge": st.sampled_from(["confirm", "free"]),  # #598
     }
     return st.fixed_dictionaries(
         {
@@ -528,6 +532,29 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
             for name, info in StorySettings.model_fields.items()
         }
     )
+
+
+TIE_BREAK_STATE = "initiative"
+"""#188: the numeric State ``_no_bypass_setup`` defines, so the strategy may draw
+``state:initiative`` as a tie-break."""
+
+
+async def _tie_break_state(engine: AsyncEngine, story: str) -> None:
+    """Define the fixture's numeric State (#188), leaving the story's module levels as they
+    were."""
+    from epistrel.core.states import StateDefinition
+    from tests import state_support as ss
+
+    with ss.delivered():
+        await ss.set_level(engine, story, "on")
+        await ss.define(
+            engine,
+            story,
+            StateDefinition.model_validate(
+                {"name": TIE_BREAK_STATE, "type": "number", "scope": "character"}
+            ),
+        )
+        await ss.set_level(engine, story, None)
 
 
 async def _no_bypass_setup(url: str, word: str) -> tuple[str, list[str], str]:
@@ -546,6 +573,7 @@ async def _no_bypass_setup(url: str, word: str) -> tuple[str, list[str], str]:
                 }
             ),
         )
+        await _tie_break_state(engine, created.story_id)
         policy = await global_policy(lib, words(word))
         return created.story_id, [c.id for c in created.characters], policy.id
     finally:
@@ -1024,3 +1052,124 @@ async def test_i_18__structured_isolation(
         await played(client, structured, body(ids[PLAYER], "Are we at Quillhaven?"))
         (character,) = [c for c in stub.calls if c.response_schema == "CharacterRender"]
         assert "Quillhaven" in "\n".join(m.content for m in character.messages)
+
+
+LITE_FORMS = {"clock": {"level": "prompt_only"}, "states": {"level": "prompt_only"}}
+"""The prompt-only clock and States a Lite story runs (FR-LITE-5): ``on`` needs the structured
+pipeline (FR-PROF-4)."""
+EVENING = "Good evening, traveller. The fire is warm and the stew is hot tonight."
+"""A reply that claims evening (it is 10:00 by the clock)."""
+CLOCK_ROWS = (
+    "SELECT c.source::text AS source, c.delta FROM state_changes c JOIN state_definitions d "
+    "ON d.id = c.state_id WHERE c.story_id = :s AND d.name = 'world_clock' ORDER BY c.id"
+)
+
+
+def _ok(response: Any, status: int = 200) -> Any:
+    assert response.status_code == status, response.text
+    return response.json()
+
+
+@pytest.mark.part("M6", "FR-LITE-1; FR-CLOCK-5")
+async def test_i_18__m6(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """The prompt-only clock and States under ``lite`` (#203, FR-LITE-5). With
+    ``clock.level = prompt_only`` the one Lite prompt gains ``## Time``: the current time as the
+    anchor shows it and the open canon scheduled events with their planned times; with
+    ``states.level = prompt_only`` it gains ``## Tracked values``: each player-visible State
+    with its value (a hidden one is left out). Each turn advances the clock by one pacing
+    increment over the input and the reply as one combined render (#194's table: 19 words, 1
+    minute), written as one ``pacing`` advance; ``manual`` mode leaves it unchanged; the API
+    advance (#193) and the State API sets (#186) work.
+
+    Complements asserted: no claim is verified (a reply saying "good evening" at 10:00 commits
+    unchanged, and the turn makes only its ``generation`` call); a reply mentioning an amount of
+    gold changes no State (Lite declares no effect); a story with both modules off has no
+    ``## Time`` or ``## Tracked values``, writes no clock row and its result carries no
+    ``clock``."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, overrides=LITE_FORMS)
+        await clock_support.anchor_at(engine, story, 10 * 60)
+        s = f"/stories/{story}"
+        visible = {"name": "gold", "type": "number", "initial_value": 10}
+        hidden = {"name": "trust", "type": "number", "initial_value": 3, "visibility": "hidden"}
+        for definition in (visible, hidden):
+            _ok(
+                await client.post(f"{s}/states", json={"definition": definition}, headers=WRITE),
+                201,
+            )
+        _ok(
+            await client.put(
+                f"{s}/states/gold", json={"delta": 5, "reason": "a purse"}, headers=WRITE
+            )
+        )
+        _ok(
+            await client.post(
+                f"{s}/scheduled-events",
+                json={"proposition": "the delivery", "planned": 60},
+                headers=WRITE,
+            ),
+            201,
+        )
+
+        stub.reset()
+        stub.when("", EVENING + " Five gold for the night.", purpose="generation")
+        said = "Is there a room for the night?"
+        first = await played(client, story, body(ids[PLAYER], said))
+        (call,) = generation_calls(stub)
+        assert [c.purpose for c in stub.calls] == ["generation"]
+        system = system_of(call)
+        positions = _order(system, "## Time", "## Tracked values", "## Your part")
+        assert positions == sorted(positions)
+        time_block = system.split("## Time\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        assert time_block[0].startswith("It is now ")
+        assert "10:00" in time_block[0]
+        assert time_block[1].startswith("Scheduled: the delivery, at ")
+        assert "11:00" in time_block[1]
+        tracked = system.split("## Tracked values\n", 1)[1].split("\n\n", 1)[0]
+        assert tracked.splitlines() == ["- gold: 15"]
+        assert "trust" not in system
+        # No claim is verified: the evening greeting at 10:00 commits as generated.
+        assert first["message"]["text"].startswith(EVENING)
+        assert first["clock"]["before"]["offset"] == 0
+        assert first["clock"]["after"]["offset"] == 1
+        assert [(r.source, r.delta) for r in await rows(engine, CLOCK_ROWS, s=story)] == [
+            ("pacing", 1)
+        ]
+        # A quantity mention changes nothing.
+        gold = _ok(
+            await client.get(f"{s}/states/gold", params={"viewpoint": "omniscient"}, headers=READ)
+        )
+        assert gold["state"]["value"] == 15
+
+        # The API advance works; the next prompt shows the new time.
+        _ok(
+            await client.post(
+                f"{s}/clock/advance", json={"minutes": 30, "reason": "they wait"}, headers=WRITE
+            )
+        )
+        stub.reset()
+        second = await played(client, story, body(ids[PLAYER], said))
+        assert "10:31" in system_of(generation_calls(stub)[0])
+        assert second["clock"]["after"]["offset"] == 32
+
+        # Manual mode: no pacing.
+        _ok(await client.patch(f"{s}/clock", json={"mode": "manual"}, headers=WRITE))
+        third = await played(client, story, body(ids[PLAYER], said))
+        assert third["clock"]["before"]["offset"] == 32
+        assert third["clock"]["after"]["offset"] == 32
+        assert [r.source for r in await rows(engine, CLOCK_ROWS, s=story)] == [
+            "pacing",
+            "consumer",
+            "pacing",
+        ]
+
+        # Complement: both modules off.
+        off, off_ids = await new_story(client, PLAYER, FIRST)
+        stub.reset()
+        plain = await played(client, off, body(off_ids[PLAYER], said))
+        sent = system_of(generation_calls(stub)[0])
+        assert "## Time" not in sent
+        assert "## Tracked values" not in sent
+        assert "clock" not in plain
+        assert await rows(engine, CLOCK_ROWS, s=off) == []

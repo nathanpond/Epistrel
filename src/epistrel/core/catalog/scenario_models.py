@@ -26,8 +26,10 @@ single source of the mapping ``{dotted path: (class, use)}`` (lists as ``[]``:
 ``cast.roles[].public_label``) that genesis (#122) and the validation report (#111) read, and
 ``classification_problems`` is the build-time check that no field is left untagged.
 
-**Shape only, in M3.** States, the clock, scheduled events, predicates, closed sets and rules
-are stored as given (JSON objects); their semantics arrive in M4 to M6. A seed's audience is a
+**Shape only, in M3.** Predicates, closed sets and rules are stored as given (JSON objects;
+#131 types them at publish and genesis). States, the starting clock, scheduled events and each
+role's ``state_initial_values`` are typed (#202: ``ScenarioState``, ``ScenarioClock``,
+``ScenarioScheduledEvent``), leaves of the class walk. A seed's audience is a
 list of tokens — the levels ``self``, ``acquaintances``, ``perceivable`` and ``public``, role
 ids, or named groups — stored as written; routing it is M5's.
 
@@ -61,7 +63,14 @@ from pydantic import (
 from pydantic.fields import FieldInfo
 
 from epistrel.core.catalog.service import CardRating, Revision
-from epistrel.core.enums import EntryStatus
+from epistrel.core.enums import (
+    EntryStatus,
+    StateOwner,
+    StateScope,
+    StateType,
+    StateVisibility,
+    TimeAwareness,
+)
 from epistrel.core.ids import Ulid
 from epistrel.core.json_numbers import require_finite
 from epistrel.core.ownership import Owner
@@ -192,6 +201,12 @@ valid time, a role's State values, the creation bounds): stored as given (a JSON
 M4 to M6 give them their semantics. Every number in it must be finite, so the stored document
 round-trips (``core.json_numbers``)."""
 
+StateValue = StrictBool | StrictInt | Annotated[float, Strict(), Field(allow_inf_nan=False)] | str
+"""A State's value as JSON: a number, a boolean or a string (an enum member, text)."""
+TimeOfDay = Annotated[str, Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")]
+"""A time of day, ``"HH:MM"``."""
+EventName = Annotated[str, Field(min_length=1, max_length=200), AfterValidator(_non_blank)]
+
 RoleKind = Literal["npc", "player"]
 FillMode = Literal["open", "default", "locked"]
 Participation = Literal["primary", "reactive", "silent"]
@@ -207,6 +222,7 @@ ChannelId = Annotated[str, Field(min_length=1, max_length=ALIAS_MAX), AfterValid
 Trust = Annotated[float, Strict(), Field(ge=0, le=1, allow_inf_nan=False)]
 InteractionMode = Literal["sequential", "simultaneous"]
 PlayerAuthority = Literal["own_character", "co_author"]
+CoAuthorKnowledge = Literal["confirm", "free"]
 RetconTiming = Literal["include_if_possible", "ask_author"]
 BackfillConflictPolicy = Literal["last_mention", "first_mention", "ask"]
 
@@ -453,7 +469,10 @@ class ScenarioRole(ScenarioModel):
     relationships: list[RoleRelationship] = Field(
         default_factory=list, max_length=RELATIONSHIPS_MAX
     )
-    state_initial_values: Annotated[Structure | None, FieldClass.starting_state] = None
+    state_initial_values: Annotated[
+        dict[Annotated[str, Field(min_length=1, max_length=NAME_MAX)], StateValue] | None,
+        FieldClass.starting_state,
+    ] = Field(default=None, max_length=STRUCTURES_MAX)
     starting_location: Annotated[Slug | None, FieldClass.knowledge_seed] = None
     participation: Annotated[Participation | None, FieldClass.configuration, Use.story_setting] = (
         None
@@ -499,17 +518,131 @@ class ScenarioChannel(ScenarioModel):
     )
 
 
+def _unset(value: Any) -> bool:
+    """An unset member: left out wherever a typed starting-state object is dumped (a read's
+    ``full`` projection included), so it reads back as the author wrote it."""
+    return value is None
+
+
+class StartingObject(BaseModel):
+    """Base of the typed starting-state objects (#202): a State, the starting clock and its
+    anchor, a scheduled event. Unknown keys are refused; every member is optional unless it says
+    otherwise and is left out of the stored document when unset, so the stored form is what the
+    author wrote. They are **leaves** of FR-SCN-11's class walk (not ``ScenarioModel``s): the
+    field holding them carries the class. Their semantics are checked at publish
+    (``core.catalog.checks.state_schema``) and applied at genesis (``core.genesis.structured``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StateConstraints(StartingObject):
+    """A State's bounds (#185's ``Constraints``, as JSON)."""
+
+    min: StrictInt | Annotated[float, Strict(), Field(allow_inf_nan=False)] | None = Field(
+        default=None, exclude_if=_unset
+    )
+    max: StrictInt | Annotated[float, Strict(), Field(allow_inf_nan=False)] | None = Field(
+        default=None, exclude_if=_unset
+    )
+    non_negative: StrictBool | None = Field(default=None, exclude_if=_unset)
+    allowed_values: list[str] | None = Field(default=None, exclude_if=_unset, max_length=ITEMS_MAX)
+    tolerance: StrictInt | Annotated[float, Strict(), Field(allow_inf_nan=False)] | None = Field(
+        default=None, exclude_if=_unset
+    )
+
+
+class ScenarioState(StartingObject):
+    """A State the story tracks from genesis (FR-STATE-3; #185's ``StateDefinition`` as an
+    author writes it): ``name``, ``type`` and the optional members. ``entity_id`` names a role
+    or a world location or entity, and ``authorization.sources`` name roles as ``role:<slug>``;
+    genesis maps both to the story's ids. The declaration's shape rules are checked at publish
+    (``state_schema``)."""
+
+    name: Annotated[str, Field(min_length=1, max_length=NAME_MAX)]
+    type: StateType
+    scope: StateScope | None = Field(default=None, exclude_if=_unset)
+    constraints: StateConstraints | None = Field(default=None, exclude_if=_unset)
+    initial_value: StateValue | None = Field(default=None, exclude_if=_unset)
+    aliases: list[str] | None = Field(default=None, exclude_if=_unset, max_length=ALIASES_MAX)
+    unit: str | None = Field(default=None, exclude_if=_unset, max_length=NAME_MAX)
+    entity_id: Slug | None = Field(default=None, exclude_if=_unset)
+    visibility: StateVisibility | None = Field(default=None, exclude_if=_unset)
+    owner: StateOwner | None = Field(default=None, exclude_if=_unset)
+    provider_id: str | None = Field(default=None, exclude_if=_unset, max_length=NAME_MAX)
+    external_value_name: str | None = Field(default=None, exclude_if=_unset, max_length=NAME_MAX)
+    silent: StrictBool | None = Field(default=None, exclude_if=_unset)
+    rules: Structure | None = Field(default=None, exclude_if=_unset)
+    authorization: Structure | None = Field(default=None, exclude_if=_unset)
+    transfer: Structure | None = Field(default=None, exclude_if=_unset)
+    reservation_expiry_minutes: StrictInt | None = Field(default=None, exclude_if=_unset)
+
+
+class ScenarioAnchor(StartingObject):
+    """The starting clock's anchor (FR-CLOCK-3; #195's components): what the author fixes of
+    the absolute time at the story's start — the date (``year``, ``month``, ``day``), the
+    ``weekday`` (a calendar weekday's name), the exact ``time`` of day, or only its ``band``
+    ("evening"). What is left out stays unknown."""
+
+    year: StrictInt | None = Field(default=None, exclude_if=_unset)
+    month: StrictInt | None = Field(default=None, exclude_if=_unset, ge=1)
+    day: StrictInt | None = Field(default=None, exclude_if=_unset, ge=1)
+    weekday: Annotated[str, Field(min_length=1, max_length=ALIAS_MAX)] | None = Field(
+        default=None, exclude_if=_unset
+    )
+    time: TimeOfDay | None = Field(default=None, exclude_if=_unset)
+    band: Annotated[str, Field(min_length=1, max_length=ALIAS_MAX)] | None = Field(
+        default=None, exclude_if=_unset
+    )
+
+
+class ScenarioClock(StartingObject):
+    """The starting clock (FR-CLOCK-3,5,8; #193): its ``anchor`` (``null``: unanchored) and the
+    settings genesis seeds onto the story's ``world_clock`` (the rest keep their defaults)."""
+
+    anchor: ScenarioAnchor | None = Field(default=None, exclude_if=_unset)
+    mode: Literal["paced", "manual"] | None = Field(default=None, exclude_if=_unset)
+    pacing_table: list[list[StrictInt | None]] | None = Field(
+        default=None, exclude_if=_unset, max_length=ITEMS_MAX
+    )
+    max_unprompted_skip_minutes: StrictInt | None = Field(default=None, exclude_if=_unset, ge=0)
+    stop_at_due_events: StrictBool | None = Field(default=None, exclude_if=_unset)
+    time_awareness: TimeAwareness | None = Field(default=None, exclude_if=_unset)
+    bands: list[list[str]] | None = Field(default=None, exclude_if=_unset, max_length=ITEMS_MAX)
+    calendar: Structure | None = Field(default=None, exclude_if=_unset)
+
+
+class ScenarioScheduledEvent(StartingObject):
+    """A pre-scheduled event (FR-CLOCK-9; #196): the event (``proposition``: its name, "the
+    dinner"), its ``subject`` (a role; default the owning role, else the first participant, else
+    the event itself), when it is ``planned`` (an offset in minutes from the story's start, or a
+    time of day ``"HH:MM"`` the starting anchor places), its ``participants`` (roles), its
+    ``place`` (a world location) and its ``owner``: ``world`` (the default) or a role, whose
+    character owns it. ``audience`` and ``disclosure`` say who knows of it, as a seed's do
+    (default: ``public`` for the world's, ``self`` for a role's)."""
+
+    proposition: EventName
+    subject: Slug | None = Field(default=None, exclude_if=_unset)
+    planned: Annotated[StrictInt, Field(ge=0)] | TimeOfDay
+    participants: list[Slug] | None = Field(default=None, exclude_if=_unset, max_length=ROLES_MAX)
+    place: Slug | None = Field(default=None, exclude_if=_unset)
+    owner: Slug | None = Field(default=None, exclude_if=_unset)
+    audience: list[AudienceToken] | None = Field(
+        default=None, exclude_if=_unset, max_length=AUDIENCE_MAX
+    )
+    disclosure: Disclosure | None = Field(default=None, exclude_if=_unset)
+
+
 class ScenarioStartingState(ScenarioModel):
     """The story's starting state: seeded world memories, State trackers with initial values,
-    the starting clock, pre-scheduled events, author-declared predicates, closed sets and rules
-    (each stored as given in M3), and the opening."""
+    the starting clock, pre-scheduled events (typed since #202), author-declared predicates,
+    closed sets and rules (#131's declarations, stored as given), and the opening."""
 
     seeded_memories: list[Seed] = Field(default_factory=list, max_length=SEEDS_MAX)
-    states: Annotated[list[Structure], FieldClass.starting_state] = Field(
+    states: Annotated[list[ScenarioState], FieldClass.starting_state] = Field(
         default_factory=list, max_length=STRUCTURES_MAX
     )
-    clock: Annotated[Structure | None, FieldClass.starting_state] = None
-    scheduled_events: Annotated[list[Structure], FieldClass.knowledge_seed] = Field(
+    clock: Annotated[ScenarioClock | None, FieldClass.starting_state] = None
+    scheduled_events: Annotated[list[ScenarioScheduledEvent], FieldClass.knowledge_seed] = Field(
         default_factory=list, max_length=STRUCTURES_MAX
     )
     predicates: Annotated[list[Structure], FieldClass.story_rule] = Field(
@@ -523,6 +656,19 @@ class ScenarioStartingState(ScenarioModel):
     )
     channels: list[ScenarioChannel] = Field(default_factory=list, max_length=ITEMS_MAX)
     opening: ScenarioOpening = Field(default_factory=ScenarioOpening)
+
+    def stored(self, name: str) -> Any:
+        """Field ``name`` as the stored document holds it (JSON; a typed object's unset members
+        left out): what a walk over its strings reads."""
+        value = getattr(self, name)
+        if isinstance(value, BaseModel):
+            return value.model_dump(mode="json", exclude_none=True)
+        if isinstance(value, list):
+            return [
+                v.model_dump(mode="json", exclude_none=True) if isinstance(v, BaseModel) else v
+                for v in value
+            ]
+        return value
 
 
 # -- the story drivers -------------------------------------------------------------------------
@@ -617,6 +763,13 @@ class StorySettingsDefaults(ScenarioModel):
     player_authority: Annotated[
         PlayerAuthority | None, FieldClass.configuration, Use.story_setting
     ] = None
+    co_author_knowledge: Annotated[
+        CoAuthorKnowledge | None, FieldClass.configuration, Use.story_setting
+    ] = None
+    """How ``co_author`` narration is held to what the narrated character could know
+    (FR-RESP-14; #598): ``confirm`` (a notice per implausible presupposition) or ``free``.
+    ``null`` leaves the story's default (``confirm``). No effect under Lite or without
+    per-character partitions, so applied to every story."""
     default_output_viewpoint: Annotated[
         Slug | None, FieldClass.configuration, Use.story_setting
     ] = None
@@ -1137,11 +1290,13 @@ __all__ = [
     "RoleCharacter",
     "RoleEligibility",
     "RoleRelationship",
+    "ScenarioAnchor",
     "ScenarioCard",
     "ScenarioCardMedia",
     "ScenarioCardMediaSet",
     "ScenarioCardRole",
     "ScenarioCast",
+    "ScenarioClock",
     "ScenarioCreate",
     "ScenarioDraft",
     "ScenarioDrivers",
@@ -1158,10 +1313,15 @@ __all__ = [
     "ScenarioPublicCard",
     "ScenarioRecommendation",
     "ScenarioRole",
+    "ScenarioScheduledEvent",
     "ScenarioStartingState",
+    "ScenarioState",
     "ScenarioVideo",
     "ScenarioWorld",
     "Seed",
+    "StartingObject",
+    "StateConstraints",
+    "StateValue",
     "StorySettingsDefaults",
     "Use",
     "VisualStyle",

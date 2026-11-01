@@ -85,7 +85,7 @@ from epistrel.core.membership import (
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
-from epistrel.core.tables import characters, stories
+from epistrel.core.tables import characters
 from epistrel.core.tables.beliefs import belief_transitions, beliefs
 from epistrel.core.verify.rules import Holder, Record, Verdict, VerdictKind, check_with
 from epistrel.observability.metrics import TESTIMONY_OUTCOMES
@@ -256,14 +256,11 @@ async def _relations_in_frame(
     seed trust in the frame through ``through``: what #137's projection answers, but read from
     canon at the frame's full position (``KeyedLookup.relations_between``; the projection is
     turn-granular) and valid at the frame's turn's story-time, as the projection's "now"."""
+    from epistrel.core import world_clock
     from epistrel.core.projections.structured import RELATIONSHIPS
     from epistrel.core.propositions.registry import load
-    from epistrel.core.resolution.time import TimeBasis, story_time_at
 
-    zero = await lookup.conn.scalar(
-        select(stories.c.story_minute_zero).where(stories.c.id == story_id)
-    )
-    now = story_time_at(through.turn, TimeBasis(minute_zero=int(zero or 0)))
+    now = await world_clock.story_time_at(lookup.conn, story_id, through)
     if registry is None or registry.story_id != story_id:
         registry = await load(lookup.conn, story_id)
     found = await lookup.relations_between(

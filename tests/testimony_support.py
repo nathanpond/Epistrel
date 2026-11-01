@@ -17,6 +17,7 @@ from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from tests import partition_support as parts
 from tests import perception_support as ps
+from tests import takeback_support
 from tests.canon_support import auto_predicate
 from tests.event_support import rows
 from tests.structured_turn_support import structured_story
@@ -53,6 +54,7 @@ async def enable_testimony(
         settings["commitment"] = {"enabled": True, "salience": salience}
     if model_calls is not None:
         settings["budgets"] = {"model_calls": model_calls}
+    takeback_support.overridden(story_id, settings)
     await set_overrides(
         engine,
         story_id,

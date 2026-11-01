@@ -59,6 +59,7 @@ from epistrel.core.catalog.checks.base import (
     Preparation,
     Subject,
     ValidationContext,
+    delivered_capabilities,
 )
 from epistrel.core.catalog.report import (
     DRAFT,
@@ -109,10 +110,13 @@ async def prepare(
     env: Preparation,
     *,
     checks: Sequence[Check] = CHECKS,
-    capabilities: frozenset[str] = DEPLOYMENT_CAPABILITIES,
+    capabilities: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """What each applicable, available check prepares for ``subject``, by check name (outside
-    any transaction; it may call a model)."""
+    any transaction; it may call a model). ``capabilities`` defaults to what the deployment
+    delivers now."""
+    if capabilities is None:
+        capabilities = delivered_capabilities()
     prepared: dict[str, Any] = {}
     for check in applicable(subject.entity_type, checks):
         if _available(check, capabilities):

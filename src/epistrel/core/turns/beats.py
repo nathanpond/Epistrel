@@ -87,9 +87,7 @@ from epistrel.core.propositions.model import (
     TypedLiteral,
 )
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_AT
-from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.entities import add_entities, character_spec
-from epistrel.core.resolution.time import story_time_at
 from epistrel.core.tables import characters, events
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.utterances import utterances
@@ -170,6 +168,82 @@ class AssertedClaim:
 
 
 @dataclass(frozen=True, slots=True)
+class DeclaredEffect:
+    """One State effect a beat declares (FR-TURN-11, FR-STATE-5; #187): the State's name, its
+    scope key (``None``: the story's, or for a character-scoped State the acting character),
+    a ``delta`` or a new ``value`` (both ``None``: unresolved, repaired), the reason (at most
+    200 characters) and whether it is ``silent``. Validated against the State before the repair
+    ladder and committed with the turn (``orchestrator.structured.effects``).
+
+    #188 (FR-STATE-10,12): ``kind`` is ``change`` or ``transfer``; a transfer names its
+    ``counterparty`` (``(state, scope_key, delta)``: the other side, whose ``delta`` ``None``
+    mirrors this one's); ``justification`` is the label of the event that justifies the change
+    and ``justified_by`` the number of the turn's beat that narrates it; ``declared`` is the
+    amount the render declared when a cap repaired it down (``core.states.authorize``)."""
+
+    state: str
+    reason: str
+    scope_key: str | None = None
+    delta: Any = None
+    value: Any = None
+    silent: bool = False
+    kind: str = "change"
+    counterparty: tuple[str, str | None, Any] | None = None
+    justification: str | None = None
+    justified_by: int | None = None
+    declared: Any = None
+    consideration: str | None = None
+    """#189 (FR-STATE-11): the item the effect pays for (an entity of the story, by id, name
+    or alias), whose availability and ownership are its preconditions."""
+    contingency: str | None = None
+    """#216 (FR-STATE-14): ``unconditional``, ``reservation`` or ``conditional`` in a turn that
+    requests external effects (``None``: the default, ``core.states.contingency``)."""
+    prerequisites: tuple[str, ...] = ()
+    """#216: the States of the turn's external effects a contingent effect waits on (empty:
+    the transfer's own external side, else every external effect of the turn)."""
+
+    @property
+    def unresolved(self) -> bool:
+        """Neither a delta nor a value: the effect names no concrete amount."""
+        return self.delta is None and self.value is None
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredAdvance:
+    """One time advance a beat declares (FR-TURN-11, FR-CLOCK-7; #194): ``minutes`` or a time
+    of day ``to`` (``"HH:MM"``), the declared step it attaches to (``None``: the beat's own) and
+    its reason. Timed with the turn (``core.world_clock.timing``) and committed as a
+    ``declared_skip`` advance of the world clock."""
+
+    reason: str
+    minutes: int | None = None
+    to: str | None = None
+    step: int | None = None
+    to_offset: int | None = None
+    """#196: a target the engine sets (a clock offset): a time stop's cutoff, which a beat
+    regenerated under it reaches."""
+    source: str | None = None
+    """#199: an advance the engine supplied for the beat (``estimate``: a ``time_estimation``
+    proposal; ``player``: the amount the player's input stated); ``None``: declared."""
+    meta: Mapping[str, Any] | None = None
+    """#199: the change row's ``estimate_meta`` (the estimate's reason, confidence, model and
+    prompt hash; ``initiated_by``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredReschedule:
+    """One ``reschedule`` a beat declares (FR-CLOCK-19; #198): the event (as the render names
+    it), its new ``planned`` time of day (``"HH:MM"``) and the reason. A declared change: the
+    beat's statement about the event is classified with ``explicit_change``
+    (``core.world_clock.schedule_statements``), so it reschedules the event only when the
+    speaker may change it."""
+
+    event: str
+    planned: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class TurnBeat:
     """One beat of a structured turn: its kind, position, text and actor (``None`` for
     narration), a ``say``'s declared intent, a ``latent``'s visibility, the claims it asserts,
@@ -207,6 +281,16 @@ class TurnBeat:
     narrated_by: str | None = None
     """#176 (FR-MULTI-9): a reactive character's reaction, narrated by this character's render
     (``character_id`` is the reactor's)."""
+    effects: tuple[DeclaredEffect, ...] = ()
+    """#187 (FR-TURN-11): the State effects the beat declares, in order (none on the player's
+    input, a ``think``, a reactive reaction or the player's ``co_author`` narration)."""
+    advances: tuple[DeclaredAdvance, ...] = ()
+    """#194 (FR-CLOCK-7): the time advances the beat declares, in order."""
+    reschedules: tuple[DeclaredReschedule, ...] = ()
+    """#198 (FR-CLOCK-19): the ``reschedule`` effects the beat declares, in order."""
+    flashback: bool = False
+    """#194 (FR-CLOCK-17): the beat recalls an earlier time: unpaced, unchecked against the
+    present, and it moves nothing."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:
@@ -613,10 +697,13 @@ async def write_character_facts(
     story_id = operation.story_id
     if story_id is None or not joined:
         return []
-    basis = await load_time_basis(conn, story_id)
-    since = story_time_at(operation.narrative_turn or 0, basis)
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
+    basis = await world_clock.time_basis(conn, story_id)
+    turn, variant = operation.narrative_turn or 0, operation.turn_variant or 0
     written: list[Fact] = []
     for character_id, age, beat in joined:
+        since = basis.at(Position(turn, variant, 0, beat or 0))
         if age is not None:
             written.append(
                 await commit_fact(
@@ -663,6 +750,9 @@ __all__ = [
     "AgeSource",
     "AssertedClaim",
     "BeatKind",
+    "DeclaredAdvance",
+    "DeclaredEffect",
+    "DeclaredReschedule",
     "Intent",
     "Introduction",
     "ObjectiveRelation",

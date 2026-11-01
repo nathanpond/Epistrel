@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core.catalog import validation
 from epistrel.core.catalog.checks.base import DEPLOYMENT_CAPABILITIES
 from epistrel.core.catalog.scenario_models import ScenarioDraft, ScenarioModel
+from epistrel.core.genesis.settings_map import genesis_capabilities
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from tests.auth_support import bearer
@@ -106,6 +107,15 @@ M3_UNAVAILABLE = ("fact_consistency", "seed_normalization", "state_schema")
 capability-gated check, since a Lite creation runs them with the Lite capabilities. A catalog
 validation lists only those the deployment has not delivered (``undeliverable_checks``): from
 M4 the structured pipeline is delivered and the seed checks run at publish (#149)."""
+
+
+def lite_unavailable() -> list[str]:
+    """``M3_UNAVAILABLE`` less the checks whose capability a Lite creation has
+    (``genesis_capabilities``): since #203 the States check runs there (FR-LITE-5's prompt-only
+    States), so a Lite creation lists only the structured checks."""
+    capabilities = genesis_capabilities()
+    by_name = {check.name: check.capability for check in validation.CHECKS}
+    return [name for name in M3_UNAVAILABLE if by_name.get(name) not in capabilities]
 
 
 def undeliverable_checks() -> list[str]:
@@ -295,9 +305,21 @@ COMPLETE: dict[str, Any] = {
                 "disclosure": "open",
             }
         ],
-        "states": [{"name": "harvest_mood", "initial": "tense"}],
-        "clock": {"start": "1987-10-24T18:00:00", "time_awareness": "loose"},
-        "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": "the reading of the will"}],
+        # Typed since #202 (``ScenarioState``, ``ScenarioClock``, ``ScenarioScheduledEvent``).
+        "states": [
+            {
+                "name": "harvest_mood",
+                "type": "enum",
+                "constraints": {"allowed_values": ["calm", "tense"]},
+                "initial_value": "tense",
+            },
+            {"name": "composure", "type": "number", "scope": "character"},
+        ],
+        "clock": {
+            "anchor": {"year": 1987, "month": 10, "day": 24, "time": "18:00"},
+            "time_awareness": "approximate",
+        },
+        "scheduled_events": [{"proposition": "the reading of the will", "planned": "21:00"}],
         "predicates": [{"name": "inherits", "subject_type": "person", "cardinality": "multi"}],
         "closed_sets": [],
         "rules": [{"when": "inherits", "then": "owns"}],
@@ -342,7 +364,6 @@ COMPLETE: dict[str, Any] = {
                 "message": "Keep the farm's address vague.",
             }
         ],
-        "required_providers": ["weather"],
     },
     "recommendation": {"engine_profile_id": "lite", "capabilities": ["per_character_partitions"]},
     "visual_style": {"prompt": "oil painting, muted autumn palette", "negative_prompt": "text"},
@@ -355,7 +376,9 @@ COMPLETE: dict[str, Any] = {
 has a role of each fill mode (an open one, one locked to a pinned catalog character, one
 pre-filled by default) and the player's. Its seeds use every disclosure, and every seed but the
 world's names several audience tokens (levels, a role and a named group). Its role characters
-are ids no character has: ``complete_with`` names real ones, which a publish needs (#111)."""
+are ids no character has: ``complete_with`` names real ones, which a publish needs (#111). It
+requires no provider: since #204 a story created from a scenario needs every required provider
+registered (``tests/conformance/test_c_06.py`` covers ``required_providers``)."""
 
 CARD_ROLES: list[dict[str, Any]] = [
     {
@@ -680,6 +703,7 @@ __all__ = [
     "error_of",
     "fields_of",
     "headers",
+    "lite_unavailable",
     "plant_character",
     "publish",
     "published",

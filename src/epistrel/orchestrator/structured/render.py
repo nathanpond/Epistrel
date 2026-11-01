@@ -16,7 +16,7 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   rendering character (never the player, never another character; the narrator names none);
 - ``intent`` is a ``say``'s alone (``sincere``, ``deceptive``, ``joking``, ``unspecified``;
   ``unspecified`` when it is left out), ``visibility`` a ``latent``'s alone (``objective`` when
-  left out; ``characters`` names cast members only), ``effects`` is empty in M4; ``hidden``
+  left out; ``characters`` names cast members only); ``hidden``
   (``{noticers, observed: fact | signal}``, cast members only) and ``holder`` (``canon`` only:
   any other is ``viewpoint_cannot_assign_truth``, FR-EPI-8) a ``latent``'s alone (#169);
 - the perception qualifiers (#161) are optional and kind-bound: ``whisper_to``, ``aside`` and
@@ -24,6 +24,23 @@ wrong and is retried within the deployment's ``structured_retry_budget``:
   ``partial_text`` a ``say``'s or a ``do``'s, ``location`` a narration's; what they name is
   validated at routing (``core.epistemic.perception``), where one that cannot be honored is
   repaired, not refused;
+- ``effects`` (#187, FR-TURN-11) are the beat's State effects, ``{kind, state, scope_key?,
+  delta? | value?, counterparty?, reason, justification?, justified_by?, consideration?,
+  silent?, contingency?, prerequisites?}``. #216's ``contingency`` (``unconditional``,
+  ``reservation``, ``conditional``) and ``prerequisites`` (the States of the turn's external
+  effects it waits on: each must name an externally owned State, ``TrackedState.external``)
+  classify the effect in a turn that requests external effects (``core.states.contingency``);
+  a time advance or a reschedule takes neither. So is an effect
+  naming no State of the story (``world_clock`` included: a time advance is #194's), a
+  ``delta`` on a non-number, both a ``delta`` and a ``value``, a value of the wrong type, a
+  scope key on a story State or naming no cast member, a character-scoped State with no
+  scope key in the narrator's render (a character's defaults to the character), a character
+  render naming a ``hidden`` State (only the narrator's may), an effect on a ``think`` beat,
+  and any effect while the story's ``states.level`` is not ``on`` (named by module). An
+  effect with neither a delta nor a value is structurally valid: it is ``effect_unresolved``,
+  repaired (``orchestrator.structured.effects``). #189's ``consideration`` names the item a
+  payment is for (an entity of the story, resolved when the effect's preconditions are
+  checked, ``core.states.preconditions``);
 - ``propositions`` are #140's text sketches (subject, relation, object, time, negated, and the
   predicate's qualifiers it names, #151);
 - ``introduces`` names each new character a beat introduces (``{name, age?, age_range?,
@@ -77,8 +94,16 @@ from typing import Annotated, Any, ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
+from epistrel.core.states.model import WORLD_CLOCK
 from epistrel.core.tables.characters import TRUE_AGE_MAX, TRUE_AGE_MIN
-from epistrel.core.turns.beats import BEAT_TEXT_MAX, CHARACTER_KINDS, NARRATOR_KINDS
+from epistrel.core.turns.beats import (
+    BEAT_TEXT_MAX,
+    CHARACTER_KINDS,
+    NARRATOR_KINDS,
+    DeclaredAdvance,
+    DeclaredEffect,
+    DeclaredReschedule,
+)
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message, ModelParams
@@ -264,6 +289,305 @@ class RemoteChannelDecl(_Strict):
     participants: list[str] = Field(default_factory=list, max_length=MAX_NAMED)
 
 
+EFFECT_REASON_MAX = 200
+"""A declared effect's reason: at most this many characters (FR-STATE-4's reason)."""
+MAX_EFFECTS = 8
+"""The most effects one beat declares."""
+STATE_NAME_MAX = 80
+EffectKind = Literal["change", "transfer", "time_advance", "reschedule"]
+TIME_ADVANCE = "time_advance"
+RESCHEDULE = "reschedule"
+CLOCK_EFFECTS = frozenset({TIME_ADVANCE, RESCHEDULE})
+"""The effect kinds that name the world clock, not a State."""
+DELIVERED_EFFECT_KINDS = frozenset({"change", "transfer", TIME_ADVANCE, RESCHEDULE})
+"""The effect kinds this deployment validates (#187's ``change``, #188's ``transfer``,
+#194's ``time_advance``, #198's ``reschedule``)."""
+MAX_SKIP_MINUTES = 525_960 * 10
+"""The longest declared time advance the schema takes (ten years; #199 caps a model-initiated
+one at ``max_unprompted_skip``)."""
+HHMM = r"^([01][0-9]|2[0-3]):[0-5][0-9]$"
+UNDELIVERED_EFFECT_FIELDS: tuple[str, ...] = ()
+"""The effect fields later stories validate: non-null is invalid until then (#189 delivered
+``consideration``, #216 ``contingency`` and ``prerequisites``)."""
+CONTINGENCY_FIELDS = ("contingency", "prerequisites")
+"""#216: a State effect's alone (a time advance or a reschedule takes neither)."""
+STATES_ON = "on"
+
+
+class CounterpartyDecl(_Strict):
+    """A transfer's other side (#188): the State (one the story does not track is untracked)
+    and its scope key, and its delta when it is not the negation of the effect's own."""
+
+    state: str = Field(min_length=1, max_length=STATE_NAME_MAX)
+    scope_key: str | None = Field(default=None, max_length=NAME_MAX)
+    delta: int | float | None = None
+
+
+class EffectDecl(_Strict):
+    """One State effect a beat declares (#187; see the module docstring)."""
+
+    kind: EffectKind = "change"
+    state: str = Field(min_length=1, max_length=STATE_NAME_MAX)
+    scope_key: str | None = Field(default=None, max_length=NAME_MAX)
+    delta: int | float | None = None
+    value: bool | int | float | str | None = None
+    counterparty: CounterpartyDecl | None = None
+    reason: str = Field(min_length=1, max_length=EFFECT_REASON_MAX)
+    justification: str | None = Field(default=None, max_length=EFFECT_REASON_MAX)
+    justified_by: int | None = Field(default=None, ge=0, le=64)
+    consideration: str | None = Field(default=None, max_length=NAME_MAX)
+    silent: bool | None = None
+    contingency: Literal["unconditional", "reservation", "conditional"] | None = None
+    prerequisites: list[Annotated[str, Field(max_length=CITE_MAX)]] | None = Field(
+        default=None, max_length=MAX_CITES
+    )
+    minutes: int | None = Field(default=None, ge=0, le=MAX_SKIP_MINUTES)
+    """#194: a ``time_advance``'s duration ("twenty minutes later": 20)."""
+    to: str | None = Field(default=None, pattern=HHMM)
+    """#194: a ``time_advance``'s target time of day (``"HH:MM"``), only when the clock's anchor
+    fixes the time of day."""
+    step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
+    """#194: the declared step a ``time_advance`` attaches to (``None``: its beat's step)."""
+    event: str | None = Field(default=None, min_length=1, max_length=NAME_MAX)
+    """#198: a ``reschedule``'s event, as the beat names it ("my dentist appointment")."""
+    planned: str | None = Field(default=None, pattern=HHMM)
+    """#198: a ``reschedule``'s new time of day (``"HH:MM"``)."""
+
+
+def declared_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredEffect, ...]:
+    """A beat's validated State effects as Core takes them (``core.turns.beats.
+    DeclaredEffect``); its time advances are ``advances_of``'s."""
+    return tuple(
+        DeclaredEffect(
+            state=e.state,
+            reason=e.reason.strip(),
+            scope_key=e.scope_key,
+            delta=e.delta,
+            value=e.value,
+            silent=bool(e.silent),
+            kind=e.kind,
+            counterparty=None
+            if e.counterparty is None
+            else (e.counterparty.state, e.counterparty.scope_key, e.counterparty.delta),
+            justification=None if e.justification is None else e.justification.strip(),
+            justified_by=e.justified_by,
+            consideration=None if e.consideration is None else e.consideration.strip() or None,
+            contingency=e.contingency,
+            prerequisites=tuple(p.strip() for p in e.prerequisites or () if p.strip()),
+        )
+        for e in effects
+        if e.kind not in CLOCK_EFFECTS
+    )
+
+
+def reschedules_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredReschedule, ...]:
+    """A beat's validated ``reschedule`` effects (#198; ``core.turns.beats
+    .DeclaredReschedule``)."""
+    return tuple(
+        DeclaredReschedule(event=e.event or "", planned=e.planned or "", reason=e.reason.strip())
+        for e in effects
+        if e.kind == RESCHEDULE
+    )
+
+
+def advances_of(effects: Sequence[EffectDecl]) -> tuple[DeclaredAdvance, ...]:
+    """A beat's validated ``time_advance`` effects (#194; ``core.turns.beats.
+    DeclaredAdvance``)."""
+    return tuple(
+        DeclaredAdvance(reason=e.reason.strip(), minutes=e.minutes, to=e.to, step=e.step)
+        for e in effects
+        if e.kind == TIME_ADVANCE
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedState:
+    """What a render's schema knows of one of the story's States (#187): its type, scope and
+    visibility (``core.states.StateDefinition``'s); ``external`` whether an external provider
+    owns it (#216: what a contingent effect's ``prerequisites`` may name)."""
+
+    type: str
+    scope: str
+    visibility: str
+    external: bool = False
+
+
+def _value_fits(state_type: str, value: Any) -> bool:
+    if state_type == "number":
+        return isinstance(value, int | float) and not isinstance(value, bool)
+    if state_type == "boolean":
+        return isinstance(value, bool)
+    return isinstance(value, str)
+
+
+_ADVANCE_FIELDS = ("minutes", "to", "step")
+"""A ``time_advance``'s own fields (#194): never a ``change``'s."""
+_RESCHEDULE_FIELDS = ("event", "planned")
+"""A ``reschedule``'s own fields (#198): never another kind's."""
+
+
+def reschedule_errors(at: str, effect: EffectDecl, *, clock: str | None) -> list[str]:
+    """The structural errors of one ``reschedule`` effect (#198, FR-CLOCK-19): it names the
+    ``world_clock``, the ``event`` and its new ``planned`` time of day (``"HH:MM"``), with a
+    reason, and nothing a ``change`` or a ``time_advance`` gives; the story must run the clock.
+    Whether the speaker may change the event is the beat's statement's classification
+    (``core.world_clock.schedule_statements``), not a structural error."""
+    if clock is None:
+        return [f"{at}: module clock is off: a render declares no reschedule"]
+    errors: list[str] = []
+    if effect.state != WORLD_CLOCK:
+        errors.append(f"{at}.state: a reschedule names the world_clock")
+    if effect.event is None:
+        errors.append(f"{at}.event: a reschedule names the event")
+    if effect.planned is None:
+        errors.append(f"{at}.planned: a reschedule gives the new time of day")
+    for name in (*_ADVANCE_FIELDS, "scope_key", "delta", "value", "counterparty", "silent"):
+        if getattr(effect, name) is not None:
+            errors.append(f"{at}.{name}: not a reschedule's")
+    return errors
+
+
+def advance_errors(
+    at: str, effect: EffectDecl, *, clock: str | None, clock_fixed: bool
+) -> list[str]:
+    """The structural errors of one ``time_advance`` effect (#194, FR-CLOCK-7): it names the
+    ``world_clock`` and gives ``minutes`` or a ``to`` (``"HH:MM"``, only when the clock's anchor
+    fixes the time of day: else ``clock_unanchored``, and the render is asked for minutes),
+    with a reason, and nothing a ``change`` gives; the story must run the clock."""
+    if clock is None:
+        return [f"{at}: module clock is off: a render declares no time advance"]
+    errors: list[str] = []
+    if effect.state != WORLD_CLOCK:
+        errors.append(f"{at}.state: a time advance moves the world_clock")
+    if (effect.minutes is None) == (effect.to is None):
+        errors.append(f"{at}: a time advance gives minutes or a to time, one of them")
+    if effect.to is not None and not clock_fixed:
+        errors.append(
+            f"{at}.to: clock_unanchored: the story has not fixed the time of day; give minutes"
+        )
+    for name in ("scope_key", "delta", "value", "counterparty", "silent", *_RESCHEDULE_FIELDS):
+        if getattr(effect, name) is not None:
+            errors.append(f"{at}.{name}: not a time advance's")
+    return errors
+
+
+def effect_errors(
+    where: str,
+    kind: str,
+    effects: Sequence[EffectDecl],
+    *,
+    narrator: bool,
+    states: Mapping[str, TrackedState],
+    level: str | None,
+    cast_ids: frozenset[str],
+    clock: str | None = None,
+    clock_fixed: bool = False,
+) -> list[str]:
+    """The structural errors of one beat's ``effects`` (see the module docstring): codes and
+    indices, never a State's name or a value (``details.structural_errors``). A
+    ``time_advance`` is checked by ``advance_errors`` (#194) under the clock's level
+    (``clock``); every other effect needs ``states.level`` ``on``."""
+    if not effects:
+        return []
+    changes = [(m, e) for m, e in enumerate(effects) if e.kind not in CLOCK_EFFECTS]
+    if changes and level != STATES_ON:
+        return [
+            f"{where}.effects: module states is {level or 'off'}: a render declares no State effect"
+        ]
+    if kind == "think":
+        return [f"{where}.effects: a think changes nothing"]
+    errors: list[str] = []
+    for m, effect in enumerate(effects):
+        if effect.kind == TIME_ADVANCE:
+            for name in (*UNDELIVERED_EFFECT_FIELDS, *CONTINGENCY_FIELDS):
+                if getattr(effect, name) is not None:
+                    errors.append(f"{where}.effects.{m}.{name}: not a time advance's")
+            errors += advance_errors(
+                f"{where}.effects.{m}", effect, clock=clock, clock_fixed=clock_fixed
+            )
+        elif effect.kind == RESCHEDULE:
+            for name in (*UNDELIVERED_EFFECT_FIELDS, *CONTINGENCY_FIELDS):
+                if getattr(effect, name) is not None:
+                    errors.append(f"{where}.effects.{m}.{name}: not a reschedule's")
+            errors += reschedule_errors(f"{where}.effects.{m}", effect, clock=clock)
+    for m, effect in changes:
+        at = f"{where}.effects.{m}"
+        for name in (*_ADVANCE_FIELDS, *_RESCHEDULE_FIELDS):
+            if getattr(effect, name) is not None:
+                errors.append(f"{at}.{name}: only a time advance's")
+        if effect.kind not in DELIVERED_EFFECT_KINDS:
+            errors.append(f"{at}.kind: only a change or a transfer is delivered")
+        for name in UNDELIVERED_EFFECT_FIELDS:
+            if getattr(effect, name) is not None:
+                errors.append(f"{at}.{name}: not delivered yet")
+        if not effect.reason.strip():
+            errors.append(f"{at}.reason: empty")
+        if effect.state == WORLD_CLOCK:
+            errors.append(f"{at}.state: the world clock moves only by a time advance")
+            continue
+        target = states.get(effect.state)
+        if target is None:
+            errors.append(f"{at}.state: not one of the story's States")
+            continue
+        if not narrator and target.visibility == "hidden":
+            errors.append(f"{at}.state: a hidden State changes only through the narrator")
+        if effect.delta is not None and effect.value is not None:
+            errors.append(f"{at}: a delta or a value, not both")
+        if effect.delta is not None and (target.type != "number" or isinstance(effect.delta, bool)):
+            errors.append(f"{at}.delta: a delta applies to a number State")
+        if effect.value is not None and not _value_fits(target.type, effect.value):
+            errors.append(f"{at}.value: not a {target.type} value")
+        if target.scope == "story" and effect.scope_key is not None:
+            errors.append(f"{at}.scope_key: the State belongs to the story")
+        if target.scope == "character":
+            if effect.scope_key is None and narrator:
+                errors.append(f"{at}.scope_key: name the character whose State it is")
+            if effect.scope_key is not None and effect.scope_key not in cast_ids:
+                errors.append(f"{at}.scope_key: not one of the story's characters")
+        errors += _transfer_errors(at, effect, target, states=states, cast_ids=cast_ids)
+        for n, cited in enumerate(effect.prerequisites or ()):
+            found = states.get(cited.strip())
+            if found is None or not found.external:
+                errors.append(f"{at}.prerequisites.{n}: names no external value of the story")
+    return errors
+
+
+def _transfer_errors(
+    at: str,
+    effect: EffectDecl,
+    target: TrackedState,
+    *,
+    states: Mapping[str, TrackedState],
+    cast_ids: frozenset[str],
+) -> list[str]:
+    """#188 (FR-STATE-12): a transfer moves a number by a delta to or from its counterparty;
+    a change names none. A counterparty the story tracks follows its State's scope."""
+    other = effect.counterparty
+    if effect.kind != "transfer":
+        return [f"{at}.counterparty: only a transfer names a counterparty"] if other else []
+    errors: list[str] = []
+    if target.type != "number" or effect.delta is None:
+        errors.append(f"{at}: a transfer moves a number State by a delta")
+    if other is None:
+        return [*errors, f"{at}.counterparty: a transfer names its counterparty"]
+    if other.state == WORLD_CLOCK:
+        return [*errors, f"{at}.counterparty.state: the world clock is no counterparty"]
+    if isinstance(other.delta, bool):
+        errors.append(f"{at}.counterparty.delta: a number")
+    found = states.get(other.state)
+    if found is None:
+        return errors  # untracked: the State's authorization decides whether it may be named
+    if found.type != "number":
+        errors.append(f"{at}.counterparty.state: a transfer moves a number State")
+    if found.scope == "story" and other.scope_key is not None:
+        errors.append(f"{at}.counterparty.scope_key: the State belongs to the story")
+    if found.scope == "character" and (other.scope_key is None or other.scope_key not in cast_ids):
+        errors.append(f"{at}.counterparty.scope_key: name one of the story's characters")
+    if other.state == effect.state and other.scope_key == effect.scope_key:
+        errors.append(f"{at}.counterparty: a transfer moves value between two parties")
+    return errors
+
+
 class BeatDecl(_Strict):
     """One beat as a render returns it. The perception qualifiers (#161) are optional and
     explicit: ``addressee`` and ``manner`` (who it is visibly addressed to, how),
@@ -280,7 +604,8 @@ class BeatDecl(_Strict):
     actor_character_id: str | None = None
     intent: IntentName | None = None
     propositions: list[PropositionSketch] = Field(default_factory=list, max_length=MAX_PROPOSITIONS)
-    effects: list[dict[str, Any]] = Field(default_factory=list)
+    effects: list[EffectDecl] = Field(default_factory=list, max_length=MAX_EFFECTS)
+    """#187 (FR-TURN-11): the beat's State effects (``EffectDecl``)."""
     visibility: VisibilityDecl | None = None
     hidden: HiddenDecl | None = None
     """#169: a ``latent``'s hidden commitment (``HiddenDecl``)."""
@@ -303,7 +628,11 @@ class BeatDecl(_Strict):
     new belief it reasons from rests on. Checked, never trusted: a citation is confirmed only
     when it names the antecedent the engine's own search finds."""
     step: int | None = Field(default=None, ge=1, le=MAX_STEP_INDEX)
-    """The ``act`` step that owns this ``say`` or ``do`` (#168, FR-TURN-12; ``None``: none)."""
+    """The ``act`` (or #194's ``time``) step that owns this ``say`` or ``do`` (#168,
+    FR-TURN-12; ``None``: none)."""
+    flashback: bool = False
+    """#194 (FR-CLOCK-17): the beat recalls an earlier time. Its time expressions are not
+    checked against the present, it gets no pacing increment and moves nothing."""
 
     def qualifiers_declared(self) -> list[str]:
         """The perception qualifiers this beat declares (#161)."""
@@ -323,15 +652,17 @@ _QUALIFIER_FIELDS = (
 )
 
 
-StepKind = Literal["observe", "believe", "act"]
+StepKind = Literal["observe", "believe", "act", "time"]
 ConfidenceName = Literal["unknown", "suspected", "believed", "known"]
 
 
 class StepDecl(_Strict):
     """One declared causal step of a character's render (#168, FR-TURN-12): ``observe`` (what
     the character perceives: a ``proposition``), ``believe`` (what it concludes: a
-    ``proposition`` and ``cites``, the earlier steps (indices) or records (ids) it rests on) or
-    ``act`` (what it does: the ``say``/``do`` beats naming its index). ``confidence`` is a
+    ``proposition`` and ``cites``, the earlier steps (indices) or records (ids) it rests on),
+    ``act`` (what it does: the ``say``/``do`` beats naming its index) or ``time`` (#194,
+    FR-CLOCK-17: a step for timing alone, which cites nothing, writes no belief and owns the
+    beats naming it like an ``act``; a time advance attaches to it). ``confidence`` is a
     ``believe``'s (``believed`` when left out)."""
 
     index: int = Field(ge=1, le=MAX_STEP_INDEX)
@@ -351,6 +682,10 @@ class StepDecl(_Strict):
         return [c for c in self.cites if isinstance(c, str)]
 
 
+_OWNING = frozenset({"act", "time"})
+"""The step kinds that own beats (#168's ``act``, #194's ``time``)."""
+
+
 def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:
     """The declared steps' structural rules (#168; see the module docstring): indices ``1..n``
     in order, a ``believe`` and an ``observe`` name a proposition, a step cites existing steps
@@ -360,6 +695,9 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         for n, beat in enumerate(beats):
             if beat.step is not None:
                 raise ValueError(f"beats.{n}.step: the render declares no steps")
+            for m, effect in enumerate(beat.effects):
+                if effect.kind == TIME_ADVANCE and effect.step is not None:
+                    raise ValueError(f"beats.{n}.effects.{m}.step: the render declares no steps")
         return
     indices = [s.index for s in steps]
     if indices != list(range(1, len(steps) + 1)):
@@ -373,12 +711,14 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
             raise ValueError(f"{where}.confidence: only a believe step declares a confidence")
         if step.kind == "observe" and step.cites:
             raise ValueError(f"{where}.cites: an observe step cites nothing")
+        if step.kind == "time" and (step.cites or step.proposition is not None):
+            raise ValueError(f"{where}: a time step cites nothing and names no proposition")
         for cited in step.step_cites():
             if cited == step.index:
                 raise ValueError(f"{where}.cites: a step cannot cite itself")
             if cited not in kinds:
                 raise ValueError(f"{where}.cites: no step {cited}")
-            if step.kind == "believe" and kinds[cited] == "act":
+            if step.kind == "believe" and kinds[cited] in _OWNING:
                 raise ValueError(f"{where}.cites: a believe step never cites an act")
     graph = {s.index: s.step_cites() for s in steps}
     state: dict[int, int] = {}
@@ -396,8 +736,11 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         if state.get(node) is None:
             visit(node)
     for n, beat in enumerate(beats):
-        if beat.step is not None and kinds.get(beat.step) != "act":
+        if beat.step is not None and kinds.get(beat.step) not in _OWNING:
             raise ValueError(f"beats.{n}.step: names no act step")
+        for m, effect in enumerate(beat.effects):
+            if effect.kind == TIME_ADVANCE and effect.step is not None and effect.step not in kinds:
+                raise ValueError(f"beats.{n}.effects.{m}.step: no step {effect.step}")
     records = {c for s in steps for c in s.record_cites()}
     for n, beat in enumerate(beats):
         if beat.kind == "think" and beat.cites and not set(beat.cites) <= records:
@@ -468,6 +811,14 @@ class RenderedBeats(_Strict):
     cast_ids: ClassVar[frozenset[str]] = frozenset()
     allowed: ClassVar[frozenset[str]] = CHARACTER_KINDS
     limit: ClassVar[int] = 6
+    states: ClassVar[Mapping[str, TrackedState]] = {}
+    """#187: the story's States by name (what an effect may name)."""
+    states_level: ClassVar[str | None] = None
+    """#187: the story's ``states.level`` (``None``: off); effects need ``on``."""
+    clock_level: ClassVar[str | None] = None
+    """#194: the story's ``clock.level`` (``None``: off); a time advance needs the clock."""
+    clock_fixed: ClassVar[bool] = False
+    """#194: whether the clock's anchor fixes the time of day (a ``to`` advance needs it)."""
 
     @model_validator(mode="after")
     def _structure(self) -> Self:
@@ -515,8 +866,19 @@ class RenderedBeats(_Strict):
                     f"{where}.holder: viewpoint_cannot_assign_truth: a latent's truth is canon's "
                     "(a character's view is a belief)"
                 )
-            if beat.effects:
-                raise ValueError(f"{where}.effects: state effects are not delivered yet")
+            found = effect_errors(
+                where,
+                beat.kind,
+                beat.effects,
+                narrator=narrator,
+                states=cls.states,
+                level=cls.states_level,
+                cast_ids=cls.cast_ids,
+                clock=cls.clock_level,
+                clock_fixed=cls.clock_fixed,
+            )
+            if found:
+                raise ValueError("; ".join(found))
             for name in beat.qualifiers_declared():
                 if beat.kind not in _SAY_ONLY[name]:
                     raise ValueError(f"{where}.{name}: not a qualifier a {beat.kind} declares")
@@ -562,9 +924,15 @@ def render_schema(
     player_id: str | None,
     cast_ids: Sequence[str],
     max_beats: int,
+    states: Mapping[str, TrackedState] | None = None,
+    states_level: str | None = None,
+    clock_level: str | None = None,
+    clock_fixed: bool = False,
 ) -> type[RenderedBeats]:
     """The beat schema of one render: a character's (``actor_id``) or the narrator's
-    (``None``), with ``render.max_beats`` as the beats' ``max_items``."""
+    (``None``), with ``render.max_beats`` as the beats' ``max_items``; #187: the story's States
+    and its ``states.level``, which its effects are validated against; #194: the clock's level
+    and whether its anchor fixes the time of day, which its time advances are."""
     name = "NarratorRender" if actor_id is None else "CharacterRender"
     model = create_model(
         name,
@@ -577,6 +945,10 @@ def render_schema(
     model.cast_ids = frozenset(cast_ids)
     model.allowed = NARRATOR_KINDS if actor_id is None else CHARACTER_KINDS
     model.limit = max_beats
+    model.states = dict(states or {})
+    model.states_level = states_level
+    model.clock_level = clock_level
+    model.clock_fixed = clock_fixed
     return model
 
 
@@ -904,12 +1276,15 @@ __all__ = [
     "AgeRepair",
     "AttributionDecl",
     "BeatDecl",
+    "EffectDecl",
     "IntroductionDecl",
     "PropositionSketch",
     "RenderedBeats",
     "StepDecl",
+    "TrackedState",
     "VisibilityDecl",
     "age_schema",
+    "effect_errors",
     "hold_length",
     "length_chars",
     "length_line",

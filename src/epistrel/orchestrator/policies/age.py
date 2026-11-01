@@ -5,8 +5,10 @@ Everything here is pure over a cast the gates pass in (``store.guard_context`` r
 the effective policies and the live ``minor_age_threshold``). A **minor** is a character whose
 current age is below the threshold (default 18, so 17 and under).
 
-- **Current age** is ``true_age`` plus the full years elapsed on the world clock since the age
-  was recorded. M2 has no clock, so it is ``true_age``.
+- **Current age** is ``true_age`` plus the full years elapsed on the world clock since the
+  character's creation position (#193: genesis for the cast, ``characters.modeled_at`` for a
+  modeled character; ``CastMember.elapsed_minutes``, which ``store.read_cast`` reads off
+  ``core.world_clock``). A story that runs the clock off ages nobody.
 - **Present** under Lite is every character of the story's cast: Lite tracks no location, so
   nobody is ever elsewhere. Under per-character partitions with perception on (#161) a
   character outside the turn's routing audience is **not present** (``CastMember.present``,
@@ -31,7 +33,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from epistrel.core.membership import Position
 from epistrel.core.policies.model import ModelAssistedRule, Policy
+from epistrel.core.world_clock import full_years
 from epistrel.orchestrator.models.registry import GuardrailCheckInputs, Subject
 from epistrel.orchestrator.policies.seeds.policies import THRESHOLD_PLACEHOLDER
 
@@ -48,12 +52,18 @@ class CastMember:
     age_recorded_at: datetime | None = None
     present: bool = True
     """In the content's routing audience (#161, #541); always under Lite and M4."""
+    created_at: Position | None = None
+    """The character's creation position (#193): genesis (0) for the cast, ``modeled_at`` for a
+    modeled character; ``None`` for one not yet in the story (a creation's cast)."""
+    elapsed_minutes: int = 0
+    """The minutes on the world clock since ``created_at`` (0 with the clock off)."""
 
 
 def current_age(member: CastMember) -> int:
-    """``true_age`` + full years elapsed on the world clock; M2 has no clock, so ``true_age``.
-    (``age_recorded_at`` is #50's wall-clock stamp and is not story time, so it adds nothing.)"""
-    return member.true_age
+    """``true_age`` + the full years elapsed on the world clock since the character's creation
+    position (#193). (``age_recorded_at`` is #50's wall-clock stamp and is not story time, so it
+    adds nothing.)"""
+    return member.true_age + full_years(member.elapsed_minutes)
 
 
 def in_order(cast: Iterable[CastMember]) -> tuple[CastMember, ...]:

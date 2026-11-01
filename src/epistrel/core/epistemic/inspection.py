@@ -1,11 +1,13 @@
 """The omniscient inspection reads of a story's character knowledge (FR-ADMIN-5, FR-RESP-12,
 FR-AUTH-2; docs/02 §9's ``/stories/{id}/inspect/…``; C-28; #178).
 
-Three reads sit beside #146's ledger: a character's belief projection (``partitions.inspect``,
+Four reads sit beside #146's ledger: a character's belief projection (``partitions.inspect``,
 #159), the story's divergences (``inspect_divergences``: #166's lie records, by
 ``divergences.divergences_of``) and its exposures (``inspect_exposures``: #164's records, by
-``exposure.exposures_of``). Each is a **raw read**: it never resolves an exposure, never writes,
-never touches an access time.
+``exposure.exposures_of``) and #207's snapshotted external facts
+(``core.states.external.inspect``, which canon facts join, so it lives beside the pins: FR-EPI-1
+keeps this module off canon). Each is a **raw read**: it never resolves an exposure, never
+writes, never touches an access time.
 
 **The gate** (``omniscient_read``). An inspection names ``omniscient`` or is refused: no named
 viewpoint is 422 ``viewpoint_unresolved`` (inspection never infers one: there is no actor and
@@ -15,7 +17,8 @@ authentication is the only other check: which callers may inspect is the consume
 
 **Module off** (``require_partitions``). A story whose effective configuration keeps no
 character partitions (a Lite story, or ``character_knowledge.partitions`` off or undelivered)
-holds no beliefs, exposures or divergences: 409 ``module_off``.
+holds no beliefs, exposures or divergences: 409 ``module_off``. The external-facts read has no
+such gate: a provider's value is no character's knowledge.
 
 Pages are by id (``limit``, ``after_id``), oldest first; ``as_of=<turn>`` reads the corrected
 view through that turn (FR-BELIEF-14: a resolution or a record a later turn made is not yet

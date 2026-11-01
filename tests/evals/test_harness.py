@@ -564,11 +564,12 @@ def test_check_cross_references_the_guarantee_table() -> None:
     story that ships it; a pending metric a suite already measures is an error too.
     Complement: with nothing pending, the unmeasured rows are named."""
     assert checks.problems() == []
-    unmeasured = checks.problems(pending={})
+    without_e09 = [s for s in SUITES.values() if s.name != "e09"]
     assert (
         "guarantee row time_estimation: its metric NFR-QUAL-9 is measured by no eval suite"
-        in unmeasured
+        in checks.problems(suites=without_e09)
     )
+    assert checks.problems(suites=without_e09, pending={"NFR-QUAL-9": "M6"}) == []
     without_e12 = [s for s in SUITES.values() if s.name != "e12"]
     assert (
         "guarantee row quality_judge: its metric NFR-QUAL-14 is measured by no eval suite"
@@ -579,11 +580,8 @@ def test_check_cross_references_the_guarantee_table() -> None:
         name = "measures_9"
         metrics = (Metric("nfr_qual_9.estimate_accuracy", Rule.rate, 0.9, Direction.at_least),)
 
-    found = checks.problems(suites=[*SUITES.values(), Measures()])
-    assert found == [
-        "NFR-QUAL-9 is measured now: remove it from PENDING "
-        "(M6 (time estimation is delivered there))"
-    ]
+    found = checks.problems(suites=[*without_e09, Measures()], pending={"NFR-QUAL-9": "M6"})
+    assert found == ["NFR-QUAL-9 is measured now: remove it from PENDING (M6)"]
 
     class Wrong(SyntheticZeroSuite):
         name = "wrong_row"

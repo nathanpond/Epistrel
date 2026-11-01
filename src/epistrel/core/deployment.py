@@ -220,6 +220,7 @@ class SettingsPatch(BaseModel):
     gate_promotion_min_cases: StrictInt | None = None
     gate_promotion_min_agreement: StrictFloat | None = None
     thunks_max_open: StrictInt | None = None
+    provider_allowed_hosts: list[str] | None = None
     profile_defaults: SettingsDocument | None = None
 
     @model_validator(mode="before")

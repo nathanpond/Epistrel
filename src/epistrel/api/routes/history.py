@@ -53,6 +53,84 @@ HISTORY_DESCRIPTION = (
 )
 
 
+class StateEffectModel(BaseModel):
+    """A State change a structured turn committed (#187, FR-RESP-7): the State, its scope key
+    (the character, for a per-character State), the value it found and the one it left, the
+    reason, its source (``turn``), contingency and status. A ``hidden`` State's appears only
+    for ``omniscient``. #209: a change asked of the consumer for a value a read-only provider
+    owns is ``status: pending`` with ``owner: external`` and its ``effect_id``: never applied,
+    its ``new_value`` null and its ``old_value`` the value pinned for the turn."""
+
+    state: str
+    scope_key: str | None
+    old_value: Any = None
+    new_value: Any = None
+    reason: str
+    source: str
+    contingency: str
+    status: str
+    kind: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188: `transfer_in` or `transfer_out` for one side of a transfer (#209: "
+        "`time_advance` for an external clock's requested advance); absent "
+        "for a change.",
+    )
+    capped: bool | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188 (FR-STATE-10): true when a cap repaired the effect down; absent "
+        "otherwise.",
+    )
+    declared: Any = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188: the amount the render declared before a cap repaired it down.",
+    )
+    counterparty: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#188 (FR-STATE-12): `untracked` or `external` when a transfer's other "
+        "side is not a story State, so only this side was written.",
+    )
+    owner: Literal["external"] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209 (FR-EXT-9): `external` for a change requested of the consumer, which "
+        "applies it to the value it owns (status `pending`); absent for a committed change.",
+    )
+    effect_id: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209: a requested change's stable id, which the consumer's outcome report "
+        "names.",
+    )
+    outbox_id: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#210 (FR-EXT-10): set when Epistrel dispatches the change to a "
+        "write-capable provider through its outbox (the same id as `effect_id`, and the "
+        "provider idempotency key): the consumer does not apply it, and the reconciliation "
+        "status lists it until it is confirmed.",
+    )
+    delta: Any = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209: a requested change's delta.",
+    )
+    value: Any = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209: a requested change's value to set.",
+    )
+    minutes: int | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#209 (FR-CLOCK-5): a requested `time_advance`'s minutes (an external "
+        "clock's pacing or skip).",
+    )
+
+
 class BeatPropositionModel(BaseModel):
     """A proposition a structured beat asserts, with its verdict (#150)."""
 
@@ -138,7 +216,9 @@ class HistoryItemModel(BaseModel):
     effects: list[dict[str, Any]] | None = Field(
         default=None,
         exclude_if=lambda v: v is None,
-        description="A structured turn's beat (#150): its state effects (empty in M4).",
+        description="A structured turn's beat (#150; omniscient reads only): the State "
+        "changes it committed (#187), each `{state, scope_key, old_value, new_value, reason, "
+        "source, contingency, status}`.",
     )
     labels: UtteranceLabelsModel | None = Field(
         default=None,
@@ -195,12 +275,53 @@ class TurnMessageModel(BaseModel):
     text: str
 
 
+class NoticeBody(BaseModel):
+    """#598 (FR-RESP-14): an ``implausible_knowledge`` notice. Under ``player_authority =
+    co_author`` and ``co_author_knowledge = confirm``, the player narrated another character
+    acting on something it had no path to know: the turn committed anyway, and the character now
+    knows it (an ``author_fiat`` acquisition). ``claim_text`` is the player's own words: a notice
+    states nothing about canon, the claim's truth or who else knows it, and is raised whether or
+    not canon settles the claim. ``correctable``: the turn may be replaced while it is the
+    story's latest (``POST /stories/{id}/correct``); ``false`` on a turn a correction wrote.
+    ``external_effects``: the turn has a dispatched or confirmed external effect, which a
+    correction cannot undo (FR-EXT-14)."""
+
+    id: str
+    kind: Literal["implausible_knowledge"]
+    character_id: str
+    claim_text: str
+    turn: int = Field(ge=1)
+    correctable: bool
+    external_effects: bool = False
+
+
 class TurnSummaryModel(BaseModel):
     """A turn on the page and its reply; ``message`` is null for a reply-less turn."""
 
     turn: int
     variant: int | None
     message: TurnMessageModel | None
+    state_effects: list[StateEffectModel] = Field(
+        default_factory=list,
+        exclude_if=lambda e: not e,
+        description="The State changes the turn committed (#187, FR-RESP-7), a `hidden` "
+        "State's only for `omniscient` (visibility only, no audience filter); absent when "
+        "none.",
+    )
+    notices: list[NoticeBody] = Field(
+        default_factory=list,
+        exclude_if=lambda n: not n,
+        description="The turn's `implausible_knowledge` notices (#598, FR-RESP-14), as its "
+        "`respond` returned them, with `external_effects` as of the read; only when the read "
+        "returns the turn's input. Absent when none.",
+    )
+    incomplete: bool = Field(
+        default=False,
+        exclude_if=lambda i: not i,
+        description="A staged turn still waiting on its external outcome or its outcome step "
+        "(#212, FR-EXT-19): `true`, with its committed beats and a null `message`; absent "
+        "otherwise.",
+    )
 
     @classmethod
     def of(cls, summary: TurnSummary) -> TurnSummaryModel:

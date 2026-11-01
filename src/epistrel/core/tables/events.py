@@ -2,11 +2,17 @@
 
 ``seq`` is dense per story (``max(seq)+1`` under the story lock) and is recording order only;
 narrative position is ``(narrative_turn, turn_variant, beat, step, slot_k)``, copied from the
-operation. ``tx_time`` is the commit transaction's time; ``valid_time`` equals it until the
-world clock arrives (M6). A trigger refuses every UPDATE, DELETE and TRUNCATE except the two
-exemptions in ``0002_event_store`` and erasure's in-place rewrite (``0039_erasure``: under
-``epistrel.erasure = on`` an UPDATE may change ``payload``, ``character_id`` and ``redacted_at``
-only; SQLSTATE ``EPI01``).
+operation. ``tx_time`` is the commit transaction's time and ``valid_time`` equals it (the
+commit timestamp, for every story). The event's story-time is ``valid_time_minutes`` (#193,
+migration 0085): ``core.world_clock.story_time_at`` of its position, the world clock's when the
+story runs it and the stand-in rule (``core.resolution.time.TimeBasis``) when it does not;
+``NULL`` on rows written before 0085, on a position-less operation's and on deployment-scoped
+events.
+
+A trigger refuses every UPDATE, DELETE and TRUNCATE except the two exemptions in
+``0002_event_store`` and erasure's in-place rewrite (``0039_erasure``: under ``epistrel.erasure
+= on`` an UPDATE may change ``payload``, ``character_id`` and ``redacted_at`` only; SQLSTATE
+``EPI01``).
 """
 
 from __future__ import annotations
@@ -81,6 +87,7 @@ events = Table(
         nullable=False,
         server_default=text("transaction_timestamp()"),
     ),
+    Column("valid_time_minutes", BigInteger, nullable=True),
     Column("provenance", pg_enum(Provenance, "provenance"), nullable=False),
     Column("authority", pg_enum(Authority, "authority"), nullable=False),
     # When erasure (#124) rewrote the event in place: its payload's matched spans (or a beat the

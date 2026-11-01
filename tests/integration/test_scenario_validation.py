@@ -36,6 +36,7 @@ from tests.media_support import media_client, png, scratch, set_media, uploaded
 from tests.policy_support import global_policy
 from tests.story_support import rest
 from tests.validation_support import (
+    ALSO_FIELD,
     PROVIDER,
     PROVIDER_FIELD,
     codes,
@@ -622,17 +623,16 @@ async def test_seeds_are_located(settings: Any, engine: Any) -> None:
 
 
 async def test_providers_must_be_declared(settings: Any, engine: Any) -> None:
-    """Every provider the content names, in a scheduled item or at any depth of a starting
+    """Every provider the content names, by the provider key of an externally owned starting
     value, must be declared in ``story_settings_defaults.required_providers``: each one that is
-    not is a ``provider_undeclared`` error at its ``provider`` key, quoting the name.
+    not is a ``provider_undeclared`` error at that key, quoting the name.
 
     Complements asserted: declaring one name clears its error and leaves the other's; with
     both declared, the scenario validates."""
     async with rest(settings, engine) as client:
-        body = with_provider(scenarios.scenario("Feeds"))
-        body["starting_state"]["states"] = [{"name": "tide", "source": {"provider": "tide_table"}}]
+        body = with_provider(scenarios.scenario("Feeds"), also="tide_table")
         created = await scenarios.create(client, body)
-        nested = "starting_state.states[0].source.provider"
+        nested = ALSO_FIELD
 
         async def errors() -> list[tuple[str, str | None, str | None, str]]:
             report = (await validate(client, created["id"])).json()["report"]

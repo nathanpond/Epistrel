@@ -21,8 +21,10 @@ A ``minor``-weight perceiver observes like any other (FR-EPI-10's sparsity filte
 memory rows, docs/02 §4.4: exposures and observation transitions are unfiltered). The player's
 character has no partition and observes nothing. A transition the guards refuse (a
 self-attestation, a contradiction already held from that position) is skipped and counted
-(``turn_report.epistemic.transitions.refused``). Log lines carry identifiers and counts only
-(invariant 3).
+(``turn_report.epistemic.transitions.refused``). #206 (FR-EXT-11): a ``state_value`` of an
+external value the turn pinned ``Unknown`` (its provider was unavailable) is never observed:
+no one newly acquires a value the engine cannot vouch for (``core.states.external.unknown_now``).
+Log lines carry identifiers and counts only (invariant 3).
 """
 
 from __future__ import annotations
@@ -46,6 +48,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.propositions.model import Granularity, Instant, Proposition
 from epistrel.core.propositions.registry import load
 from epistrel.core.propositions.vocabulary import SPOKE, SPOKE_TO
+from epistrel.core.states import external
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +100,7 @@ async def observe(
     holders: dict[str, bool] = {}
     when: int | None = None
     written = 0
+    withheld = 0
 
     async def holds(character_id: str) -> bool:
         if character_id not in holders:
@@ -127,13 +131,17 @@ async def observe(
                 kind == "say" and seen.fidelity == perception.ENVELOPE and seen.envelope is not None
             ):
                 if when is None:
-                    from epistrel.core.resolution.context import load_time_basis
-                    from epistrel.core.resolution.time import story_time_at
+                    from epistrel.core import world_clock
 
-                    when = story_time_at(position.turn, await load_time_basis(conn, story_id))
+                    when = await world_clock.story_time_at(conn, story_id, position)
                 found = envelope_proposition(seen.envelope, when)
                 observed = [] if found is None else [found]
             for proposition in observed:
+                if external.unknown_now(proposition):
+                    # #206 (FR-EXT-11): a value pinned Unknown this turn is no one's newly
+                    # acquired exact knowledge: the observation is never written.
+                    withheld += 1
+                    continue
                 try:
                     await transitions.transition(
                         conn,
@@ -152,7 +160,7 @@ async def observe(
                     continue  # counted by transition() itself
                 except EpistemicError, InvalidRequest, UnknownPredicate:
                     transitions.refused()  # a held_already contradiction, an unknown predicate
-    log.debug("observations: %d written", written)
+    log.debug("observations: %d written, %d withheld (provider unknown)", written, withheld)
     return written
 
 

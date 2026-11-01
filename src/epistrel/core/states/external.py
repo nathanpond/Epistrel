@@ -1,0 +1,481 @@
+"""Externally owned State values as Core reads them (FR-EXT-2, FR-VERIFY-7, FR-STORE-17; #205).
+
+An externally owned State's value is never folded from ``state_changes``: it is what the
+provider answered, pinned once per turn and recorded as an ``external_read`` event (the
+Orchestrator's ``orchestrator.providers.pinned.PinnedReads``), folded into the
+``external_values`` projection (``core.projections.external``). Core never calls a provider and
+never imports ``orchestrator.providers``: it reads what was pinned.
+
+**Two sources, one answer** (``pinned_values``):
+
+- **Inside a turn** the Orchestrator installs its pins as the current ``PinSource`` (``pinning``)
+  for the whole turn, its commit included. Its reads are staged, not yet committed, so Core asks
+  the source: the version pinned at or before the position read (``PinSource.pinned``). A State
+  the turn has not pinned has no value (FR-EXT-2: no earlier turn's read stands in for this
+  turn's, and nothing reads speculatively).
+- **Outside a turn** (a later verification of a recorded position, an inspection), and inside
+  one for a **frame-bounded read** of an earlier turn (``through`` before the pins' turn: #164's
+  lazy resolution, #165's could-have-known replay; #207), Core reads the committed
+  ``external_values``, never the current pin: the latest version at or before the position, of
+  an operation on the active timeline (``core.membership.active_operation``, so a truncated or
+  replaced turn's read no longer answers, and a regenerate's own replaced variant is left out).
+
+**Versions** (#215, FR-EXT-20). A turn's read is version 1 and is never changed. A confirmed
+external effect adds later versions of it, each a row of its own at its own position (the
+outcome step, or a late settlement's inter-turn slot ``N⁺k``): the confirmation's resulting
+value, one recorded post-effect read, or ``Unknown``. A version names the read it extends
+(``base_event_id``); ``version_base`` answers the chain a new version continues and its next
+number. ``pinned_value_at`` is the value at a position: the latest version at or before it by
+``Position.key()`` (so a version at ``N⁺k`` orders after turn N and before N+1), or ``Unknown``.
+No value is ever computed from a version and a change.
+
+**Inspection** (``inspect``, #207; ``GET /stories/{id}/inspect/external-facts``, FR-ADMIN-5):
+the story's ``external_read`` events on the active timeline with the facts citing them, an
+omniscient raw read (the caller applies ``core.epistemic.inspection.omniscient_read``).
+
+**Unavailability** (#206, FR-EXT-7,11): ``last_read`` is the recorded live read a provider's
+``last_known`` policy may stand in with; ``unknown_now`` tells the observation writer
+(``core.epistemic.observation``) that a value is pinned ``Unknown`` this turn, so no one newly
+learns it.
+
+Pure but for ``pinned_values``'s (``pinned_value_at``'s), ``version_base``'s, ``last_read``'s
+and ``inspect``'s reads; logs nothing
+(invariant 3).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Protocol
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+from epistrel.core.enums import ExternalValueSource, StateOwner
+from epistrel.core.membership import (
+    Position,
+    active_operation,
+    position_key,
+    position_literal,
+)
+from epistrel.core.states.model import StateDefinition, Value, from_json
+from epistrel.core.tables import operations
+from epistrel.core.tables.states import STORY_SCOPE_KEY, external_values
+
+if TYPE_CHECKING:
+    from epistrel.core.canon.facts import Fact
+    from epistrel.core.propositions.model import Proposition
+
+INSPECT_LIMIT_DEFAULT = 100
+INSPECT_LIMIT_MAX = 500
+"""``inspect``'s page size and its cap (#178's inspection reads keep the same)."""
+
+Key = tuple[str, str | None]
+"""An external value within a story: ``(state id, scope key)`` (``None``: story-scoped)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalPin:
+    """One version of an externally owned State's value: the State, the scope key, the typed
+    value (``None``: unknown), where it was read, its version and source, and its
+    ``external_read`` event (``None`` while the turn that read it has not committed)."""
+
+    state_id: str
+    scope_key: str | None
+    value: Value | None
+    position: Position
+    version: int = 1
+    source: ExternalValueSource = ExternalValueSource.READ
+    event_id: str | None = None
+
+
+class PinSource(Protocol):
+    """A turn's pinned reads as Core reads them (``orchestrator.providers.pinned.PinnedReads``)."""
+
+    @property
+    def turn(self) -> int:
+        """The narrative turn the pins were read for."""
+        ...
+
+    def pinned(self, state_id: str, scope_key: str | None, through: Position | None) -> Any:
+        """The ``ExternalPin`` of ``(state_id, scope_key)``: the latest version the turn has
+        pinned at or before ``through`` (``None``: the latest), or ``None`` when it has none."""
+        ...
+
+
+_PINS: ContextVar[PinSource | None] = ContextVar("epistrel_external_pins", default=None)
+
+
+@contextmanager
+def pinning(source: PinSource) -> Iterator[PinSource]:
+    """Make ``source`` the current turn's pins for the block (see the module docstring)."""
+    token = _PINS.set(source)
+    try:
+        yield source
+    finally:
+        _PINS.reset(token)
+
+
+def current() -> PinSource | None:
+    """The current turn's pins, or ``None`` outside a turn."""
+    return _PINS.get()
+
+
+def external(states: Sequence[StateDefinition]) -> list[StateDefinition]:
+    """The externally owned ones among ``states``."""
+    return [s for s in states if s.owner is StateOwner.EXTERNAL and s.id is not None]
+
+
+def _at_or_before(position: Position, through: Position | None) -> bool:
+    return through is None or position.at_or_before(through)
+
+
+async def pinned_values(
+    conn: AsyncConnection,
+    story_id: str,
+    states: Sequence[StateDefinition],
+    keys: Sequence[Key],
+    *,
+    through: Position | None = None,
+) -> dict[Key, ExternalPin]:
+    """The value of each of ``keys`` (externally owned ``states``) at or before ``through``
+    (``None``: the latest): the current turn's pin, or outside a turn the latest committed
+    version on the active timeline (see the module docstring). A key with none is absent."""
+    by_id = {s.id: s for s in external(states)}
+    wanted = [k for k in keys if k[0] in by_id]
+    if not wanted:
+        return {}
+    source = current()
+    if source is not None and (through is None or through.turn >= source.turn):
+        found: dict[Key, ExternalPin] = {}
+        for key in wanted:
+            pin = source.pinned(key[0], key[1], through)
+            if isinstance(pin, ExternalPin):
+                found[key] = pin
+        return found
+    v = external_values.c
+    query = (
+        select(external_values)
+        .join(operations, operations.c.operation_id == v.operation_id)
+        .where(
+            v.story_id == story_id,
+            v.state_id.in_(sorted({k[0] for k in wanted})),
+            active_operation(operations),
+        )
+    )
+    if through is not None:
+        query = query.where(position_key(external_values, "position") <= position_literal(through))
+    rows = await conn.execute(query)
+    latest: dict[Key, tuple[tuple[int, ...], ExternalPin]] = {}
+    want = set(wanted)
+    for row in rows:
+        scope_key = None if row.scope_key == STORY_SCOPE_KEY else str(row.scope_key)
+        key = (str(row.state_id), scope_key)
+        if key not in want:
+            continue
+        position = Position.of_columns(dict(row._mapping), "position")
+        assert position is not None  # noqa: S101 - the column group is NOT NULL
+        order = (*position.key(), int(row.version))
+        if key in latest and latest[key][0] >= order:
+            continue
+        latest[key] = (
+            order,
+            ExternalPin(
+                state_id=key[0],
+                scope_key=scope_key,
+                value=from_json(by_id[key[0]].type, row.value),
+                position=position,
+                version=int(row.version),
+                source=ExternalValueSource(row.source),
+                event_id=str(row.event_id),
+            ),
+        )
+    return {key: pin for key, (_, pin) in latest.items() if _at_or_before(pin.position, through)}
+
+
+# -- versions (#215) ----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Unknown:
+    """No known value of an external value at a position (FR-EXT-11,20): ``pin`` is the
+    recorded ``Unknown`` version answering there, or ``None`` when nothing was recorded."""
+
+    state_id: str
+    scope_key: str | None
+    pin: ExternalPin | None = None
+
+
+async def pinned_value_at(
+    conn: AsyncConnection,
+    story_id: str,
+    definition: StateDefinition,
+    scope_key: str | None,
+    position: Position,
+) -> ExternalPin | Unknown:
+    """The value of the externally owned State ``definition`` (under ``scope_key``; ``None``:
+    story-scoped) at ``position``: the latest version at or before it by ``Position.key()``
+    (``pinned_values``: the current turn's pins, or the committed versions on the active
+    timeline), or ``Unknown`` when there is none or the latest one is pinned ``Unknown``."""
+    state_id = str(definition.id)
+    found = await pinned_values(
+        conn, story_id, [definition], [(state_id, scope_key)], through=position
+    )
+    pin = found.get((state_id, scope_key))
+    if pin is None:
+        return Unknown(state_id, scope_key)
+    if pin.source is ExternalValueSource.UNKNOWN:
+        return Unknown(state_id, scope_key, pin)
+    return pin
+
+
+@dataclass(frozen=True, slots=True)
+class VersionBase:
+    """Where a new post-effect version of an external value goes: the version-1 read it extends
+    (``base_event_id``) and its number (``next_version``)."""
+
+    base_event_id: str
+    next_version: int
+
+
+async def version_base(
+    conn: AsyncConnection,
+    story_id: str,
+    state_id: str,
+    scope_key: str | None,
+    position: Position,
+) -> VersionBase | None:
+    """The chain a post-effect version of ``(state_id, scope_key)`` at ``position`` continues:
+    the base read of the latest committed version at or before ``position`` on the active
+    timeline, and one more than that chain's highest version; ``None`` when no version was
+    recorded (there is no read to version). Reads version numbers only, never a value."""
+    v = external_values.c
+    scope = STORY_SCOPE_KEY if scope_key is None else scope_key
+    latest = await conn.scalar(
+        select(v.base_event_id)
+        .select_from(external_values.join(operations, operations.c.operation_id == v.operation_id))
+        .where(
+            v.story_id == story_id,
+            v.state_id == state_id,
+            v.scope_key == scope,
+            active_operation(operations),
+            position_key(external_values, "position") <= position_literal(position),
+        )
+        .order_by(position_key(external_values, "position").desc(), v.version.desc())
+        .limit(1)
+    )
+    if latest is None:
+        return None
+    highest = await conn.scalar(
+        select(func.max(v.version)).where(
+            v.story_id == story_id,
+            v.state_id == state_id,
+            v.scope_key == scope,
+            v.base_event_id == latest,
+        )
+    )
+    return VersionBase(str(latest), int(highest or 0) + 1)
+
+
+# -- unavailability (#206) ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedRead:
+    """A recorded live read of an external value (``last_known``'s candidate, #206): its
+    ``external_read`` event, the stored value and when the provider answered it."""
+
+    event_id: str
+    value: Any
+    read_at: datetime
+
+
+LAST_READ_SOURCES: tuple[ExternalValueSource, ...] = (
+    ExternalValueSource.READ,
+    ExternalValueSource.POST_EFFECT_READ,
+    ExternalValueSource.CONFIRMATION,
+)
+"""The versions ``last_read`` may answer: the provider's own answers (a live read, #215's
+post-effect read, a confirmation's resulting value), never a ``last_known`` or ``Unknown``."""
+
+
+async def last_read(
+    conn: AsyncConnection, story_id: str, state_id: str, scope_key: str | None
+) -> RecordedRead | None:
+    """The most recent value the provider itself answered for ``(state_id, scope_key)``
+    (``LAST_READ_SOURCES``, a value) on the story's active timeline (an operation
+    ``core.membership.active_operation`` keeps), by position and version, with when it
+    answered (an ``external_read``'s ``read_at``, an ``external_outcome``'s ``answered_at``);
+    ``None`` when there is none (#206's ``last_known``, FR-EXT-7). A ``last_known`` or
+    ``Unknown`` pin is never a candidate: freshness is measured from the provider's own answer.
+    #215: a confirmation's or a post-effect read's version is newer than the read it versions,
+    so a ``last_known`` stand-in never falls back to the pre-effect value."""
+    from epistrel.core.tables import events
+
+    v = external_values.c
+    answered = func.coalesce(
+        events.c.payload["read_at"].astext, events.c.payload["answered_at"].astext
+    )
+    query = (
+        select(v.event_id, v.value, answered.label("read_at"))
+        .select_from(
+            external_values.join(operations, operations.c.operation_id == v.operation_id).join(
+                events, events.c.id == v.event_id
+            )
+        )
+        .where(
+            v.story_id == story_id,
+            v.state_id == state_id,
+            v.scope_key == (STORY_SCOPE_KEY if scope_key is None else scope_key),
+            v.source.in_(LAST_READ_SOURCES),
+            v.value.is_not(None),
+            active_operation(operations),
+        )
+        .order_by(position_key(external_values, "position").desc(), v.version.desc())
+        .limit(1)
+    )
+    row = (await conn.execute(query)).first()
+    if row is None or row.read_at is None:
+        return None
+    return RecordedRead(str(row.event_id), row.value, datetime.fromisoformat(str(row.read_at)))
+
+
+def unknown_now(claim: Proposition) -> bool:
+    """Whether ``claim`` is a ``state_value`` of an external value the current turn pinned
+    ``Unknown`` (#206, FR-EXT-11): no one may newly acquire it this turn (an observation of it
+    is never written). ``False`` outside a turn."""
+    from epistrel.core.propositions.vocabulary import STATE_VALUE
+
+    source = current()
+    if source is None or claim.predicate_id != STATE_VALUE:
+        return False
+    state_id = claim.qualifiers.get("state")
+    if not isinstance(state_id, str):
+        return False
+    for scope_key in (None, claim.subject_id):
+        pin = source.pinned(state_id, scope_key, None)
+        if isinstance(pin, ExternalPin) and pin.source is ExternalValueSource.UNKNOWN:
+            return True
+    return False
+
+
+# -- external facts (#207) ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalFactItem:
+    """One ``external_read`` (#205) with the facts that reference it: the event, the provider
+    and the value's name, the State and scope key (``None``: story-scoped), the value read
+    (``None``: unknown), when it was read, its turn and variant, its source (``live``,
+    ``last_known``, ``unknown``) and every fact version citing it (``source_event_ids``)."""
+
+    event_id: str
+    provider: str
+    value_name: str
+    state_id: str | None
+    scope_key: str | None
+    value: Any
+    read_at: str | None
+    turn: int | None
+    variant: int | None
+    source: str
+    facts: tuple[Fact, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalFactPage:
+    story_id: str
+    revision: int
+    items: tuple[ExternalFactItem, ...]
+    next_after_id: str | None
+
+
+async def inspect(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    as_of: int | None = None,
+    limit: int = INSPECT_LIMIT_DEFAULT,
+    after_id: str | None = None,
+) -> ExternalFactPage:
+    """The story's snapshotted external facts (FR-ADMIN-5, FR-EXT-2,4; #207): its
+    ``external_read`` events on the active timeline, positioned at or before turn ``as_of``, by
+    id after ``after_id``, ``limit`` a page, each with the facts that cite it. A raw read: no
+    provider is called. No partitions gate applies (a value read is no character's knowledge),
+    so a story with no reads answers an empty page. 404 for an unknown story."""
+    from epistrel.core.canon import facts as canon_facts
+    from epistrel.core.concurrency import check_expected_revision
+    from epistrel.core.events.types import EXTERNAL_READ
+    from epistrel.core.tables import events
+
+    limit = max(1, min(INSPECT_LIMIT_MAX, limit))
+    e = events.c
+    query = (
+        select(e.id, e.payload, e.narrative_turn, e.turn_variant)
+        .select_from(events.join(operations, operations.c.operation_id == e.operation_id))
+        .where(e.story_id == story_id, e.type == EXTERNAL_READ, active_operation(operations))
+        .order_by(e.id)
+        .limit(limit + 1)
+    )
+    if after_id is not None:
+        query = query.where(e.id > after_id)
+    if as_of is not None:
+        query = query.where(e.narrative_turn <= as_of)
+    async with db.connect() as conn:
+        revision = await check_expected_revision(conn, story_id, None)
+        rows = list(await conn.execute(query))
+        page, more = rows[:limit], len(rows) > limit
+        cited = await canon_facts.citing(conn, story_id, [str(r.id) for r in page])
+    by_event: dict[str, list[Fact]] = {}
+    for fact in cited:
+        for event_id in fact.source_event_ids:
+            by_event.setdefault(event_id, []).append(fact)
+    items = []
+    for row in page:
+        payload = dict(row.payload or {})
+        items.append(
+            ExternalFactItem(
+                event_id=str(row.id),
+                provider=str(payload.get("provider", "")),
+                value_name=str(payload.get("value_name", "")),
+                state_id=payload.get("state_id"),
+                scope_key=payload.get("scope_key"),
+                value=payload.get("value"),
+                read_at=payload.get("read_at"),
+                turn=row.narrative_turn,
+                variant=row.turn_variant,
+                source=str(payload.get("source", "")),
+                facts=tuple(by_event.get(str(row.id), ())),
+            )
+        )
+    return ExternalFactPage(
+        story_id, revision, tuple(items), items[-1].event_id if more and items else None
+    )
+
+
+__all__ = [
+    "INSPECT_LIMIT_DEFAULT",
+    "INSPECT_LIMIT_MAX",
+    "LAST_READ_SOURCES",
+    "ExternalFactItem",
+    "ExternalFactPage",
+    "ExternalPin",
+    "Key",
+    "PinSource",
+    "RecordedRead",
+    "Unknown",
+    "VersionBase",
+    "current",
+    "external",
+    "inspect",
+    "last_read",
+    "pinned_value_at",
+    "pinned_values",
+    "pinning",
+    "unknown_now",
+    "version_base",
+]

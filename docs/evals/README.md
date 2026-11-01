@@ -88,6 +88,7 @@ measures.
 | `e05` | E-05: salience detection (`detect_salience`) | recall ≥ 95 %, precision ≥ 70 % (rate); F-beta (FN x3) reported | `salience/` (300) | #157 |
 | `e06` | E-06 (M4): structured generation conformance (`respond`: structure, length, temperature-0 repeatability) | ≥ 98 % (rate) | `generation_conformance/` (200) | #157 |
 | `e07` | E-07: structured output valid after retry; injected garbage takes the degradation path | ≥ 99 % (rate); never silent acceptance | `structured_output/` (200) | #157 |
+| `e09` | E-09 (M6): time estimation. Each narrated skip runs the live path's `time_estimation` call (no render) in a fixture story with the clock on; an estimate the engine would not take (a model error, an unparsable answer, 0 minutes, a confidence under the floor) is out of range. Also reports, informationally, the model-initiated skips removed per 100 turns over a 10-scenario sample of `scenarios/` played with the clock on. | ≥ 85 % in range (rate) | `time_estimation/` (200) | #201 |
 | `e10` | E-10: claim-detection recall per `extraction_mode`, layer and category (`ClaimDetector`) | ≥ 95 % per mode (rate) | `claim_detection/` (300) | #157 |
 | `q01` | Q-01: recall@10 and MRR over the 5,000-turn S-THOSEGUYS-style fixture (`Engine.retrieve`) | recall@10 ≥ 0.9 (rate) | `retrieval/recall.jsonl` (100) | #157 |
 | `q02` | Q-02: referential and temporal resolution (the retrieval pipeline's resolve stage) | report only | `retrieval/resolution.jsonl` (120) | #139, #157 |
@@ -98,7 +99,35 @@ measures.
 | `q04` | Q-04: knowledge asymmetry. A character is asked about another character's private fact through `respond` (per-character partitions, perception `full`, the output read as the player's character); the player-facing answer must hold none of the fact's forbidden forms. Negative controls (the holder asked) show the oracle detects a disclosure. | 0 observed on ≥ 300 cases a seed (zero) | `asymmetry/` (384 + 32 controls) | #179 |
 | `priv_think_leak` | NFR-QUAL-1's private-thought metric: a scripted prelude plants a character's `think`, then another character answers the player; neither turn's player-facing output may disclose the thought (verbatim, paraphrased or as narrated inner state) | 0 observed on ≥ 300 cases a seed (zero) | `think_leak/` (345 + 96 controls) | #179 |
 
-`--check` lists NFR-QUAL-9 as pending until M6 delivers time estimation.
+## E-09: time estimation (#201)
+
+`e09` measures NFR-QUAL-9 on the reference model tier: `cydonia-24b-v4.3`, served by LM Studio
+on the owner's machine (port 1235, or the port `lms server status` reports). Each of the 200
+labeled skips (`evals/sets/time_estimation/`, owner-approved) runs #199's `time_estimation`
+call exactly as a turn makes it, with the route of a fixture story on the seeded profile with
+the clock on; no render is generated. `nfr_qual_9.within_range` counts an estimate in range
+when the engine took it and its minutes lie in the case's acceptable range. A model error, an
+unparsable answer, 0 minutes, or a confidence under the floor is out of range, as a turn would
+remove that skip. The floor is the live path's: the structured layer's `uncertain_below` (0.5
+by default) and then `MIN_CONFIDENCE` (0.3). Rows per activity family and per kind (explicit,
+implicit, inferred) are reported. The pacing-health row,
+`e09.model_initiated_skips_removed_per_100_turns`, is informational: the `unprompted_skip`
+repairs per turn over a seeded sample of 10 `scenarios` cases (fewer under `--sample`) played
+with the clock on, shown as a percentage, so 2.00% is 2 removals per 100 turns.
+
+CI runs it on the stub in the `evals` job (the stub answers each case's midpoint). The real
+model runs only locally, never in CI and never on a schedule. Load only `cydonia-24b-v4.3` (no
+judge or embedding model), then:
+
+```sh
+uv run epistrel evals run --suite e09 --new-run --base-url http://localhost:1235/v1 \
+    --model cydonia-24b-v4.3 --seeds 3 \
+    --hardware "<machine, memory>" --server-version "LM Studio <version>"
+```
+
+That is about 600 short calls, plus the scenario sample's turns. Commit the report and
+`INDEX.md` whatever the verdict. A miss is filed as a bug and fixed for any engine-side cause; a
+miss that is the model's own may move to M9 by ADR-164's route.
 
 ## NFR-QUAL-1's zero-leak run (#179)
 

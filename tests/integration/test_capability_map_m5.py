@@ -44,6 +44,7 @@ from epistrel.core.genesis.settings_map import (
     SETTING_CAPABILITIES,
     unmapped_settings,
 )
+from epistrel.core.ids import new_ulid
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.capabilities import (
     CAPABILITY,
@@ -61,6 +62,7 @@ from epistrel.core.profiles.validate import (
     validate_profile,
 )
 from epistrel.core.seeds import profiles as seeds
+from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.settings_schema import (
     CharacterSettings,
     ConfigClass,
@@ -74,7 +76,7 @@ from epistrel.tools.capability_map import MAP_PATH, render
 from tests import perception_support as ps
 from tests.auth_support import auth_settings, bearer
 from tests.conftest import alembic_config
-from tests.event_support import new_story, rows, scalar
+from tests.event_support import rows, scalar
 from tests.profile_support import (
     M5_MODULES,
     PROFILES,
@@ -351,7 +353,7 @@ async def test_c_16__m5_capabilities(
     assert CAPABILITY["per_character_renders"].story_settings == MULTI_CHARACTER_SETTINGS
     assert "player_authority" in MULTI_CHARACTER_SETTINGS
     v1 = merged_settings(seeds.profile_defaults(), seeds.STRUCTURED_M4_SETTINGS)
-    v2 = merged_settings(seeds.profile_defaults(), seeds.STRUCTURED_SETTINGS)
+    v2 = merged_settings(seeds.profile_defaults(), seeds.STRUCTURED_M5_SETTINGS)
     assert set(CAPABILITY) - set(holding(v1)) >= {
         "partitions",
         "perception_co_location",
@@ -375,11 +377,15 @@ async def test_c_16__m5_capabilities(
     (published_structured,) = [p for p in guarantee_tool.SEEDED if p.profile_id == structured()]
     assert (published_structured.name, published_structured.version) == (
         seeds.STRUCTURED_NAME,
-        2,
+        seeds.STRUCTURED_VERSION,  # the latest: 2 in M5 (#203 adds 3)
     )
     table = guarantee_tool.render()
     assert table == (guarantee_tool.TABLE_PATH).read_text(encoding="utf-8")
-    assert f"### {seeds.STRUCTURED_NAME}\n\nProfile `{structured()}`, version 2 as seeded." in table
+    latest = seeds.STRUCTURED_VERSION
+    assert (
+        f"### {seeds.STRUCTURED_NAME}\n\nProfile `{structured()}`, version {latest} as seeded."
+        in table
+    )
     assert "`player_authority`" in table.split("### Lite", 1)[1].split("### ", 1)[0]
 
     # The story settings.
@@ -438,14 +444,21 @@ async def test_c_16__m5_capabilities(
 
         # The seeded profile.
         head = (await client.get(f"{PROFILES}/{structured()}", headers=READ)).json()
-        assert (head["name"], head["version"]) == (seeds.STRUCTURED_NAME, 2)
-        assert head["settings"] == seeds.structured_settings()
+        assert head["name"] == seeds.STRUCTURED_NAME
+        second = (
+            await client.get(
+                f"{PROFILES}/{structured()}",
+                params={"version": seeds.STRUCTURED_M5_VERSION},
+                headers=READ,
+            )
+        ).json()
+        assert second["settings"] == seeds.structured_m5_settings()
         first = (
             await client.get(f"{PROFILES}/{structured()}", params={"version": 1}, headers=READ)
         ).json()
         assert first["settings"] == seeds.structured_m4_settings()
         assert module_on(
-            parse_settings(merged(seeds.profile_defaults(), head["settings"])), "partitions"
+            parse_settings(merged(seeds.profile_defaults(), second["settings"])), "partitions"
         )
 
         # A turn-less story pinned to version 1 moves to version 2 through the report.
@@ -482,7 +495,7 @@ async def test_c_16__m5_capabilities(
         after = (await client.get(f"/stories/{story}/effective-config", headers=READ)).json()
         assert after["profile"] == {
             "id": structured(),
-            "version": 2,
+            "version": seeds.STRUCTURED_VERSION,  # the latest: 2 in M5 (#203 adds 3)
             "pinned": False,
             "deleted": False,
         }
@@ -533,6 +546,21 @@ async def test_c_16__m5_capabilities(
         assert effective["profile"]["version"] == 1
 
 
+async def _story_row(db: AsyncEngine) -> str:
+    """A story row as revision 0079 has it, on the Lite preset: today's genesis writes tables a
+    later revision adds (#193), and the migration reads only the row."""
+    story = new_ulid()
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO stories (id, owner_principal, engine_profile_id) "
+                "VALUES (:s, 'p-test', :p)"
+            ),
+            {"s": story, "p": LITE_PRESET_ID},
+        )
+    return story
+
+
 @pytest.mark.part("M5", "FR-PROF-12,13")
 async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
     """Migration ``0080`` updates the seeded profile in place: on a database where a story
@@ -545,14 +573,14 @@ async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
     command.upgrade(cfg, "0079")
     db = make_engine(auth_settings(scratch_database))
     try:
-        on_profile, lite = await new_story(db), await new_story(db)
+        on_profile, lite = await _story_row(db), await _story_row(db)
         async with db.begin() as conn:
             await conn.execute(
                 text("UPDATE stories SET engine_profile_id = :p WHERE id = :s"),
                 {"p": structured_m4(), "s": on_profile},
             )
         changes = await scalar(db, "SELECT count(*) FROM config_changes")
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0080")  # #203's 0104 adds version 3 (test_capability_map_m6)
         head = (
             await rows(
                 db,
@@ -566,7 +594,7 @@ async def test_c_16__m5_seed_pins(scratch_database: str) -> None:
             "SELECT settings FROM engine_profile_versions WHERE profile_id = :p AND version = 2",
             p=structured(),
         )
-        assert version == seeds.structured_settings()
+        assert version == seeds.structured_m5_settings()
         pins = {
             r.id: r.engine_profile_version_pin
             for r in await rows(db, "SELECT id, engine_profile_version_pin FROM stories")

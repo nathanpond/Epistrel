@@ -225,6 +225,7 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
             # with its name as an alias; the role overrides add "Mum" and "Tommy".
             "entities": 4,
             "entity_aliases": 6,
+            **lg.BUILT_IN_ROWS,
         }
         async with engine.connect() as conn:
             entity_rows = (
@@ -299,7 +300,7 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
             None,
         )
         assert shown["counts"] == {**counts}
-        assert shown["unavailable"] == list(scenarios.M3_UNAVAILABLE)
+        assert shown["unavailable"] == scenarios.lite_unavailable()
         assert [c["kind"] for c in shown["cast"]] == ["catalog", "catalog", "catalog", "player"]
         assert [c["role_id"] for c in shown["cast"]] == ["mother", "brother", "aunt", "player"]
         assert shown["cast"][1]["source"] == {

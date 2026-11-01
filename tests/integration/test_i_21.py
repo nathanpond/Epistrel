@@ -1134,9 +1134,9 @@ async def test_i_21__offboarding(pg_url: str) -> None:
             "engine_profiles": 1,
         }
         assert found["owned"]["characters"]["items"][0]["companion"] == {"id": w.companion}
-        assert found["related"]["characters"]["items"] == [
-            {"id": w.others_character, "relations": ["editor"]}
-        ]
+        assert [
+            (item["id"], item["relations"]) for item in found["related"]["characters"]["items"]
+        ] == [(w.others_character, ["editor"])]
         body = {"principal": a, "actions": DOCS_ACTIONS, "transfer_to": k}
         before = await table_counts(s.db)
         rows_before = await table_contents(s.db)

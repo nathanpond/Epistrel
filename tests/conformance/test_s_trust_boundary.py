@@ -1,7 +1,7 @@
-"""S-TRUST-BOUNDARY, M5 part (docs/04 §7; FR-AUTH-2; #178): Epistrel filters by viewpoint and
-authorizes no one. The M2 to M4 parts are in ``tests/test_trust_boundary.py``; this one runs over
-both surfaces (the ``both`` fixture), because its clause is that the rules hold identically over
-REST and the library.
+"""S-TRUST-BOUNDARY, M5 and M6 parts (docs/04 §7; FR-AUTH-2; #178, #186): Epistrel filters by
+viewpoint and authorizes no one. The M2 to M4 parts are in ``tests/test_trust_boundary.py``; these
+run over both surfaces (the ``both`` fixture), because their clause is that the rules hold
+identically over REST and the library.
 """
 
 from __future__ import annotations
@@ -16,7 +16,15 @@ from tests import canon_support as c
 from tests import partition_support as ps
 from tests import perception_support as perception
 from tests.conformance.conftest import Outcome, Surface
-from tests.conformance.test_c_12 import THOUGHT, _rooms, _vp, _whisper_turn
+from tests.conformance.test_c_12 import (
+    HIDDEN_STATE,
+    THOUGHT,
+    VISIBLE_STATE,
+    _rooms,
+    _states_story,
+    _vp,
+    _whisper_turn,
+)
 from tests.conftest import REPO_ROOT
 from tests.respond_support import body
 
@@ -109,3 +117,37 @@ async def test_s_trust_boundary__m5(
     for sentence in SENTENCES:
         assert sentence in section, sentence
         assert sentence in section_11, sentence
+
+
+@pytest.mark.part("M6", "FR-AUTH-2")
+async def test_s_trust_boundary__m6(
+    both: dict[str, Surface], engine: AsyncEngine, states_delivered: None
+) -> None:
+    """A State read for a character viewpoint never returns a hidden State (#186): over REST
+    and the library, under two principals, every character's list read leaves the hidden
+    ``trust`` out (its name appears nowhere in the body) and a named read of it is 404 as an
+    unknown name is, with the same status and code on both surfaces.
+
+    Complement: ``omniscient`` named by the same request returns the hidden State."""
+    rest, library = both["rest"], both["library"]
+    story, ids = await _states_story(rest, engine)
+    for character in ids.values():
+        viewpoint = _vp(character)
+        names: dict[str, list[str]] = {}
+        for name, surface in both.items():
+            for principal in ("p-one", "p-two"):
+                read = await surface.states(story, viewpoint=viewpoint, principal=principal)
+                assert read.status == 200, read.code
+                assert HIDDEN_STATE not in json.dumps(read.json), (name, principal)
+                names[f"{name}:{principal}"] = [s["name"] for s in read.json["states"]]
+        assert set(map(tuple, names.values())) == {(VISIBLE_STATE,)}
+        outcomes = [
+            _shape(await s.state(story, HIDDEN_STATE, viewpoint=viewpoint)) for s in (rest, library)
+        ]
+        assert outcomes == [(404, "not_found")] * 2
+    for surface in (rest, library):
+        seen = await surface.state(story, HIDDEN_STATE, viewpoint="omniscient")
+        assert seen.status == 200, seen.code
+        assert seen.json["state"]["values"][ids["Ada"]] == 3
+        listed = await surface.states(story, viewpoint="omniscient")
+        assert HIDDEN_STATE in [s["name"] for s in listed.json["states"]]

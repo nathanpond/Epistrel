@@ -1,4 +1,5 @@
-"""docs/04 I-01, M2 part: the event store and the atomic turn commit."""
+"""docs/04 I-01: the event store and the atomic turn commit (the M2 part), and the staged
+turn's stages (the M6 part, #212: ``test_i_01__staged``)."""
 
 from __future__ import annotations
 
@@ -9,10 +10,19 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.config import Settings
 from epistrel.core.enums import OperationKind
 from epistrel.core.events import Operation
 from epistrel.core.events.types import MessageRendered, PlayerInput
+from epistrel.core.idempotency import IdempotentCall
+from epistrel.core.states import contingency as contingency_rules
 from epistrel.core.views import audit_view, corrected_history
+from epistrel.orchestrator.structured import staged
+from tests import effect_support as es
+from tests import multi_support as ms
+from tests import provider_support as ps
+from tests import staged_support as sp
+from tests.auth_support import auth_settings
 from tests.event_support import (
     execute_in_tx,
     new_story,
@@ -23,6 +33,8 @@ from tests.event_support import (
     sqlstate,
     story_row,
 )
+from tests.respond_support import body, respond, respond_client
+from tests.structured_turn_support import beat, structured_story
 
 
 class Boom(Exception):
@@ -224,3 +236,185 @@ async def _assert_rolled_back(
         == "failed"
     )
     assert await story_row(engine, story) == before
+
+
+# -- M6 (#212): the staged turn ------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+async def _failing(
+    client: Any,
+    engine: AsyncEngine,
+    epistrel: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    target: tuple[object, str],
+) -> tuple[str, int, Any]:
+    """A staged purchase whose stage ``target`` (``(object, name)``) raises ``Boom``: the
+    story, its revision before the turn, and the turn's operation row afterwards."""
+    story, cal, _, fake = await sp.sync_story(client, engine, epistrel)
+    fake.script_writes("gold", "confirmed")
+    sp.script_purchase(epistrel.models.stub, cal)
+    before = await sp.revision(engine, story)
+
+    async def boom(*_: Any, **__: Any) -> Any:
+        raise Boom("induced")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(target[0], target[1], boom)
+        try:
+            answer = await sp.buy(client, story, cal)
+        except Boom:
+            answer = None
+    assert answer is None or answer.status_code >= 500
+    return story, before, await sp.staged_op(engine, story)
+
+
+async def _resumed(engine: AsyncEngine, epistrel: Any, operation_id: str) -> None:
+    """Resume a turn ``_failing`` left unfinished (#213) to ``completed``, so no later test's
+    worker resumes it on the shared database (its recovery pass resumes every stalled one)."""
+    done = await staged.resume(engine, operation_id, registry=epistrel.in_process_providers)
+    assert done.stage is not None
+    assert done.stage.value == "completed", done
+
+
+@pytest.mark.part("M6", "FR-EXT-19")
+async def test_i_01__staged(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A staged turn (#212): an induced failure inside any stage rolls back that stage only,
+    leaving the turn at the previous stage boundary with the earlier stages intact, and the
+    timeline revision advances exactly once at intent, once at outcome and once at completion,
+    never at the claim or the stored response (read between the stages).
+
+    - The claim's bookkeeping fails: the turn stays ``intent_committed`` (one revision), its
+      attempt beats committed, no outcome.
+    - The outcome transaction fails (its settlement step): ``awaiting_outcome``, still one
+      revision, no ``external_outcome`` event, the intent intact.
+    - The completion fails (its report step): ``outcome_recorded``, two revisions, the outcome
+      event kept, no outcome-step beat and no message.
+    - The response storage fails: ``completed``, three revisions, the message committed, no
+      ``response`` stage logged.
+
+    Complement: an ordinary turn still commits in one transaction, bumps the revision once and
+    has ``turn_stage IS NULL``."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        # The revision read between the stages of a turn that completes.
+        story, cal, _, fake = await sp.sync_story(client, engine, epistrel)
+        fake.script_writes("gold", "confirmed")
+        sp.script_purchase(epistrel.models.stub, cal)
+        seen: list[tuple[str, int]] = []
+        claim_all, record_outcomes = staged.claim_all, staged.record_outcomes
+        store_response = staged.store_response
+
+        async def claiming(*args: Any, **kwargs: Any) -> Any:
+            seen.append(("intent", await sp.revision(engine, story)))
+            found = await claim_all(*args, **kwargs)
+            seen.append(("claim", await sp.revision(engine, story)))
+            return found
+
+        async def recording(*args: Any, **kwargs: Any) -> Any:
+            found = await record_outcomes(*args, **kwargs)
+            seen.append(("outcome", await sp.revision(engine, story)))
+            return found
+
+        async def storing(*args: Any, **kwargs: Any) -> Any:
+            seen.append(("completion", await sp.revision(engine, story)))
+            await store_response(*args, **kwargs)
+            seen.append(("response", await sp.revision(engine, story)))
+
+        before = await sp.revision(engine, story)
+        with monkeypatch.context() as patched:
+            patched.setattr(staged, "claim_all", claiming)
+            patched.setattr(staged, "record_outcomes", recording)
+            patched.setattr(staged, "store_response", storing)
+            answer = await sp.buy(client, story, cal)
+        assert answer.status_code == 200, answer.text
+        assert seen == [
+            ("intent", before + 1),
+            ("claim", before + 1),
+            ("outcome", before + 2),
+            ("completion", before + 3),
+            ("response", before + 3),
+        ]
+        op = await sp.staged_op(engine, story)
+        assert (op.status, op.turn_stage, op.timeline_revision) == (
+            "committed",
+            "completed",
+            before + 3,
+        )
+        assert await sp.stage_names(engine, story) == list(staged.STAGES)
+        await ps.drop_outbox_jobs(engine, story)
+
+        # The claim's bookkeeping fails: the turn stays at its intent.
+        story, before, op = await _failing(
+            client, engine, epistrel, monkeypatch, (staged, "append_stage")
+        )
+        assert op.turn_stage == "intent_committed"
+        assert await sp.revision(engine, story) == before + 1
+        types = await sp.event_types(engine, op.operation_id)
+        assert "beat_do" in types
+        assert "external_outcome" not in types
+        assert "message_rendered" not in types
+        await _resumed(engine, epistrel, op.operation_id)
+        await ps.drop_outbox_jobs(engine, story)
+
+        # The outcome transaction fails: the turn stays awaiting its outcome.
+        story, before, op = await _failing(
+            client, engine, epistrel, monkeypatch, (contingency_rules, "settle")
+        )
+        assert op.turn_stage == "awaiting_outcome"
+        assert await sp.revision(engine, story) == before + 1
+        types = await sp.event_types(engine, op.operation_id)
+        assert "beat_do" in types
+        assert "external_outcome" not in types
+        await _resumed(engine, epistrel, op.operation_id)
+        await ps.drop_outbox_jobs(engine, story)
+
+        # The completion fails: the outcome stays recorded.
+        story, before, op = await _failing(
+            client, engine, epistrel, monkeypatch, (staged, "write_report")
+        )
+        assert op.turn_stage == "outcome_recorded"
+        assert await sp.revision(engine, story) == before + 2
+        types = await sp.event_types(engine, op.operation_id)
+        assert types.count("external_outcome") == 1
+        assert "message_rendered" not in types
+        assert types.count("beat_narration") == 1  # the intent's narration only
+        await _resumed(engine, epistrel, op.operation_id)
+        await ps.drop_outbox_jobs(engine, story)
+
+        # The response storage fails: the turn stays completed.
+        story, before, op = await _failing(
+            client, engine, epistrel, monkeypatch, (IdempotentCall, "store")
+        )
+        assert op.turn_stage == "completed"
+        assert await sp.revision(engine, story) == before + 3
+        assert "message_rendered" in await sp.event_types(engine, op.operation_id)
+        assert await sp.stage_names(engine, story) == list(staged.STAGES[:-1])
+        await ps.drop_outbox_jobs(engine, story)
+
+        # Complement: an ordinary turn, one transaction, one revision, no stage.
+        story, ids = await structured_story(client, "Cal", "Mira")
+        stub = epistrel.models.stub
+        stub.reset()
+        es.narrator(stub, es.render(beat("narration", "Rain taps.")))
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Close the door.")))
+        before = await sp.revision(engine, story)
+        answer = await respond(client, story, body(ids["Cal"], None, do="waits"))
+        assert answer.status_code == 200, answer.text
+        assert await sp.revision(engine, story) == before + 1
+        (row,) = await rows(
+            engine,
+            "SELECT turn_stage, stage_log FROM operations WHERE story_id = :s AND kind = 'turn'",
+            s=story,
+        )
+        assert row.turn_stage is None
+        assert not [e for e in row.stage_log or [] if e.get("stage") in staged.STAGES]

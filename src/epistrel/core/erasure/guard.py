@@ -398,6 +398,12 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.epistemic.exposure", DIRECT),
     WritePath("epistrel.core.epistemic.divergences", DIRECT),
     WritePath("epistrel.core.turns.beats", DIRECT),
+    WritePath("epistrel.core.states", DIRECT),
+    WritePath("epistrel.core.states.proposals", DIRECT),
+    WritePath("epistrel.core.world_clock.stops", DIRECT),
+    # #210: the outbox's intent rows (a turn's commit step), and the dispatcher's and the
+    # intake's raw writes (statuses and outcome records: ids, kinds and hashes, no text).
+    WritePath("epistrel.core.outbox", DIRECT),
     WritePath(
         "epistrel.core.verify.shadow",
         EXEMPT,

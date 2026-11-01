@@ -89,6 +89,7 @@ from epistrel.core.profiles import effective, guarantees, impact, schema
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import Delta, ImpactReport, TwoStageRequest, TwoStageResult
+from epistrel.core.profiles.reservation import SafetyFacts
 from epistrel.core.profiles.schema import (
     SETTINGS_SCHEMA,
     ProfileSettings,
@@ -97,8 +98,10 @@ from epistrel.core.profiles.schema import (
 )
 from epistrel.core.profiles.validate import (
     ProfileValidation,
+    ProfileValidationWarning,
     canonical,
     refusal,
+    safety_warnings,
     validate_profile,
 )
 from epistrel.core.settings_schema import ConfigClass, flatten
@@ -242,6 +245,9 @@ class ProfileWrite:
     changed: bool = True
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    warnings: tuple[ProfileValidationWarning, ...] = ()
+    """The validator's warnings for the profile's latest version over the deployment's
+    ``profile_defaults`` (#456: ``below_safety_minimum``, as ``validate`` answers it)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,13 +475,19 @@ async def validated(
 
 
 async def create(
-    db: AsyncEngine, request: ProfileCreate, *, principal: str, purposes: Purposes | None = None
+    db: AsyncEngine,
+    request: ProfileCreate,
+    *,
+    principal: str,
+    purposes: Purposes | None = None,
+    safety: SafetyFacts | None = None,
 ) -> ProfileWrite:
     """A new profile at version 1 (see the module docstring); 422 ``validation_error`` or
-    ``invalid_profile`` for settings that cannot run, and nothing is written."""
+    ``invalid_profile`` for settings that cannot run, and nothing is written. ``safety``: what
+    the answer's ``warnings`` count (#456)."""
     async with db.begin() as conn:
         await default_profile(conn)  # the deployment row FOR SHARE: the defaults hold
-        settings, _ = await validated(conn, request.settings, purposes=purposes)
+        settings, whole = await validated(conn, request.settings, purposes=purposes)
         profile_id = await _insert_profile(
             conn,
             name=request.name,
@@ -484,7 +496,11 @@ async def create(
             principal=principal,
         )
         await control.record_control_operation(conn, actor=principal)
-        return ProfileWrite(await _read(conn, profile_id), await config_revision(conn))
+        return ProfileWrite(
+            await _read(conn, profile_id),
+            await config_revision(conn),
+            warnings=tuple(safety_warnings(whole, safety)),
+        )
 
 
 async def update_profile(
@@ -495,11 +511,13 @@ async def update_profile(
     principal: str,
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
+    safety: SafetyFacts | None = None,
 ) -> TwoStageResult[ProfileWrite]:
     """Replace the profile's name and settings, in two stages (see the module docstring): a new
     version when the settings differ. The impact report covers every story following the
     profile's latest version; ``facts`` are the model ids and template hashes their fingerprints
-    need. 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and 422
+    need, and ``safety`` what its ``budget_warnings`` and the result's ``warnings`` count
+    (#456). 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and 422
     ``invalid_profile`` for settings that cannot run, whatever ``ignore_warnings`` says."""
     async with db.begin() as conn:
         deployment = await lock_deployment(conn)  # first, as every configuration write
@@ -529,7 +547,10 @@ async def update_profile(
             facts=facts,
             purposes=purposes,
         )
-        following = await impact.following_report(conn, profile_id, change, overridden)
+        warned = tuple(safety_warnings(after, safety))
+        following = await impact.following_report(
+            conn, profile_id, change, overridden, budget_warnings=warned
+        )
 
         async def report() -> ImpactReport:
             return following.report
@@ -537,7 +558,10 @@ async def update_profile(
         async def apply(_: ImpactReport) -> ProfileWrite:
             if not new_version and request.name == head.name:
                 return ProfileWrite(
-                    await _read(conn, profile_id), await config_revision(conn), changed=False
+                    await _read(conn, profile_id),
+                    await config_revision(conn),
+                    changed=False,
+                    warnings=warned,
                 )
             now = clock.now()
             values: dict[str, Any] = {"name": request.name, "updated_at": now}
@@ -559,7 +583,9 @@ async def update_profile(
                 )
             else:
                 await control.record_control_operation(conn, actor=principal)
-            return ProfileWrite(await _read(conn, profile_id), await config_revision(conn))
+            return ProfileWrite(
+                await _read(conn, profile_id), await config_revision(conn), warnings=warned
+            )
 
         outcome = await impact.two_stage(report, apply, ignore_warnings=request.ignore_warnings)
         return dataclasses.replace(outcome, config_revision=await config_revision(conn))
@@ -682,10 +708,12 @@ async def copy_profile(
     *,
     principal: str,
     version: int | None = None,
+    safety: SafetyFacts | None = None,
 ) -> ProfileWrite:
     """A new profile at version 1 with the settings of ``profile_id``'s latest version (or of
     ``version``), owned by ``request.owner`` or the requester; a deleted profile may be copied.
-    404 for an unknown profile or version."""
+    404 for an unknown profile or version. ``safety``: what the answer's ``warnings`` count
+    (#456)."""
     async with db.begin() as conn:
         head = await _head(conn, profile_id, lock="share")
         source = await _version(conn, profile_id, version or int(head.current_version))
@@ -697,7 +725,12 @@ async def copy_profile(
             principal=principal,
         )
         await control.record_control_operation(conn, actor=principal)
-        return ProfileWrite(await _read(conn, copied), await config_revision(conn))
+        whole = effective.merged_settings(await effective.profile_defaults(conn), source.settings)
+        return ProfileWrite(
+            await _read(conn, copied),
+            await config_revision(conn),
+            warnings=tuple(safety_warnings(whole, safety)),
+        )
 
 
 async def _usage(conn: AsyncConnection, profile_id: str) -> tuple[list[ProfileWarning], int, int]:

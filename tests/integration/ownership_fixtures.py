@@ -338,9 +338,134 @@ async def _unsignable(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {}
 
 
+PROVIDER = "ownership-ledger"
+"""An in-process provider the binding routes name (#204): registered once, deployment-wide."""
+BINDING = {"external_ids": {"player": "p-1"}}
+
+
+async def _provider(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The provider registered (an earlier case may have registered it: 409 then)."""
+    body = {
+        "name": PROVIDER,
+        "trust_tier": "authoritative",
+        "transport": "in_process",
+        "manifest": {"values": {"gold": {"type": "number", "writable": False}}},
+    }
+    response = await client.post("/admin/external-providers", json=body, headers=headers(OWNER))
+    assert response.status_code in (201, 409), response.text
+    return {"name": PROVIDER}
+
+
+async def _bound(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story bound to the provider by its owner (#204)."""
+    found = await _provider(client, kind, entity)
+    await _send(client, kind, entity, "PUT", f"/providers/{PROVIDER}/binding", BINDING, 200)
+    return found
+
+
 async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """The story's non-player character, Ada, for a promotion (#114)."""
     return {"character_id": entity.ids["ada"]}
+
+
+PROMPT_ONLY = {"clock": {"level": "prompt_only"}, "states": {"level": "prompt_only"}}
+"""#203: the Lite story's overrides for the clock, scheduled-event and State routes: the world
+clock and States in their prompt-only Lite forms (FR-LITE-5)."""
+GOLD = {"name": "gold", "type": "number", "initial_value": 10}
+
+
+async def _prompt_only(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The story runs the clock and States at ``prompt_only`` (#203; a Lite story's forms)."""
+    await _send(
+        client,
+        kind,
+        entity,
+        "PATCH",
+        "/profile-overrides",
+        {"settings": PROMPT_ONLY, "ignore_warnings": True},
+        200,
+    )
+    return {}
+
+
+async def _state_name(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A declared State's name for the State routes (#186), on the story running States at
+    ``prompt_only`` (#203)."""
+    await _prompt_only(client, kind, entity)
+    await _post(client, kind, entity, "/states", {"definition": GOLD}, 201)
+    return {"name": "gold"}
+
+
+async def _state_proposal(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A ``proposed`` State proposal for the proposal routes (#192), on the story running States
+    at ``prompt_only`` (#203). No route files one (the analysis is a job), so it is written as
+    the analysis writes it."""
+    await _prompt_only(client, kind, entity)
+    proposal = new_ulid()
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO state_proposals (id, story_id, name, suggested_type, "
+                "suggested_scope, suggested_unit, created_by_operation_id) VALUES "
+                "(:i, :s, 'arrows', 'number', 'story', 'arrows', :o)"
+            ),
+            {"i": proposal, "s": entity.id, "o": new_ulid()},
+        )
+    return {"proposal_id": proposal}
+
+
+async def _outbox_effect(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A listed effect for the reconciliation actions (#218): the story, on ``Structured (M4)``
+    with States on (#203), whose gold a write-capable in-process provider owns, with Wren's
+    purchase of Ada's sword confirmed after the player rewound past it (listed
+    ``confirmed_discarded_origin``)."""
+    from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+    from tests import late_settlement_support as ls
+
+    epistrel = client._transport.app.state.epistrel  # type: ignore[attr-defined]
+    db = epistrel.db
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = 1 "
+                "WHERE id = :s"
+            ),
+            {"s": entity.id, "p": STRUCTURED_M4_PROFILE_ID},
+        )
+    bank = await ls.bank(db, epistrel, entity.id)
+    bank.script_writes("gold", "confirmed")
+    await ls.swords(db, entity.id, entity.ids["ada"])
+    listed = await ls.discarded(
+        db, epistrel, entity.id, bank.name, entity.ids["wren"], entity.ids["ada"]
+    )
+    return {"outbox_id": listed}
+
+
+def _refund(entity: Entity) -> dict[str, Any]:
+    """#218: a refund of the listed purchase's payment, to Wren's external gold."""
+    refund = {"state": "gold", "delta": 5, "reason": "refund", "scope_key": entity.ids["wren"]}
+    return {"effect": refund}
+
+
+async def _scheduled_event(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A scheduled event for the event writes (#196), on the story running the clock at
+    ``prompt_only`` (#203)."""
+    await _prompt_only(client, kind, entity)
+    created = await _post(
+        client,
+        kind,
+        entity,
+        "/scheduled-events",
+        {"proposition": "the delivery", "planned": 60},
+        201,
+    )
+    return {"event_id": created["event"]["event_id"]}
+
+
+async def _omniscient(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The omniscient viewpoint, as a query parameter (#196's list)."""
+    return {"query.viewpoint": "omniscient"}
 
 
 async def _believing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
@@ -592,6 +717,10 @@ CALLS: dict[tuple[str, str], Call] = {
     # -- stories: writes
     ("POST", f"{S}/respond"): Call(200, respond_body),
     ("POST", f"{S}/regenerate"): Call(200, {}, prepare=_played),
+    # #598 (FR-RESP-14): the played turn replaced with new input.
+    ("POST", f"{S}/correct"): Call(
+        200, {"turn": 1, "player_input": {"say": "Hello again."}}, prepare=_played
+    ),
     ("POST", f"{S}/ingest"): Call(
         201,
         {"events": [{"client_event_id": "evt-1", "kind": "narration", "text": "Rain falls."}]},
@@ -622,6 +751,44 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"weight": "minor"}, prepare=_story_character
     ),
     ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
+    # -- stories: the world clock (#193): read, settings changed, and an advance, on the story
+    # running the clock at prompt_only (#203: a Lite story's form)
+    ("GET", f"{S}/clock"): Call(200),
+    ("PATCH", f"{S}/clock"): Call(200, {"mode": "manual"}),
+    ("POST", f"{S}/clock/advance"): Call(
+        200, {"minutes": 30, "reason": "they wait"}, prepare=_prompt_only
+    ),
+    # -- stories: its scheduled events (#196): the list, one created, rescheduled, cancelled
+    ("GET", f"{S}/scheduled-events"): Call(200, prepare=_omniscient),
+    ("POST", f"{S}/scheduled-events"): Call(
+        201, {"proposition": "the delivery", "planned": 60}, prepare=_prompt_only
+    ),
+    ("PATCH", f"{S}/scheduled-events/{{event_id}}"): Call(
+        200, {"planned": 90}, prepare=_scheduled_event
+    ),
+    ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(200, prepare=_scheduled_event),
+    # -- stories: its States (#186), on the story running States at prompt_only (#203)
+    ("GET", f"{S}/states"): Call(200, prepare=_state_name),
+    ("GET", f"{S}/states/{{name}}"): Call(200, prepare=_state_name),
+    ("PUT", f"{S}/states/{{name}}"): Call(
+        200, {"delta": 5, "reason": "found a purse"}, prepare=_state_name
+    ),
+    ("POST", f"{S}/states"): Call(201, {"definition": GOLD}, prepare=_prompt_only),
+    ("PATCH", f"{S}/states/{{name}}/definition"): Call(200, {"unit": "coins"}, prepare=_state_name),
+    # -- stories: engine-proposed States (#192), on the story running States at prompt_only
+    ("POST", f"{S}/state-proposals/analyze"): Call(202, prepare=_prompt_only),
+    ("GET", f"{S}/state-proposals"): Call(200, prepare=_state_proposal),
+    ("POST", f"{S}/state-proposals/{{proposal_id}}/approve"): Call(
+        201, {"definition": {}}, prepare=_state_proposal
+    ),
+    ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(200, prepare=_state_proposal),
+    # -- stories: the reconciliation status of its external effects (#210)
+    ("GET", f"{S}/reconciliation"): Call(200),
+    # #218: the explicit actions on a listed effect (#203: on a story running States)
+    ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(200, prepare=_outbox_effect),
+    ("POST", f"{S}/reconciliation/{{outbox_id}}/compensate"): Call(
+        201, _refund, prepare=_outbox_effect
+    ),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
         200, {"role": "primary", "fixed": True}, prepare=_story_character
@@ -660,11 +827,18 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/inspect/beliefs"): Call(409, queries=(OMNISCIENT,), prepare=_believing),
     ("GET", f"{S}/inspect/divergences"): Call(409, queries=(OMNISCIENT,)),
     ("GET", f"{S}/inspect/exposures"): Call(409, queries=(OMNISCIENT,)),
+    # #207's snapshotted external facts: no partitions gate, so an empty page for everyone.
+    ("GET", f"{S}/inspect/external-facts"): Call(200, queries=(OMNISCIENT,)),
     # Author pins (#147): a fresh memory pinned, a fresh pinned memory unpinned.
     ("POST", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_memory),
     ("DELETE", f"{S}/memories/{{memory_id}}/pin"): Call(200, prepare=_pinned_memory),
     # Retrieval (#141): the debugging read, omniscient.
     ("GET", f"{S}/retrieve"): Call(200, queries=({"q": "the game", **OMNISCIENT},)),
+    # -- stories: the story's bindings to its providers (#204): bound by each requester, and
+    # read after the owner bound it.
+    ("PUT", f"{S}/providers/{{name}}/binding"): Call(200, BINDING, prepare=_provider),
+    ("GET", f"{S}/providers"): Call(200, prepare=_bound),
+    ("GET", f"{S}/providers/{{name}}/binding"): Call(200, prepare=_bound),
     # -- stories: message ratings (#112). Each requester rates a fresh story's reply, retracts
     # the owner's rating (none of its own: still 204), and reads its own rating of a reply all
     # three rated alike.

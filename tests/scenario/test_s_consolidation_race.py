@@ -21,7 +21,7 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core import clock, summary_port
+from epistrel.core import summary_port
 from epistrel.core.enums import MemoryKind
 from epistrel.core.input_versions import input_key
 from epistrel.core.memory import records
@@ -36,10 +36,11 @@ from tests import consolidation_support as cs
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, new_story, play_turn, rows, scalar
 from tests.integration import test_jobs as jt
-from tests.integration.test_jobs import DERIVED_KIND, LEASE_S, MovableClock, Probe
+from tests.integration.test_jobs import DERIVED_KIND, LEASE_S, Probe
 from tests.profile_support import WINDOW, nest, store_overrides
 from tests.projection_support import truncate
 from tests.summary_support import claim_summary, run_due_jobs, segment_rows, worker
+from tests.wall_clock_support import MovableClock, moving
 
 _config = jt._config
 _enqueue = jt._enqueue
@@ -71,12 +72,8 @@ async def registry(engine: AsyncEngine) -> AsyncIterator[Probe]:
 
 @pytest.fixture
 def moved() -> Iterator[MovableClock]:
-    movable = MovableClock()
-    clock.set_clock(movable)
-    try:
+    with moving() as movable:
         yield movable
-    finally:
-        clock.set_clock(None)
 
 
 @pytest.fixture

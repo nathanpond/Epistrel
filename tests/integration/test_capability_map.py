@@ -68,7 +68,9 @@ from epistrel.core.profiles.validate import (
 from epistrel.core.seeds.profiles import (
     LITE_PRESET_ID,
     STRUCTURED_M4_NAME,
+    STRUCTURED_M4_VERSION,
     STRUCTURED_NAME,
+    STRUCTURED_VERSION,
     lite_settings,
     profile_defaults,
     structured_m4_settings,
@@ -414,12 +416,13 @@ async def test_c_16__capabilities(scratch: Space) -> None:
         "CROSS JOIN deployment_state d WHERE p.id = :p",
         p=structured_m4(),
     )
-    # #181 renamed the row in place and added version 2; version 1 is M4's, unchanged.
+    # #181 renamed the row in place and added version 2 (#203: version 3); version 1 is M4's,
+    # unchanged.
     assert tuple(stored)[:6] == (
         STRUCTURED_NAME,
         "system",
         False,
-        2,
+        STRUCTURED_VERSION,
         structured_m4_settings(),
         LITE_PRESET_ID,
     )
@@ -589,8 +592,12 @@ async def test_c_16__guarantee_routes(scratch: Space) -> None:
                 rows_v1 = [row.model_dump(mode="json") for row in evaluate_guarantees(v1)]
                 assert first == {"profile_id": seeded.profile_id, "version": 1, "rows": rows_v1}
         profile_path = f"/engine-profiles/{structured_m4()}/guarantees"
-        profile_table = await ok(await client.get(profile_path, headers=READ))
-        story, _ = await _story(client, structured_m4())
+        # The story runs M4's version 1 (#203: the latest turns on a module that needs
+        # commitment, so the override below would not validate there).
+        profile_table = await ok(
+            await client.get(profile_path, params={"version": STRUCTURED_M4_VERSION}, headers=READ)
+        )
+        story, _ = await _story(client, structured_m4(), STRUCTURED_M4_VERSION)
         assert await ok(await client.get(f"/stories/{story}/guarantees", headers=READ)) == {
             **profile_table
         }
@@ -607,7 +614,10 @@ async def test_c_16__guarantee_routes(scratch: Space) -> None:
         provided = {row["id"]: row["provided"] for row in after["rows"]}
         assert (provided["commitment_mechanics"], provided["salience"]) == (False, False)
         assert provided["verification"] is True
-        assert await ok(await client.get(profile_path, headers=READ)) == profile_table
+        unchanged = await client.get(
+            profile_path, params={"version": STRUCTURED_M4_VERSION}, headers=READ
+        )
+        assert await ok(unchanged) == profile_table
         for missing in (
             await client.get(f"/engine-profiles/{'0' * 26}/guarantees", headers=READ),
             await client.get(f"/stories/{'0' * 26}/guarantees", headers=READ),

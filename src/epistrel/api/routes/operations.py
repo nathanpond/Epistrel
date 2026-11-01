@@ -36,7 +36,12 @@ OPERATION_DESCRIPTION = (
     "`reactivation_check` (`checking`, then `applied`/`reactivated` or `refused`); an "
     "`offboarding` (one stage per entity type, in processing order); and an `erasure` "
     "(`redacted`, `ledger_written`, `regenerated`, `rebuilt`; a catalog erasure skips the last "
-    "two). Every other operation has a null `label` and no stages."
+    "two). A staged turn (a turn with an effect on a `synchronous` write-capable provider, "
+    "FR-EXT-16) carries `staged: true` and the label `staged_turn`, with the stages `intent`, "
+    "`claim`, `outcome`, `completion` and `response`, each also carrying the story's "
+    "`revision` once it committed; the stage after the last recorded one is `running` while "
+    "the turn is incomplete, and a turn a discard abandoned shows the rest `skipped`. Every "
+    "other operation has a null `label` and no stages."
     "\n\nAn operation that captured a read set reports `read_set`: `keys_count` (the query "
     "keys a structured turn's verdict, precondition and blocker lookups recorded, empty "
     "results included; 0 for a Lite turn), `retrieved_count` (rows read as generation context "
@@ -50,8 +55,11 @@ OPERATION_DESCRIPTION = (
     "\n\nWithin the idempotency result window (default 24 hours) `result` holds the stored "
     "response (`status`, `body`) of the operation's `Idempotency-Key`. A result produced for an "
     "output viewpoint (a turn) is returned only when `?viewpoint=` names that viewpoint; another "
-    "named viewpoint is 409 `idempotency_conflict`. After the window `result` is absent: the "
-    "operation is the reference a retry receives. Unknown ids are 404."
+    "named character viewpoint is 409 `idempotency_conflict`. A read naming no viewpoint, or "
+    "naming `omniscient` for a result produced for a character, gets the operation with "
+    "`result` null; the omniscient read still gets `eval_hooks` and `read_set.keys`. After the "
+    "window `result` is absent: the operation is the reference a retry receives. Unknown ids "
+    "are 404."
 )
 
 
@@ -69,10 +77,16 @@ class StageBody(BaseModel):
     name: str
     status: StageStatus
     at: datetime | None
+    revision: int | None = Field(
+        default=None,
+        exclude_if=lambda r: r is None,
+        description="A staged turn's stage only: the story's timeline revision once the stage "
+        "committed (absent otherwise).",
+    )
 
     @classmethod
     def of(cls, stage: Stage) -> StageBody:
-        return cls(name=stage.name, status=stage.status, at=stage.at)
+        return cls(name=stage.name, status=stage.status, at=stage.at, revision=stage.revision)
 
 
 class QueryKeyBody(BaseModel):
@@ -138,7 +152,13 @@ class OperationBody(BaseModel):
     attempts: list[dict[str, Any]]
     config_revisions: dict[str, Any] | None
     idempotency_key: str | None
-    result: StoredResultBody | None = None
+    result: StoredResultBody | None = Field(
+        default=None,
+        description="Within the result window, the stored response of the operation's "
+        "`Idempotency-Key`. Null after the window, for a read naming no viewpoint, and for an "
+        "`omniscient` read of a result produced for a character viewpoint (that read still "
+        "gets `eval_hooks` and `read_set.keys`).",
+    )
     queued_ms: int | None = None
     first_call_offset_ms: int | None = None
     creation_report: CreationReport | None = None
@@ -146,6 +166,11 @@ class OperationBody(BaseModel):
     stages: list[StageBody] = []
     read_set: ReadSetBody | None = None
     eval_hooks: EvalHooksBody | None = None
+    staged: bool = Field(
+        default=False,
+        exclude_if=lambda s: not s,
+        description="A staged turn (#212, FR-EXT-16): `true`; absent for every other operation.",
+    )
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -185,6 +210,7 @@ class OperationBody(BaseModel):
             eval_hooks=None
             if view.eval_hooks is None
             else EvalHooksBody.model_validate(view.eval_hooks),
+            staged=view.staged,
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

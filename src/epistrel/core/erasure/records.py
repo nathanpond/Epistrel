@@ -50,6 +50,7 @@ from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
 from epistrel.core.tables.memories import memories
+from epistrel.core.tables.outbox import external_effect_outbox
 from epistrel.core.tables.propositions import (
     closed_sets,
     entities,
@@ -58,6 +59,8 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.scheduled_events import scheduled_events
+from epistrel.core.tables.states import state_changes, state_definitions, state_proposals
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -374,6 +377,82 @@ def belief_transition_record(row: Any) -> Record:
     if source is not None:
         declared.append((SubjectKind.CHARACTER, str(source), "source_character_id"))
     return Record(belief_transitions.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+def state_definition_record(row: Any) -> Record:
+    """A State's declaration (#185): its ``name``, each alias (``aliases[n]``), its ``unit`` and a
+    text State's ``initial_value``, indexed positionally (ADR-154); it declares no subject."""
+    fields: dict[str, str | None] = {"name": predicate_words(str(row.name))}
+    for index, alias in enumerate(row.aliases or ()):
+        fields[f"aliases[{index}]"] = alias
+    if row.unit:
+        fields["unit"] = row.unit
+    if isinstance(row.initial_value, str):
+        fields["initial_value"] = row.initial_value
+    return Record(state_definitions.name, str(row.id), _str(row.story_id), fields)
+
+
+def state_change_record(row: Any) -> Record:
+    """A State change (#185): its ``reason`` and its string values (``value``, ``old_value``,
+    ``new_value``: a text or enum State's), indexed positionally (ADR-154); a change scoped to a
+    character declares it (``scope_key``)."""
+    fields: dict[str, str | None] = {"reason": row.reason}
+    for column in ("value", "old_value", "new_value"):
+        found = getattr(row, column, None)
+        if isinstance(found, str):
+            fields[column] = found
+    scope_key = _str(getattr(row, "scope_key", None))
+    declared: tuple[Declared, ...] = (
+        ((SubjectKind.CHARACTER, scope_key, "scope_key"),) if scope_key else ()
+    )
+    return Record(state_changes.name, str(row.id), _str(row.story_id), fields, declared)
+
+
+def state_proposal_record(row: Any) -> Record:
+    """An engine-proposed State (#192): its suggested ``name`` and ``suggested_unit`` and every
+    text of its ``evidence`` (the beats it quotes), indexed positionally (ADR-154); it declares
+    no subject."""
+    fields: dict[str, str | None] = {"name": predicate_words(str(row.name))}
+    if row.suggested_unit:
+        fields["suggested_unit"] = row.suggested_unit
+    fields.update(text_fields(row.evidence, "evidence"))
+    return Record(state_proposals.name, str(row.id), _str(row.story_id), fields)
+
+
+def scheduled_event_record(row: Any) -> Record:
+    """A scheduled event's version (#196): it holds no text of its own (the event's canon
+    ``scheduled`` proposition is indexed with the proposition); its participants, a character
+    owner and its shared owners (#198) are declared subjects."""
+    declared: list[Declared] = [
+        (SubjectKind.CHARACTER, str(p), f"participants[{index}]")
+        for index, p in enumerate(row.participants or ())
+    ]
+    owner = _str(getattr(row, "owner", None))
+    if owner and owner not in ("author", "world"):
+        declared.append((SubjectKind.CHARACTER, owner, "owner"))
+    # #198: a shared owner is a declared subject as the owner is.
+    declared += [
+        (SubjectKind.CHARACTER, str(o), f"shared_owners[{index}]")
+        for index, o in enumerate(getattr(row, "shared_owners", None) or ())
+    ]
+    return Record(scheduled_events.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+def outbox_record(row: Any) -> Record:
+    """An outbox row (#210): every text of its ``effect`` (the render's ``reason``, the State's
+    name), indexed positionally (ADR-154); a character-scoped value declares its character
+    (``scope_key``)."""
+    scope_key = _str(getattr(row, "scope_key", None))
+    declared: tuple[Declared, ...] = (
+        ((SubjectKind.CHARACTER, scope_key, "scope_key"),) if scope_key else ()
+    )
+    return Record(
+        external_effect_outbox.name,
+        str(row.id),
+        _str(row.story_id),
+        text_fields(row.effect, "effect"),
+        declared,
+    )
 
 
 def exposure_record(row: Any) -> Record:
@@ -834,6 +913,31 @@ async def read_belief_transitions(conn: AsyncConnection, story_id: str | None) -
     return await _story_rows(conn, belief_transitions, story_id, belief_transition_record)
 
 
+async def read_state_definitions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's State declarations, as ``state_definition_record`` indexes them."""
+    return await _story_rows(conn, state_definitions, story_id, state_definition_record)
+
+
+async def read_state_changes(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's State changes, as ``state_change_record`` indexes them."""
+    return await _story_rows(conn, state_changes, story_id, state_change_record)
+
+
+async def read_state_proposals(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's State proposals, as ``state_proposal_record`` indexes them."""
+    return await _story_rows(conn, state_proposals, story_id, state_proposal_record)
+
+
+async def read_scheduled_events(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's scheduled event versions, as ``scheduled_event_record`` indexes them."""
+    return await _story_rows(conn, scheduled_events, story_id, scheduled_event_record)
+
+
+async def read_outbox(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's outbox rows (#210), as ``outbox_record`` indexes them."""
+    return await _story_rows(conn, external_effect_outbox, story_id, outbox_record)
+
+
 async def read_thunks(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's thunks, as ``thunk_record`` indexes them."""
     return await _story_rows(conn, thunks, story_id, thunk_record)
@@ -887,6 +991,7 @@ __all__ = [
     "media_record",
     "memory_record",
     "operation_record",
+    "outbox_record",
     "persona_record",
     "policy_record",
     "predicate_record",
@@ -898,8 +1003,17 @@ __all__ = [
     "read_beliefs",
     "read_divergences",
     "read_exposures",
+    "read_outbox",
+    "read_scheduled_events",
+    "read_state_changes",
+    "read_state_definitions",
+    "read_state_proposals",
     "read_thunks",
+    "scheduled_event_record",
     "snapshot_record",
+    "state_change_record",
+    "state_definition_record",
+    "state_proposal_record",
     "story_record",
     "text_fields",
     "thunk_record",

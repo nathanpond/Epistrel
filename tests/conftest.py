@@ -20,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core import ids
 from epistrel.core.db import make_engine, make_sync_engine, normalize_url
+from epistrel.core.enums import UNFINISHED_TURN_STAGES
+from tests import takeback_support
 from tests.auth_support import ERASURE_LEDGER_DIR, auth_settings, note_session_database
 from tests.perf.census import CENSUS, installed
 
@@ -281,6 +283,90 @@ async def engine(settings: Settings) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
+@pytest.fixture
+def withheld_module(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """One module read as undelivered for the test (``profile_support.WITHHELD``): every module
+    is delivered since #203, so a test of the refusal of an undelivered module withholds one."""
+    from tests import profile_support
+
+    return profile_support.withhold(monkeypatch)
+
+
+_STATES_OFF = text(
+    "UPDATE story_profile_overrides SET settings = settings - 'states', revision = revision + 1 "
+    "WHERE settings -> 'states' IS NOT NULL"
+)
+
+
+@pytest.fixture
+async def states_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """The ``states`` module delivered for the test (#185; #203 delivers it for real), and no
+    story left on the shared database with a ``states`` override afterwards: once the patch
+    is gone, such a story's configuration names an undelivered level, which a later
+    deployment-wide validation (``PATCH /admin/settings``) refuses."""
+    from tests import state_support
+
+    state_support.deliver(monkeypatch)
+    try:
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(_STATES_OFF)
+
+
+@pytest.fixture
+async def clock_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """The ``clock`` module delivered for the test (#193; #203 delivers it for real), and no
+    story left on the shared database with a ``clock`` override afterwards (as
+    ``states_delivered``)."""
+    from tests import clock_support
+
+    clock_support.deliver(monkeypatch)
+    try:
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(clock_support.CLOCK_OFF)
+
+
+@pytest.fixture
+async def stops_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """The ``clock`` module and its ``scheduled_stops`` flag delivered for the test (#196; #203
+    delivers them for real), and no story left with a ``clock`` override afterwards (as
+    ``clock_delivered``)."""
+    from tests import clock_support
+
+    clock_support.deliver_stops(monkeypatch)
+    try:
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(clock_support.CLOCK_OFF)
+
+
+@pytest.fixture
+async def time_claims_delivered(
+    monkeypatch: pytest.MonkeyPatch, engine: AsyncEngine
+) -> AsyncIterator[None]:
+    """The ``clock`` module with its ``scheduled_stops`` and ``time_claims`` flags delivered for
+    the test (#200; #203 delivers them for real), and no story left with a ``clock`` override
+    afterwards (as ``clock_delivered``)."""
+    from tests import clock_support
+
+    clock_support.deliver_time_claims(monkeypatch)
+    try:
+        yield
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(clock_support.CLOCK_OFF)
+
+
 # -- embedding jobs on the shared database (#138) -------------------------------------------------
 
 EMBEDDING_JOB_KINDS = ("embed", "reembed")
@@ -309,6 +395,20 @@ _UNPIN = (
 )
 """Put a pinned shared database back to unpinned (``tests.embedding_support.RESET``'s vector
 space half), so only the test that pinned it fails, not every test after it."""
+_STALLED = text(
+    "SELECT operation_id FROM operations WHERE status = 'committed' "
+    "AND turn_stage::text = ANY(:stages) ORDER BY operation_id"
+)
+"""Staged turns left unfinished on the shared database (``UNFINISHED_TURN_STAGES``, #212).
+Every worker's recovery pass, a later test's or a child engine's (``EngineProcess``), resumes
+them (#213, ``staged.resume_stalled``): a resume that is not that test's delays its worker's
+start (``Worker.listening``) and commits a turn under its harness (X-04's paused commit)."""
+_ABANDON = (
+    "UPDATE stories SET in_flight_turn = NULL, in_flight_lease_until = NULL "
+    "WHERE in_flight_turn = ANY(:ops)",
+    "UPDATE operations SET turn_stage = 'abandoned' WHERE operation_id = ANY(:ops)",
+)
+"""Take the unfinished staged turns a test left out of every later recovery pass's reach."""
 
 
 @pytest.fixture(scope="session")
@@ -326,7 +426,8 @@ def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
     job is left queued or running there (M3's rule: deployment-scope state is rolled back). A
     test that writes memories there drains its jobs with ``drained_embedding_jobs``. It fails
     too if the test left the shared vector space pinned (``_PINNED``; #473), after unpinning
-    it (``_UNPIN``) so the tests after it run unpinned. The
+    it (``_UNPIN``) so the tests after it run unpinned; and if it left a staged turn unfinished
+    there (``_STALLED``), after abandoning it (``_ABANDON``) so no later worker resumes it. The
     database is requested before the test runs (only for a test that uses ``pg_url``, so a unit
     test starts no container): pytest refuses fixture requests during teardown."""
     sync = request.getfixturevalue("_shared_jobs_db") if "pg_url" in request.fixturenames else None
@@ -336,6 +437,14 @@ def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
     with sync.connect() as conn:
         left = int(conn.execute(_LEFTOVER, {"kinds": list(EMBEDDING_JOB_KINDS)}).scalar() or 0)
         pinned = conn.execute(_PINNED).one()
+        stalled = [
+            str(r.operation_id)
+            for r in conn.execute(_STALLED, {"stages": [s.value for s in UNFINISHED_TURN_STAGES]})
+        ]
+    if stalled:
+        with sync.begin() as conn:
+            for statement in _ABANDON:
+                conn.execute(text(statement), {"ops": stalled})
     if left:
         pytest.fail(
             f"{request.node.nodeid} left {left} embed/reembed job(s) queued on the shared "
@@ -352,6 +461,29 @@ def _no_embedding_jobs_left(request: pytest.FixtureRequest) -> Iterator[None]:
             "runs on a database of its own (tests.conformance.conftest.migrated_database)",
             pytrace=False,
         )
+    if stalled:
+        pytest.fail(
+            f"{request.node.nodeid} left {len(stalled)} staged turn(s) unfinished on the "
+            f"shared database ({', '.join(stalled)}), which a later worker's recovery pass "
+            "would resume (#213): finish them (staged.resume) or use a database of its own",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _m5_leftovers_taken_back(request: pytest.FixtureRequest) -> Iterator[None]:
+    """After every test, take back the story overrides and profiles the M5 helpers recorded
+    (``tests.takeback_support``, #517) on the shared database, so a later ``profile_defaults``
+    write does not validate them. The database is requested before the test runs, as for
+    ``_no_embedding_jobs_left``; a test without it only has its record cleared."""
+    sync = request.getfixturevalue("_shared_jobs_db") if "pg_url" in request.fixturenames else None
+    takeback_support.clear()
+    yield
+    if sync is None:
+        takeback_support.clear()
+        return
+    with sync.begin() as conn:
+        takeback_support.take_back(conn)
 
 
 @pytest.fixture

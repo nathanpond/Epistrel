@@ -89,6 +89,17 @@ class ModelCall(BaseModel):
     """USD, only when the endpoint reported it; absent from the response otherwise."""
     request_id: str | None = None
     finish_reason: str | None = None
+    stage: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The turn stage the call's budget charged it to (#456), from the budget's "
+        "per-kind accounting (`turn_report.budget.used_by_kind` counts the same keys): "
+        "`render` (a character's render), `narrator` (the narrator's render), `extraction`, "
+        "`composed` (the composed message's claim detection), `guardrail`, `salience`, "
+        "`entailment`, `testimony`, `repair`, `polish`, `follow_up`, `director_order`, "
+        "`director_tiebreak`, `age_repair`, or the call's purpose for a call no stage "
+        "names. Absent for a call made outside a turn's budget.",
+    )
 
 
 class CallLog:

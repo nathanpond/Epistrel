@@ -27,9 +27,9 @@ Valid-time is the fact's outer bounds (approximate bounds collapse to them).
 the earliest when several did; a position-less closer closes it at every position). A read as
 of turn N takes the rows written through N that no closer through N closed, exactly as
 ``canon(through_position=(N, 0))`` does, so a supersede or a retcon later than N leaves N's
-answer alone. "Now" at turn N is N's story-time, ``story_time_at(N)`` (``stories.story_minute_zero``
-plus N story-turns; #139's rule, so the scene and profile reads agree with the resolver, #438)
-until the world clock lands (M6).
+answer alone. "Now" at turn N is the story-time at the end of N (``core.world_clock``, #193:
+the world clock's when the story runs it, #139's stand-in otherwise, so the scene and profile
+reads agree with the resolver, #438).
 
 **One fold, two paths.** ``derive`` is a pure, order-free function of a set of active fact
 versions; ``scene`` of the placement rows. The incremental path (``on_fact_change``, a
@@ -74,10 +74,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import HolderKind, OperationKind, OperationStatus
 from epistrel.core.errors import InvalidRequest, StoryEntityNotFound, StoryNotFound
+from epistrel.core.membership import POSITION_MAX, active_only, active_operation
 from epistrel.core.membership import Position as NarrativePosition
-from epistrel.core.membership import active_only, active_operation
 from epistrel.core.projections.base import LogEvent, Projection, Row, Rows
-from epistrel.core.resolution.time import TimeBasis, story_time_at
+from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.tables import (
     characters,
@@ -424,9 +424,16 @@ async def _stored(conn: AsyncConnection, story_id: str, subjects: Sequence[str] 
 
 
 async def _basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
-    """The story's time basis: "now" at turn N is ``story_time_at(N, basis)`` (#139, #438)."""
-    found = await conn.scalar(select(stories.c.story_minute_zero).where(stories.c.id == story_id))
-    return TimeBasis(minute_zero=int(found or 0))
+    """The story's time basis (``core.world_clock``, #193): "now" at turn N is the story-time
+    at the end of N (#139, #438)."""
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
+    return await world_clock.time_basis(conn, story_id)
+
+
+def _end_of(turn: int, variant: int = 0) -> NarrativePosition:
+    """The last position of turn ``turn`` (its ``variant``), before its inter-turn slots."""
+    return NarrativePosition(turn, variant, 0, POSITION_MAX, POSITION_MAX)
 
 
 async def _actor(conn: AsyncConnection, story_id: str) -> str | None:
@@ -473,7 +480,7 @@ def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> ColumnEleme
     """The rows ``scene`` can keep at some turn from ``from_turn`` on (#153): not closed at or
     before ``(from_turn, 0)`` (``through``), and valid past that turn's story time (``covers``;
     story time never decreases with the turn). The rest are dropped by every such turn."""
-    start = story_time_at(from_turn, basis)
+    start = basis.at(NarrativePosition(from_turn))
     closed = tuple_(table.c.closed_turn, func.coalesce(table.c.closed_slot, 0))
     return and_(
         or_(
@@ -544,7 +551,7 @@ async def _scenes(
     basis = basis or await _basis(conn, story_id)
     out: dict[tuple[Any, ...], Row] = {}
     for turn, variant, operation_id in turns:
-        now = story_time_at(turn, basis)
+        now = basis.at(_end_of(turn, variant))
         found = scene(places, presences, actor, turn_position(turn), now)
         if found.empty:
             continue
@@ -886,7 +893,9 @@ async def _read_context(
             "as_of must be a turn of the story, from 0 to its head",
             {"field": "query.as_of", "head": head},
         )
-    now = story_time_at(through_turn, TimeBasis(minute_zero=int(row.story_minute_zero)))
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
+    now = await world_clock.story_time_at(conn, story_id, _end_of(through_turn))
     return _ReadContext(head=head, now=now, viewpoint=resolved), through_turn
 
 

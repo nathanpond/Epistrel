@@ -29,7 +29,10 @@ and the capabilities enabled and the quality status after (``capabilities_after`
 ``quality_status_after``). Then the scenario recommendations the result does not meet
 (``recommended_by`` is the scenario's ``<catalog id>@<version>``), the guarantee-table rows it loses
 (FR-VERIFY-15: ``guarantees.GUARANTEES`` ids, as ``docs/guarantees.md`` publishes them; #132), and
-the warning kinds that made it two-stage. A report on one story (a preview, an assignment,
+the warning kinds that made it two-stage. ``budget_warnings`` (#456) carries the profile
+validator's ``below_safety_minimum`` for the configuration after the change (a profile edit's
+new settings, a story's resolved configuration), informational only: it holds nothing. A report
+on one story (a preview, an assignment,
 overrides) also states the fingerprints, the capabilities and the quality status at its top. So does
 a report that lists no story, since no entry can state them: a creation's states the new story's,
 and an edit's, when no story follows the profile, states the profile's own before and after the edit
@@ -76,7 +79,9 @@ from epistrel.core.profiles.capabilities import module_names
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp
 from epistrel.core.profiles.guarantees import guarantees_gained, guarantees_lost, ordered
+from epistrel.core.profiles.reservation import SafetyFacts
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsPatch
+from epistrel.core.profiles.validate import ProfileValidationWarning, safety_warnings
 from epistrel.core.tables import operations, stories, transcript_messages
 from epistrel.observability.logging import get_logger
 
@@ -178,6 +183,14 @@ class ImpactReport(BaseModel):
     capabilities_after: list[str] | None = None
     quality_status_after: QualityStatus | None = None
     warnings: list[str]
+    budget_warnings: list[ProfileValidationWarning] = Field(
+        default_factory=list,
+        description="The profile validator's warnings for the configuration after the change "
+        "(#456): `below_safety_minimum` when its `budgets.model_calls` is below a turn's "
+        "single-primary safety minimum with the deployment's model-assisted policies, so every "
+        "turn would be refused (NFR-PERF-6, FR-PROF-7), as `POST /engine-profiles/{id}/validate` "
+        "answers it. Informational: it does not hold the change for confirmation.",
+    )
 
 
 # -- comparing two configurations ----------------------------------------------------------------
@@ -293,8 +306,10 @@ def single_report(
     change: Delta,
     *,
     recommendations: Sequence[UnmetRecommendation] = (),
+    budget_warnings: Sequence[ProfileValidationWarning] = (),
 ) -> ImpactReport:
-    """The report of a change to one story (a preview, an assignment, overrides)."""
+    """The report of a change to one story (a preview, an assignment, overrides);
+    ``budget_warnings`` are the validator's for its configuration after (#456)."""
     return ImpactReport(
         affected_stories=[entry],
         affected_count=1,
@@ -311,6 +326,7 @@ def single_report(
             unavailable=entry.upgrade_unavailable,
             recommendations=recommendations,
         ),
+        budget_warnings=list(budget_warnings),
     )
 
 
@@ -383,6 +399,8 @@ async def following_report(
     profile_id: str,
     change: Delta,
     overridden: Mapping[str, Delta] | None = None,
+    *,
+    budget_warnings: Sequence[ProfileValidationWarning] = (),
 ) -> Following:
     """The report of a change to every story that follows ``profile_id``'s latest version (a
     story pinned to an earlier version does not follow it, and is not affected). ``change`` is
@@ -393,7 +411,8 @@ async def following_report(
     read: a turn cannot commit on one until the edit has, so the stories kept are exactly the
     ones with history whose own change adds such capability. Each entry states the stamp its
     story would run under; when the report lists no story, its top states the profile's own,
-    before and after the change (FR-PROF-16: every impact report states one)."""
+    before and after the change (FR-PROF-16: every impact report states one).
+    ``budget_warnings`` are the validator's for the profile's new version (#456)."""
     overridden = overridden or {}
     following = (
         stories.c.engine_profile_id == profile_id,
@@ -441,6 +460,7 @@ async def following_report(
         capabilities_after=list(change.after.capabilities) if unlisted else None,
         quality_status_after=change.after.quality_status if unlisted else None,
         warnings=_following_warnings(seen, unavailable=bool(keep)),
+        budget_warnings=list(budget_warnings),
     )
     return Following(report, frozenset(keep))
 
@@ -592,6 +612,7 @@ async def preview(
     *,
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
+    safety: SafetyFacts | None = None,
 ) -> ImpactReport:
     """What assigning ``request.profile_id`` and/or applying ``request.overrides`` would do to
     ``story_id``. ``overrides`` is a JSON merge patch over the story's own overrides, applied as
@@ -600,7 +621,8 @@ async def preview(
     one the write would answer. A profile assigned keeps the story's overrides too. 404 for an
     unknown story; 422 ``profile_deleted`` for a profile that cannot be assigned; 422
     ``validation_error`` or ``invalid_profile`` for a patch or a result that cannot run. The
-    story's own profile is no reassignment: it keeps the version it runs on."""
+    story's own profile is no reassignment: it keeps the version it runs on. ``safety``: what
+    the report's ``budget_warnings`` count (#456)."""
     async with db.connect() as conn:
         current = await effective.effective_configuration(conn, story_id, validate=False)
         if request.profile_id is not None and request.profile_id != current.profile_id:
@@ -615,7 +637,7 @@ async def preview(
     entry = affected(
         story_id, change, history=story_id in history, transcript=sizes.get(story_id, (0, 0))
     )
-    return single_report(entry, change)
+    return single_report(entry, change, budget_warnings=safety_warnings(settings, safety))
 
 
 __all__ = [

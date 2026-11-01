@@ -78,6 +78,17 @@ async def _queue(engine: AsyncEngine, story: str) -> list[Any]:
     )
 
 
+async def _queued(engine: AsyncEngine, story: str, count: int) -> bool:
+    return len(await _queue(engine, story)) == count
+
+
+async def _settled(engine: AsyncEngine, operation_id: str) -> bool:
+    """Whether the operation has ended (``committed`` or ``failed``): a condition to wait on
+    rather than a fixed sleep before ``drainer.idle()``, which returns at once when the
+    recovery pass has not kicked the drainer yet (#446)."""
+    return (await _operation(engine, operation_id)).status in {"committed", "failed"}
+
+
 async def _held(stub: Any, client: httpx.AsyncClient, story: str, actor: str) -> Any:
     latch = stub.hold("generation")
     pending = asyncio.ensure_future(respond(client, story, body(actor, "Hold this.")))
@@ -378,7 +389,9 @@ async def test_queued_failure_reaches_the_waiter(
         stub.fault_hook = second_fails
         try:
             waiting = asyncio.ensure_future(respond(client, story, body(ids[FIRST], "Go on.")))
-            await asyncio.sleep(0.2)
+            await until(
+                lambda: _queued(engine, story, 1), "the second turn is queued behind the first"
+            )
             latch.release()
             assert (await first).status_code == 200
             failed = await waiting
@@ -448,21 +461,21 @@ async def test_restart_drains_the_queue(stub_settings: Settings, engine: AsyncEn
 
         plain = await queue_one(f"restart-1-{RUN}")
         await epistrel.start_workers()
-        await asyncio.sleep(0.2)
+        await until(lambda: _settled(engine, plain), "the recovery pass drains the queued turn")
         await asyncio.wait_for(epistrel.drainer.idle(), 10)
         assert (await _operation(engine, plain)).status == "committed"
 
         rerun = await queue_one(f"restart-2-{RUN}")
         await interrupted(attempts=0)(rerun)
         await epistrel.start_workers()
-        await asyncio.sleep(0.2)
+        await until(lambda: _settled(engine, rerun), "the recovery pass drains the queued turn")
         await asyncio.wait_for(epistrel.drainer.idle(), 10)
         assert (await _operation(engine, rerun)).status == "committed"
 
         capped = await queue_one(f"restart-3-{RUN}")
         await interrupted(attempts=turn_gate.MAX_RUNS - 1)(capped)
         await epistrel.start_workers()
-        await asyncio.sleep(0.2)
+        await until(lambda: _settled(engine, capped), "the recovery pass drains the queued turn")
         await asyncio.wait_for(epistrel.drainer.idle(), 10)
         lost = await _operation(engine, capped)
         assert (lost.status, lost.error_code) == ("failed", "turn_interrupted")

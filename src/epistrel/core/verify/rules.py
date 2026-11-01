@@ -38,9 +38,41 @@ rule's evidence lists every conflicting record it found.
      checked without the coverage step (the added precision is a novel detail).
    - An **event** claim stated over an interval ("sometime in 2012") is supported by a matching
      record inside it, and a record that contains it is a granularity refinement.
+   - **Placement supports presence** (#515, the owner's option (a); ``PRESENCE_SUPPORT``): the
+     subject's affirmed ``located_at(X, P)`` records match an affirmed ``present_at(X, P)``
+     claim as if they were ``present_at`` records, by the same coverage test. A character
+     placed at the scene's place takes part in the scene, so a ``do`` beat's mention of a
+     co-located character (#148's mention claim, ``present_at`` of the scene's place) is
+     ``supported``, not ``novel``. A character placed elsewhere, or not placed, is unchanged:
+     its mention is still ``novel`` (and its permission decides). It is support only: a
+     placement never contradicts a presence here.
    - A **permanent** predicate ignores valid-time here.
    - Overlap that the approximate bounds cannot decide is ``uncertain(approximate_bounds)``,
      unless a contradiction rule below is conclusive.
+
+**A fluent change comes before the contradiction rules** (``fluent_change``; FR-PROP-9; #518).
+A claim that changes a fluent "from now on" does not conflict with the value it replaces: two
+values of a functional fluent (or a fluent and its negation) in non-overlapping intervals are
+not in conflict. It applies when all of these hold:
+
+- the check names a ``mover`` (``check``'s argument: the character acting in the beat, a
+  render's own ``do`` or the player's own action, when the claim states a change: the
+  Orchestrator's ``verifier.mover_of``) and the claim's subject is that character;
+- the predicate is a fluent (never permanent, never an event);
+- the claim holds from an exact start ``t`` and is open-ended (``[t, ∞)``: a claim that states
+  no time, at its beat's story-time);
+- a holder record would conflict with it by polarity (the identical proposition, the other
+  polarity) or by the functional key (an affirmed other object under the same key, not related
+  through containment), and that record is open-ended and starts before ``t`` in every reading.
+
+Each such record is taken as closed at ``t`` (``[its start, t)``) and the claim is checked
+again over the record set so closed: ``novel`` there is ``novel`` here, its evidence citing
+each record it closes (rule ``fluent_change``, ``Verdict.supersedes``), and any other answer
+(a contradiction by another rule, an undecided overlap) stands. The commit closes those facts
+the same way (``core.canon.facts.commit_fact`` splits an overlapping conflicting fact, keeping
+what came before ``t``). A claim about another subject, one that starts at or before the
+record, a bounded claim and a permanent predicate keep the rules' answer: a stale
+re-assertion of a placement the subject has left is still ``contradicted``.
 
 2. **Polarity** (``polarity``): the identical normalized proposition (subject, predicate,
    object and every qualifier) with the opposite polarity, over time that overlaps in every
@@ -114,7 +146,8 @@ learn about partitions.
 
 - the subject's and object's ``same_as``;
 - the claim's predicate for the expanded subjects, windowed to the claim's possible span (not
-  windowed for event and permanent predicates);
+  windowed for event and permanent predicates), and for an affirmed ``present_at`` claim the
+  subjects' ``located_at`` likewise (#515);
 - for an affirmed claim whose predicate has an inverse with cardinality, the claim's predicate
   for each expanded object (any subject), windowed the same way: the item's other holders;
 - the predicate's containment predicate (any subject);
@@ -129,6 +162,29 @@ learn about partitions.
 Canon reads take only active, current versions (#130, #133): a dormant fact is never evidence.
 Closed sets are read from ``closed_sets``. In M4 the author writes them at genesis, before any
 turn, and canon's own (#145) will need keying when they land.
+
+**Owner-lookup predicates** (#191, ADR-160's owner paths). A predicate registered with an
+owner lookup (``registry.register_owner_lookup``: ``state_value``, whose canon is a story State's
+fold, ``core.states.verify``) takes part only through its lookup. For a canon holder,
+``check_with`` reads the owner's values at the claim's position (``KeyedLookup.owned``: a query
+key of the read set, re-checked at the rebase by ``recheck``) and ``check`` hands a claim on the
+predicate to the lookup's ``verdict`` (``supported`` when the value matches, ``contradicted``
+otherwise, citing the value's ``owner_ref``); no ``facts`` row is read for it, so a stale canon
+fact naming another number never supports it (FR-VERIFY-7). A forward-implication consequence
+on such a predicate (a declared rule ``holds ⇒ state_value``) is checked against the lookup's
+value too: the lookup's ``implied`` turns it into the value its cause states, and a different
+value is ``contradicted`` (``implication``, then ``functional_key`` with the owner's ref). A
+``belief(A)`` holder never consults the lookup: its record set is A's partition and the canon A
+may read (ADR-167), where a value is an ordinary belief. A lookup registered with a
+``belief_only`` test (#207: the value of an externally owned State) is decided over A's
+partition alone: the canon fallback is not consulted, so neither the pinned value nor a fact
+answers for A, and a value A holds no belief about stays ``novel``. A lookup registered with a
+``belief`` decider (#200: the clock checks) has a ``belief(A)`` holder's claim decided from A's
+own view whenever it answers (A's time belief, ``core.world_clock.time_belief``), and, with the
+clock on, A's canon fallback leaves out every fact on a clock predicate and every ``scheduled``
+fact A does not hold (ADR-167; ``_belief_canon``). An owner's value may be
+``unsettled`` (``OwnedValue.unsettled``: #207's ``advisory`` provider), when the lookup answers
+``uncertain`` with that reason whatever the claim says.
 
 **``verify``** asks the story's effective profile first (#129). With ``verification`` off, it
 is inert: no lookup, no verdict. With ``contradiction_checking`` off, no contradiction rule runs.
@@ -149,6 +205,7 @@ import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
@@ -160,6 +217,7 @@ from epistrel.core.membership import Through, bound_of
 from epistrel.core.profiles.capabilities import level_at_least, module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.propositions.model import (
+    Bound,
     Cardinality,
     Instant,
     Interval,
@@ -179,11 +237,22 @@ from epistrel.core.propositions.registry import (
     Registry,
     canonical,
     cardinality_may_contradict,
+    conditional_owner,
     imply,
     load,
+    owner_active,
+    owner_belief,
+    owner_belief_only,
+    owner_lookup,
     same_event,
 )
-from epistrel.core.propositions.vocabulary import SAME_AS
+from epistrel.core.propositions.vocabulary import (
+    CLOCK_PREDICATES,
+    LOCATED_AT,
+    PRESENT_AT,
+    SAME_AS,
+    SCHEDULED,
+)
 from epistrel.core.readset import (
     KeyedLookup,
     StructuredReadSet,
@@ -200,6 +269,10 @@ if TYPE_CHECKING:
     from epistrel.core.events.operation import Operation
 
 log = logging.getLogger(__name__)
+
+HIDDEN_FROM_BELIEF: frozenset[str] = frozenset({*CLOCK_PREDICATES, SCHEDULED})
+"""#200: the predicates whose canon a ``belief(A)`` record set may leave out (the clock's, and a
+``scheduled`` event A does not hold; ``_belief_canon``)."""
 
 EVIDENCE_STATES: frozenset[FactCommitState] = frozenset(
     {FactCommitState.COMMITTED, FactCommitState.REVISED}
@@ -238,6 +311,14 @@ class VerdictReason(StrEnum):
     WEAK_SEMANTICS = "weak_semantics"
     WORLD_KNOWLEDGE = "world_knowledge"
     ARGUMENT_TYPE = "argument_type"
+    NO_CLOCK = "no_clock"
+    """#195: a clock check on a story that does not run the clock."""
+    ADVISORY = "advisory"
+    """#207: a value an ``advisory`` external provider answered (its ``trust_tier``): it
+    settles no claim either way (the owner's decision, 2026-10-30)."""
+    PROVIDER_UNKNOWN = "provider_unknown"
+    """#206: a value pinned ``Unknown`` this turn (the provider was unavailable and its policy,
+    FR-EXT-7, fell to ``unknown``): no objective claim of it can be settled (FR-EXT-11)."""
 
 
 class Rule(StrEnum):
@@ -252,9 +333,11 @@ class Rule(StrEnum):
     EXCLUSION = "exclusion"
     IMPLICATION = "implication"
     INSTANT_IDENTITY = "instant_identity"
+    FLUENT_CHANGE = "fluent_change"
+    """#518: a ``novel`` claim's change of a fluent, citing each record it closes."""
 
 
-CONTRADICTION_RULES = frozenset(Rule) - {Rule.COVERAGE}
+CONTRADICTION_RULES = frozenset(Rule) - {Rule.COVERAGE, Rule.FLUENT_CHANGE}
 
 CONFIDENCE: Mapping[VerdictReason, float] = {
     VerdictReason.PARTIAL_COVERAGE: 1.0,
@@ -266,6 +349,9 @@ CONFIDENCE: Mapping[VerdictReason, float] = {
     VerdictReason.UNRESOLVED_PREDICATE: 0.0,
     VerdictReason.UNRESOLVED_ENTITY: 0.0,
     VerdictReason.UNRESOLVED_TIME: 0.0,
+    VerdictReason.NO_CLOCK: 0.0,
+    VerdictReason.ADVISORY: 0.0,
+    VerdictReason.PROVIDER_UNKNOWN: 0.0,
 }
 """``Verdict.confidence`` of an ``uncertain`` verdict, by reason; rule verdicts are 1.0."""
 
@@ -364,6 +450,25 @@ class ClosedSetRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class OwnedValue:
+    """An owner's value of an owner-lookup predicate at a claim's position (#191): the
+    proposition it amounts to (its ``literal`` ``None`` when the owner holds no value yet), the
+    ``ref`` evidence cites (``state:<state id>``), how a claim compares with it (``kind``: the
+    State's type; ``tolerance``: how far a number may be and still match) and the entity the
+    value tracks (``entity_id``: a possession-style State's, read by a declared rule's
+    consequence)."""
+
+    proposition: Proposition
+    ref: str
+    kind: str
+    tolerance: float = 0.0
+    entity_id: str | None = None
+    unsettled: VerdictReason | None = None
+    """#207: why the value settles no claim (``advisory``: an advisory provider answered it),
+    so a claim on it is ``uncertain`` with this reason either way; ``None``: it settles."""
+
+
+@dataclass(frozen=True, slots=True)
 class Evidence:
     """One record a verdict rests on: the ``rule`` and the proposition (with its fact) or the
     closed set it cites. ``depth_capped`` marks the implication closure's depth stop, which cites
@@ -375,26 +480,31 @@ class Evidence:
     closed_set_id: str | None = None
     depth_capped: bool = False
     belief_id: str | None = None
+    owner_ref: str | None = None
+    """#191: the owner's value an owner-lookup verdict rests on (``state:<state id>``)."""
 
     @property
     def table(self) -> str | None:
-        """The table of the record cited: ``facts``, ``beliefs`` or ``closed_sets``."""
+        """The table of the record cited: ``facts``, ``beliefs``, ``closed_sets`` or, for an
+        owner's value, ``state_values``."""
         if self.fact_id is not None:
             return "facts"
         if self.belief_id is not None:
             return "beliefs"
         if self.closed_set_id is not None:
             return "closed_sets"
+        if self.owner_ref is not None:
+            return "state_values"
         return None
 
     @property
     def record_id(self) -> str | None:
         """The id of the record cited, in ``table``."""
-        return self.fact_id or self.belief_id or self.closed_set_id
+        return self.fact_id or self.belief_id or self.closed_set_id or self.owner_ref
 
     def as_payload(self) -> dict[str, Any]:
         found: dict[str, Any] = {"rule": self.rule.value}
-        for name in ("proposition_id", "fact_id", "belief_id", "closed_set_id"):
+        for name in ("proposition_id", "fact_id", "belief_id", "closed_set_id", "owner_ref"):
             value = getattr(self, name)
             if value is not None:
                 found[name] = value
@@ -426,6 +536,15 @@ class Verdict:
     @property
     def depth_capped(self) -> bool:
         return any(e.depth_capped for e in self.evidence)
+
+    @property
+    def supersedes(self) -> tuple[str, ...]:
+        """#518: the facts a fluent change closes at the claim's start (``fluent_change``)."""
+        return tuple(
+            e.fact_id
+            for e in self.evidence
+            if e.rule is Rule.FLUENT_CHANGE and e.fact_id is not None
+        )
 
     def cited(self) -> tuple[str, ...]:
         """The proposition and closed-set ids the evidence cites, in order."""
@@ -548,6 +667,12 @@ class _Context:
     """Containment edges by containment predicate: ``"<pred>:<inner>"`` → outer objects."""
     placed: dict[str, set[str]]
     """Objects some containment fact of each containment predicate names, either side."""
+    owned: list[OwnedValue] = field(default_factory=list)
+    """#191: the owners' values (a canon holder's owner lookups)."""
+    canon: bool = True
+    """Whether the holder is canon: only a canon holder's checks consult an owner lookup."""
+    mover: str | None = None
+    """#518: the character acting in the claim's beat, whose own fluents it may change."""
 
     @classmethod
     def build(
@@ -556,13 +681,18 @@ class _Context:
         closed: Sequence[ClosedSetRecord],
         registry: Registry,
         options: Options,
+        owned: Sequence[OwnedValue] = (),
+        *,
+        canon: bool = True,
+        mover: str | None = None,
     ) -> _Context:
         # #171: the holder's identities, depth 1 (``core.resolution.identity``): the records
         # are the holder's, so the expansion is holder-aware.
         reps = representatives(
             pair for r in records if (pair := pair_of(r.proposition)) is not None
         )
-        ctx = cls(registry, options, reps, [], list(closed), {}, {})
+        ctx = cls(registry, options, reps, [], list(closed), {}, {}, list(owned), canon)
+        ctx.mover = None if mover is None else ctx.rep(mover)
         ctx.records = [(r, ctx.norm(r.proposition)) for r in records]
         containment = {
             p.containment_of for p in registry.predicates.values() if p.containment_of is not None
@@ -740,6 +870,24 @@ class _Support:
     evidence: list[Evidence] = field(default_factory=list)
     covered: list[Span] = field(default_factory=list)
     uncovered: list[Span] = field(default_factory=list)
+
+
+PRESENCE_SUPPORT: Mapping[str, str] = {PRESENT_AT: LOCATED_AT}
+"""#515: the predicate whose affirmed records support an affirmed claim of the key predicate
+with the same subject and object (a placement supports presence there; see the module
+docstring's coverage)."""
+
+
+def _placements(claim: Proposition, ctx: _Context) -> list[tuple[Record, Proposition]]:
+    """#515: the subject's affirmed placements, as records of the claim's predicate."""
+    source = PRESENCE_SUPPORT.get(claim.predicate_id)
+    if source is None or claim.polarity is not Polarity.AFFIRMED:
+        return []
+    return [
+        (r, p.model_copy(update={"predicate_id": claim.predicate_id}))
+        for r, p in ctx.by(source, claim.subject_id)
+        if p.polarity is Polarity.AFFIRMED
+    ]
 
 
 def _support(
@@ -1202,6 +1350,23 @@ def _forward(claim: Proposition, predicate: Predicate, ctx: _Context) -> tuple[_
         consequent = ctx.registry.get(derived.predicate_id)
         if consequent is None:
             continue
+        hook = owner_lookup(derived.predicate_id)
+        if hook is not None and conditional_owner(derived.predicate_id) and not ctx.owned:
+            hook = None  # #195: a conditional owner its story does not run (facts decide)
+        if hook is not None:
+            # #191 (ADR-160): a consequence on an owner-lookup predicate is checked against the
+            # owner's value, never against records; only a canon holder reads the owner.
+            if not ctx.canon:
+                continue
+            implied = hook.implied(derived, claim, ctx.owned)
+            if implied is None:
+                continue
+            settled = hook.verdict(implied, ctx.owned)
+            if settled.kind is VerdictKind.CONTRADICTED:
+                used = _joins_used(derived, joins, reached)
+                out.evidence = [*(used or [Evidence(Rule.IMPLICATION)]), *settled.evidence]
+                return out, closure.truncated
+            continue
         for found in _consequence_rules(ctx.norm(derived), consequent, ctx):
             if found.evidence:
                 used = _joins_used(derived, joins, reached)
@@ -1313,6 +1478,71 @@ def _weak_conflict(
     )
 
 
+def _change_start(claim: Proposition, predicate: Predicate, ctx: _Context) -> int | None:
+    """#518: the story-minute a claim changes its subject's fluent from (see the module
+    docstring), or ``None`` when it is no fluent change of the beat's mover."""
+    vt = claim.valid_time
+    if (
+        ctx.mover is None
+        or claim.subject_id != ctx.mover
+        or predicate.temporal_kind is not TemporalKind.FLUENT
+        or not isinstance(vt, Interval)
+        or vt.start is None
+        or not vt.start.exact
+        or vt.end is not None
+    ):
+        return None
+    return vt.start.inner
+
+
+def _replaced(claim: Proposition, predicate: Predicate, record: Proposition, ctx: _Context) -> bool:
+    """Whether ``record`` holds a value the claim replaces: the identical proposition with the
+    other polarity, or an affirmed other object under the claim's functional key."""
+    if record.polarity is not claim.polarity and _identical(claim, record):
+        return True
+    if (
+        predicate.cardinality is not Cardinality.FUNCTIONAL
+        or claim.polarity is Polarity.NEGATED
+        or record.polarity is Polarity.NEGATED
+        or predicate.uniqueness_key(claim) != predicate.uniqueness_key(record)
+        or _object_within(claim, record)
+    ):
+        return False
+    return not (
+        claim.object_id is not None
+        and record.object_id is not None
+        and ctx.related(predicate, claim.object_id, record.object_id)
+    )
+
+
+def _fluent_change(
+    claim: Proposition, predicate: Predicate, ctx: _Context
+) -> tuple[list[Record], _Context] | None:
+    """#518 (FR-PROP-9): the records a fluent change closes and the record set with them closed
+    at the change's start; ``None`` when the claim changes nothing (see the module docstring)."""
+    start = _change_start(claim, predicate, ctx)
+    if start is None:
+        return None
+    closed: list[Record] = []
+    records: list[tuple[Record, Proposition]] = []
+    for r, p in ctx.records:
+        vt = p.valid_time
+        if (
+            p.predicate_id == claim.predicate_id
+            and p.subject_id == claim.subject_id
+            and isinstance(vt, Interval)
+            and vt.end is None
+            and (vt.start is None or vt.start.inner < start)
+            and _replaced(claim, predicate, p, ctx)
+        ):
+            closed.append(r)
+            p = p.model_copy(update={"valid_time": vt.model_copy(update={"end": Bound.at(start)})})
+        records.append((r, p))
+    if not closed:
+        return None
+    return closed, replace(ctx, records=records)
+
+
 # -- check ------------------------------------------------------------------------------------
 
 
@@ -1325,9 +1555,24 @@ def _check(
     skip_support: bool = False,
 ) -> Verdict:
     same = ctx.by(claim.predicate_id, claim.subject_id)
+    change = _fluent_change(claim, predicate, ctx) if ctx.options.contradictions else None
+    if change is not None:
+        closed, after = change
+        found = _check(
+            claim,
+            predicate,
+            replace(after, mover=None),
+            remainder=remainder,
+            skip_support=skip_support,
+        )
+        if found.kind is not VerdictKind.NOVEL:
+            return found
+        return replace(
+            found, evidence=(*(_ev(Rule.FLUENT_CHANGE, r) for r in closed), *found.evidence)
+        )
     pending: VerdictReason | None = None
     if not skip_support:
-        support = _support(claim, predicate, same)
+        support = _support(claim, predicate, [*same, *_placements(claim, ctx)])
         if support.kind == "supported":
             return Verdict(VerdictKind.SUPPORTED, evidence=tuple(support.evidence))
         if support.kind == "partial" and not remainder:
@@ -1424,13 +1669,25 @@ def check(
     holder: Holder = CANON,
     position: Any = None,
     options: Options = Options(),  # noqa: B008 - frozen
+    owned: Sequence[OwnedValue] = (),
+    mover: str | None = None,
 ) -> Verdict:
     """The verdict on ``claim`` over the holder's ``records`` and ``closed_sets`` (see the
-    module docstring). Pure: no I/O."""
+    module docstring) and, for a canon holder, the owners' values ``owned`` (#191). ``mover``
+    (#518): the character acting in the claim's beat, whose own fluent a claim may change from
+    its start (``fluent_change``). Pure: no I/O."""
     predicate = registry.get(claim.predicate_id)
     if predicate is None:
         return uncertain(VerdictReason.UNRESOLVED_PREDICATE, holder=holder, position=position)
-    ctx = _Context.build(records, closed_sets, registry, options)
+    canon = holder.kind == "canon"
+    ctx = _Context.build(records, closed_sets, registry, options, owned, canon=canon, mover=mover)
+    hook = owner_lookup(predicate.id)
+    if hook is not None and canon and (ctx.owned or not conditional_owner(predicate.id)):
+        # #191: an owner-lookup predicate takes part only through its lookup (FR-VERIFY-7).
+        settled = hook.verdict(ctx.norm(claim), ctx.owned)
+        if settled.kind is VerdictKind.CONTRADICTED and not options.contradictions:
+            settled = Verdict(VerdictKind.NOVEL)  # coverage only: no contradiction rule runs
+        return replace(settled, holder=holder, position=position)
     found = _check(ctx.norm(claim), predicate, ctx)
     return replace(found, holder=holder, position=position)
 
@@ -1530,6 +1787,7 @@ async def check_with(
     registry: Registry | None = None,
     options: Options = Options(),  # noqa: B008 - frozen
     fetched: list[Record] | None = None,
+    mover: str | None = None,
 ) -> Verdict:
     """Fetch what ``claim`` needs through ``lookup`` (each read a query key of the turn's read
     set) and ``check`` it. ``viewpoint`` filters canon (a character's claim is checked only
@@ -1537,7 +1795,8 @@ async def check_with(
     records are #150's to fetch and pass to ``check``. A ``belief(A)`` holder's records are A's
     partition at the claim's position (``belief_through``) and the canon A may read, the belief
     winning (see the module docstring). ``fetched``, when given, receives the records the
-    verdict was decided over (#142's entailment call is shown exactly those)."""
+    verdict was decided over (#142's entailment call is shown exactly those). ``mover``: see
+    ``check``."""
     if holder.kind == "utterance":
         raise ValueError("check_with reads canon; pass an utterance holder's records to check()")
     registry = registry or await load(lookup.conn, story_id)
@@ -1589,7 +1848,38 @@ async def check_with(
         return [Record.of_belief(b) for b in found]
 
     canon_viewpoint = viewpoint
+    through = belief_through(position, through_position)
+
+    async def read_owned(predicate_id: str, subjects: Sequence[str] | None) -> list[OwnedValue]:
+        return await lookup.owned(story_id, predicate_id, subjects, through, canon_viewpoint)
+
+    if holder.kind != "belief" and await owner_active(c.predicate_id, lookup.conn, story_id):
+        # #191: a canon holder's claim on an owner-lookup predicate reads the owner's values
+        # (never a fact): the claim's subject, ``same_as``-expanded as any other read.
+        subjects = {c.subject_id}
+        for r in await read_canon(SAME_AS, c.subject_id, None):
+            p = r.proposition
+            if p.polarity is Polarity.AFFIRMED and p.object_id is not None:
+                subjects |= {p.subject_id, p.object_id}
+        owned = await read_owned(c.predicate_id, sorted(subjects))
+        log.debug("verify fetched %d owner values", len(owned))
+        return check(
+            claim,
+            registry=registry,
+            holder=holder,
+            position=position,
+            options=options,
+            mover=mover,
+            owned=owned,
+        )
     if holder.kind == "belief":
+        assert holder.holder_id is not None  # noqa: S101 - a belief holder names its holder
+        decided = await owner_belief(lookup.conn, story_id, holder.holder_id, c, through)
+        if decided is not None:
+            # #200: a clock check is decided against A's own time belief, never the clock or
+            # A's canon (FR-CLOCK-10, ADR-167).
+            log.debug("verify decided %s by its owner's belief reader", c.predicate_id)
+            return replace(decided, holder=holder, position=position)
         # The canon a belief holder may read: what its character sees (FR-RET-1).
         canon_viewpoint = f"{CHARACTER_VIEWPOINT_PREFIX}{holder.holder_id}"
         held, closed = await _gather(
@@ -1603,13 +1893,19 @@ async def check_with(
             holder=holder,
             position=position,
             options=options,
+            mover=mover,
         )
-        if verdict.kind is not VerdictKind.NOVEL:
+        if verdict.kind is not VerdictKind.NOVEL or await owner_belief_only(
+            lookup.conn, story_id, c
+        ):
+            # #207: an externally owned value is known to A only as A's own belief; the canon
+            # fallback never answers it (an unbelieved value stays novel: hidden to #166).
             if fetched is not None:
                 fetched.extend(held)
             log.debug("verify fetched %d belief records, %d closed sets", len(held), len(closed))
             return verdict
         known, _ = await _gather(lookup, story_id, c, predicate, registry, options, read_canon)
+        known = await _belief_canon(lookup.conn, story_id, holder.holder_id, known)
         unique = _unique([*held, *known])
         if fetched is not None:
             fetched.extend(unique)
@@ -1622,8 +1918,20 @@ async def check_with(
             holder=holder,
             position=position,
             options=options,
+            mover=mover,
         )
-    records, closed = await _gather(lookup, story_id, c, predicate, registry, options, read_canon)
+    owned_found: list[OwnedValue] = []
+    records, closed = await _gather(
+        lookup,
+        story_id,
+        c,
+        predicate,
+        registry,
+        options,
+        read_canon,
+        read_owned=read_owned,
+        owned=owned_found,
+    )
     unique = _unique(records)
     if fetched is not None:
         fetched.extend(unique)
@@ -1636,7 +1944,28 @@ async def check_with(
         holder=holder,
         position=position,
         options=options,
+        owned=owned_found,
+        mover=mover,
     )
+
+
+async def _belief_canon(
+    conn: AsyncConnection, story_id: str, holder_id: str, known: list[Record]
+) -> list[Record]:
+    """#200 (ADR-167): the canon in a ``belief(A)`` record set, less what a character never
+    reads as canon with the clock on: a fact on a clock predicate, and a ``scheduled`` fact A
+    does not hold (``core.world_clock.time_belief.hidden_canon``)."""
+    if not any(r.proposition.predicate_id in HIDDEN_FROM_BELIEF for r in known):
+        return known
+    from epistrel.core.world_clock.time_belief import hidden_canon
+
+    facts = [
+        SimpleNamespace(id=r.fact_id, proposition=r.proposition, proposition_id=r.proposition_id)
+        for r in known
+        if r.fact_id is not None
+    ]
+    hidden = await hidden_canon(conn, story_id, holder_id, facts)
+    return [r for r in known if r.fact_id is None or r.fact_id not in hidden]
 
 
 def _unique(records: Iterable[Record]) -> list[Record]:
@@ -1649,6 +1978,9 @@ Reader = Callable[
 ]
 """One holder read of ``check_with``: ``(predicate, subjects, window, object)``."""
 
+OwnedReader = Callable[[str, "Sequence[str] | None"], Awaitable[list[OwnedValue]]]
+"""A canon holder's owner read (#191): ``(predicate, subjects)``."""
+
 
 async def _gather(
     lookup: KeyedLookup,
@@ -1658,9 +1990,13 @@ async def _gather(
     registry: Registry,
     options: Options,
     read: Reader,
+    *,
+    read_owned: OwnedReader | None = None,
+    owned: list[OwnedValue] | None = None,
 ) -> tuple[list[Record], list[ClosedSetRecord]]:
     """Every read the verdict on ``c`` rests on, through ``read`` (see the module docstring's
-    fetch), and the closed sets it needs."""
+    fetch), and the closed sets it needs. A consequent with an owner lookup (#191) is read
+    through ``read_owned`` into ``owned`` (a canon holder's), never as records."""
     records: list[Record] = []
     subjects = {c.subject_id}
     objects = set() if c.object_id is None else {c.object_id}
@@ -1678,6 +2014,9 @@ async def _gather(
     window = None if timeless else _window(c.valid_time)
     subject_set = sorted(subjects)
     records += await read(c.predicate_id, subject_set, window, None)
+    if c.polarity is Polarity.AFFIRMED and c.predicate_id in PRESENCE_SUPPORT:
+        # #515: the subject's placement, which supports its presence there.
+        records += await read(PRESENCE_SUPPORT[c.predicate_id], subject_set, window, None)
     if (
         options.contradictions
         and c.polarity is Polarity.AFFIRMED
@@ -1714,6 +2053,16 @@ async def _gather(
                 then = registry.get(x)
                 if then is None:
                     continue
+                if owner_lookup(x) is not None:
+                    found_owned = (
+                        await read_owned(x, subject_set)
+                        if read_owned is not None and owned is not None
+                        else []
+                    )
+                    if owned is not None:
+                        owned += found_owned
+                    if found_owned or not conditional_owner(x):
+                        continue
                 records += await read(x, subject_set, _window(c.valid_time), None)
                 closed += await closed_sets_for(lookup.conn, story_id, x)
                 if then.containment_of is not None:
@@ -1752,6 +2101,7 @@ class _Call:
     through_position: tuple[int, int] | None
     viewpoint: str
     kind: VerdictKind
+    mover: str | None = None
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -1801,11 +2151,12 @@ async def verify(
     viewpoint: str = OMNISCIENT,
     remember: bool = True,
     fetched: list[Record] | None = None,
+    mover: str | None = None,
 ) -> Verdict | None:
     """The deterministic verdict on ``claim`` under the story's effective profile, its reads
     keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The verdict
     is recorded for the turn's rebase re-check unless ``remember`` is off. ``fetched`` receives
-    the records it was decided over (``check_with``)."""
+    the records it was decided over (``check_with``). ``mover``: see ``check`` (#518)."""
     options = await options_for(conn, story_id)
     if options is None:
         return None
@@ -1819,6 +2170,7 @@ async def verify(
         viewpoint=viewpoint,
         options=options,
         fetched=fetched,
+        mover=mover,
     )
     if remember:
         _remember(
@@ -1831,6 +2183,7 @@ async def verify(
                 through_position,
                 viewpoint,
                 verdict.kind,
+                mover,
             ),
         )
     return verdict
@@ -1854,6 +2207,7 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             through_position=call.through_position,
             viewpoint=call.viewpoint,
             remember=False,
+            mover=call.mover,
         )
         if again is None or again.kind is not call.kind:
             log.debug("rebase re-check: a verdict changed (%d checked)", len(calls))
@@ -1863,6 +2217,12 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
 
 register_rebase_check(recheck)
 
+# #191: ``state_value``'s owner lookup registers itself on import (``core.states.verify``
+# imports this module, so it is imported here, after every name it reads is defined).
+from epistrel.core.states import verify as _state_verify  # noqa: E402, F401
+
+# #195: the clock checks' owner lookup (``time_is`` while the story runs the clock).
+from epistrel.core.world_clock import verify as _clock_verify  # noqa: E402, F401
 
 __all__ = [
     "CANON",
@@ -1874,6 +2234,7 @@ __all__ = [
     "Evidence",
     "Holder",
     "Options",
+    "OwnedValue",
     "Record",
     "Rule",
     "Span",

@@ -14,7 +14,9 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   ``message``; a ``player_input`` with both ``say`` and ``do`` yields two items sharing one
   ``message_id``. ``origin`` is ``ingested`` for a consumer's ``ingest`` (#58).
 - **Turns**: one summary per turn on the page with its reply (``message``), ``null`` for a
-  reply-less turn such as an ingested ``player_turn`` (#58).
+  reply-less turn such as an ingested ``player_turn`` (#58), and its ``implausible_knowledge``
+  notices (#598, FR-RESP-14: stored on its ``player_input``, returned when the read returns that
+  input, with ``external_effects`` as of the read, ``core.timeline_effects.with_effects``).
 - **Window**: ``as_of`` (default the head; > head or < 0 is 422) bounds the read; pages hold
   whole turns, newest first, up to ``limit`` items (default 200, max 1,000; a single larger turn
   is returned whole); ``before_turn`` pages backwards and ``next_before_turn`` names the next
@@ -56,7 +58,17 @@ Reads the ``transcript_messages`` projection (joined to each beat's event for a 
   "bypassed_by_player_view"``). Every structured beat carries ``fidelity``.
 - **Beat metadata** (#177): a character read's structured beats keep each proposition's text
   with ``verdict: null`` and carry no ``detected`` or ``effects`` (a ``contradicted`` verdict on a
-  lie discloses the truth); ``omniscient`` reads keep them all.
+  lie discloses the truth); ``omniscient`` reads keep them all, each beat's ``effects`` being the
+  State changes it committed (#187).
+- **State effects** (#187, FR-RESP-7): each turn on the page carries ``state_effects``, the State
+  changes its operation committed (``core.states.turn_effects``: ``{state, scope_key,
+  old_value, new_value, reason, source, contingency, status}``), a ``hidden`` State's only for
+  ``omniscient``: visibility only, no audience filter (owner decision 2026-10-28).
+- **Incomplete turns** (#212, FR-EXT-19): a staged turn whose completion has not committed
+  (``operations.turn_stage`` ``intent_committed``, ``awaiting_outcome`` or
+  ``outcome_recorded``) is on the page with its committed beats (the action as an attempt,
+  filtered for the viewpoint like any other) and no message, its summary marked
+  ``incomplete``.
 """
 
 from __future__ import annotations
@@ -72,7 +84,12 @@ from sqlalchemy import and_, bindparam, case, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import EventCategory, Membership, OperationStatus
+from epistrel.core.enums import (
+    UNFINISHED_TURN_STAGES,
+    EventCategory,
+    Membership,
+    OperationStatus,
+)
 from epistrel.core.epistemic import audience as audience_rules
 from epistrel.core.epistemic import perception
 from epistrel.core.errors import InvalidRequest, StoryNotFound
@@ -81,6 +98,7 @@ from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.tables.memories import memories
+from epistrel.core.timeline_effects import with_effects
 from epistrel.core.turns.assembly import AssemblyBeat, deterministic_assembly
 from epistrel.core.variants import ChainRef, ChainSelection, chain_operations
 from epistrel.core.viewpoint import (
@@ -126,7 +144,8 @@ class HistoryItem:
     """A structured turn's beat (#150): the propositions it asserts, each
     ``{proposition, verdict}``; ``None`` for a Lite item."""
     effects: list[dict[str, Any]] | None = None
-    """A structured turn's beat (#150): its state effects (always empty in M4)."""
+    """A structured turn's beat (#150; omniscient reads only): the State changes it committed
+    (#187)."""
     labels: dict[str, Any] | None = None
     """A ``say`` (#150): the utterance's three labels (FR-TURN-6)."""
     visibility: dict[str, Any] | None = None
@@ -154,6 +173,13 @@ class TurnSummary:
     turn: int
     variant: int | None
     message: TurnMessage | None
+    state_effects: list[dict[str, Any]] = field(default_factory=list)
+    """#187 (FR-RESP-7): the State changes the turn committed (see the module docstring)."""
+    notices: list[dict[str, Any]] = field(default_factory=list)
+    """#598 (FR-RESP-14): the turn's ``implausible_knowledge`` notices, as its ``respond``
+    returned them, with ``external_effects`` as of the read (see the module docstring)."""
+    incomplete: bool = False
+    """#212 (FR-EXT-19): a staged turn still waiting on its outcome or its outcome step."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +262,7 @@ async def read_history(
         rows = await _rows(conn, story_id, lower=lower, upper=upper, chain=chain)
         view = player_view or story.settings.player_view
         heard = await _audience(conn, story_id, rows, resolved, view)
+        changed = await _state_effects(conn, story_id, rows, resolved)
         items = _items(
             rows,
             resolved,
@@ -243,7 +270,9 @@ async def read_history(
             await _names(conn, story_id, rows, resolved, heard),
             await _quarantined(conn, story_id, rows, resolved),
             heard,
+            changed,
         )
+        noticed = await _notices(conn, story_id, rows, items)
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
         )
@@ -260,7 +289,7 @@ async def read_history(
         timeline_revision=story.timeline_revision,
         output_viewpoint=resolved,
         as_of=through,
-        turns=_turns(items),
+        turns=_turns(items, changed, noticed, _incomplete(rows)),
         audit=audit,
         next_before_turn=next_before,
         summary=summary,
@@ -307,7 +336,8 @@ async def filtered_turn_beats(
         heard = await _audience(conn, story_id, rows, viewpoint, player_view)
         names = await _names(conn, story_id, rows, viewpoint, heard)
         quarantined = await _quarantined(conn, story_id, rows, viewpoint)
-    items = _items(rows, viewpoint, ages, names, quarantined, heard)
+        changed = await _state_effects(conn, story_id, rows, viewpoint)
+    items = _items(rows, viewpoint, ages, names, quarantined, heard, changed)
     stated = heard.stated
     beats = [i for i in items if i.kind != REPLY_KIND]
     if heard.routed and not beats and stated not in ("none", audience_rules.BYPASSED):
@@ -428,7 +458,11 @@ async def _rows(
     t = transcript_messages
     query = (
         select(
-            t, operations.c.origin, operations.c.viewpoint.label("op_viewpoint"), events.c.payload
+            t,
+            operations.c.origin,
+            operations.c.viewpoint.label("op_viewpoint"),
+            operations.c.turn_stage.label("op_turn_stage"),
+            events.c.payload,
         )
         .join(operations, operations.c.operation_id == t.c.operation_id)
         .join(events, events.c.id == t.c.message_id)
@@ -787,6 +821,20 @@ def _assemblies(
     }
 
 
+async def _state_effects(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], viewpoint: str
+) -> dict[str, list[dict[str, Any]]]:
+    """#187: the State changes each structured turn among ``rows`` committed, by operation."""
+    from epistrel.core.states import turn_effects
+
+    ops = sorted({str(r.operation_id) for r in rows if str(r.kind).startswith(STRUCTURED_PREFIX)})
+    return await turn_effects(conn, story_id, ops, omniscient=is_omniscient(viewpoint))
+
+
+def _turn_effects(found: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [{k: v for k, v in e.items() if k != "beat"} for e in found]
+
+
 def _items(
     rows: Sequence[Any],
     viewpoint: str,
@@ -794,6 +842,7 @@ def _items(
     names: Mapping[str, str] | None = None,
     quarantined: Collection[str] = (),
     heard: _Audience | None = None,
+    changed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> list[HistoryItem]:
     omniscient = is_omniscient(viewpoint)
     recomposed = _assemblies(rows, viewpoint, names or {}, heard)
@@ -809,6 +858,11 @@ def _items(
                 continue  # #177: the viewpoint did not perceive the beat
             if structured:
                 structured["fidelity"] = audience_rules.CONTENT
+            if "effects" in structured and changed:
+                # #187: an omniscient read's beat carries the State changes it committed.
+                structured["effects"] = _turn_effects(
+                    [e for e in changed.get(str(row.operation_id), ()) if e["beat"] == row.beat]
+                )
             if isinstance(seen, audience_rules.Seen):
                 structured["fidelity"] = seen.fidelity
                 if seen.text != part:
@@ -843,16 +897,148 @@ def _items(
     return items
 
 
-def _turns(items: Sequence[HistoryItem]) -> list[TurnSummary]:
+async def _notices(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], items: Sequence[HistoryItem]
+) -> dict[str, list[dict[str, Any]]]:
+    """#598 (FR-RESP-14): each turn's stored notices by operation (its ``player_input``
+    event's ``notices``), for a turn whose input the read returns, with ``external_effects``:
+    whether the turn has a dispatched or confirmed external effect now (FR-EXT-14)."""
+    shown = {i.operation_id for i in items if i.kind == INPUT_KIND}
+    found: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        payload = row.payload or {}
+        if row.kind != INPUT_KIND or not payload.get("notices") or row.operation_id not in shown:
+            continue
+        found[str(row.operation_id)] = [dict(n) for n in payload["notices"]]
+    if not found:
+        return {}
+    effects = await with_effects(conn, story_id, sorted(found))
+    return {
+        op: [{**n, "external_effects": op in effects} for n in notices]
+        for op, notices in found.items()
+    }
+
+
+def _incomplete(rows: Sequence[Any]) -> frozenset[str]:
+    """#212: the operations on the page that are unfinished staged turns."""
+    unfinished = {s.value for s in UNFINISHED_TURN_STAGES}
+    return frozenset(
+        str(r.operation_id)
+        for r in rows
+        if r.op_turn_stage is not None and str(r.op_turn_stage) in unfinished
+    )
+
+
+def _turns(
+    items: Sequence[HistoryItem],
+    changed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    noticed: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    incomplete: frozenset[str] = frozenset(),
+) -> list[TurnSummary]:
     turns: dict[int, TurnSummary] = {}
     for item in items:
         if item.turn is None or item.turn < 1:
             continue
-        summary = turns.get(item.turn) or TurnSummary(item.turn, item.variant, None)
+        summary = turns.get(item.turn) or TurnSummary(
+            item.turn,
+            item.variant,
+            None,
+            _turn_effects((changed or {}).get(item.operation_id, ())),
+            [dict(n) for n in (noticed or {}).get(item.operation_id, ())],
+            incomplete=item.operation_id in incomplete,
+        )
         if summary.message is None and item.kind == REPLY_KIND:
-            summary = TurnSummary(item.turn, item.variant, TurnMessage(item.message_id, item.text))
+            summary = dataclasses.replace(summary, message=TurnMessage(item.message_id, item.text))
         turns[item.turn] = summary
     return list(turns.values())
+
+
+@dataclass(frozen=True, slots=True)
+class StagedMessage:
+    """#213: a resumed staged turn's message: its text and the audience filtering it was
+    assembled under (``MessageRendered.perception_level``/``player_view``; ``None`` when it was
+    not filtered)."""
+
+    text: str
+    perception_level: str | None
+    player_view: str | None
+
+
+async def staged_message(
+    conn: AsyncConnection,
+    story_id: str,
+    operation_id: str,
+    viewpoint: str,
+    *,
+    player_view: PlayerView,
+    extra: Sequence[audience_rules.AudienceBeat],
+) -> StagedMessage:
+    """#213 (FR-EXT-17, FR-RESP-8,13): the message a staged turn resumed without its request's
+    render context completes with: the deterministic assembly of the turn's committed beats
+    and ``extra`` (the deterministic outcome narration it is about to commit, each with its
+    qualifiers), as ``viewpoint`` receives them (#177's audience filter over the scene at the
+    turn's start and its committed moves, as a history read filters them)."""
+    from epistrel.core.epistemic import scene as scenes
+    from epistrel.core.memory import records
+
+    rows = [r for r in await _rows(conn, story_id, operation_id=operation_id) if _is_beat(r)]
+    heard: list[audience_rules.AudienceBeat] = []
+    for row in rows:
+        stored = perception.Qualifiers.of((row.payload or {}).get("perception"))
+        for channel, part in _parts(row):
+            heard.append(
+                audience_rules.AudienceBeat(
+                    kind=channel,
+                    beat=int(row.beat or 0),
+                    character_id=row.actor_character_id,
+                    text=part,
+                    qualifiers=stored
+                    if channel == "say" or row.kind != INPUT_KIND
+                    else perception.Qualifiers(),
+                    source=row.kind != INPUT_KIND,
+                )
+            )
+    heard += [dataclasses.replace(b, source=True) for b in extra]
+    found = await conn.execute(
+        select(characters.c.id, characters.c.name).where(characters.c.story_id == story_id)
+    )
+    names = {str(r.id): str(r.name) for r in found}
+    level = (
+        perception.NONE if is_omniscient(viewpoint) else await scenes.current_level(conn, story_id)
+    )
+    turn = next((int(r.narrative_turn) for r in rows if r.narrative_turn is not None), None)
+    scene: perception.SceneState | None = None
+    places: Mapping[str, str] | None = None
+    if level != perception.NONE and turn is not None:
+        scene, moves = await scenes.load_scene(conn, story_id, turn)
+        heard = _with_moves(heard, moves)
+        _, places = await records.places_and_names(conn, story_id)
+    filtered = audience_rules.filter_for_viewpoint(
+        heard,
+        viewpoint,
+        scene=scene,
+        level=level,
+        names=names,
+        places=places,
+        player_view=player_view,
+    )
+    assembled = [
+        AssemblyBeat(
+            s.beat.kind,
+            s.text,
+            s.beat.character_id,
+            s.beat.beat,
+            audience_rules.CONTENT if player_view == audience_rules.STORY_VIEW else s.fidelity,
+        )
+        for s in filtered.seen
+        if s.beat.source is True
+    ]
+    routed = level != perception.NONE and scene is not None
+    return StagedMessage(
+        text=deterministic_assembly(assembled, names, viewpoint),
+        perception_level=str(level) if routed else None,
+        player_view=str(player_view) if routed else None,
+    )
 
 
 @asynccontextmanager
@@ -870,11 +1056,13 @@ __all__ = [
     "MAX_LIMIT",
     "History",
     "HistoryItem",
+    "StagedMessage",
     "TurnBeats",
     "TurnMessage",
     "TurnSummary",
     "filtered_turn_beats",
     "read_history",
+    "staged_message",
     "story_player_view",
     "turn_beats",
 ]

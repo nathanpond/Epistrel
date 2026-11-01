@@ -429,6 +429,25 @@ class NothingToRegenerate(EpistrelError):
     http_status = 422
 
 
+class NotLatestTurn(EpistrelError):
+    """``correct`` named a turn that is not the story's latest active turn (FR-RESP-14; #598):
+    a later turn has committed (or the turn was rewound), so only history rewrite reaches it.
+    Nothing is written. ``details``: ``story_id``, ``turn`` (the one named) and ``latest``."""
+
+    code = "not_latest_turn"
+    http_status = 409
+
+
+class AlreadyCorrected(EpistrelError):
+    """``correct`` named a turn a correction wrote (FR-RESP-14; #598): a corrected turn cannot
+    be corrected again (swap back to the replaced one, or rewrite history). Nothing is written.
+    ``details``: ``story_id``, ``turn`` and ``corrected_from`` (the replaced turn's
+    operation)."""
+
+    code = "already_corrected"
+    http_status = 409
+
+
 class DatabaseUnavailable(EpistrelError):
     """The database kept refusing a transaction that cannot be retried by the caller: a fork's
     snapshot copy hit a serialization failure on every attempt (#67; ``details``: ``attempts``),
@@ -1126,6 +1145,90 @@ class ModuleOff(EpistrelError):
     http_status = 409
 
 
+class StateNotFound(EpistrelError):
+    """The State a call names is not one the story declares on its active timeline (FR-STATE-1;
+    #185). ``details``: ``story_id`` and ``state``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class StateNameTaken(EpistrelError):
+    """A State declaration reuses a name a State on the story's active timeline holds (FR-STATE-1;
+    #185; #186: a declaration a truncation discarded frees its name), or an untruncation or a
+    swap would make two active States share one. ``details``: ``story_id`` and ``state``.
+    Nothing is written."""
+
+    code = "state_name_taken"
+    http_status = 409
+
+
+class StateConstraintViolation(EpistrelError):
+    """A State write would leave a value its constraints refuse (FR-STATE-6; #185): a definition
+    update whose new constraints the current value already violates (#186's set refuses the
+    same way). ``details``: ``state``, ``constraint``, ``attempted`` and ``current``. Nothing is
+    written."""
+
+    code = "state_constraint_violation"
+    http_status = 422
+
+
+class StateReadonlyExternal(EpistrelError):
+    """A set of an externally owned State through the State API (FR-STATE-2,9, FR-EXT-8; #186):
+    its value is the provider's, written through the external path (#209, #210). ``details``:
+    ``story_id`` and ``state``. Nothing is written."""
+
+    code = "state_readonly_external"
+    http_status = 422
+
+
+class StateUnpermitted(EpistrelError):
+    """A State write from a source the State's ``authorization.sources`` does not admit
+    (FR-STATE-9; #186, owner decision 2026-10-30; #188 owns the full rule): an API set or an
+    ingested ``state_change`` of a State whose sources omit ``consumer``. ``details``:
+    ``story_id``, ``state``, ``reason`` (``source``) and ``source``. Nothing is written."""
+
+    code = "state_unpermitted"
+    http_status = 422
+
+
+class StateDerived(EpistrelError):
+    """A direct set of a derived State (FR-STATE-7; #186, #192): its value is recomputed from
+    other States. ``details``: ``story_id`` and ``state``. Nothing is written."""
+
+    code = "state_derived"
+    http_status = 422
+
+
+class ClockBackward(EpistrelError):
+    """A world clock advance that would move it backward along the active timeline (FR-CLOCK-8,13;
+    #193): a negative number of minutes, or a target offset before the clock's value there.
+    ``details``: ``story_id``, ``current`` (the offset in minutes) and ``attempted``. Nothing is
+    written; earlier story-time is reached by a truncation or a rewrite."""
+
+    code = "clock_backward"
+    http_status = 422
+
+
+class ClockUnanchored(EpistrelError):
+    """A clock target given as a time of day (``"HH:MM"``) while the clock's anchor does not fix
+    the hour (FR-CLOCK-3; #193, until #195's anchors): the engine never picks a time the story
+    has not established. ``details``: ``story_id`` and ``to``. Nothing is written."""
+
+    code = "clock_unanchored"
+    http_status = 422
+
+
+class ClockExternal(EpistrelError):
+    """A consumer's advance of a world clock in ``external`` mode (FR-CLOCK-5; #209): the clock is
+    a provider's value, read and pinned each turn, so Epistrel never moves it (the consumer
+    advances its own clock). ``details``: ``story_id`` and ``provider_id``. Nothing is
+    written."""
+
+    code = "clock_external"
+    http_status = 422
+
+
 class ScopeMismatch(EpistrelError):
     """A consolidation's inputs span viewpoint scopes no one output may combine (FR-MEM-9; #143):
     the intersection of their scopes is empty (two characters' private memories). Refused when
@@ -1192,3 +1295,110 @@ class GateThresholdNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+# -- external-data providers (FR-EXT-1,6; #204) ---------------------------------------------------
+
+
+class ProviderNotFound(EpistrelError):
+    """No external-data provider is registered under the name a call gives (FR-EXT-1; #204).
+    ``details``: ``provider``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class ProviderExists(EpistrelError):
+    """A registration names a provider already registered (#204): replace it with ``PUT``.
+    ``details``: ``provider``. Nothing is written."""
+
+    code = "provider_exists"
+    http_status = 409
+
+
+class ProviderInUse(EpistrelError):
+    """Deleting a provider a story's State names (#204: ``state_definitions.provider_id`` has no
+    foreign key, so the delete is refused). ``details``: ``provider`` and ``stories`` (their
+    ids). Nothing is written."""
+
+    code = "provider_in_use"
+    http_status = 409
+
+
+class InvalidManifest(InvalidRequest):
+    """A provider registration's manifest breaks a rule (FR-EXT-1, FR-EXT-5; #204): an unknown
+    placeholder, a placeholder in a URL's scheme, host or port, a URL that is not ``https`` (or
+    ``http`` on a loopback host), a host the deployment's ``provider_allowed_hosts`` lacks, a
+    path expression outside ``$``/``.key``/``[n]``, or a write template on a provider that is not
+    write-capable. ``details``: ``field`` (the manifest member) and ``reason``. Nothing is
+    written."""
+
+    code = "invalid_manifest"
+    http_status = 422
+
+
+class BindingIncomplete(EpistrelError):
+    """A story's binding to a provider lacks a key the provider's manifest substitutes
+    (``{binding.<key>}``; #204). ``details``: ``provider`` and ``missing`` (the keys). Nothing
+    is written."""
+
+    code = "binding_incomplete"
+    http_status = 422
+
+
+class ProviderUnbound(EpistrelError):
+    """A turn of a story that needs a provider (an externally owned State names it, or the
+    story's ``required_providers`` lists it) has no binding to it (#204): it fails closed before
+    anything is recorded. ``details``: ``story_id`` and ``providers`` (the unbound ones)."""
+
+    code = "provider_unbound"
+    http_status = 422
+
+
+class ProviderDown(EpistrelError):
+    """A turn read an external value whose provider could not answer (an adapter error, a
+    timeout, a missing secret or callable, a malformed answer) and the provider's unavailability
+    policy is ``fail_turn`` (FR-EXT-7; #206): the turn fails cleanly before its commit, so
+    nothing is recorded (no event, no ``external_read``). ``details``: ``provider`` and
+    ``value`` (the provider's value name)."""
+
+    code = "provider_unavailable"
+    http_status = 503
+
+
+class ProviderUnregistered(EpistrelError):
+    """A story created from a scenario requires providers the deployment has not registered
+    (``story_settings_defaults.required_providers``; #204). ``details``: ``providers`` (the
+    missing ones). Nothing is written."""
+
+    code = "provider_unregistered"
+    http_status = 422
+
+
+class EffectNotFound(EpistrelError):
+    """An ingested ``outcome`` names an external effect the story does not know (#217,
+    FR-EXT-21): no outbox row with its ``outbox_id``, no ``requested_effect`` with its
+    ``effect_id``. ``details``: ``locator`` (``events[i]``) and ``effect_id`` or ``outbox_id``.
+    Nothing is written."""
+
+    code = "effect_not_found"
+    http_status = 422
+
+
+class SettleRefused(EpistrelError):
+    """An author's settle-now (#218, FR-EXT-22) whose re-verification against current state
+    fails at that moment: the effect is not applied and nothing changes. ``details``:
+    ``outbox_id`` and ``reasons`` (codes: ``precondition:availability``,
+    ``precondition:ownership``, ``bounds:<constraint>``, ``settlement_conflict``,
+    ``not_confirmed``)."""
+
+    code = "settle_refused"
+    http_status = 409
+
+
+class ProviderReadOnly(EpistrelError):
+    """A compensating effect (#218, FR-EXT-22) on a State whose provider is not write-capable:
+    Epistrel cannot issue it. ``details``: ``state`` and ``provider``. Nothing is written."""
+
+    code = "provider_read_only"
+    http_status = 422

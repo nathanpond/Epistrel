@@ -43,6 +43,8 @@ SIZES = {
     "q04": 300,
     "priv_think_leak": 300,
     "e01_viewpoint": 300,
+    # #201's time-estimation set (E-09, NFR-QUAL-9).
+    "e09": 200,
 }
 
 
@@ -67,6 +69,44 @@ def test_every_set_loads_meets_its_size_and_is_approved_or_pending() -> None:
     assert len(load_pairs(SETS)) >= CALIBRATION_MIN_PAIRS
     for relative, generate in GENERATORS.items():
         assert (SETS / relative).read_text(encoding="utf-8") == render(generate()), relative
+
+
+def test_time_estimation_set_is_stratified_and_generated(tmp_path: Path) -> None:
+    """#201: E-09's 200 cases span the seven activity families and the three kinds (explicit,
+    implicit, inferred); the digest shows every family among its sampled cases (stratified,
+    no scripted answer) with its counts per kind, and an edited case is drift
+    (``--check-sets`` names the set)."""
+    from epistrel.evals.suites.e09_time_estimation import FAMILIES, KINDS, TimeEstimationCase
+
+    cases = [c for c in SUITES["e09"].load(SETS) if isinstance(c, TimeEstimationCase)]
+    assert len(cases) == 200
+    assert {c.family for c in cases} == set(FAMILIES)
+    assert {c.kind for c in cases} == set(KINDS)
+    for case in cases:
+        lo, hi = case.acceptable_minutes
+        minutes = case.stub_answer.minutes
+        assert minutes is not None, case.id
+        assert lo <= minutes <= hi, case.id
+    assert "time_estimation/cases.jsonl" in labeled.STRATIFIED
+    digest = labeled.digest_text(SETS)
+    section = digest.split("## `time_estimation/cases.jsonl` (e09, 200 cases)", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    sampled = [line for line in section.splitlines() if line.startswith("- `time_estimation-")]
+    assert len(sampled) == labeled.DIGEST_SAMPLES
+    for family in FAMILIES:
+        assert any(f"- `time_estimation-{family}-" in line for line in sampled), family
+    assert "stub_answer" not in section
+    assert "Labels: explicit " in section
+
+    copy = tmp_path / "sets"
+    shutil.copytree(SETS, copy)
+    path = copy / "time_estimation" / "cases.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0].replace('"narrated_text": "', '"narrated_text": "Then ', 1)
+    path.write_text("\n".join(lines) + "\n", "utf-8")
+    assert "time_estimation/cases.jsonl differs from what its authoring module generates" in (
+        labeled.problems(copy, require_approved=False)
+    )
 
 
 def test_provenance_lines_are_required(tmp_path: Path) -> None:

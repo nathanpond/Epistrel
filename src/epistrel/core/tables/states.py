@@ -1,0 +1,367 @@
+"""``state_definitions``, ``state_changes`` and ``state_values``: story States (FR-STATE-1,2,4,6;
+docs/02 §7.1; #185, migration 0084).
+
+- **``state_definitions``** — one row per State a story declares: its ``name`` (unique among the
+  story's active States: ``ex_state_definitions_active_name``, deferred to the commit, #186,
+  migration 0088; a declaration a truncation discarded frees its name), ``type`` (``state_type``),
+  ``scope`` (``story`` or ``character``), ``constraints`` (``{min, max, non_negative,
+  allowed_values, tolerance}``), ``initial_value`` (the fold's base; ``NULL``: undefined until
+  set), the ``aliases`` and ``unit`` that let prose name it, the ``entity_id`` a possession-style
+  State tracks, ``visibility``, ``owner`` (``story`` or ``external``, with its ``provider_id``
+  and the provider's ``external_value_name``, #204),
+  ``silent``, the effect rules (``rules``, ``authorization``, ``transfer``; #188),
+  ``reservation_expiry_minutes`` (#216) and ``created_by``. The built-in ``world_clock`` (#193,
+  migration 0085; type ``clock``) also fills the clock's settings, one column each (``mode``,
+  ``anchor``, ``pacing_table``, ``max_unprompted_skip_minutes``, ``stop_at_due_events``,
+  ``grace_minutes``, ``time_statement_tolerance_minutes``, ``elapsed_tolerance_factor``,
+  ``time_awareness``, ``bands``, ``calendar``); they are ``NULL`` for every other State (CHECK
+  ``clock_settings``). It is a derived record (``core.membership``): ``operation_id`` is the
+  operation that defined it, and its membership follows that operation only. ``core.states``'s
+  ``update_definition`` changes the row in place; its history is the ``config_changes`` log.
+- **``state_changes``** — one row per change: the State (``state_id``, no foreign key: integrity
+  is ``core.states.apply_change``'s), the character it is scoped to (``scope_key``), its
+  ``kind`` and ``value`` or signed ``delta``, the ``old_value``/``new_value`` it left, a
+  ``reason``, its ``source``, ``contingency``, ``status`` and ``prerequisite_effect_ids``; its
+  narrative position (``narrative_turn``/``turn_variant`` of the derived columns, plus ``slot_k``,
+  ``beat`` and ``step``; read as a ``core.membership.Position``), its story-minute
+  (``valid_time_minutes``), when it was recorded (``tx_from``) and, for a clock advance the
+  Orchestrator estimated, the estimate and its reason (``estimate_meta``; #193, #197); a
+  settlement's intent row (``settles_change_id``, #216, migration 0099). Append-only
+  (``epistrel_state_changes_append_only``): an UPDATE may change only ``membership`` and
+  ``membership_tx``, and ``status`` only along a settlement (``SETTLEMENT_TRANSITIONS``:
+  ``held → converted | released``, ``pending → converted | dropped``; #216); an erasure may
+  also redact ``reason`` and the values; a DELETE passes only under an erasure or the story's
+  deletion.
+- **``state_values``** — the projection (``core.projections.states``): one row per
+  ``(state, scope key)`` with at least one counted active change, its folded ``value``, the
+  position of its last change (``since_*``) and ``change_count``. ``scope_key`` is ``''`` for a
+  story-scoped State (a primary key column cannot be ``NULL``).
+- **``external_values``** — the projection of ``external_read`` events (#205, migration 0090;
+  ``core.projections.external``): one row per recorded version of an externally owned State's
+  value (FR-EXT-2, FR-STORE-17), keyed by its event (``event_id``) and positioned where it was
+  read (``position_*``: the turn's input, beat 0 and step 0, for a read at turn start; the
+  claim's beat and step for one made on demand during verification; FR-STORE-31). It carries
+  the State (``state_id``), the scope key (``''`` for a story-scoped State), the ``version``
+  (1 for a read), the ``value`` (``NULL``: unknown, #206), its ``source`` and the event's
+  operation (``operation_id``: a read follows its turn's membership through it). #215
+  (migration 0097, FR-EXT-20): a confirmed effect adds later versions of a read, from an
+  ``external_outcome`` event (``confirmation`` or ``unknown``) or a ``post_effect_read``;
+  ``base_event_id`` names the version-1 read a version extends (a read's own event for a
+  read), unique with ``version`` per State and scope key. Rebuilt from the log; a fork
+  refolds it from the copied events.
+"""
+
+from __future__ import annotations
+
+from sqlalchemy import (
+    TIMESTAMP,
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Column,
+    Index,
+    Integer,
+    Numeric,
+    PrimaryKeyConstraint,
+    SmallInteger,
+    Table,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, ExcludeConstraint
+
+from epistrel.core.enums import (
+    ClockMode,
+    ExternalValueSource,
+    StateChangeKind,
+    StateChangeSource,
+    StateChangeStatus,
+    StateContingency,
+    StateCreatedBy,
+    StateOwner,
+    StateProposalStatus,
+    StateScope,
+    StateType,
+    StateVisibility,
+    TimeAwareness,
+)
+from epistrel.core.membership import (
+    DerivedTable,
+    active_only_predicate,
+    derived_columns,
+    derived_indexes,
+    position_group,
+    register_derived,
+)
+from epistrel.core.tables.base import metadata, pg_enum, ulid_type
+
+STORY_SCOPE_KEY = ""
+"""``state_values.scope_key`` of a story-scoped State (``state_changes.scope_key`` is ``NULL``)."""
+
+MUTABLE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("membership", "membership_tx")
+"""The columns an UPDATE of ``state_changes`` may change freely (``status`` only along
+``SETTLEMENT_TRANSITIONS``)."""
+
+SETTLEMENT_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("held", "converted"),
+        ("held", "released"),
+        ("pending", "converted"),
+        ("pending", "dropped"),
+    }
+)
+"""The ``status`` updates the append-only trigger admits (#216, migration 0099): a reservation
+converted or released, a conditional change converted or dropped. Any other is refused."""
+
+ERASURE_STATE_CHANGE_COLUMNS: tuple[str, ...] = ("reason", "value", "old_value", "new_value")
+"""The columns an erasure may also rewrite (redaction of a subject's name)."""
+
+ACTIVE_NAME_CONSTRAINT = "ex_state_definitions_active_name"
+"""A name is held by at most one active State of a story (#186): checked at the commit, so an
+untruncation or a swap that would reactivate a taken name is refused by ``core.states`` first
+(409 ``state_name_taken``) and by this constraint as a backstop."""
+
+CLOCK_SETTINGS_CHECK = (
+    "(type = 'clock') = (mode IS NOT NULL) AND (type = 'clock' OR (anchor IS NULL "
+    "AND pacing_table IS NULL AND max_unprompted_skip_minutes IS NULL "
+    "AND stop_at_due_events IS NULL AND grace_minutes IS NULL "
+    "AND time_statement_tolerance_minutes IS NULL AND elapsed_tolerance_factor IS NULL "
+    "AND time_awareness IS NULL AND bands IS NULL AND calendar IS NULL))"
+)
+"""The clock's settings belong to the clock (``state_definitions.ck_..._clock_settings``)."""
+
+state_definitions = Table(
+    "state_definitions",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("name", Text, nullable=False),
+    Column("type", pg_enum(StateType, "state_type"), nullable=False),
+    Column("scope", pg_enum(StateScope, "state_scope"), nullable=False),
+    Column("constraints", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("initial_value", JSONB(none_as_null=True), nullable=True),
+    Column("aliases", ARRAY(Text), nullable=False, server_default=text("'{}'")),
+    Column("unit", Text, nullable=True),
+    Column("entity_id", ulid_type(), nullable=True),
+    Column("visibility", pg_enum(StateVisibility, "state_visibility"), nullable=False),
+    Column("owner", pg_enum(StateOwner, "state_owner"), nullable=False),
+    Column("provider_id", Text, nullable=True),
+    Column("external_value_name", Text, nullable=True),
+    Column("silent", Boolean, nullable=False, server_default=text("false")),
+    Column("rules", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("authorization", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("transfer", JSONB, nullable=False, server_default=text("'{}'::jsonb")),
+    Column("reservation_expiry_minutes", Integer, nullable=True),
+    Column("created_by", pg_enum(StateCreatedBy, "state_created_by"), nullable=False),
+    Column("mode", pg_enum(ClockMode, "clock_mode"), nullable=True),
+    Column("anchor", JSONB(none_as_null=True), nullable=True),
+    Column("pacing_table", JSONB(none_as_null=True), nullable=True),
+    Column("max_unprompted_skip_minutes", Integer, nullable=True),
+    Column("stop_at_due_events", Boolean, nullable=True),
+    Column("grace_minutes", Integer, nullable=True),
+    Column("time_statement_tolerance_minutes", Integer, nullable=True),
+    Column("elapsed_tolerance_factor", Numeric, nullable=True),
+    Column("time_awareness", pg_enum(TimeAwareness, "time_awareness"), nullable=True),
+    Column("bands", JSONB(none_as_null=True), nullable=True),
+    Column("calendar", Text, nullable=True),
+    *derived_columns(),
+    ExcludeConstraint(
+        ("story_id", "="),
+        ("name", "="),
+        name=ACTIVE_NAME_CONSTRAINT,
+        using="btree",
+        where=text(active_only_predicate()),
+        deferrable=True,
+        initially="DEFERRED",
+    ),
+    CheckConstraint("length(name) BETWEEN 1 AND 80", name="name_length"),
+    CheckConstraint("owner <> 'external' OR provider_id IS NOT NULL", name="external_provider"),
+    CheckConstraint(
+        "(owner = 'external') = (external_value_name IS NOT NULL)", name="external_value_name"
+    ),
+    CheckConstraint(
+        "reservation_expiry_minutes IS NULL OR reservation_expiry_minutes > 0",
+        name="reservation_expiry",
+    ),
+    CheckConstraint(
+        "jsonb_typeof(constraints) = 'object' AND jsonb_typeof(rules) = 'object' "
+        "AND jsonb_typeof(\"authorization\") = 'object' AND jsonb_typeof(transfer) = 'object'",
+        name="documents",
+    ),
+    CheckConstraint(CLOCK_SETTINGS_CHECK, name="clock_settings"),
+    *derived_indexes("state_definitions"),
+)
+
+STATE_DEFINITIONS = register_derived(DerivedTable(state_definitions))
+"""``state_definitions`` in ``core.membership.DERIVED_TABLES``: a definition follows the
+operation that defined it (a truncation past a slot's definition discards it)."""
+
+state_changes = Table(
+    "state_changes",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("state_id", ulid_type(), nullable=False),
+    Column("scope_key", ulid_type(), nullable=True),
+    Column("kind", pg_enum(StateChangeKind, "state_change_kind"), nullable=False),
+    Column("value", JSONB(none_as_null=True), nullable=True),
+    Column("delta", Numeric, nullable=True),
+    Column("old_value", JSONB(none_as_null=True), nullable=True),
+    Column("new_value", JSONB(none_as_null=True), nullable=True),
+    Column("reason", Text, nullable=False),
+    Column("source", pg_enum(StateChangeSource, "state_change_source"), nullable=False),
+    Column(
+        "contingency",
+        pg_enum(StateContingency, "state_contingency"),
+        nullable=False,
+        server_default=text("'unconditional'"),
+    ),
+    Column(
+        "status",
+        pg_enum(StateChangeStatus, "state_change_status"),
+        nullable=False,
+        server_default=text("'committed'"),
+    ),
+    Column(
+        "prerequisite_effect_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")
+    ),
+    *derived_columns(),
+    Column("slot_k", SmallInteger, nullable=False, server_default=text("0")),
+    Column("beat", SmallInteger, nullable=False, server_default=text("0")),
+    Column("step", SmallInteger, nullable=False, server_default=text("0")),
+    Column("valid_time_minutes", BigInteger, nullable=True),
+    Column("tx_from", TIMESTAMP(timezone=True), nullable=False),
+    Column("estimate_meta", JSONB(none_as_null=True), nullable=True),
+    Column("stopped_by_event_id", ulid_type(), nullable=True),
+    Column("paused_for_event_id", ulid_type(), nullable=True),
+    Column("settles_change_id", ulid_type(), nullable=True),
+    CheckConstraint("narrative_turn IS NOT NULL AND turn_variant IS NOT NULL", name="positioned"),
+    CheckConstraint(
+        "(kind = 'set') = (value IS NOT NULL) AND (kind = 'set') = (delta IS NULL)",
+        name="kind_shape",
+    ),
+    CheckConstraint("length(reason) <= 200", name="reason_length"),
+    *derived_indexes("state_changes"),
+)
+Index(
+    "ix_state_changes_story_state_scope",
+    state_changes.c.story_id,
+    state_changes.c.state_id,
+    state_changes.c.scope_key,
+)
+
+STATE_CHANGES = register_derived(
+    DerivedTable(state_changes, valid_time=("valid_time_minutes", "valid_time_minutes"))
+)
+"""``state_changes`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation, swap,
+regenerate and fork move a change with its operation, so a State's value in any view is the fold
+of its active changes there (FR-STATE-4)."""
+
+state_values = Table(
+    "state_values",
+    metadata,
+    Column("story_id", ulid_type(), nullable=False),
+    Column("state_id", ulid_type(), nullable=False),
+    Column("scope_key", Text, nullable=False, server_default=text("''")),
+    Column("value", JSONB(none_as_null=True), nullable=True),
+    *position_group("since", nullable=False),
+    Column("change_count", Integer, nullable=False),
+    PrimaryKeyConstraint("story_id", "state_id", "scope_key"),
+    CheckConstraint("change_count > 0", name="change_count"),
+)
+
+external_values = Table(
+    "external_values",
+    metadata,
+    Column("event_id", ulid_type(), nullable=False),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("operation_id", ulid_type(), nullable=False),
+    Column("state_id", ulid_type(), nullable=False),
+    Column("scope_key", Text, nullable=False, server_default=text("''")),
+    *position_group("position", nullable=False),
+    Column("version", Integer, nullable=False),
+    Column("value", JSONB(none_as_null=True), nullable=True),
+    Column("source", pg_enum(ExternalValueSource, "external_value_source"), nullable=False),
+    Column("base_event_id", ulid_type(), nullable=False),
+    PrimaryKeyConstraint("event_id"),
+    CheckConstraint("version > 0", name="version"),
+)
+Index(
+    "uq_external_values_version",
+    external_values.c.story_id,
+    external_values.c.state_id,
+    external_values.c.scope_key,
+    external_values.c.base_event_id,
+    external_values.c.version,
+    unique=True,
+)
+Index(
+    "ix_external_values_story_state_scope_position",
+    external_values.c.story_id,
+    external_values.c.state_id,
+    external_values.c.scope_key,
+    external_values.c.position_turn,
+    external_values.c.position_slot_k,
+    external_values.c.position_beat,
+    external_values.c.position_step,
+)
+
+state_proposals = Table(
+    "state_proposals",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("story_id", ulid_type(), nullable=False),
+    Column("name", Text, nullable=False),
+    Column("suggested_type", pg_enum(StateType, "state_type"), nullable=False),
+    Column("suggested_scope", pg_enum(StateScope, "state_scope"), nullable=False),
+    Column("suggested_unit", Text, nullable=True),
+    Column("suggested_entity_id", ulid_type(), nullable=True),
+    Column("evidence", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column(
+        "status",
+        pg_enum(StateProposalStatus, "state_proposal_status"),
+        nullable=False,
+        server_default=text("'proposed'"),
+    ),
+    Column("created_by_operation_id", ulid_type(), nullable=False),
+    Column(
+        "created_at",
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("transaction_timestamp()"),
+    ),
+    Column("decided_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("decided_by", Text, nullable=True),
+    Column("definition_id", ulid_type(), nullable=True),
+    UniqueConstraint("story_id", "name"),
+    CheckConstraint("char_length(name) BETWEEN 1 AND 80", name="name"),
+    CheckConstraint("jsonb_typeof(evidence) = 'array'", name="evidence"),
+    CheckConstraint(
+        "(status = 'approved') = (definition_id IS NOT NULL)", name="approved_definition"
+    ),
+)
+"""Engine-proposed States awaiting the author (FR-STATE-3; #192, migration 0091): one row per
+recurring quantity unit or possessed entity the on-demand history analysis found with no State,
+its suggested declaration (``suggested_*``), its ``evidence`` (``[{turn, event_id, span,
+text}]``: where it recurs, quoting the beat), its ``status`` and the analysis request's
+operation (``created_by_operation_id``). Unique ``(story_id, name)`` is the analysis's
+fingerprint: a second run writes no duplicate and a ``dismissed`` row is never proposed again.
+An ``approved`` row names the definition it created (``definition_id``; no foreign key). A
+review queue, not a timeline record: no membership, and a fork does not copy it."""
+
+__all__ = [
+    "ACTIVE_NAME_CONSTRAINT",
+    "CLOCK_SETTINGS_CHECK",
+    "ERASURE_STATE_CHANGE_COLUMNS",
+    "MUTABLE_STATE_CHANGE_COLUMNS",
+    "SETTLEMENT_TRANSITIONS",
+    "STATE_CHANGES",
+    "STATE_DEFINITIONS",
+    "STORY_SCOPE_KEY",
+    "external_values",
+    "state_changes",
+    "state_definitions",
+    "state_proposals",
+    "state_values",
+]

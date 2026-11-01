@@ -5,9 +5,10 @@
   ``Scope`` and a span named after the method, and on exit logs one ``operation`` line with
   ``operation_id``, ``story_id``, ``principal``, ``kind`` (the method), ``duration_ms`` and
   ``outcome`` (``ok``, ``rejected`` for a 4xx error, ``error`` otherwise) and counts
-  ``epistrel_operations_total{kind,outcome}``. Calls an ``Engine`` method makes on itself are
-  part of the outer call. (The planner's ``@instrumented`` decorator, folded into #73's
-  operation marking: ``observability`` owns the one wrapper.)
+  ``epistrel_operations_total{kind,outcome}`` (and ``epistrel_budget_rejected_total`` when the
+  call was refused ``budget_below_safety_minimum``, #456). Calls an ``Engine`` method makes
+  on itself are part of the outer call. (The planner's ``@instrumented`` decorator, folded
+  into #73's operation marking: ``observability`` owns the one wrapper.)
 - ``background(kind, ...)`` does the same for a job run, a queued turn and a timer pass:
   principal ``system``, a new trace with no parent.
 - ``TelemetryMiddleware`` (hand-written ASGI) gives every HTTP request a scope and a server span
@@ -33,11 +34,17 @@ from opentelemetry.trace import SpanKind
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from epistrel.core.context import SYSTEM_PRINCIPAL
+from epistrel.core.errors import BudgetBelowSafetyMinimum
 from epistrel.core.idempotency import ReferenceReplay
 from epistrel.core.turn_gate import TurnAccepted
 from epistrel.observability import context, tracing
 from epistrel.observability.logging import get_logger
-from epistrel.observability.metrics import HTTP_DURATION, OPERATIONS, UNMATCHED_ROUTE
+from epistrel.observability.metrics import (
+    HTTP_DURATION,
+    OPERATIONS,
+    UNMATCHED_ROUTE,
+    count_budget_rejected,
+)
 
 log = get_logger("epistrel.operation")
 request_log = get_logger("epistrel.request")
@@ -105,6 +112,8 @@ def _unit(scope: context.Scope, *, root: bool, line: str) -> Iterator[_Run]:
         finally:
             outcome = run.outcome or outcome_of(run.error)
             OPERATIONS.labels(scope.kind, outcome).inc()
+            if isinstance(run.error, BudgetBelowSafetyMinimum):
+                count_budget_rejected()  # #456: once per unit, whichever planner refused it
             level = "warning" if outcome == "error" else "debug" if run.quiet else "info"
             getattr(log, level)(
                 line,

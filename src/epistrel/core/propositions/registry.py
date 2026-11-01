@@ -60,10 +60,10 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import and_, func, insert, literal_column, select, update
@@ -110,6 +110,10 @@ from epistrel.core.tables import (
     stories,
 )
 from epistrel.core.tables.propositions import CORE_SCOPE
+
+if TYPE_CHECKING:
+    from epistrel.core.membership import Position
+    from epistrel.core.verify.rules import OwnedValue, Verdict
 
 log = logging.getLogger(__name__)
 
@@ -389,6 +393,131 @@ def imply(
         depth += 1
         derived.extend(fresh)
         known.extend(fresh)
+
+
+# -- owner lookups (#191) ----------------------------------------------------------------------
+
+
+class OwnerLookup(Protocol):
+    """The canon of an **owner-lookup** predicate (#191, ADR-160's owner paths): a value its owner
+    holds (a story State's fold, ``core.states.verify``; #195's clock and #207's external values
+    next), never a ``facts`` row. #140's ``check_with`` reads it for a canon holder only, through
+    ``core.readset.KeyedLookup.owned`` (keyed, re-checked at the rebase), as the holder's
+    viewpoint may read it (a value hidden from it is not read), and ``check`` hands the claim to
+    ``verdict``; a ``belief(A)`` holder never consults it (ADR-167). ``implied`` turns a
+    declared rule's consequence on the predicate (``holds ⇒ state_value``) into the value its
+    cause states, or ``None`` when it states none."""
+
+    async def read(
+        self,
+        conn: AsyncConnection,
+        story_id: str,
+        subjects: Sequence[str] | None,
+        through: Position | None,
+        viewpoint: str,
+    ) -> list[OwnedValue]: ...
+
+    def verdict(self, claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict: ...
+
+    def implied(
+        self, consequence: Proposition, cause: Proposition, owned: Sequence[OwnedValue]
+    ) -> Proposition | None: ...
+
+
+OWNER_LOOKUPS: dict[str, OwnerLookup] = {}
+"""The owner lookups by predicate id (``register_owner_lookup``)."""
+
+OwnerActive = Callable[[AsyncConnection, str], Awaitable[bool]]
+"""Whether a conditional owner lookup answers for a story (#195: the clock, while it runs)."""
+OWNER_ACTIVE: dict[str, OwnerActive] = {}
+"""The conditional owner lookups' tests, by predicate id (``register_owner_lookup(active=)``)."""
+
+
+OwnerBeliefOnly = Callable[[AsyncConnection, str, Proposition], Awaitable[bool]]
+"""Whether a claim on an owner-lookup predicate is known to a character only as its own belief
+(#207: a value an external provider owns), so a ``belief(A)`` holder's canon fallback is not
+consulted for it."""
+OWNER_BELIEF_ONLY: dict[str, OwnerBeliefOnly] = {}
+"""The belief-only tests of owner lookups, by predicate id (``register_owner_lookup(
+belief_only=)``)."""
+
+
+OwnerBelief = Callable[[AsyncConnection, str, str, Proposition, Any], Awaitable["Verdict | None"]]
+"""#200: a ``belief(A)`` holder's verdict on a claim on an owner-lookup predicate, decided by
+the owner from A's own view of the value (``(conn, story, A, claim, through)``: the clock
+checks against A's time belief), or ``None`` to decide it as any belief holder's claim."""
+OWNER_BELIEF: dict[str, OwnerBelief] = {}
+"""The belief deciders of owner lookups, by predicate id (``register_owner_lookup(belief=)``)."""
+
+
+def register_owner_lookup(
+    predicate_id: str,
+    lookup: OwnerLookup,
+    *,
+    active: OwnerActive | None = None,
+    belief_only: OwnerBeliefOnly | None = None,
+    belief: OwnerBelief | None = None,
+) -> OwnerLookup:
+    """Make ``predicate_id`` an owner-lookup predicate answered by ``lookup``. With ``active``
+    the lookup is **conditional** (#195: ``time_is`` is the clock's only while the story runs
+    the clock, and an ordinary fact-backed predicate otherwise, as in M4): ``check_with`` reads
+    the owner only for a story ``active`` admits, and a pure ``check`` hands the claim to the
+    lookup only when it is given the owner's values. With ``belief_only``, a claim it admits is
+    decided for a ``belief(A)`` holder over A's partition alone (#207: ADR-167's canon fallback
+    never answers an externally owned value, so one A holds no belief about stays ``novel``).
+    With ``belief`` (#200), a ``belief(A)`` holder's claim is decided by it whenever it answers
+    (the clock checks against A's time belief, never the clock or A's canon)."""
+    OWNER_LOOKUPS[predicate_id] = lookup
+    if active is not None:
+        OWNER_ACTIVE[predicate_id] = active
+    else:
+        OWNER_ACTIVE.pop(predicate_id, None)
+    if belief_only is not None:
+        OWNER_BELIEF_ONLY[predicate_id] = belief_only
+    else:
+        OWNER_BELIEF_ONLY.pop(predicate_id, None)
+    if belief is not None:
+        OWNER_BELIEF[predicate_id] = belief
+    else:
+        OWNER_BELIEF.pop(predicate_id, None)
+    return lookup
+
+
+def owner_lookup(predicate_id: str) -> OwnerLookup | None:
+    """The owner lookup of ``predicate_id``, or ``None`` for a predicate whose canon is facts."""
+    return OWNER_LOOKUPS.get(predicate_id)
+
+
+def conditional_owner(predicate_id: str) -> bool:
+    """``predicate_id``'s owner lookup answers only for some stories (``register_owner_lookup``'s
+    ``active``)."""
+    return predicate_id in OWNER_ACTIVE
+
+
+async def owner_active(predicate_id: str, conn: AsyncConnection, story_id: str) -> bool:
+    """``predicate_id`` is an owner-lookup predicate for ``story_id``: registered, and
+    unconditional or admitted by its ``active`` test."""
+    if predicate_id not in OWNER_LOOKUPS:
+        return False
+    test = OWNER_ACTIVE.get(predicate_id)
+    return True if test is None else await test(conn, story_id)
+
+
+async def owner_belief_only(conn: AsyncConnection, story_id: str, claim: Proposition) -> bool:
+    """``claim`` is on an owner-lookup predicate whose ``belief_only`` test admits it: a
+    character knows its value only as its own belief (see ``register_owner_lookup``)."""
+    test = OWNER_BELIEF_ONLY.get(claim.predicate_id)
+    return test is not None and await test(conn, story_id, claim)
+
+
+async def owner_belief(
+    conn: AsyncConnection, story_id: str, holder_id: str, claim: Proposition, through: Any
+) -> Verdict | None:
+    """#200: ``holder_id``'s belief verdict on ``claim`` as the predicate's owner decides it
+    (``register_owner_lookup(belief=)``), or ``None`` when it has no such decider or the decider
+    does not answer."""
+    decide = OWNER_BELIEF.get(claim.predicate_id)
+    return None if decide is None else await decide(conn, story_id, holder_id, claim, through)
 
 
 # -- author declarations (#108's loose lists, typed) --------------------------------------------
@@ -1406,6 +1535,10 @@ __all__ = [
     "ENGINE_PRINCIPAL",
     "IDENTITY",
     "IMPLICATION_MAX_DEPTH",
+    "OWNER_ACTIVE",
+    "OWNER_BELIEF",
+    "OWNER_BELIEF_ONLY",
+    "OWNER_LOOKUPS",
     "PROPOSABLE",
     "PROPOSAL_OBSERVATIONS",
     "ApproveRequest",
@@ -1415,6 +1548,10 @@ __all__ = [
     "Decision",
     "IdentityReason",
     "ImplicationRule",
+    "OwnerActive",
+    "OwnerBelief",
+    "OwnerBeliefOnly",
+    "OwnerLookup",
     "PredicateDecl",
     "PredicateList",
     "PredicateNotFound",
@@ -1430,6 +1567,7 @@ __all__ = [
     "canonical",
     "cardinality_may_contradict",
     "check_rules",
+    "conditional_owner",
     "consider_proposal",
     "consider_proposals",
     "core_registry",
@@ -1441,7 +1579,12 @@ __all__ = [
     "intersection",
     "list_predicates",
     "load",
+    "owner_active",
+    "owner_belief",
+    "owner_belief_only",
+    "owner_lookup",
     "register_author",
+    "register_owner_lookup",
     "reject",
     "rules_from_deferred",
     "rules_from_snapshot",

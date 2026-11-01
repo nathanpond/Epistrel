@@ -14,6 +14,7 @@ from epistrel.api.routes import (
     admin,
     catalog_characters,
     catalog_scenarios,
+    clock,
     engine_profiles,
     feedback,
     feedback_reports,
@@ -26,15 +27,20 @@ from epistrel.api.routes import (
     personas,
     predicates,
     principals,
+    reconciliation,
     respond,
     retrieval,
     scene,
+    scheduled_events,
+    state_proposals,
+    states,
     stories,
     story_profile,
     story_rating,
     story_texts,
     timeline,
 )
+from epistrel.api.routes.admin import providers as admin_providers
 from epistrel.observability import metrics
 
 public_router = APIRouter()
@@ -61,6 +67,12 @@ router.include_router(personas.router)
 router.include_router(principals.router)
 router.include_router(story_profile.router)
 router.include_router(story_rating.router)
+router.include_router(clock.router)
+router.include_router(scheduled_events.router)
+router.include_router(admin_providers.story_router)
+router.include_router(states.router)
+router.include_router(state_proposals.router)
+router.include_router(reconciliation.router)
 router.include_router(feedback.router)
 router.include_router(feedback_reports.router)
 router.include_router(admin.router)

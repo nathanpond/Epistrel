@@ -37,7 +37,7 @@ import asyncio
 import contextlib
 import logging
 import math
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,7 +45,12 @@ from pydantic import ValidationError
 from sqlalchemy import delete, func, insert, literal_column, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core.enums import OperationKind, OperationStatus
+from epistrel.core.enums import (
+    UNFINISHED_TURN_STAGES,
+    OperationKind,
+    OperationStatus,
+    StagedTurnStage,
+)
 from epistrel.core.errors import EpistrelError, StoryBusy, StoryNotFound
 from epistrel.core.idempotency import QUEUE_OWNER_PREFIX
 from epistrel.core.profiles.effective import StoryProfile, effective_configuration
@@ -272,6 +277,7 @@ async def acquire(
     operation is no longer ``queued`` (it ended, but its row was never dropped) is finished
     here as ``fail_item`` would, without running it."""
     ended = False
+    stuck: str | None = None
     async with db.begin() as conn:
         row = await _lock_story(conn, story_id)
         holder = row.in_flight_turn
@@ -281,9 +287,15 @@ async def acquire(
                 select(operations.c.origin).where(operations.c.operation_id == holder)
             )
             return Held(holder, origin, max(1, math.ceil(remaining)), await _depth(conn, story_id))
-        if holder is not None:
-            await _reclaim(conn, story_id, holder)
-        if newcomer:
+        if holder is not None and not await _reclaim(conn, story_id, holder):
+            # #212: an unfinished staged turn keeps the slot past its lease; #213 resumes it
+            # (``stalled``, once this transaction ended).
+            origin = await conn.scalar(
+                select(operations.c.origin).where(operations.c.operation_id == holder)
+            )
+            stuck = str(holder)
+            held = Held(holder, origin, 1, await _depth(conn, story_id))
+        elif newcomer:
             depth = await _depth(conn, story_id)
             if depth:
                 return Held(None, None, 1, depth)
@@ -298,7 +310,7 @@ async def acquire(
                     await _fail(conn, operation_id, error)
                     await _forget_item(conn, operation_id)
                 ended = True
-        if not ended:
+        if not ended and stuck is None:
             await conn.execute(
                 update(stories)
                 .where(stories.c.id == story_id)
@@ -307,6 +319,9 @@ async def acquire(
                     in_flight_lease_until=func.clock_timestamp() + _interval(lease_s),
                 )
             )
+    if stuck is not None:
+        stalled(db, story_id, stuck)
+        return held
     if ended:
         wakeups.wake(story_id)
         raise NotQueued(operation_id)
@@ -339,10 +354,22 @@ def _interval(seconds: float) -> Any:
     return literal_column(f"make_interval(secs => {float(seconds)!r})")
 
 
-async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
+async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> bool:
     """The holder's lease ran out (its process died, or it hung): a queued turn goes back to
     the queue (``MAX_RUNS`` interrupted runs fail it); any other turn is marked ``failed``. A
-    late commit of the dead turn is refused (its operation is no longer ``in_flight``)."""
+    late commit of the dead turn is refused (its operation is no longer ``in_flight``).
+
+    #212: a staged turn whose intent committed and whose completion has not (``turn_stage`` in
+    ``UNFINISHED_TURN_STAGES``) is skipped: it is never marked ``failed`` or
+    ``turn_interrupted`` and keeps its slot; #213 resumes it from here (``acquire`` tells the
+    ``stalled`` hook; the worker's recovery pass resumes every one). Answers whether the slot
+    was reclaimed."""
+    stage = await conn.scalar(
+        select(operations.c.turn_stage).where(operations.c.operation_id == holder)
+    )
+    if stage is not None and StagedTurnStage(stage) in UNFINISHED_TURN_STAGES:
+        logger.warning("turn slot of a story held past its lease by a staged turn (%s)", holder)
+        return False
     queued = (
         await conn.execute(
             select(turn_queue.c.attempts)
@@ -374,12 +401,14 @@ async def _reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
         if queued is not None:
             await _forget_item(conn, holder)
     await release(conn, story_id, holder)
+    return True
 
 
-async def reclaim(conn: AsyncConnection, story_id: str, holder: str) -> None:
+async def reclaim(conn: AsyncConnection, story_id: str, holder: str) -> bool:
     """Reclaim ``holder``'s expired slot (the caller holds the story row lock; #75's
-    start-up sweep, ``core.orphans``)."""
-    await _reclaim(conn, story_id, holder)
+    start-up sweep, ``core.orphans``); ``False`` for an unfinished staged turn (#212), which
+    keeps it."""
+    return await _reclaim(conn, story_id, holder)
 
 
 class TurnInterrupted(EpistrelError):
@@ -429,6 +458,74 @@ async def release_now(db: AsyncEngine, story_id: str, operation_id: str) -> None
             await release(conn, story_id, operation_id)
     finally:
         wakeups.wake(story_id)
+
+
+async def take_over_staged(
+    db: AsyncEngine, story_id: str, operation_id: str, lease_s: float
+) -> bool:
+    """#213 (FR-EXT-17): take the turn slot of the unfinished staged turn ``operation_id`` over
+    to resume it, in one short transaction under the story row lock: only while the turn still
+    holds the slot with a lapsed lease (the process running it is gone), or while the slot is
+    free (a control action cleared it). A live lease means someone runs the turn: ``False``.
+    The resumer then renews the lease (``renewing``) like the turn it continues."""
+    async with db.begin() as conn:
+        row = await _lock_story(conn, story_id)
+        if row.in_flight_turn is not None and (
+            str(row.in_flight_turn) != operation_id or row.in_flight_lease_until > row.now
+        ):
+            return False
+        stage = await conn.scalar(
+            select(operations.c.turn_stage).where(operations.c.operation_id == operation_id)
+        )
+        if stage is None or StagedTurnStage(stage) not in UNFINISHED_TURN_STAGES:
+            return False
+        await conn.execute(
+            update(stories)
+            .where(stories.c.id == story_id)
+            .values(
+                in_flight_turn=operation_id,
+                in_flight_lease_until=func.clock_timestamp() + _interval(lease_s),
+            )
+        )
+    return True
+
+
+async def lapse(db: AsyncEngine, story_id: str, operation_id: str) -> None:
+    """#213: end the lease of the slot ``operation_id`` holds now (a staged turn whose stage
+    failed in its own process): it keeps the slot, and a same-key retry or the recovery sweep
+    takes it over at once to resume the turn (``take_over_staged``)."""
+    try:
+        async with db.begin() as conn:
+            await conn.execute(
+                update(stories)
+                .where(stories.c.id == story_id, stories.c.in_flight_turn == operation_id)
+                .values(in_flight_lease_until=func.clock_timestamp())
+            )
+    except Exception as exc:  # pragma: no cover - the database went away; the lease runs out
+        logger.warning("could not end a staged turn's lease: %s", type(exc).__name__)
+
+
+StalledHook = Callable[[AsyncEngine, str, str], None]
+"""#213: told of an unfinished staged turn found holding its story's slot past its lease
+(``story_id``, ``operation_id``), so it is resumed (the Orchestrator binds
+``orchestrator.structured.staged.kick``)."""
+_stalled: list[StalledHook] = []
+
+
+def bind_stalled(hook: StalledHook | None) -> None:
+    """Make ``hook`` the one ``acquire`` tells of a stalled staged turn; ``None`` unbinds."""
+    _stalled.clear()
+    if hook is not None:
+        _stalled.append(hook)
+
+
+def stalled(db: AsyncEngine, story_id: str, operation_id: str) -> None:
+    """Tell the bound hook (if any) that ``operation_id`` stalled (logged, never raised)."""
+    for hook in list(_stalled):
+        try:
+            hook(db, story_id, operation_id)
+        except Exception as exc:  # pragma: no cover - a hook never stops a request
+            logger.warning("could not schedule a staged turn's resume: %s", type(exc).__name__)
 
 
 @contextlib.asynccontextmanager
@@ -505,13 +602,16 @@ async def enqueue(
     origin: str,
     queue_max: int,
     hand_over: Any = None,
+    operation_kind: OperationKind = OperationKind.TURN,
 ) -> int:
     """Queue a turn; return its position (turns ahead of it).
 
     One transaction under the story row lock: 423 ``story_busy`` ``{reason: queue_full}``
     when ``queue_max`` turns already wait; else the ``operations`` row (``queued``, the
     request's key and viewpoint) and the ``turn_queue`` row, and ``hand_over(conn, owner)``
-    hands the request's ``Idempotency-Key`` to the queue (#61) in the same transaction."""
+    hands the request's ``Idempotency-Key`` to the queue (#61) in the same transaction.
+    ``operation_kind``: the queued operation's kind (an ingest batch that starts with a
+    ``state_change`` starts with an ``inter_turn`` slot, #186)."""
     async with db.begin() as conn:
         row = await _lock_story(conn, story_id)
         depth = await _depth(conn, story_id)
@@ -532,7 +632,7 @@ async def enqueue(
             insert(operations).values(
                 operation_id=operation_id,
                 story_id=story_id,
-                kind=OperationKind.TURN.value,
+                kind=operation_kind.value,
                 principal=principal,
                 status=OperationStatus.QUEUED.value,
                 idempotency_key=idempotency_key,
@@ -780,10 +880,12 @@ __all__ = [
     "NotQueued",
     "Outcome",
     "QueueItem",
+    "StalledHook",
     "TurnAccepted",
     "TurnInterrupted",
     "Wakeups",
     "acquire",
+    "bind_stalled",
     "clear_lease",
     "close_item",
     "enqueue",
@@ -791,6 +893,7 @@ __all__ = [
     "fail_item",
     "fail_queued",
     "head",
+    "lapse",
     "lease_seconds",
     "outcome",
     "queue_owner",
@@ -800,7 +903,9 @@ __all__ = [
     "release",
     "release_now",
     "renewing",
+    "stalled",
     "stored_error",
+    "take_over_staged",
     "turn_queue_defaults",
     "wakeups",
 ]

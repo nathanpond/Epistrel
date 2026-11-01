@@ -93,10 +93,16 @@ class RecoveryReport:
 
 
 async def recovery_pass(db: AsyncEngine) -> RecoveryReport:
-    """Reclaim every lapsed lease (fenced, each once), reconcile and fire every overdue timer
-    and recurring task, and run the recovery hooks; idempotent."""
+    """Reclaim every lapsed lease (fenced, each once), resume every stalled staged turn (#213),
+    reconcile and fire every overdue timer and recurring task, and run the recovery hooks;
+    idempotent."""
     reclaimed = await queue.reap(db)
     orphaned = await orphans.fail_orphans(db)
+    # #213 (FR-EXT-17): the staged turns the slot reclaim skipped, resumed from their last stage.
+    from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
+    from epistrel.orchestrator.structured import staged  # here: staged imports this module
+
+    await staged.resume_stalled(db, registry=dispatcher.bound())
     await timers.reconcile(db)
     due = await timers.fire_due(db)
     ran: list[str] = []

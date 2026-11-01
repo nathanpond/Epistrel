@@ -46,10 +46,16 @@ DIGEST = REPO_ROOT / "docs" / "evals" / "sets-digest.md"
 DIGEST_SAMPLES = 20
 DIGEST_SEED = 157
 STRATIFIED = frozenset(
-    {"asymmetry/cases.jsonl", "think_leak/cases.jsonl", "entailment_viewpoint/cases.jsonl"}
+    {
+        "asymmetry/cases.jsonl",
+        "think_leak/cases.jsonl",
+        "entailment_viewpoint/cases.jsonl",
+        "time_estimation/cases.jsonl",
+    }
 )
 """#179's sets, whose digest sample is stratified by family (the fixture, the category) and
-template, so every stratum is in front of the reviewer."""
+template, and #201's time-estimation set, stratified by activity family, so every stratum is in
+front of the reviewer."""
 HAND_WRITTEN = frozenset({"smoke", "e02"})
 """Suites whose sets predate #157 (#134's smoke, #155's E-02): no provenance or digest rule."""
 
@@ -101,6 +107,14 @@ def _label(value: Any) -> str:
     return "labeled"
 
 
+def _row_label(row: dict[str, Any]) -> str:
+    """A row's label in the digest's counts: #201's time-estimation cases by their kind (the
+    first word of their notes: explicit, implicit, inferred), every other set by ``_label``."""
+    if "acceptable_minutes" in row:
+        return str(row.get("notes", "")).split(":", 1)[0] or "labeled"
+    return _label(row.get("expected", row.get("label")))
+
+
 def _stratum(row: dict[str, Any]) -> tuple[str, str]:
     inputs = row.get("inputs") if isinstance(row.get("inputs"), dict) else {}
     assert isinstance(inputs, dict)  # noqa: S101 - narrowed above
@@ -150,7 +164,7 @@ def digest_text(sets_dir: Path) -> str:
         path = sets_dir / set_file
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
         families = Counter(str(r.get("family", "")) for r in rows)
-        labels = Counter(_label(r.get("expected", r.get("label"))) for r in rows)
+        labels = Counter(_row_label(r) for r in rows)
         lines += [
             f"## `{set_file}` ({owner}, {len(rows)} cases)",
             "",

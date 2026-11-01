@@ -21,7 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
-from epistrel.core.enums import Membership, OperationKind, OperationStatus
+from epistrel.core.enums import Membership, OperationKind, OperationStatus, StagedTurnStage
 from epistrel.core.tables.base import metadata, pg_enum, ulid_type
 
 MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
@@ -43,8 +43,12 @@ MUTABLE_OPERATION_COLUMNS: tuple[str, ...] = (
     "parent_variant",
     "checked_guardrails",
     "stage_log",
+    "slot_k",
+    "turn_stage",
 )
-"""The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list)."""
+"""The only ``operations`` columns an UPDATE may change (#44's engine-wide allow-list; #193 adds
+``slot_k``, which an inter-turn slot's commit sets beside its turn and variant; #212 adds
+``turn_stage``, which a staged turn's stages move)."""
 
 ORIGIN_CHECK = "origin IN ('generated', 'ingested')"
 """``generated``: the Engine produced the operation's records; ``ingested``: a consumer recorded
@@ -114,7 +118,13 @@ operations = Table(
     # The stages an erasure's operations record (#124; ``Operation.stage``), in order:
     # ``[{stage, status}]`` (``redacted``, ``ledger_written``, ``regenerated``, ``rebuilt``;
     # status ``done``, ``partial``, ``skipped`` or ``failed``). Identifiers and outcomes only.
+    # A staged turn's (#212) are ``{stage, status, at, revision}``: ``intent``, ``claim``,
+    # ``outcome``, ``completion``, ``response``.
     Column("stage_log", JSONB, nullable=True),
+    # A staged turn's stage (#212, FR-EXT-16): ``intent_committed``, ``awaiting_outcome``,
+    # ``outcome_recorded``, ``completed`` or ``abandoned``; ``NULL`` for every ordinary turn and
+    # every non-turn operation (``is_staged_turn``). ``status`` is ``committed`` from intent on.
+    Column("turn_stage", pg_enum(StagedTurnStage, "turn_stage"), nullable=True),
     CheckConstraint(ORIGIN_CHECK, name="origin"),
     CheckConstraint(
         "kind <> 'turn' OR status <> 'committed' OR narrative_turn IS NOT NULL",

@@ -33,11 +33,15 @@ from epistrel.config import Settings
 from epistrel.core.propositions import registry, store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import FRIEND_OF
+from epistrel.core.resolution.context import load_index
+from epistrel.core.verify.protected import load_protected_index
+from epistrel.core.visibility import Visibility
 from tests import perception_support as ps
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
+from tests.canon_support import commit
 from tests.event_support import rows
-from tests.respond_support import body, respond, respond_client
+from tests.respond_support import body, played, respond, respond_client
 from tests.story_support import READ
 from tests.structured_turn_support import beat, claim, render, turn_report, utterances
 
@@ -55,10 +59,16 @@ def stub_settings(pg_url: str) -> Settings:
     return auth_settings(pg_url, model_adapter="stub")
 
 
-async def _phone_story(client: Any, engine: AsyncEngine) -> tuple[str, dict[str, str], str]:
-    """The room, the phone and its two possible contents, and ``message_content``."""
-    story, ids, _ = await ts.room(client, engine, "Wren", "Jenni", "Bobby")
-    await ts.enable_testimony(engine, story, "defaulted")
+async def _phone_story(
+    client: Any,
+    engine: AsyncEngine,
+    *away: str,
+    level: str = "full",
+) -> tuple[str, dict[str, str], str]:
+    """The room, the phone and its two possible contents, and ``message_content`` (``away``:
+    more characters, in the kitchen; ``level``: the perception level)."""
+    story, ids, _ = await ts.room(client, engine, "Wren", "Jenni", "Bobby", *away, away=away)
+    await ts.enable_testimony(engine, story, "defaulted", level=level)
     async with engine.begin() as conn:
         for name, kind in ((PHONE, "item"), (TRUTH, "other"), (MEME, "other")):
             await store.add_entity(conn, story, kind, name)
@@ -282,3 +292,106 @@ async def test_s_phone(
             engine, "SELECT id, revealed_by_event_id FROM divergences WHERE story_id = :s", s=story
         )
         assert [(d.id, d.revealed_by_event_id) for d in kept] == [(divergence.id, reveal_event.id)]
+
+
+# -- a narrated reveal of a hidden fact (#566) ---------------------------------------------------
+
+NARRATED = "In the parlor, all can read the message on the phone: the breakup text."
+
+
+async def _protects_truth(engine: AsyncEngine, story: str, speaker: str) -> bool:
+    """``speaker``'s protected index flags the truth's words."""
+    async with engine.connect() as conn:
+        index = await load_index(conn, story)
+        protected = await load_protected_index(conn, story, speaker, index=index)
+    return protected is not None and protected.match(REVEAL_LINE) != []
+
+
+@pytest.mark.part("M5", "FR-TURN-4,5,6,7; FR-COMMIT-2,4")
+async def test_s_phone__narrated_reveal(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#566: a perceived narration stating a hidden fact (any predicate, not only #546's
+    ``same_as``) widens it to the beat's content perceivers, as a say or do reveal does. At
+    perception ``co_location`` the truth is scoped to Bobby; a narration in the parlor shows it,
+    with Jenni and Wren there and Marcus in the kitchen. The fact widens to the parlor (Marcus
+    not joining its scope), the turn reports the reveal, Jenni's protected index stops flagging
+    it and her later sincere line saying it is not repaired. Complement: before the narration
+    her index flags it, and Marcus, who perceived nothing, is still flagged after."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, content = await _phone_story(client, engine, "Marcus", level="co_location")
+        jenni, bobby, wren, marcus = ids["Jenni"], ids["Bobby"], ids["Wren"], ids["Marcus"]
+        entity = {
+            r.canonical_name: str(r.id)
+            for r in await rows(
+                engine, "SELECT id, canonical_name FROM entities WHERE story_id = :s", s=story
+            )
+        }
+        truth = await commit(
+            engine,
+            story,
+            Proposition(
+                subject_id=entity[PHONE],
+                predicate_id=content,
+                object_id=entity[TRUTH],
+                valid_time=Interval.of(None, None),
+            ),
+            provenance="author",
+            visibility=Visibility(scope="characters", characters=(bobby,)),
+        )
+        assert await _protects_truth(engine, story, jenni)
+        assert await _protects_truth(engine, story, marcus)
+
+        # -- the narration, in the parlor
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "narration",
+                        NARRATED,
+                        location="parlor",
+                        propositions=[claim(PHONE, "message_content", TRUTH)],
+                    )
+                ),
+                render(beat("think", "So now they know.")),
+            ],
+        )
+        await played(
+            client, story, body(wren, None, do="Wren waits.", render_character_ids=[bobby])
+        )
+        (closed, widened) = await _contents(engine, story, content)
+        assert (closed.id, closed.superseded_by, widened.tx_to) == (truth.id, widened.id, None)
+        assert widened.visibility == {
+            "scope": "characters",
+            "characters": sorted([jenni, bobby, wren]),
+        }
+        (revealed,) = (await turn_report(engine, story))["commit"]["reveals"]
+        assert (revealed["fact_id"], revealed["superseded_id"]) == (widened.id, truth.id)
+        assert not await _protects_truth(engine, story, jenni)
+        assert await _protects_truth(engine, story, marcus)
+
+        # -- Jenni says it: not protected content for her any more, so nothing is repaired
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say",
+                        REVEAL_LINE,
+                        intent="sincere",
+                        addressee=bobby,
+                        propositions=[claim(PHONE, "message_content", TRUTH)],
+                    )
+                )
+            ],
+        )
+        said = await _turn(client, story, ids, "What did it say?")
+        assert REVEAL_LINE in said["message"]["text"]
+        assert "repairs" not in await turn_report(engine, story)
+        (line,) = [u for u in await utterances(engine, story) if u.speaker_character_id == jenni]
+        assert (line.objective_relation, line.classification) == ("true", "sincere")

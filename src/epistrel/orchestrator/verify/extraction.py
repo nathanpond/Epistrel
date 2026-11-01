@@ -102,7 +102,9 @@ from epistrel.core.resolution.entities import NARRATOR, PLAYER, ResolutionContex
 from epistrel.core.resolution.identity import speaker_identities
 from epistrel.core.resolution.time import Position, turn_of
 from epistrel.core.settings_schema import OMNISCIENT, VerifySettings
-from epistrel.core.tables import events, operations
+from epistrel.core.states import definitions as state_definitions
+from epistrel.core.states.verify import tracked
+from epistrel.core.tables import characters, events, operations
 from epistrel.core.tables.commitments import thunks
 from epistrel.core.verify import shadow
 from epistrel.core.verify.detect import (
@@ -154,10 +156,13 @@ from epistrel.orchestrator.models.registry import (
 )
 from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.verify.verifier import (
+    CLOCK_CHECKED,
+    TIME_CHANNELS,
     ClaimRef,
     SafeDisposition,
     Verifier,
     VerifyResult,
+    own_time_claim,
 )
 
 log = logging.getLogger(__name__)
@@ -251,10 +256,14 @@ async def load_env(
     speakers: Sequence[str],
     config: DetectionConfig | None = None,
     registry: Registry | None = None,
+    addressed: str | None = None,
 ) -> DetectionEnv:
     """The detection environment of one turn, built once at plan time: the registry, the
     resolution context and protected index of each speaker (remembered for the rebase
-    re-check), the scene's place and placements, and the open thunks."""
+    re-check), the scene's place and placements, and the open thunks. ``addressed`` (#483):
+    the turn's input actor, whom every context's ``you`` may name
+    (``ResolutionContext.addressed``). #191: the story's States and characters, which turn a
+    stated balance into a ``state_value`` claim."""
     config = config or await DetectionConfig.load(conn, story_id)
     registry = registry or await load(conn, story_id)
     basis = await load_time_basis(conn, story_id)
@@ -267,7 +276,7 @@ async def load_env(
     reads: CanonReads = {}
     shared: SharedContext = {}
     for speaker in dict.fromkeys([*speakers, NARRATOR]):
-        contexts[speaker] = await load_context(
+        context = await load_context(
             conn,
             story_id,
             position=position,
@@ -279,6 +288,9 @@ async def load_env(
             identities=await speaker_identities(
                 lookup, story_id, speaker, through_position=(turn, 0)
             ),
+        )
+        contexts[speaker] = (
+            context if addressed is None else replace(context, addressed=frozenset({addressed}))
         )
         protected[speaker] = await load_protected_index(
             conn,
@@ -318,6 +330,24 @@ async def load_env(
         predicates={pid: p.name for pid, p in registry.predicates.items()},
     )
 
+    # #191: the story's States and characters, so a stated balance is a ``state_value`` claim.
+    states = tracked(await state_definitions(conn, story_id))
+    scope_keys = (
+        frozenset(
+            str(c)
+            for c in await conn.scalars(
+                select(characters.c.id).where(characters.c.story_id == story_id)
+            )
+        )
+        if states
+        else frozenset()
+    )
+
+    # #200: who is asleep or passed out, so a waking names the state it ends.
+    from epistrel.core.epistemic.scene import unconscious_kinds
+
+    unconscious = await unconscious_kinds(conn, story_id, turn, read_set=read_set)
+
     def context_for(speaker: str) -> ResolutionContext:
         return contexts.get(speaker) or contexts[NARRATOR]
 
@@ -333,6 +363,9 @@ async def load_env(
         placement=placement,
         open_thunks=open_thunks,
         private=private,
+        states=states,
+        scope_keys=scope_keys,
+        unconscious=unconscious,
     )
 
 
@@ -762,11 +795,13 @@ async def verify_detected(
     start: int = 0,
     intent_of: Callable[[DetectedClaim], str | None] | None = None,
     cites_of: Callable[[DetectedClaim], Sequence[str]] | None = None,
+    change_of: Callable[[DetectedClaim], bool] | None = None,
 ) -> list[CheckedClaim]:
     """Verify every detected claim of ``outcome`` (see the module docstring); claim ids are
     ``<operation>:<n>`` from ``start``. A character's ``say`` claim (never the player's own,
     FR-EPI-12) is first-person: it names its speaker as the believer (#166), with its beat's
-    declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``)."""
+    declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``).
+    ``change_of`` (#198): whether the claim's beat states an explicit schedule change."""
     checked: list[CheckedClaim] = []
     on = verifier is not None and verifier.config.on
     for n, claim in enumerate(outcome.claims, start):
@@ -825,6 +860,22 @@ async def verify_detected(
             if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)
             else None
         )
+        if (
+            verifier.config.clock
+            and claim.proposition.predicate_id in CLOCK_CHECKED
+            and claim.channel in TIME_CHANNELS
+            and claim.speaker not in (PLAYER, NARRATOR)
+        ):
+            # #200 (FR-CLOCK-10): a character's own time claim is checked against its time
+            # belief (its belief relation; a time a ``do`` shows is what is seen: objective);
+            # with the profile's ``clock.time_claims`` off it is checked as narration is
+            # (objectively, as #195 and #194 shipped), with no belief dimension.
+            if verifier.config.time_claims and own_time_claim(
+                claim.proposition.predicate_id, claim.channel
+            ):
+                believer = claim.speaker
+            else:
+                believer = None
         proposition = claim.proposition
         if claim.attribution is not None:
             # #167: "Bobby thinks …" asserts Bobby's belief, not the proposition: checked
@@ -862,6 +913,9 @@ async def verify_detected(
             believer=believer,
             intent=None if intent_of is None or believer is None else intent_of(claim),
             cites=() if cites_of is None or believer is None else tuple(cites_of(claim)),
+            giver=claim.giver,  # #519: a detected transfer's giver (the hand-over exception)
+            change=claim.change_cue,  # #518: a stated change may change the actor's own fluent
+            schedule_change=change_of is not None and change_of(claim),
             # #146's resolution exemption: a claim filling an open thunk resolves it, so
             # binding the thunk to a modeled character is reconciliation's to judge (#154,
             # #165), not a permission denial.
@@ -1122,6 +1176,13 @@ async def _run_shadow(ctx: JobContext) -> JobOutput:
         settings = (await effective_configuration(conn, story_id, validate=False)).settings
         routes = routes_of(settings)
         speakers = [str(r.get("speaker") or NARRATOR) for r in skipped]
+        # #483: the turn's input actor, as the live check resolved ``you`` against.
+        actor = await conn.scalar(
+            select(events.c.character_id).where(
+                events.c.operation_id == payload.operation_id,
+                events.c.type == "player_input",
+            )
+        )
         env = await load_env(
             conn,
             story_id,
@@ -1129,6 +1190,7 @@ async def _run_shadow(ctx: JobContext) -> JobOutput:
             position=(turn, 0),
             speakers=speakers,
             config=DetectionConfig.of(settings),
+            addressed=None if actor is None else str(actor),
         )
         beats: dict[int | None, DetectBeat] = {}
         for r in skipped:

@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.enums import BeliefConfidenceLevel, OperationKind, Provenance
 from epistrel.core.epistemic import nested, transitions
-from epistrel.core.epistemic.partitions import Belief
+from epistrel.core.epistemic.partitions import Acquisition, Belief, acquisitions
 from epistrel.core.epistemic.transitions import Antecedent, Confidence, Transition
 from epistrel.core.errors import ModuleOff
 from epistrel.core.events import Operation
@@ -109,6 +109,17 @@ class BeliefWrite:
     operation_id: str
     closed: tuple[str, ...] = ()
     replayed: bool = False
+    acquisition: Acquisition | None = None
+    """#654: how the belief was acquired, read from the transition its ``provenance`` names (a
+    belief changed in place keeps the transition that produced it). ``None`` only in a result
+    stored before #654 (``acquired``)."""
+
+    @property
+    def acquired(self) -> Acquisition:
+        """``acquisition``, or (a result stored before #654) the recorded transition's."""
+        if self.acquisition is not None:
+            return self.acquisition
+        return Acquisition.of(self.transition.kind, self.transition.source_character_id)
 
 
 async def require_partitions(db: AsyncEngine, story_id: str) -> ProfileSettings:
@@ -199,19 +210,30 @@ async def write_belief(
                         settings=settings,
                     )
                 ).result
-                return
-            found["result"] = await transitions.transition(
-                conn,
-                op,
-                holder=request.holder,
-                kind=transitions.Kind.AUTHOR,
-                proposition=request.proposition,
-                polarity=request.polarity,
-                antecedent=Antecedent.record("events", str(act)),
-                position=await _position(conn, story_id),
-                confidence=Confidence(request.confidence_level, request.confidence_scalar),
-                settings=settings,
-            )
+            else:
+                found["result"] = await transitions.transition(
+                    conn,
+                    op,
+                    holder=request.holder,
+                    kind=transitions.Kind.AUTHOR,
+                    proposition=request.proposition,
+                    polarity=request.polarity,
+                    antecedent=Antecedent.record("events", str(act)),
+                    position=await _position(conn, story_id),
+                    confidence=Confidence(request.confidence_level, request.confidence_scalar),
+                    settings=settings,
+                )
+            # #654: the producing transition's kind; a belief changed in place keeps its own.
+            done: transitions.TransitionResult = found["result"]
+            provenance = done.belief.provenance
+            if provenance == done.transition.id:
+                found["acquisition"] = Acquisition.of(
+                    done.transition.kind, done.transition.source_character_id
+                )
+            else:
+                found["acquisition"] = (await acquisitions(conn, story_id, [provenance]))[
+                    provenance
+                ]
 
         op.add_commit_step(step)
         await op.commit()
@@ -229,6 +251,7 @@ async def write_belief(
         timeline_revision=int(op.timeline_revision),
         operation_id=op.operation_id,
         closed=result.closed,
+        acquisition=found["acquisition"],
     )
 
 

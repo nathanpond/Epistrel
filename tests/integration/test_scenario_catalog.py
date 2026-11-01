@@ -358,25 +358,26 @@ async def test_numbers_in_stored_structures_must_be_finite(client: httpx.AsyncCl
     cannot hold: it is refused at its field, on create and on save, rather than silently
     stored as ``null``. Complement: a finite number is stored as sent."""
     sid = (await create(client))["id"]
-    huge = b'{"starting_state": {"clock": {"speed": 1e400}}, "public_card": {"name": "Big"}}'
+    # An object stored as given (#202 typed the starting clock: the creation bounds stay so).
+    huge = b'{"creation_rules": {"bounds": {"speed": 1e400}}, "public_card": {"name": "Big"}}'
     created = await client.post(
         BASE, content=huge, headers={**WRITE, "Content-Type": "application/json"}
     )
     assert (created.status_code, error_of(created)["details"]["field"]) == (
         422,
-        "body.starting_state.clock",
+        "body.creation_rules.bounds",
     )
     patched = await client.patch(
         f"{BASE}/{sid}",
-        content=b'{"draft_revision": 1, "starting_state": {"clock": {"speed": -1e400}}}',
+        content=b'{"draft_revision": 1, "creation_rules": {"bounds": {"speed": -1e400}}}',
         headers={**WRITE, "Content-Type": "application/json"},
     )
     assert (patched.status_code, error_of(patched)["details"]["field"]) == (
         422,
-        "body.starting_state.clock",
+        "body.creation_rules.bounds",
     )
-    kept = await save(client, sid, 1, starting_state={"clock": {"speed": 2.5, "skip": -3}})
-    assert kept.json()["starting_state"]["clock"] == {"speed": 2.5, "skip": -3}
+    kept = await save(client, sid, 1, creation_rules={"bounds": {"speed": 2.5, "skip": -3}})
+    assert kept.json()["creation_rules"]["bounds"] == {"speed": 2.5, "skip": -3}
 
 
 # -- optimistic concurrency (FR-CAT-3, shared with #103's service) -----------------------------

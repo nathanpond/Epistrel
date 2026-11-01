@@ -1,7 +1,7 @@
 """The seeded engine profiles: the Lite preset (FR-PROF-3; #106), the profile every deployment
 starts with and its default, and the system-owned ``Structured`` profile (#129 seeded it as
-``Structured (M4)``; #181 renamed it and made its version 2 the full M5 set); and the deployment's
-profile defaults they are read over.
+``Structured (M4)``; #181 renamed it and made its version 2 the full M5 set, #203 its version 3
+the full M6 set); and the deployment's profile defaults they are read over.
 
 Migration ``0025_engine_profiles`` inserts it with the fixed id below, owned by ``system``
 (FR-AUTH-5: presets shipped with Epistrel are owned by ``system``), at version 1, and makes it
@@ -140,14 +140,12 @@ STRUCTURED_M4_VERSION = 1
 the committed M4 baseline reports keep (``Structured (M4) v1``)."""
 
 
-# -- the Structured profile, version 2 (#181) -----------------------------------------------------
+# -- the Structured profile, version 2 (#181; frozen by #203) ------------------------------------
 
 STRUCTURED_PROFILE_ID = STRUCTURED_M4_PROFILE_ID
 """The seeded structured profile's id: the same row as ``Structured (M4)``, renamed in place
 (the owner's decision), so every M4 fixture and pin keeps working."""
 STRUCTURED_NAME = "Structured"
-STRUCTURED_VERSION = 2
-"""The version migration ``0080_structured_profile_m5`` adds: ``STRUCTURED_SETTINGS``."""
 
 STRUCTURED_RENDERS = 2
 """The renders (B) a turn of the seeded profile is budgeted for: two primaries."""
@@ -160,7 +158,7 @@ total cap that includes the reserved guardrail calls, as every explicit cap is (
 STRUCTURED_DEADLINE_MS = 60_000
 """A two-render turn's deadline: 45 s (M4's) raised to 60 s (#454 leaves model speed to M9)."""
 
-STRUCTURED_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
+STRUCTURED_M5_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
     {
         **STRUCTURED_M4_SETTINGS,
         "character_knowledge": {
@@ -181,7 +179,39 @@ STRUCTURED_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
 in-place update): per-character partitions with nested beliefs to depth 2, lazy resolution and
 testimony adjudicated by the model (at most 2 adjudications and 20 lazy resolutions a turn),
 ``full`` perception routing, and per-character renders (interjections of at most 6 words where
-a story allows them). Budgets: ``STRUCTURED_MODEL_CALLS`` calls and a 60 s deadline."""
+a story allows them). Budgets: ``STRUCTURED_MODEL_CALLS`` calls and a 60 s deadline. Frozen by
+#203: migration ``0080_structured_profile_m5`` inserts exactly these."""
+
+STRUCTURED_M5_VERSION = 2
+"""The version ``STRUCTURED_M5_SETTINGS`` is (``0080_structured_profile_m5``), and the label the
+committed M5 reports keep (``Structured v2``)."""
+
+
+def structured_m5_settings() -> dict[str, Any]:
+    """A fresh, mutable copy of ``STRUCTURED_M5_SETTINGS``."""
+    copied: dict[str, Any] = _thaw(STRUCTURED_M5_SETTINGS)
+    return copied
+
+
+# -- the Structured profile, version 3 (#203) -----------------------------------------------------
+
+STRUCTURED_VERSION = 3
+"""The version migration ``0104_structured_profile_m6`` adds: ``STRUCTURED_SETTINGS``."""
+
+STRUCTURED_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        **STRUCTURED_M5_SETTINGS,
+        "clock": {"level": "on", "time_claims": True, "scheduled_stops": True},
+        "states": {"level": "on"},
+    }
+)
+"""``Structured``'s version 3 settings, as stored (JSON): everything version 2 turns on
+(``STRUCTURED_M5_SETTINGS``), plus both modules M6 delivers (#203, the owner's decision of an
+in-place update): the world clock ``on`` with time-claim verification and scheduled-event
+stops, and States ``on``. The clock's mode (``paced``, ``manual`` or ``external``) is a story
+setting, not a profile dial. Budgets stay version 2's (the owner's decision of 2026-10-28):
+NFR-PERF-6's 4 already counts time estimation, and a story with a synchronous provider's
+outcome step (#214's O) is reserved inside the explicit cap."""
 
 
 def structured_settings() -> dict[str, Any]:
@@ -313,16 +343,28 @@ M5_PROFILE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
 yet, so the document stays complete."""
 
 
+M6_PROFILE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        "clock": {"level": "off", "time_claims": False, "scheduled_stops": False},
+        "states": {"level": "off"},
+    }
+)
+"""The settings M6 delivers (#203), at the schema's defaults, both modules off: migration
+``0104_structured_profile_m6`` adds each one the deployment's ``profile_defaults`` does not name
+yet, so the document stays complete."""
+
+
 def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
     ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS``,
     ``CONSOLIDATION_DEFAULTS``, ``IMPLICATION_DEFAULTS``, ``HOT_SET_DEFAULTS``,
-    ``RENDER_DEFAULTS`` and ``M5_PROFILE_DEFAULTS`` under them (a complete document of every
-    delivered setting)."""
+    ``RENDER_DEFAULTS``, ``M5_PROFILE_DEFAULTS`` and ``M6_PROFILE_DEFAULTS`` under them (a complete
+    document of every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
     base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
     base = _merged(_merged(base, IMPLICATION_DEFAULTS), HOT_SET_DEFAULTS)
     base = _merged(_merged(base, RENDER_DEFAULTS), M5_PROFILE_DEFAULTS)
+    base = _merged(base, M6_PROFILE_DEFAULTS)
     return _merged(base, LITE_SETTINGS)
 
 
@@ -336,6 +378,7 @@ __all__ = [
     "LITE_SETTINGS",
     "M4_PROFILE_DEFAULTS",
     "M5_PROFILE_DEFAULTS",
+    "M6_PROFILE_DEFAULTS",
     "PREVIOUS_ENTAILMENT_GATE",
     "RENDER_DEFAULTS",
     "RETRIEVAL_DEFAULTS",
@@ -346,6 +389,8 @@ __all__ = [
     "STRUCTURED_M4_PROFILE_ID",
     "STRUCTURED_M4_SETTINGS",
     "STRUCTURED_M4_VERSION",
+    "STRUCTURED_M5_SETTINGS",
+    "STRUCTURED_M5_VERSION",
     "STRUCTURED_MODEL_CALLS",
     "STRUCTURED_NAME",
     "STRUCTURED_PROFILE_ID",
@@ -356,5 +401,6 @@ __all__ = [
     "lite_settings",
     "profile_defaults",
     "structured_m4_settings",
+    "structured_m5_settings",
     "structured_settings",
 ]

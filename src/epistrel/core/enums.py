@@ -242,9 +242,10 @@ class BeliefKind(StrEnum):
 class BeliefTransitionKind(StrEnum):
     """The typed cause of a belief-set change (FR-EPI-7, FR-BELIEF-2; #160): the acquisition
     operations ``observation``, ``testimony``, ``inference``, ``discovery``, ``correction``,
-    ``forgetting`` and ``revision``, plus ``author`` (author direction, a seed) and ``resolution``
-    (a thunk binding's knowledge obligation, FR-COMMIT-14). Postgres enum
-    ``belief_transition_kind``."""
+    ``forgetting`` and ``revision``, plus ``author`` (author direction, a seed), ``resolution``
+    (a thunk binding's knowledge obligation, FR-COMMIT-14) and ``author_fiat`` (#598,
+    FR-RESP-14: a presupposition of the ``co_author`` player's narration the narrated character
+    had no path to, accepted as its knowledge). Postgres enum ``belief_transition_kind``."""
 
     OBSERVATION = "observation"
     TESTIMONY = "testimony"
@@ -255,6 +256,7 @@ class BeliefTransitionKind(StrEnum):
     REVISION = "revision"
     AUTHOR = "author"
     RESOLUTION = "resolution"
+    AUTHOR_FIAT = "author_fiat"
 
 
 class AntecedentKind(StrEnum):
@@ -317,6 +319,193 @@ class CharacterWeight(StrEnum):
     MAJOR = "major"
 
 
+class StateType(StrEnum):
+    """A State's value type (FR-STATE-1; #185): a number (``numeric``, never a float), a
+        boolean, one of the definition's ``allowed_values`` (``enum``), or short text (at most 200
+        characters), or the built-in world ``clock`` (#193: an offset in minutes from the story's
+    start, changed only by its advances). Postgres enum ``state_type``."""
+
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+    ENUM = "enum"
+    TEXT = "text"
+    CLOCK = "clock"
+
+
+class StateScope(StrEnum):
+    """Whether a State has one value for the ``story`` or one per ``character`` (the player's
+    gold apart from Jenni's). Postgres enum ``state_scope``."""
+
+    STORY = "story"
+    CHARACTER = "character"
+
+
+class StateVisibility(StrEnum):
+    """Who sees a State: the player (``player_visible``, gold) or nobody but the narrator and an
+    ``omniscient`` read (``hidden``, an NPC's trust score). Postgres enum ``state_visibility``."""
+
+    PLAYER_VISIBLE = "player_visible"
+    HIDDEN = "hidden"
+
+
+class StateOwner(StrEnum):
+    """Who holds a tracked value (FR-STATE-2): Epistrel (``story``) or a registered provider
+    (``external``, FR-EXT). Postgres enum ``state_owner``."""
+
+    STORY = "story"
+    EXTERNAL = "external"
+
+
+class StateCreatedBy(StrEnum):
+    """Who declared a State (FR-STATE-3): the story's ``genesis`` (a scenario's declaration),
+    the ``consumer`` API, the ``author``, or an approved engine ``proposal``. Postgres enum
+    ``state_created_by``."""
+
+    GENESIS = "genesis"
+    CONSUMER = "consumer"
+    AUTHOR = "author"
+    PROPOSAL = "proposal"
+
+
+class StateChangeKind(StrEnum):
+    """What one ``state_changes`` row does to the value: ``set`` it, add a signed ``delta``, or
+    one side of a transfer (FR-STATE-12, #188), which also carries its signed ``delta``.
+    Postgres enum ``state_change_kind``."""
+
+    SET = "set"
+    DELTA = "delta"
+    TRANSFER_IN = "transfer_in"
+    TRANSFER_OUT = "transfer_out"
+
+
+class StateChangeSource(StrEnum):
+    """Where a change came from (FR-STATE-4): a narrative ``turn``, the ``author``, the
+    ``consumer`` API, a ``rule``; the world clock's advances (``pacing``, ``declared_skip``,
+    ``estimate``, ``player``, #193); an ``external`` provider; a late ``settlement``
+    (FR-EXT-21); or a genesis ``seed`` at position 0 (#202). Postgres enum
+    ``state_change_source``."""
+
+    TURN = "turn"
+    AUTHOR = "author"
+    CONSUMER = "consumer"
+    RULE = "rule"
+    PACING = "pacing"
+    DECLARED_SKIP = "declared_skip"
+    ESTIMATE = "estimate"
+    PLAYER = "player"
+    EXTERNAL = "external"
+    SETTLEMENT = "settlement"
+    SEED = "seed"
+
+
+class StateContingency(StrEnum):
+    """How a change depends on external effects (FR-STATE-14, #216): ``unconditional``, a
+    ``reservation`` or ``conditional``. Postgres enum ``state_contingency``."""
+
+    UNCONDITIONAL = "unconditional"
+    RESERVATION = "reservation"
+    CONDITIONAL = "conditional"
+
+
+class StateChangeStatus(StrEnum):
+    """A change's settlement status (FR-STATE-14; #216): only ``committed`` rows count toward
+    the value. At intent a reservation is ``held`` and a conditional change ``pending``; a
+    settlement marks the intent row ``converted`` (and writes a new ``committed`` row at the
+    settling position), ``released`` (a hold) or ``dropped`` (a conditional change). Postgres
+    enum ``state_change_status``."""
+
+    COMMITTED = "committed"
+    HELD = "held"
+    PENDING = "pending"
+    RELEASED = "released"
+    CONVERTED = "converted"
+    DROPPED = "dropped"
+
+
+class StateProposalStatus(StrEnum):
+    """Where an engine-proposed State stands (FR-STATE-3; #192): ``proposed`` (awaiting the
+    author), ``approved`` (its definition was created) or ``dismissed`` (never proposed again).
+    Postgres enum ``state_proposal_status``."""
+
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DISMISSED = "dismissed"
+
+
+class ClockMode(StrEnum):
+    """How the world clock advances (FR-CLOCK-5; #193): ``paced`` (the pacing rule and validated
+    skips), ``manual`` (explicit skips only) or ``external`` (a provider's, #209). Postgres enum
+    ``clock_mode``."""
+
+    PACED = "paced"
+    MANUAL = "manual"
+    EXTERNAL = "external"
+
+
+class TimeAwareness(StrEnum):
+    """How precisely the story's characters know the time (#200; set through #193's
+    ``PATCH /clock``): ``exact``, ``approximate`` or ``none``. Postgres enum ``time_awareness``."""
+
+    EXACT = "exact"
+    APPROXIMATE = "approximate"
+    NONE = "none"
+
+
+class ScheduledStatus(StrEnum):
+    """Where a canon scheduled event stands (FR-CLOCK-9,18; #196): ``pending`` (not yet due),
+    ``possibly_due`` (due under some readings of a partial anchor, #197), ``due`` (the clock
+    reached its planned time), ``surfaced`` (presented to a render), then ``completed``,
+    ``missed`` (still surfaced past its planned time plus its grace) or ``cancelled``; a
+    reschedule returns it to ``pending``. Postgres enum ``scheduled_status``."""
+
+    PENDING = "pending"
+    POSSIBLY_DUE = "possibly_due"
+    DUE = "due"
+    SURFACED = "surfaced"
+    COMPLETED = "completed"
+    MISSED = "missed"
+    CANCELLED = "cancelled"
+
+
+class ExternalValueSource(StrEnum):
+    """Where an ``external_values`` version came from (FR-EXT-2,7,20; #205): a live ``read``,
+    the ``last_known`` recorded value or ``unknown`` under the provider's unavailability policy
+    (#206), a write's ``confirmation`` carrying the resulting values, or one ``post_effect_read``
+    after a confirmed effect (#215, FR-EXT-20). Postgres enum ``external_value_source``."""
+
+    READ = "read"
+    LAST_KNOWN = "last_known"
+    UNKNOWN = "unknown"
+    CONFIRMATION = "confirmation"
+    POST_EFFECT_READ = "post_effect_read"
+
+
+class StagedTurnStage(StrEnum):
+    """Where a staged turn is (FR-EXT-16,19; #212): a turn with an effect on a ``synchronous``
+    write-capable provider commits as a workflow of atomic stages, tracked on its operation
+    (``operations.turn_stage``; ``NULL`` for every ordinary turn and every other operation).
+    ``operations.status`` is ``committed`` from the intent commit on. Not ``TurnStage``: that
+    name is #174's same-turn overlay (``core.epistemic.stage``). Postgres enum ``turn_stage``."""
+
+    INTENT_COMMITTED = "intent_committed"
+    AWAITING_OUTCOME = "awaiting_outcome"
+    OUTCOME_RECORDED = "outcome_recorded"
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+
+
+UNFINISHED_TURN_STAGES: frozenset[StagedTurnStage] = frozenset(
+    {
+        StagedTurnStage.INTENT_COMMITTED,
+        StagedTurnStage.AWAITING_OUTCOME,
+        StagedTurnStage.OUTCOME_RECORDED,
+    }
+)
+"""A staged turn that has not completed (nor been abandoned): it still holds its story's turn
+slot, history reads it ``incomplete``, and the lapsed-lease reclaim and the orphan sweep leave
+it alone (#213 resumes it)."""
+
+
 PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "event_category": EventCategory,
     "operation_kind": OperationKind,
@@ -345,6 +534,21 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "exposure_kind": ExposureKind,
     "exposure_fidelity": ExposureFidelity,
     "exposure_state": ExposureState,
+    "state_type": StateType,
+    "state_scope": StateScope,
+    "state_visibility": StateVisibility,
+    "state_owner": StateOwner,
+    "state_created_by": StateCreatedBy,
+    "state_change_kind": StateChangeKind,
+    "state_change_source": StateChangeSource,
+    "state_contingency": StateContingency,
+    "state_change_status": StateChangeStatus,
+    "state_proposal_status": StateProposalStatus,
+    "clock_mode": ClockMode,
+    "time_awareness": TimeAwareness,
+    "external_value_source": ExternalValueSource,
+    "scheduled_status": ScheduledStatus,
+    "turn_stage": StagedTurnStage,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

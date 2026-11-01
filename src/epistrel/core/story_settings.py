@@ -8,7 +8,8 @@ replaced it (``replacement``; a story overrides it with ``PATCH
 /stories/{id}/profile-overrides``). The default output viewpoint is checked against the cast
 (``validate_default_viewpoint``: never ``omniscient``, 422 ``viewpoint_unresolved`` for anyone
 outside the cast) and stored as ``character:<id>``. A ``simultaneous_tie_break`` of
-``state:<name>`` is 422 with ``reason: not_yet`` (a designated-State tie-break is M6's; #175).
+``state:<name>`` must name a numeric State of the story (#188; 422 ``validation_error``,
+``reason: tie_break_state_invalid``).
 
 A write that changes anything moves the story's ``config_revision`` by one and records one
 ``config_changes`` row per changed leaf setting (scope ``story``, the setting's own class,
@@ -40,10 +41,11 @@ from epistrel.core.settings_schema import (
     StorySettings,
     flatten,
     merge_patch,
-    refuse_state_tie_break,
     setting_class,
+    state_tie_break_name,
     superseded,
 )
+from epistrel.core.states import validate_state_tie_break
 from epistrel.core.stories import settings_of, split_settings
 from epistrel.core.tables import characters, stories
 from epistrel.core.viewpoint import validate_default_viewpoint
@@ -98,7 +100,6 @@ async def update_story_settings(
     """Apply ``patch`` to the story's settings; see the module docstring."""
     check_keys(patch)
     tie_break = patch.get(TIE_BREAK)
-    refuse_state_tie_break(tie_break if isinstance(tie_break, str) else None, f"body.{TIE_BREAK}")
     async with db.begin() as conn:
         row = (
             await conn.execute(
@@ -116,6 +117,9 @@ async def update_story_settings(
         ).one_or_none()
         if row is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        if state_tie_break_name(tie_break) is not None:
+            # #188 (FR-MULTI-8): the designated State is a numeric State of the story.
+            await validate_state_tie_break(conn, story_id, tie_break, field=f"body.{TIE_BREAK}")
         current_document = settings_of(row)
         current = _dump(_validated(current_document))
         wanted_document = merge_patch(current_document, patch)

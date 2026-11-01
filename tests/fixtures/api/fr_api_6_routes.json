@@ -948,6 +948,11 @@
       "requirement": "FR-RESP-9"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/correct",
+      "requirement": "FR-RESP-14"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/variants",
       "requirement": "FR-RESP-9"
@@ -1038,6 +1043,11 @@
       "requirement": "FR-MEM-8"
     },
     {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/memories",
+      "requirement": "FR-MEM-8"
+    },
+    {
       "method": "POST",
       "path": "/admin/stories/{story_id}/memories/{memory_id}/quarantine",
       "requirement": "FR-GUARD-4"
@@ -1056,6 +1066,11 @@
       "method": "GET",
       "path": "/admin/stories/{story_id}/facts",
       "requirement": "FR-GUARD-4"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/{story_id}/facts/{fact_id}",
+      "requirement": "FR-BITEMP-3"
     },
     {
       "method": "POST",
@@ -1208,6 +1223,11 @@
       "requirement": "FR-ADMIN-5"
     },
     {
+      "method": "GET",
+      "path": "/stories/{story_id}/inspect/external-facts",
+      "requirement": "FR-ADMIN-5"
+    },
+    {
       "method": "POST",
       "path": "/admin/stories/{story_id}/beliefs",
       "requirement": "FR-EPI-7"
@@ -1229,8 +1249,143 @@
     },
     {
       "method": "GET",
+      "path": "/stories/{story_id}/clock",
+      "requirement": "FR-CLOCK-13"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/clock/advance",
+      "requirement": "FR-CLOCK-13"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/clock",
+      "requirement": "FR-CLOCK-5"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/scheduled-events",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/scheduled-events",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/scheduled-events/{event_id}",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "DELETE",
+      "path": "/stories/{story_id}/scheduled-events/{event_id}",
+      "requirement": "FR-CLOCK-9"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/states",
+      "requirement": "FR-STATE-9"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/states/{name}",
+      "requirement": "FR-STATE-9"
+    },
+    {
+      "method": "PUT",
+      "path": "/stories/{story_id}/states/{name}",
+      "requirement": "FR-STATE-9"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/states",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/states/{name}/definition",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/state-proposals/analyze",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/state-proposals",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/reconciliation",
+      "requirement": "FR-EXT-10"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/reconciliation/{outbox_id}/settle-now",
+      "requirement": "FR-EXT-22"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/reconciliation/{outbox_id}/compensate",
+      "requirement": "FR-EXT-22"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/state-proposals/{proposal_id}/approve",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/state-proposals/{proposal_id}/dismiss",
+      "requirement": "FR-STATE-3"
+    },
+    {
+      "method": "GET",
       "path": "/admin/evals/extraction-shadow",
       "requirement": "FR-OBS-4"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/external-providers",
+      "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/external-providers",
+      "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/external-providers/{name}",
+      "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/external-providers/{name}",
+      "requirement": "FR-EXT-6"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/external-providers/{name}",
+      "requirement": "FR-EXT-6"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/providers",
+      "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "PUT",
+      "path": "/stories/{story_id}/providers/{name}/binding",
+      "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/providers/{name}/binding",
+      "requirement": "FR-EXT-1"
     }
   ]
 }

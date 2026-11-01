@@ -141,6 +141,18 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "The say a witness heard (#162): the speaker's name, the words as the witness perceived "
         "them, the visible manner, the claims they carry and the intent the witness reads."
     ),
+    ContentCategory.TRACKED_VALUES: (
+        "A structured render's tracked values (#187, FR-TURN-11): for a character's render, the "
+        "player-visible States it may change (name, type, scope, unit, aliases, allowed values) "
+        "and the effect syntax, never a value; for the narrator's, every State with its current "
+        "value and constraints."
+    ),
+    ContentCategory.EXTERNAL_DATA: (
+        "A value an external-data provider answered (#208, FR-EXT-5, NFR-SEC-2): untrusted "
+        "content, typed and cleaned, rendered only inside a fenced, labelled data block "
+        "(<external name=... tier=...>) and never as instructions; the answer's JSON keys "
+        "never. The narrator's render takes it; a character learns a value only as a belief."
+    ),
     ContentCategory.BELIEF_STATE: (
         "A structured character render's own belief state (#170, FR-TURN-8): its beliefs as "
         '"you suspect / believe / know ..." lines, its nested beliefs ("you think Bobby '

@@ -21,7 +21,11 @@ caller's, or a server-generated ULID: the key is optional everywhere). The call:
    - ``in_flight`` waits for the original (polling the row, 50 ms backing off to 250 ms) up to
      the turn deadline + 5 s, then 503 ``original_in_flight_timeout``. A dead original (its
      lease expired) is taken over under a new ``owner_token`` and re-executed — unless its
-     operation already committed, in which case the retry gets the reference.
+     operation already committed, in which case the retry gets the reference. #213
+     (FR-EXT-17): a ``respond`` whose committed operation is a staged turn still open (short of
+     its completion, or completed with no response stored: ``staged_open``) is taken over too,
+     and the retry raises ``StagedOriginal``: the Engine resumes the turn from its last
+     committed stage and answers its finished response, never a second turn.
 
 2. **binds** its operation inside the operation's commit transaction (``Operation`` calls
    ``bind``; configuration writes call ``bind_configuration`` with the ``control``
@@ -32,6 +36,8 @@ caller's, or a server-generated ULID: the key is optional everywhere). The call:
 3. **finishes**: ``done`` with the result ``{status, body}`` and ``expires_at`` (the result
    window in force when the call started, ``idempotency_result_window`` hours). A failure
    (any error) deletes the row, so the key is free for a retry: failures are never stored.
+   A failure after the operation committed leaves a tombstone, except (#213) under a staged
+   turn still open: the key stays ``in_flight`` with its lease ended, so a retry resumes it.
 
 The request hash covers the operation name, the validated request (the model dump, defaults
 filled, keys sorted), the path ids, the acting character, the *resolved* output viewpoint and
@@ -64,7 +70,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
-from epistrel.core.enums import OperationStatus
+from epistrel.core.enums import UNFINISHED_TURN_STAGES, OperationStatus, StagedTurnStage
 from epistrel.core.erasure.index import drop_many, index_records
 from epistrel.core.erasure.records import idempotency_id, idempotency_record
 from epistrel.core.errors import IdempotencyConflict, InvalidRequest, OriginalInFlightTimeout
@@ -191,6 +197,46 @@ class QueuedOriginal(Exception):
     def __init__(self, operation_id: str) -> None:
         super().__init__(f"queued as {operation_id}")
         self.operation_id = operation_id
+
+
+class StagedOriginal(Exception):
+    """#213 (FR-EXT-17): the key's original request committed a staged turn that is still open
+    (``staged_open``) and is no longer run by anyone (its lease lapsed): this call took the key
+    over and resumes the turn (the Engine calls ``orchestrator.structured.staged``), storing its
+    finished response under the key."""
+
+    def __init__(self, operation_id: str) -> None:
+        super().__init__(f"staged turn {operation_id} resumes")
+        self.operation_id = operation_id
+
+
+STAGED_OPERATIONS = frozenset({"respond"})
+"""The Engine calls whose committed operation may be a staged turn (#212) a retry resumes."""
+RESPONSE_STAGE = "response"
+"""The staged turn's last ``stage_log`` entry: its response stored (#212's stage 5)."""
+
+
+async def staged_open(conn: AsyncConnection, operation_id: str) -> bool:
+    """#213: whether ``operation_id`` is a committed staged turn short of its completion, or
+    completed with no response stored yet (no ``response`` stage logged)."""
+    row = (
+        await conn.execute(
+            select(operations.c.turn_stage, operations.c.stage_log).where(
+                operations.c.operation_id == operation_id,
+                operations.c.status == OperationStatus.COMMITTED.value,
+                operations.c.turn_stage.is_not(None),
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return False
+    stage = StagedTurnStage(row.turn_stage)
+    if stage in UNFINISHED_TURN_STAGES:
+        return True
+    logged = row.stage_log or []
+    return stage is StagedTurnStage.COMPLETED and not any(
+        isinstance(e, Mapping) and e.get("stage") == RESPONSE_STAGE for e in logged
+    )
 
 
 class ReferenceReplay(Exception):
@@ -390,6 +436,13 @@ class IdempotentCall:
                 # Owned by the queue, not by a process: no lease applies.
                 raise QueuedOriginal(row.owner_token.removeprefix(QUEUE_OWNER_PREFIX))
             if row.lease_until <= clock.now():
+                if row.operation_id is not None and await self._resumes(row.operation_id):
+                    # #213: a staged turn still open is resumed by this retry, never re-run.
+                    if await self._take_over(row.owner_token, bound=row.operation_id):
+                        self.claimed = True
+                        self._renewal = asyncio.create_task(self._renew())
+                        raise StagedOriginal(str(row.operation_id))
+                    continue
                 if row.operation_id is not None:
                     await self._settle_dead(row)
                     self._answer_reference(row)
@@ -465,9 +518,23 @@ class IdempotentCall:
             revision_field=self.codec.revision_field,
         )
 
-    async def _take_over(self, dead_token: str) -> bool:
-        """Replace a dead original's claim (lease expired, nothing committed) with ours."""
+    async def _resumes(self, operation_id: str) -> bool:
+        """#213: whether a retry of this call resumes ``operation_id`` (a staged turn still
+        open) rather than answering its reference."""
+        if self.operation not in STAGED_OPERATIONS:
+            return False
+        async with self.db.connect() as conn:
+            return await staged_open(conn, operation_id)
+
+    async def _take_over(self, dead_token: str, *, bound: str | None = None) -> bool:
+        """Replace a dead original's claim (lease expired, nothing committed; #213: or its
+        committed staged turn ``bound``, still open) with ours."""
         now = clock.now()
+        operation = (
+            idempotency_keys.c.operation_id.is_(None)
+            if bound is None
+            else idempotency_keys.c.operation_id == bound
+        )
         async with self.db.begin() as conn:
             taken = await conn.scalar(
                 update(idempotency_keys)
@@ -475,7 +542,7 @@ class IdempotentCall:
                     self._where(),
                     idempotency_keys.c.owner_token == dead_token,
                     idempotency_keys.c.status == KeyStatus.IN_FLIGHT.value,
-                    idempotency_keys.c.operation_id.is_(None),
+                    operation,
                     idempotency_keys.c.lease_until <= now,
                 )
                 .values(owner_token=self.token, lease_until=now + timedelta(seconds=LEASE_S))
@@ -598,6 +665,21 @@ class IdempotentCall:
 
     # -- bind (inside the commit transaction) --------------------------------------------------
 
+    async def hold(self, conn: AsyncConnection) -> None:
+        """Lock the key's row in the caller's transaction until it ends, ahead of a later
+        ``bind`` there. A ``REPEATABLE READ`` transaction that binds calls this as its first
+        statement (the fork's snapshot): otherwise this call's own lease renewal, committing
+        after the snapshot was taken, fails the bind with a serialization failure on every
+        attempt that outlasts a renewal period (#637). The renewal waits for the transaction
+        instead; a takeover cannot follow it, since the committed bind sets ``operation_id``."""
+        if not self.claimed:
+            return
+        await conn.execute(
+            select(idempotency_keys.c.key)
+            .where(self._where(), idempotency_keys.c.owner_token == self.token)
+            .with_for_update(key_share=True)
+        )
+
     async def bind(self, conn: AsyncConnection, operation: Any) -> None:
         """Bind this call's committing ``operation`` to the key, in the commit transaction.
 
@@ -682,6 +764,15 @@ class IdempotentCall:
             ],
         )
 
+    async def store(self, conn: AsyncConnection, value: Any) -> None:
+        """Store ``value`` as the key's result in ``conn``'s transaction, after the call's
+        operation committed (a staged turn's response stage, #212): ``finish`` then answers it
+        without storing again."""
+        if self.claimed:
+            await self._store(conn, self.codec.store(value), revision_of(value))
+        self.committed_value = value
+        self.stored_in_commit = True
+
     async def finish(self, value: Any) -> Any:
         """Store ``value`` as the key's result (unless the commit already did) and return the
         value the caller gets (the one built in the commit, when there is one)."""
@@ -713,6 +804,23 @@ class IdempotentCall:
                     .returning(idempotency_keys.c.key)
                 )
                 if removed is None:
+                    bound = await conn.scalar(
+                        select(idempotency_keys.c.operation_id).where(
+                            self._where(), idempotency_keys.c.owner_token == self.token
+                        )
+                    )
+                    # #213: a staged turn still open keeps its key in flight with its lease
+                    # ended, so a retry resumes the turn (``StagedOriginal``).
+                    resumable = (
+                        bound is not None
+                        and self.operation in STAGED_OPERATIONS
+                        and await staged_open(conn, str(bound))
+                    )
+                    ended: dict[str, Any] = (
+                        {"lease_until": clock.now()}
+                        if resumable
+                        else {"status": KeyStatus.DONE.value, "expires_at": clock.now()}
+                    )
                     await conn.execute(
                         update(idempotency_keys)
                         .where(
@@ -720,7 +828,7 @@ class IdempotentCall:
                             idempotency_keys.c.owner_token == self.token,
                             idempotency_keys.c.status == KeyStatus.IN_FLIGHT.value,
                         )
-                        .values(status=KeyStatus.DONE.value, expires_at=clock.now())
+                        .values(**ended)
                     )
         except Exception as exc:  # pragma: no cover - the database went away; the lease expires
             logger.warning("could not release an idempotency key: %s", type(exc).__name__)
@@ -787,6 +895,8 @@ __all__ = [
     "KEY_MAX",
     "LEASE_S",
     "QUEUE_OWNER_PREFIX",
+    "RESPONSE_STAGE",
+    "STAGED_OPERATIONS",
     "IdempotentCall",
     "KeyStatus",
     "QueuedOriginal",
@@ -794,6 +904,7 @@ __all__ = [
     "Replayed",
     "ResultCodec",
     "Scope",
+    "StagedOriginal",
     "StoredResult",
     "calling",
     "current_call",
@@ -804,6 +915,7 @@ __all__ = [
     "purge_expired",
     "read_idempotency_settings",
     "request_hash",
+    "staged_open",
     "stored_result",
     "validate_key",
 ]

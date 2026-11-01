@@ -104,6 +104,8 @@ async def fold(
             type=row.type,
             payload=validate(row.type, row.payload),
             redacted_at=row.redacted_at,
+            step=int(row.step or 0),
+            slot_k=row.slot_k,
         )
         for row in found
     ]

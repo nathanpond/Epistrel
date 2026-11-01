@@ -25,24 +25,37 @@ Complement: with every role a default and the budget open, a reaction needing sp
 decision escalates. The perception and could-have-known checks of every narrated reaction run in
 the database (``roles.verify``) and are S-REACTIVE's and S-EXTRACT-ADVERSARIAL (f)'s. 300 examples
 in CI.
+
+The M6 part (#185, "nor State records"): ``test_reactive_bounds__m6_states`` over the same random
+turns, and ``test_reactive_bounds__m6_apply`` on Postgres: a State change a reactive character
+asserts in a turn is refused (``reactive_asserter``) and nothing is written.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.enums import StateChangeKind, StateChangeSource
 from epistrel.core.epistemic import roles as rules
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.states import StateChange, StateDefinition
+from epistrel.core.states import Violation as StateViolation
+from epistrel.core.states import model as state_model
 from epistrel.core.turns import CastEntry
 from epistrel.core.turns.beats import TurnBeat
 from epistrel.orchestrator.structured import roles as roles_rt
+from tests import canon_support as c
+from tests import state_support as ss
+from tests.memory_support import use_structured
 
 NIGHTLY = os.environ.get("EPISTREL_HYPOTHESIS_PROFILE") == "nightly"
 EXAMPLES = 3_000 if NIGHTLY else 300
@@ -253,3 +266,83 @@ def test_reactive_bounds__escalates() -> None:
     assert found.escalated == ["Ada", "Sam"]  # declared reactions first, then prose
     assert found.roles["Sam"].source == rules.ESCALATED
     assert not found.escalation_deferred
+
+
+# -- M6: nor State records (FR-MULTI-9; #185) ------------------------------------------------------
+
+PURSE = StateDefinition.model_validate(
+    {"name": "purse", "type": "number", "scope": "character", "initial_value": 10}
+)
+
+
+def _asserted(beat: TurnBeat, found: roles_rt.TurnRoles) -> StateChange:
+    """The State change the beat's character would assert in the turn, with its role."""
+    who = str(beat.character_id)
+    role = found.roles[who].role if who in found.roles else None
+    return StateChange(
+        state="purse",
+        reason="pockets the coin",
+        source=StateChangeSource.TURN,
+        kind=StateChangeKind.DELTA,
+        delta=Decimal(1),
+        scope_key=who,
+        asserter_role=role,
+    )
+
+
+@pytest.mark.part("M6", "FR-MULTI-9")
+@settings(
+    max_examples=EXAMPLES,
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large],
+)
+@given(turn=turns())
+def test_reactive_bounds__m6_states(turn: Turn) -> None:
+    """M6: for any generated turn, no State change is written for a reactive character: every
+    beat's character asserts a change to its own ``purse`` (within its bounds), and
+    ``check_change`` (what ``core.states.apply_change`` decides before it writes) refuses each
+    one a reactive character asserts as ``reactive_asserter``. Complement: a primary's change
+    is accepted."""
+    found, beats = _play(turn)
+    written: list[StateChange] = []
+    for beat in beats:
+        change = _asserted(beat, found)
+        refused = state_model.check_change(PURSE, change, Decimal(11), Decimal(10))
+        if change.asserter_role == rules.REACTIVE:
+            assert refused is not None
+            assert refused.constraint == "reactive_asserter"
+        else:
+            assert refused is None
+            written.append(change)
+    assert all(c.asserter_role != rules.REACTIVE for c in written)
+    for primary in turn.named:
+        assert found.roles[primary].role == rules.PRIMARY
+        beat = TurnBeat(kind="do", beat=2, text="Pays.", character_id=primary)
+        assert (
+            state_model.check_change(PURSE, _asserted(beat, found), Decimal(11), Decimal(10))
+            is None
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-MULTI-9")
+async def test_reactive_bounds__m6_apply(engine: AsyncEngine, states_delivered: None) -> None:
+    """M6 on Postgres: ``apply_change`` answers ``Violation(reactive_asserter)`` for a turn
+    change a reactive character asserts and writes nothing (no row, no projection row); the
+    same change asserted by a primary, or written by the consumer, is applied."""
+    w = await c.world(engine)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(engine, story, PURSE)
+    reactive = ss.delta("purse", 1, scope_key=bobby, asserter_role=rules.REACTIVE)
+    _, (refused,) = await ss.change(engine, story, reactive)
+    assert isinstance(refused, StateViolation)
+    assert refused.constraint == "reactive_asserter"
+    assert await ss.change_rows(engine, story) == []
+    assert await ss.stored_values(engine, story) == []
+    primary = ss.delta("purse", 1, scope_key=bobby, asserter_role=rules.PRIMARY)
+    consumer = ss.delta("purse", 2, scope_key=bobby, source=StateChangeSource.CONSUMER)
+    _, applied = await ss.change(engine, story, primary, consumer)
+    assert all(not isinstance(a, StateViolation) for a in applied)
+    assert await ss.value(engine, story, "purse", bobby) == 13

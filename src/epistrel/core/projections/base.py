@@ -55,6 +55,10 @@ class LogEvent:
     redacted_at: datetime | None = None
     """When erasure rewrote the event in place (#124): the projections mark their row
     redacted. An event being committed never is."""
+    step: int = 0
+    """The event's declared causal step within its beat (#168, FR-STORE-31; 0: outside)."""
+    slot_k: int | None = None
+    """The inter-turn slot of an operation positioned in one (#193; ``None``: none)."""
 
 
 class Rows:

@@ -19,6 +19,10 @@ Present: {{ scene_context.present_entities|join(", ") if scene_context.present_e
 {% for line in scene_context.last_beats %}
 - {{ line }}
 {% endfor %}
+{% if external_data %}
+
+{% endif %}
+{% include "external_data.j2" %}
 {% endblock %}
 {% block user %}
 {% for beat in beats %}

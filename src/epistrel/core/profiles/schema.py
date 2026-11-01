@@ -36,8 +36,9 @@ has delivered to its delivered levels: in M3 the ``lite`` pipeline, the rolling 
 memories, the polish pass, budgets and models; M4 adds the ``structured`` pipeline, episodic
 retrieval, consolidation, verification at every level, contradiction checking, commitment and
 the repair attempts (#129); M5 the character-knowledge, perception and per-character modules
-(#181). M6 flips entries here and nothing else. ``delivered_schema`` derives, from the full
-model, the JSON Schema of only the delivered modules and levels: the OpenAPI document and
+(#181); M6 the world clock with its two flags and States (#203). ``delivered_schema``
+derives, from the full model, the JSON Schema of only the delivered modules and levels: the
+OpenAPI document and
 ``GET /engine-profiles/schema`` publish that one. ``PATCH_SCHEMA`` is the same with ``null``
 allowed for every member: a JSON merge patch over a story's overrides (#113).
 
@@ -723,6 +724,10 @@ DELIVERED: Mapping[str, frozenset[str]] = types.MappingProxyType(
         "testimony": frozenset({"model", "defaulted"}),
         "perception": frozenset({"co_location", "full"}),
         "multi_character": frozenset({"per_character"}),
+        "clock": frozenset({"prompt_only", ON}),
+        "time_claims": frozenset({ON}),
+        "scheduled_stops": frozenset({ON}),
+        "states": frozenset({"prompt_only", ON}),
         "repair": frozenset({ON}),
         "polish": frozenset({ON}),
         "budgets": frozenset({ON}),
@@ -737,8 +742,10 @@ consolidation, verification at ``declared``, ``extraction`` and ``entailment`` (
 latter and ``safe_disposition``), contradiction checking, commitment, and the repair
 attempts. M5 (#181): per-character partitions (with their adjudication and lazy-resolution
 caps), nested beliefs, lazy resolution, testimony at ``model`` and ``defaulted``, perception at
-``co_location`` and ``full``, and per-character renders (with ``interjection_max_words``). A
-module not listed is not delivered at any level."""
+``co_location`` and ``full``, and per-character renders (with ``interjection_max_words``). M6
+(#203): the world clock at ``prompt_only`` (FR-LITE-5's Lite form) and ``on``, with its
+``time_claims`` and ``scheduled_stops`` flags, and States at ``prompt_only`` and ``on``. Every
+module is now delivered; a module not listed would not be delivered at any level."""
 
 
 UNDELIVERED_VALUES: Mapping[str, tuple[object, ...]] = types.MappingProxyType(

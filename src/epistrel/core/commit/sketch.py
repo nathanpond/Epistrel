@@ -34,7 +34,7 @@ from epistrel.core.enums import OpenSlot
 from epistrel.core.propositions.model import NONE, Polarity, Proposition, TypedLiteral
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.resolution.entities import ResolutionContext, resolve_reference
-from epistrel.core.resolution.time import Position, TimeBasis, resolve_time, story_time_at
+from epistrel.core.resolution.time import Position, TimeBasis, resolve_time
 from epistrel.core.resolution.types import ResolvedTime
 from epistrel.core.verify.normalize import (
     LITERAL_TYPES,
@@ -137,7 +137,7 @@ def valid_time_of(
     """The story-minute a reference is about: its time expression's start when it has one
     (#139), else the position's."""
     if not sketch.time_text:
-        return story_time_at(position, basis)
+        return basis.at(position)
     resolved = resolve_time(sketch.time_text, position, None, basis=basis)
     if not isinstance(resolved, ResolvedTime):
         return Unnormalizable(VerdictReason.UNRESOLVED_TIME, resolved.reason.code.value, resolved)
@@ -146,7 +146,7 @@ def valid_time_of(
     if start is None:
         bound = getattr(found, "start", None)
         start = None if bound is None else bound.outer
-    return story_time_at(position, basis) if start is None else int(start)
+    return basis.at(position) if start is None else int(start)
 
 
 def open_sketch(

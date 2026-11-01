@@ -53,6 +53,7 @@ from epistrel.core.catalog.scenario_models import (
     Use,
     scenario_schema_classes,
 )
+from epistrel.core.catalog.starting_state import role_sources
 from epistrel.core.genesis.models import DeferredItem, InactiveItem
 from epistrel.core.genesis.settings_map import (
     MULTI_CHARACTER,
@@ -348,13 +349,22 @@ def materialize(
                 roles=[role.id],
             )
     state = draft.starting_state
-    for index, _ in enumerate(state.states):
-        build.add("starting_state.states", ("starting_state", "states", index), STATES)
+    for index, tracked in enumerate(state.states):
+        # #202: the roles its sources and entity name, resolved like a seed's.
+        build.add(
+            "starting_state.states",
+            ("starting_state", "states", index),
+            STATES,
+            roles=[*role_sources(tracked), tracked.entity_id],
+        )
     if state.clock is not None:
         build.add("starting_state.clock", ("starting_state", "clock"), CLOCK)
-    for index, _ in enumerate(state.scheduled_events):
+    for index, event in enumerate(state.scheduled_events):
         build.add(
-            "starting_state.scheduled_events", ("starting_state", "scheduled_events", index), CLOCK
+            "starting_state.scheduled_events",
+            ("starting_state", "scheduled_events", index),
+            CLOCK,
+            roles=[event.owner, event.subject, *(event.participants or ())],
         )
     for name in ("predicates", "closed_sets", "rules"):
         for index, _ in enumerate(getattr(state, name)):

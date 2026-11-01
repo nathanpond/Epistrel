@@ -68,6 +68,10 @@ def _entry(
     )
 
 
+UNDELIVERED = "undelivered"
+"""A capability no deployment delivers (every module is delivered since #203)."""
+
+
 def _context(capabilities: frozenset[str] = DEPLOYMENT_CAPABILITIES) -> ValidationContext:
     """A context for checks that read no database (the connection is never touched)."""
     settings = DeploymentState(
@@ -212,18 +216,18 @@ async def test_runner_lists_what_the_deployment_cannot_run() -> None:
     nor appear), but a check the deployment cannot run is still listed. A check for another
     entry type does not run."""
     always = _probe("always")
-    needs = _probe("needs", capability="states")
+    needs = _probe("needs", capability=UNDELIVERED)
     report = await validation.run(_subject({}), _context(), checks=[always, needs])
     assert (always.ran, needs.ran, report.unavailable) == (True, False, ["needs"])
 
-    granted = _probe("needs", capability="states")
+    granted = _probe("needs", capability=UNDELIVERED)
     report = await validation.run(
-        _subject({}), _context(DEPLOYMENT_CAPABILITIES | {"states"}), checks=[granted]
+        _subject({}), _context(DEPLOYMENT_CAPABILITIES | {UNDELIVERED}), checks=[granted]
     )
     assert (granted.ran, report.unavailable) == (True, [])
 
     gate, after = _probe("gate", gate=True, error=True), _probe("after")
-    later = _probe("later", capability="states")
+    later = _probe("later", capability=UNDELIVERED)
     report = await validation.run(_subject({}), _context(), checks=[gate, after, later])
     assert (after.ran, [e.code for e in report.errors]) == (False, ["gate_failed"])
     assert report.unavailable == ["later"]
@@ -236,7 +240,8 @@ async def test_runner_lists_what_the_deployment_cannot_run() -> None:
 def test_the_checks_and_the_capabilities() -> None:
     """The ordered checks, each named once: the document check first (it gates), the three
     capability-gated ones last. The deployment's capabilities are each delivered level of the
-    pipeline and every other delivered module (``DELIVERED``): not States."""
+    pipeline and every other delivered module (``DELIVERED``), not States; and ``providers``,
+    delivered with the provider registry (#204)."""
     names = [check.name for check in validation.CHECKS]
     assert names == [
         "document",
@@ -263,18 +268,19 @@ def test_the_checks_and_the_capabilities() -> None:
         "state_schema": "states",
     }
     delivered = set(DELIVERED["pipeline"]) | {name for name in DELIVERED if name != "pipeline"}
-    assert delivered == DEPLOYMENT_CAPABILITIES
+    assert delivered | {"providers"} == DEPLOYMENT_CAPABILITIES
     assert {"lite", "rolling_summary", "pins", "polish", "budgets", "models"} <= delivered
-    assert "states" not in delivered
+    assert "states" in delivered  # #203
 
 
 async def test_capability_checks_never_pass_silently() -> None:
-    """Even given its capability, a capability-gated check not implemented yet lists itself
-    (the State-schema check, M6), so none can pass a scenario silently; the seed checks #149
-    implements run and find nothing to report in an empty scenario."""
+    """Even given its capability, a capability-gated check not implemented yet would list
+    itself, so none can pass a scenario silently; every gated check is implemented now (the
+    seed checks #149 implements and #202's), and each runs and finds nothing to report in an
+    empty scenario."""
     gated = [check for check in validation.CHECKS if check.capability is not None]
     context = _context(DEPLOYMENT_CAPABILITIES | {"structured", "states"})
-    implemented = {"seed_normalization", "fact_consistency"}
+    implemented = {"seed_normalization", "fact_consistency", "state_schema"}
     for check in gated:
         found = await check.run(_subject({}, EntityType.SCENARIO), context)
         listed = [] if check.name in implemented else [check.name]
@@ -452,3 +458,34 @@ def test_provider_names_are_found_at_any_depth() -> None:
         )
     )
     assert found == [("s[0].provider", "weather"), ("s[1].steps[0].provider", "news")]
+
+
+def test_typed_starting_state_keeps_every_indexed_path() -> None:
+    """#202 types the starting state's States, clock and scheduled events (and each role's
+    initial values): the stored document is what the author wrote, and the subject index reads
+    the same paths and texts from it as the generic walk over the raw JSON did before the
+    typing (#323's ``text_fields``), for the complete scenario and for the family's allowance,
+    clock and dinner."""
+    from epistrel.core.catalog.scenarios import indexed_fields
+    from epistrel.core.erasure.records import text_fields
+    from tests import seeded_clock_support
+
+    groups = ("states", "clock", "scheduled_events")
+    for raw in (COMPLETE, seeded_clock_support.family()):
+        draft = ScenarioDraft.model_validate(raw)
+        stored = draft.document()
+        before: dict[str, str | None] = {}
+        for name in groups:
+            assert stored["starting_state"][name] == raw["starting_state"][name]
+            before.update(text_fields(raw["starting_state"][name], f"starting_state.{name}"))
+        for index, role in enumerate(raw["cast"]["roles"]):
+            values = role.get("state_initial_values")
+            before.update(text_fields(values, f"cast.roles[{index}].state_initial_values"))
+        after = {
+            path: text
+            for path, text in indexed_fields(draft).items()
+            if path.startswith(tuple(f"starting_state.{name}" for name in groups))
+            or ".state_initial_values" in path
+        }
+        assert before, "the fixture names something to index"
+        assert after == before

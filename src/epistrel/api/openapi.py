@@ -7,7 +7,7 @@ at ``/openapi.json``. ``epistrel.tools.openapi`` writes the same document to
 
 What ``build`` adds or changes:
 
-- OpenAPI 3.1, ``info.version`` fixed at the milestone (``"m3"``, not the package version, so a
+- OpenAPI 3.1, ``info.version`` fixed at the milestone (``"m6"``, not the package version, so a
   release does not churn the file), no ``servers``.
 - FastAPI's default validation components (``HTTPValidationError``, ``ValidationError``) are
   removed: every error answers the one envelope (``Error``), and each operation declares the
@@ -64,7 +64,7 @@ from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.stories import StorySpec
 
-SCHEMA_VERSION = "m3"
+SCHEMA_VERSION = "m6"
 """``info.version``: the milestone whose contract the document describes."""
 OPENAPI_VERSION = "3.1.0"
 TITLE = "Epistrel Engine"
@@ -218,11 +218,14 @@ ERROR_STATUS: dict[str, int] = {
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
+    "not_latest_turn": 409,
+    "already_corrected": 409,
     "revision_conflict": 409,
     "story_archived": 409,
     "story_paused": 409,
     "timeline_changed": 409,
     "erased_subject_referenced": 409,
+    "settle_refused": 409,
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
@@ -233,9 +236,12 @@ ERROR_STATUS: dict[str, int] = {
     "upload_closed": 409,
     "upload_incomplete": 409,
     "module_off": 409,
+    "state_name_taken": 409,
     "fact_superseded": 409,
     "fact_inactive": 409,
     "gate_not_promotable": 409,
+    "provider_exists": 409,
+    "provider_in_use": 409,
     "length_required": 411,
     "draft_too_large": 413,
     "media_too_large": 413,
@@ -288,6 +294,15 @@ ERROR_STATUS: dict[str, int] = {
     "seed_unnormalizable": 422,
     "seed_memory_invalid": 422,
     "span_not_found": 422,
+    "state_constraint_violation": 422,
+    "state_readonly_external": 422,
+    "state_unpermitted": 422,
+    "state_derived": 422,
+    "clock_backward": 422,
+    "clock_unanchored": 422,
+    "clock_external": 422,
+    "effect_not_found": 422,
+    "provider_read_only": 422,
     "pin_limit_exceeded": 422,
     "key_mismatch": 422,
     "unknown_predicate": 422,
@@ -299,6 +314,10 @@ ERROR_STATUS: dict[str, int] = {
     "unsupported_event_kind": 422,
     "validation_error": 422,
     "viewpoint_unresolved": 422,
+    "binding_incomplete": 422,
+    "invalid_manifest": 422,
+    "provider_unbound": 422,
+    "provider_unregistered": 422,
     "story_busy": 423,
     "budget_exhausted": 503,
     "config_key_missing": 503,
@@ -310,6 +329,7 @@ ERROR_STATUS: dict[str, int] = {
     "model_unavailable": 503,
     "moderation_unavailable": 503,
     "original_in_flight_timeout": 503,
+    "provider_unavailable": 503,
     "turn_interrupted": 503,
 }
 """Every error code a route documents, with its status. ``config_conflict`` stands for the 409
@@ -333,6 +353,7 @@ STATUS_TEXT = {
 
 _TURN = (
     "model_unavailable",
+    "provider_unavailable",
     "budget_exhausted",
     "turn_interrupted",
     "timeline_changed",
@@ -396,7 +417,15 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         # persona a pending catalog-scope erasure reaches (#346).
         "erasure_pending",
         "ledger_unavailable",
+        # The scenario's required providers, and the request's provider bindings (#204).
+        "provider_unregistered",
+        "binding_incomplete",
     ),
+    # External-data providers (#204).
+    "register_external_provider": (*_ADMIN_CONFIG, "invalid_manifest", "provider_exists"),
+    "replace_external_provider": (*_ADMIN_CONFIG, "invalid_manifest"),
+    "delete_external_provider": (*_ADMIN_CONFIG, "provider_in_use"),
+    "bind_provider": ("binding_incomplete", "story_archived"),
     "list_media": ("ledger_unavailable",),
     # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.
     "promote_verify_gate": ("gate_not_promotable", "not_found"),
@@ -404,6 +433,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "respond": (
         *_GATED,
         *_TURN,
+        "provider_unbound",
         "story_archived",
         "story_paused",
         "story_busy",
@@ -412,11 +442,26 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "regenerate": (
         *_GATED,
         *_TURN,
+        "provider_unbound",
         "story_archived",
         "story_paused",
         "story_busy",
         "viewpoint_unresolved",
         "nothing_to_regenerate",
+    ),
+    # #598 (FR-RESP-14): a correction of the latest turn; a later turn, or a turn a correction
+    # wrote, is refused.
+    "correct": (
+        *_GATED,
+        *_TURN,
+        "provider_unbound",
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "viewpoint_unresolved",
+        "nothing_to_regenerate",
+        "not_latest_turn",
+        "already_corrected",
     ),
     "ingest": (
         *_GATED,
@@ -426,6 +471,103 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "client_event_conflict",
         "timeline_changed",
         "unsupported_event_kind",
+        "erased_subject_referenced",
+        # an ingested state_change (#186): the refusals a State set has
+        "module_off",
+        "state_constraint_violation",
+        "state_readonly_external",
+        "state_unpermitted",
+        "state_derived",
+        # an ingested outcome (#217): an effect the story does not know
+        "effect_not_found",
+    ),
+    # The world clock (#193): a consumer's advance between turns, and its settings.
+    "advance_clock": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "clock_backward",
+        "clock_unanchored",
+        "clock_external",
+        "erased_subject_referenced",
+    ),
+    # #209: an external clock names a provider the story is bound to.
+    "update_clock": ("story_archived", "provider_unbound"),
+    # Scheduled events (#196): the list for a viewpoint, and writes at inter-turn slots.
+    "list_scheduled_events": ("viewpoint_unresolved",),
+    "create_scheduled_event": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "clock_unanchored",
+        "erased_subject_referenced",
+    ),
+    "reschedule_scheduled_event": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "clock_unanchored",
+        "erased_subject_referenced",
+    ),
+    "cancel_scheduled_event": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "erased_subject_referenced",
+    ),
+    # The State API (#186): reads for a viewpoint, and sets and declarations at inter-turn slots
+    # (as a turn, they wait for or are refused by one in flight), and definition updates.
+    "get_states": ("module_off", "viewpoint_unresolved"),
+    "get_state": ("module_off", "viewpoint_unresolved"),
+    "set_state": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "module_off",
+        "state_constraint_violation",
+        "state_readonly_external",
+        "state_unpermitted",
+        "state_derived",
+        "erased_subject_referenced",
+    ),
+    "define_state": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "module_off",
+        "state_name_taken",
+        "state_unpermitted",
+        "erased_subject_referenced",
+    ),
+    "update_state_definition": (
+        "story_archived",
+        "module_off",
+        "state_constraint_violation",
+        "state_unpermitted",
+    ),
+    # Engine-proposed States (#192): an analysis request, the list, and the review (an approval
+    # declares the State at an inter-turn slot, as define_state does).
+    "analyze_state_proposals": ("story_archived", "story_paused", "module_off"),
+    "list_state_proposals": ("module_off",),
+    "approve_state_proposal": (
+        "story_archived",
+        "story_paused",
+        "story_busy",
+        "module_off",
+        "state_name_taken",
+        "state_unpermitted",
+        "erased_subject_referenced",
+    ),
+    "dismiss_state_proposal": ("story_archived", "story_paused", "module_off"),
+    # The explicit reconciliation actions (#218, FR-EXT-22): settle-now (re-verified at that
+    # moment) and a compensating effect through the outbox, each at an inter-turn slot.
+    "settle_now": ("story_archived", "story_paused", "module_off", "settle_refused"),
+    "compensate": (
+        "story_archived",
+        "story_paused",
+        "module_off",
+        "state_unpermitted",
+        "provider_read_only",
         "erased_subject_referenced",
     ),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
@@ -506,13 +648,19 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "nesting_too_deep",
     ),
     "list_facts": ("module_off", "omniscient_required", "viewpoint_unresolved"),
+    "get_fact": ("module_off", "omniscient_required", "viewpoint_unresolved", "fact_not_found"),
+    "list_memories": ("omniscient_required", "viewpoint_unresolved"),
     "inspect_ledger": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_beliefs": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_divergences": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_exposures": ("module_off", "omniscient_required", "viewpoint_unresolved"),
+    "inspect_external_facts": ("omniscient_required", "viewpoint_unresolved"),
     "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),
+    # The structured state reads (#137): no viewpoint resolves (#536).
+    "scene": ("viewpoint_unresolved",),
+    "entity_profile": ("viewpoint_unresolved",),
     "get_operation": (
         "idempotency_conflict",
         "viewpoint_unresolved",
@@ -679,7 +827,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
 QUEUEING_OPERATIONS = frozenset({"respond", "ingest"})
 """Operations a ``queue`` story answers with 202 ``QueuedTurn`` (and ``Prefer: respond-async``)."""
 
-VIEWPOINT_OPERATIONS = frozenset({"respond", "regenerate", "history", "get_story", "get_operation"})
+VIEWPOINT_OPERATIONS = frozenset(
+    {"respond", "regenerate", "correct", "history", "get_story", "get_operation"}
+)
 """Operations that read the output viewpoint from ``?viewpoint=`` (FR-RESP-12)."""
 
 PRINCIPAL_READS = frozenset({"get_feedback"})

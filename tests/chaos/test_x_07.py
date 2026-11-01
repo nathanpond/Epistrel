@@ -19,11 +19,13 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -41,8 +43,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api import create_app
 from epistrel.api.routes.health import check
 from epistrel.config import Settings
-from epistrel.core import clock
+from epistrel.core import clock, states
+from epistrel.core import outbox as core_outbox
+from epistrel.core.enums import (
+    OperationKind,
+    Provenance,
+    StateChangeStatus,
+    StateContingency,
+)
 from epistrel.core.events.operation import Operation
+from epistrel.core.ids import new_ulid
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.tables import audit_log, idempotency_keys, jobs, recurring_tasks, timers
 from epistrel.core.tables import worker_heartbeats as heartbeats
@@ -50,7 +60,8 @@ from epistrel.engine import TURN_QUEUE_HOOK, Engine
 from epistrel.orchestrator.jobs import handlers, queue
 from epistrel.orchestrator.jobs import timers as timer_api
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
-from epistrel.orchestrator.jobs.handlers import retention, turn_queue
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
+from epistrel.orchestrator.jobs.handlers import reservations, retention, turn_queue
 from epistrel.orchestrator.jobs.recurring import (
     NoPayload,
     RecurringTask,
@@ -66,12 +77,19 @@ from epistrel.orchestrator.jobs.worker import (
     WorkerConfig,
     recovery_pass,
 )
+from epistrel.orchestrator.providers.in_process import InProcessRegistry
+from tests import canon_support as c
+from tests import provider_support as ps
+from tests import state_support as ss
 from tests.auth_support import CREDENTIAL_A, ERASURE_LEDGER_DIR, MEDIA_ROOT, auth_settings
 from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
 from tests.integration import test_jobs as jt
 from tests.integration.test_media_assets import SWEEPER, put
 from tests.media_support import blob_path, png, scratch
+from tests.memory_support import use_structured
+from tests.respond_support import until
+from tests.wall_clock_support import MovableClock, moving
 
 POLL_S = 0.3
 LEASE_S = 3.0
@@ -187,25 +205,10 @@ def _now() -> datetime:
     return clock.now()
 
 
-class MovableClock:
-    def __init__(self) -> None:
-        self.offset = timedelta()
-
-    def __call__(self) -> datetime:
-        return datetime.now(UTC) + self.offset
-
-    def advance(self, seconds: float) -> None:
-        self.offset += timedelta(seconds=seconds)
-
-
 @pytest.fixture
 def moved() -> Iterator[MovableClock]:
-    movable = MovableClock()
-    clock.set_clock(movable)
-    try:
+    with moving() as movable:
         yield movable
-    finally:
-        clock.set_clock(None)
 
 
 def _config(**kw: Any) -> WorkerConfig:
@@ -218,6 +221,60 @@ async def _wait_for(probe: Any, within: float = 5.0) -> None:
     while not await probe():
         assert time.monotonic() < deadline, "condition not reached in time"
         await asyncio.sleep(0.02)
+
+
+class LoopLog:
+    """What a worker's loop did, in order (#446): ``("poll", claimed)`` after each
+    ``run_one``, ``("wait", seconds)`` for each idle wait it computed, and ``("fire", moment,
+    timer kinds)`` for each timer pass (``moment`` read just before it). "Within one polling
+    interval" is checked against this record rather than the wall clock: the work is taken by
+    the first pass that could see it, after at most one idle wait no longer than the interval,
+    so the check holds however slow the host is."""
+
+    def __init__(self, worker: Worker, patch: pytest.MonkeyPatch) -> None:
+        self.entries: list[tuple[Any, ...]] = []
+        run_one, idle, fire_due = worker.run_one, worker._idle_timeout, timer_api.fire_due
+
+        async def polled(worker_id: str) -> bool:
+            claimed = await run_one(worker_id)
+            self.entries.append(("poll", claimed))
+            return claimed
+
+        async def waited() -> float:
+            seconds = await idle()
+            self.entries.append(("wait", seconds))
+            return seconds
+
+        async def fired(db: AsyncEngine, now: datetime | None = None) -> timer_api.Fired:
+            moment = clock.now()
+            result = await fire_due(db, now)
+            self.entries.append(("fire", moment, tuple(result.timers)))
+            return result
+
+        patch.setattr(worker, "run_one", polled)
+        patch.setattr(worker, "_idle_timeout", waited)
+        patch.setattr(timer_api, "fire_due", fired)
+
+    def waits(self, start: int, end: int) -> list[float]:
+        return [e[1] for e in self.entries[start:end] if e[0] == "wait"]
+
+    def first(self, *entry: Any, after: int = 0) -> int | None:
+        """The index of the first entry from ``after`` on that starts with ``entry``."""
+        for index in range(after, len(self.entries)):
+            if self.entries[index][: len(entry)] == entry:
+                return index
+        return None
+
+    def last(self, kind: str, before: int) -> int:
+        """The index of the last ``kind`` entry before ``before``."""
+        return max(i for i in range(before) if self.entries[i][0] == kind)
+
+    def assert_waits_within_interval(self, start: int, end: int, most: int) -> None:
+        """Between ``start`` and ``end`` the loop waited at most ``most`` times, each wait no
+        longer than the polling interval."""
+        waits = self.waits(start, end)
+        assert len(waits) <= most, self.entries[start : end + 1]
+        assert all(w <= POLL_S for w in waits), waits
 
 
 async def _jobs_of(engine: AsyncEngine, kind: str) -> list[Any]:
@@ -284,17 +341,27 @@ async def test_x_07__jobs(engine: AsyncEngine, registry: jt.Probe, moved: Movabl
     exactly once with fencing, and the job then finishes; a second recovery pass changes
     nothing. The lost claim's late commit is refused and writes nothing. Complement: the
     current claim's commit is accepted."""
-    # 1. NOTIFY suppressed: polling alone claims the job within one interval.
+    # 1. NOTIFY suppressed: polling alone claims the job within one interval. The loop's own
+    # record shows it, not elapsed time (#446): the first poll to start after the enqueue
+    # claims it (at most one poll, under way at the enqueue, misses it), and no idle wait from
+    # the one the loop was in at the enqueue up to the claim is longer than the interval.
     worker = Worker(engine, jt._config())
-    running = asyncio.create_task(worker.run())
-    await asyncio.sleep(0.1)  # the loop is idle and waiting for its next poll
-    assert not worker.listening.is_set()
-    started = time.monotonic()
-    polled = await jt._enqueue(engine, "test_echo", {"n": 1})
-    await jt._wait_for(lambda: jt._done(engine, polled), within=jt.POLL_S + 2.0)
-    assert time.monotonic() - started <= jt.POLL_S + 0.5
-    worker.stop()
-    await running
+    with pytest.MonkeyPatch.context() as patch:
+        log = LoopLog(worker, patch)
+        running = asyncio.create_task(worker.run())
+        await until(lambda: log.first("wait") is not None, "the loop is idle between polls")
+        assert not worker.listening.is_set()
+        mark = len(log.entries)
+        polled = await jt._enqueue(engine, "test_echo", {"n": 1})
+        await until(lambda: log.first("poll", True, after=mark) is not None, "a poll claims it")
+        claim = log.first("poll", True, after=mark)
+        assert claim is not None
+        missed = [e for e in log.entries[mark:claim] if e[0] == "poll"]
+        assert len(missed) <= 1, log.entries[mark : claim + 1]
+        log.assert_waits_within_interval(log.last("wait", mark), claim, most=2)
+        assert await jt._done(engine, polled)
+        worker.stop()
+        await running
 
     # 2. Kill a worker mid-job; the lease lapses; a new worker's recovery pass reclaims it once.
     killed = Worker(engine, jt._config())
@@ -365,17 +432,30 @@ async def test_x_07__timers(engine: AsyncEngine, quiet: Probe) -> None:
     a timer and ``cancel`` removes it; a timer of an unknown kind is deleted unfired.
     Complement: a timer not yet due is not fired."""
     worker = Worker(engine, _config())
-    run = asyncio.create_task(worker.run())
-    try:
-        due_in = 0.5
-        async with engine.begin() as conn:
-            await timer_api.schedule(conn, TIMER, "polled", _now() + timedelta(seconds=due_in))
-        started = time.monotonic()
-        await _wait_for(lambda: _ran(quiet, "polled"), within=due_in + POLL_S + 2.0)
-        assert time.monotonic() - started <= due_in + POLL_S + 1.0
-    finally:
-        worker.stop()
-        await run
+    with pytest.MonkeyPatch.context() as patch:
+        log = LoopLog(worker, patch)
+        run = asyncio.create_task(worker.run())
+        try:
+            # Past the recovery pass and into the loop, so a loop pass fires it (#446).
+            await until(lambda: log.first("wait") is not None, "the loop is idle between polls")
+            due = _now() + timedelta(seconds=0.5)
+            async with engine.begin() as conn:
+                await timer_api.schedule(conn, TIMER, "polled", due)
+            await until(lambda: _ran(quiet, "polled"), "a polling worker fires the due timer")
+        finally:
+            worker.stop()
+            await run
+    # The loop's record, not elapsed time: the first pass that began once the timer was due
+    # fired it (every earlier pass began before it was due), after at most one idle wait of
+    # at most the interval since the pass before.
+    passes = [i for i, e in enumerate(log.entries) if e[0] == "fire"]
+    firing = [i for i in passes if TIMER in log.entries[i][2]]
+    assert len(firing) == 1, log.entries
+    (fired,) = firing
+    earlier = [i for i in passes if i < fired]
+    assert earlier, log.entries  # the recovery pass and a loop pass ran before it was scheduled
+    assert all(log.entries[i][1] < due for i in earlier), log.entries
+    log.assert_waits_within_interval(earlier[-1], fired, most=1)
     assert quiet.ran.count((TIMER, "polled")) == 1
     assert await _scalar(engine, "SELECT count(*) FROM timers") == 0
 
@@ -853,9 +933,77 @@ async def _task_ran(engine: AsyncEngine, name: str) -> bool:
 
 
 def _free_port() -> int:
+    """A port free a moment ago: ``_workers`` starts a worker on it again elsewhere if someone
+    took it before the worker bound it (#468)."""
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+BOUND = re.compile(r"Uvicorn running on http://127\.0\.0\.1:(\d+)")
+"""uvicorn's INFO line once it bound its port (the CLI takes no port 0 to report one)."""
+IN_USE = "address already in use"
+"""uvicorn's ERROR line when its port was taken: it exits."""
+WORKER_ATTEMPTS = 3
+WORKER_START_S = 30.0
+
+
+class _Worker:
+    """An ``epistrel worker`` process on ``port``; a thread drains its output (its JSON log lines
+    on stdout at INFO, and stderr), keeping the last lines and noting whether it bound its port
+    or found it taken."""
+
+    def __init__(self, pg_url: str, port: int) -> None:
+        self.port = port
+        self.proc = _spawn(pg_url, port)
+        self.lines: deque[str] = deque(maxlen=200)
+        self.bound = threading.Event()
+        self.in_use = False
+        self.drain = threading.Thread(target=self._drain, daemon=True)
+        self.drain.start()
+
+    def _drain(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            self.lines.append(line)
+            found = BOUND.search(line)
+            if found and int(found.group(1)) == self.port:
+                self.bound.set()
+            elif IN_USE in line.lower():
+                self.in_use = True
+
+    def output(self) -> str:
+        return "".join(self.lines)
+
+
+async def _workers(pg_url: str, n: int) -> list[_Worker]:
+    """``n`` workers started together, each on a port it bound itself: one whose port was taken
+    between ``_free_port`` and its bind is started again on a fresh port (``WORKER_ATTEMPTS`` at
+    most, #468). Until a worker has bound, nothing talks to its port."""
+    workers = [_Worker(pg_url, _free_port()) for _ in range(n)]
+    started: list[_Worker] = []
+    try:
+        for slot in range(n):
+            for attempt in range(1, WORKER_ATTEMPTS + 1):
+                worker = workers[slot]
+                deadline = time.monotonic() + WORKER_START_S
+                while not worker.bound.is_set() and worker.proc.poll() is None:
+                    assert time.monotonic() < deadline, f"worker not bound: {worker.output()}"
+                    await asyncio.sleep(0.05)
+                if worker.bound.is_set():
+                    break
+                worker.proc.wait(timeout=10)
+                worker.drain.join(timeout=5)  # it has read the last lines
+                assert worker.in_use, worker.output()
+                assert attempt < WORKER_ATTEMPTS, worker.output()
+                workers[slot] = _Worker(pg_url, _free_port())
+            started.append(workers[slot])
+    except BaseException:
+        for worker in workers:
+            worker.proc.kill()
+            worker.proc.wait(timeout=10)
+        raise
+    return started
 
 
 def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
@@ -865,7 +1013,8 @@ def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
         "EPISTREL_SERVICE_CREDENTIALS": CREDENTIAL_A,
         "EPISTREL_MODEL_ADAPTER": "stub",
         "EPISTREL_WORKER_POLL_INTERVAL": "0.3",
-        "EPISTREL_LOG_LEVEL": "WARNING",
+        # INFO: uvicorn's line once it bound its port (``BOUND``).
+        "EPISTREL_LOG_LEVEL": "INFO",
         "EPISTREL_HOST": "127.0.0.1",
         # The start-up check needs a writable media root (#105); never one under the repository.
         "EPISTREL_MEDIA_ROOT": str(MEDIA_ROOT),
@@ -877,8 +1026,8 @@ def _spawn(pg_url: str, port: int) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [sys.executable, "-m", "epistrel.cli", "worker", "--port", str(port)],
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
     )
 
@@ -896,13 +1045,13 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
         "UPDATE recurring_tasks SET next_run_at = now() - interval '3 hours 5 minutes' "
         "WHERE name = 'idempotency_purge'",
     )
-    ports = [_free_port(), _free_port()]
-    procs = [_spawn(pg_url, port) for port in ports]
+    workers = await _workers(pg_url, 2)
+    ports = [w.port for w in workers]
     try:
 
         async def all_alive() -> bool:
-            for proc in procs:
-                assert proc.poll() is None, proc.stderr.read() if proc.stderr else ""
+            for worker in workers:
+                assert worker.proc.poll() is None, worker.output()
             return bool(await _scalar(engine, "SELECT count(*) FROM worker_heartbeats") == 4)
 
         await _wait_for(all_alive, within=30)
@@ -924,9 +1073,9 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
             routes = await client.get(f"http://127.0.0.1:{ports[0]}/stories", headers=_bearer())
             assert routes.status_code == 404
     finally:
-        for proc in procs:
-            proc.kill()
-            proc.wait(timeout=10)
+        for worker in workers:
+            worker.proc.kill()
+            worker.proc.wait(timeout=10)
     assert await _scalar(engine, "SELECT count(*) FROM worker_heartbeats") == 4  # no clean stop
     await _execute(engine, "UPDATE worker_heartbeats SET at = at - interval '61 seconds'")
     api = auth_settings(pg_url)
@@ -934,6 +1083,51 @@ async def test_x_07__processes(pg_url: str, engine: AsyncEngine, quiet: Probe) -
     assert body["status"] == "degraded"
     assert body["checks"]["workers"]["alive"] == 0
     assert body["checks"]["workers"]["last_heartbeat_s"] >= 61
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M2", "NFR-REL-5; NFR-OPS-1")
+async def test_x_07__processes_port_taken(
+    pg_url: str, engine: AsyncEngine, quiet: Probe, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker whose port another process took before it bound it (#468) exits with uvicorn's
+    ``address already in use``; ``_workers`` starts it again on a fresh port, and only that one
+    runs: its heartbeats are the only ones (the first stopped cleanly), and nothing talked to
+    the taken port."""
+    with socket.socket() as other:
+        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        other.bind(("127.0.0.1", 0))
+        other.listen()
+        other.setblocking(False)
+        taken = int(other.getsockname()[1])
+        picked: list[int] = []
+        fresh = _free_port
+
+        def first_taken() -> int:
+            picked.append(taken if not picked else fresh())
+            return picked[-1]
+
+        monkeypatch.setattr(sys.modules[__name__], "_free_port", first_taken)
+        (worker,) = await _workers(pg_url, 1)
+        try:
+            assert len(picked) == 2
+            assert worker.port == picked[1] != taken
+
+            async def alive() -> bool:
+                assert worker.proc.poll() is None, worker.output()
+                return bool(await _scalar(engine, "SELECT count(*) FROM worker_heartbeats") == 2)
+
+            await _wait_for(alive, within=30)
+            async with httpx.AsyncClient() as client:
+                health = await client.get(f"http://127.0.0.1:{worker.port}/health")
+                assert health.status_code == 200
+                assert health.json()["checks"]["workers"]["alive"] == 2
+        finally:
+            worker.proc.kill()
+            worker.proc.wait(timeout=10)
+        with pytest.raises(BlockingIOError):
+            other.accept()
 
 
 # -- the deployment: compose, image, entrypoint -------------------------------------------------
@@ -1131,3 +1325,211 @@ async def test_x_07__media_sweep(
         task = await _task(space.db, media_sweep_job.MEDIA_SWEEP)
         assert task.last_status == "ok"
         assert task.next_run_at > _now()
+
+
+# -- the outbox's claim leases (#210) ------------------------------------------------------------
+
+
+async def _outbox_turn(engine: AsyncEngine, story: str, names: list[str]) -> list[str]:
+    """One turn writing an ``intended`` outbox row per provider ``names``; their ids."""
+    ids = [new_ulid() for _ in names]
+    async with Operation(engine, story_id=story, kind=OperationKind.TURN, principal="p-test") as op:
+        op.append("player_input", {"text": "pay"}, provenance=Provenance.PLAYER)
+        op.append("message_rendered", {"text": "the coins change hands"})
+
+        async def write(conn: Any) -> None:
+            await core_outbox.write_intended(
+                conn,
+                op,
+                [
+                    core_outbox.Intended(
+                        id=row_id,
+                        provider_name=name,
+                        value_name="gold",
+                        scope_key=None,
+                        effect={"kind": "change", "state": "gold", "delta": -5, "reason": "dues"},
+                        beat=2,
+                    )
+                    for row_id, name in zip(ids, names, strict=True)
+                ],
+            )
+            for row_id in ids:
+                await outbox_job.enqueue(conn, row_id, story)
+
+        op.add_commit_step(write)
+        await op.commit()
+    return ids
+
+
+async def _outbox_state(engine: AsyncEngine, outbox_id: str) -> tuple[str, int, list[str]]:
+    """A row's status and attempts, and the kinds of its outcome records in order."""
+    async with engine.connect() as conn:
+        row = (
+            await conn.execute(
+                text("SELECT status, attempts FROM external_effect_outbox WHERE id = :i"),
+                {"i": outbox_id},
+            )
+        ).one()
+        kinds = list(
+            await conn.scalars(
+                text(
+                    "SELECT kind FROM outbox_outcomes WHERE outbox_id = :i ORDER BY received_at, id"
+                ),
+                {"i": outbox_id},
+            )
+        )
+    return str(row.status), int(row.attempts), kinds
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M6", "NFR-REL-5")
+async def test_x_07__m6_outbox(engine: AsyncEngine, quiet: Probe, moved: MovableClock) -> None:
+    """The outbox's claim leases (#210, FR-EXT-17,18): a turn's two outbox rows are claimed and
+    the worker dies before it sends either. While no worker runs their leases lapse; racing
+    workers fire each lease timer once, and the next worker runs them: the provider that
+    deduplicates gets the row again under the same key (confirmed), the one that does not has
+    its row moved to ``unknown`` with one outcome record, never sent. Restarts and later passes
+    change nothing. Complement: the confirmed row is never re-sent."""
+    dedupe, plain = ps.unique_name("dedupe"), ps.unique_name("plain")
+    await ps.register(engine, ps.write_capable_spec(dedupe, dedupes=True))
+    await ps.register(engine, ps.write_capable_spec(plain, dedupes=False))
+    story = await new_story(engine)
+    registry = InProcessRegistry()
+    fakes = {name: ps.ScriptedProvider(name) for name in (dedupe, plain)}
+    for name, fake in fakes.items():
+        registry.register(name, read=fake.read, write=fake.write)
+        await ps.bind(engine, story, name, {"player": "p-1"})
+    outbox_job.bind(registry)
+    try:
+        resent, lapsed = await _outbox_turn(engine, story, [dedupe, plain])
+        assert {j.status for j in await ps.outbox_jobs(engine, story)} == {"queued"}
+        # The worker claims both rows and dies before sending (its dispatch jobs end).
+        for row_id in (resent, lapsed):
+            assert isinstance(await outbox_job.claim(engine, row_id), outbox_job.Claimed)
+        async with engine.begin() as conn:
+            await conn.execute(delete(jobs).where(jobs.c.story_id == story))
+        assert await _outbox_state(engine, lapsed) == ("claimed", 1, [])
+
+        # The outage outlasts the leases; racing workers fire each lease timer once.
+        moved.advance(outbox_job.CLAIM_LEASE.total_seconds() + 5)
+        results = await asyncio.gather(*(timer_api.fire_due(engine) for _ in range(4)))
+        fired = sorted(kind for r in results for kind in r.timers)
+        assert fired == [outbox_job.OUTBOX_LEASE, outbox_job.OUTBOX_LEASE]
+        worker = Worker(engine, _config(timers=False))
+        assert await worker.recovery_pass() is not None
+        # The two lease jobs, and (#217) the late settlement the confirmation enqueued.
+        assert await _drain(engine, worker) == 3
+        assert fakes[dedupe].idempotency_keys == [resent]
+        assert fakes[plain].idempotency_keys == []
+        assert await _outbox_state(engine, resent) == ("confirmed", 2, ["confirmed"])
+        assert await _outbox_state(engine, lapsed) == ("unknown", 1, ["unknown"])
+        listed = (await core_outbox.listings(engine, story)).listings
+        assert [(e.outbox_id, e.reason) for e in listed] == [(lapsed, "unknown")]
+
+        # Restarts and later passes change nothing; the confirmed row is never re-sent.
+        for _ in range(2):
+            moved.advance(outbox_job.CLAIM_LEASE.total_seconds() + 5)
+            restarted = Worker(engine, _config(timers=False))
+            await restarted.recovery_pass()
+            await timer_api.fire_due(engine)
+            await _drain(engine, restarted)
+            await outbox_job.expire(engine, lapsed)
+            await outbox_job.expire(engine, resent)
+        assert fakes[dedupe].idempotency_keys == [resent]
+        assert fakes[plain].idempotency_keys == []
+        assert await _outbox_state(engine, resent) == ("confirmed", 2, ["confirmed"])
+        assert await _outbox_state(engine, lapsed) == ("unknown", 1, ["unknown"])
+    finally:
+        outbox_job.bind(None)
+        await ps.drop_outbox_jobs(engine, story)
+
+
+# -- State reservation expiry (#216) -------------------------------------------------------------
+
+
+async def _holds(engine: AsyncEngine) -> tuple[str, str, str]:
+    """A story whose Cal has 10 gold, two of it held by one turn for two external payouts
+    (``held`` reservations), each with a ``reservation_expiry`` timer due in two hours; answers
+    the story and the two held changes' ids."""
+    world = await c.world(engine)
+    story, cal = world.story_id, world.characters["Cal"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(engine, story, ss.gold())
+    await ss.change(engine, story, ss.set_to("gold", 10, scope_key=cal))
+
+    def hold() -> Any:
+        return ss.delta(
+            "gold",
+            -1,
+            scope_key=cal,
+            contingency=StateContingency.RESERVATION,
+            status=StateChangeStatus.HELD,
+            prerequisite_effect_ids=(new_ulid(),),
+        )
+
+    async def write(conn: Any, op: Operation) -> list[str]:
+        found = [await states.apply_change(conn, op, hold()) for _ in range(2)]
+        ids = [f.change_id for f in found if isinstance(f, states.Applied)]
+        due = clock.now() + timedelta(hours=2)
+        for change_id in ids:
+            await timer_api.schedule(
+                conn, reservations.RESERVATION_EXPIRY, change_id, due, story_id=story
+            )
+        return ids
+
+    _, (first, second) = await c.run(engine, story, write)
+    return story, first, second
+
+
+async def _change_status(engine: AsyncEngine, change_id: str) -> str:
+    return str(await _scalar(engine, "SELECT status FROM state_changes WHERE id = :i", i=change_id))
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M6", "NFR-REL-5")
+async def test_x_07__m6_reservation(
+    engine: AsyncEngine, quiet: Probe, moved: MovableClock, states_delivered: None
+) -> None:
+    """State reservation expiry (#216, FR-STATE-14): two holds' expiry timers come due while no
+    worker runs; racing workers fire each timer once, and the next worker's recovery pass and
+    drain release the hold exactly once. Restarts, later passes and a repeated release change
+    nothing. Complement: a hold converted before its expiry is not released by its timer, and a
+    timer not yet due fires nothing."""
+    story, released, converted = await _holds(engine)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE state_changes SET status = 'converted' WHERE id = :i"), {"i": converted}
+        )
+    # Not due yet: nothing fires.
+    assert (await timer_api.fire_due(engine)).timers == []
+
+    # The outage outlasts the expiry; racing workers fire each timer once.
+    moved.advance(timedelta(hours=2, minutes=1).total_seconds())
+    results = await asyncio.gather(*(timer_api.fire_due(engine) for _ in range(4)))
+    fired = sorted(kind for r in results for kind in r.timers)
+    assert fired == [reservations.RESERVATION_EXPIRY] * 2
+    worker = Worker(engine, _config(timers=False))
+    assert await worker.recovery_pass() is not None
+    assert await _drain(engine, worker) == 2
+    outcomes = sorted(
+        j.result["outcome"] for j in await _jobs_of(engine, reservations.RESERVATION_EXPIRY)
+    )
+    assert outcomes == [reservations.RELEASED, reservations.SKIPPED]
+    assert await _change_status(engine, released) == "released"
+    assert await _change_status(engine, converted) == "converted"
+
+    # Restarts and later passes change nothing.
+    for _ in range(2):
+        moved.advance(timedelta(hours=3).total_seconds())
+        restarted = Worker(engine, _config(timers=False))
+        await restarted.recovery_pass()
+        await timer_api.fire_due(engine)
+        assert await _drain(engine, restarted) == 0
+        assert await reservations.expire(engine, released) == reservations.SKIPPED
+    assert await _change_status(engine, released) == "released"
+    assert len(await _jobs_of(engine, reservations.RESERVATION_EXPIRY)) == 2
+    async with engine.begin() as conn:
+        await conn.execute(delete(jobs).where(jobs.c.story_id == story))

@@ -18,6 +18,7 @@ from epistrel.core.seeds.profiles import structured_m4_settings
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from tests import genesis_support as g
 from tests import scenario_support as scenarios
+from tests import takeback_support
 from tests.profile_support import PROFILES, merged
 
 PARTITIONED: dict[str, Any] = {
@@ -207,7 +208,7 @@ def body_with(**changes: Any) -> dict[str, Any]:
 
 async def partitioned_profile(client: httpx.AsyncClient, name: str = "Seeded partitions") -> str:
     """A profile running ``Structured (M4)`` with partitions and nested beliefs on (the caller
-    has delivered them): its id."""
+    has delivered them): its id. It is deleted after the test (``takeback_support``, #517)."""
     created = await client.post(
         PROFILES,
         json={"name": name, "settings": merged(structured_m4_settings(), PARTITIONED)},
@@ -215,6 +216,7 @@ async def partitioned_profile(client: httpx.AsyncClient, name: str = "Seeded par
     )
     assert created.status_code == 201, created.text
     profile_id: str = created.json()["id"]
+    takeback_support.created_profile(profile_id)
     return profile_id
 
 

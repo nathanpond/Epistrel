@@ -44,7 +44,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.config_changes import read_guardrail_settings
 from epistrel.core.enums import Authority, Membership, OperationKind, OperationStatus, Provenance
-from epistrel.core.errors import InvalidRequest, NothingToRegenerate, StoryNotFound
+from epistrel.core.errors import (
+    AlreadyCorrected,
+    InvalidRequest,
+    NothingToRegenerate,
+    NotLatestTurn,
+    StoryNotFound,
+)
 from epistrel.core.events import Operation
 from epistrel.core.events.types import GuardrailOutputRejected, MessageRendered, PlayerInput
 from epistrel.core.genesis.render import read_rendered
@@ -429,6 +435,8 @@ class RecordedTurn:
     render_character_ids: tuple[str, ...]
     viewpoint: str | None
     generation_settings: dict[str, Any] | None
+    corrected_from: str | None = None
+    """#598: the turn is a correction (FR-RESP-14), of the turn whose operation this names."""
 
 
 async def read_regenerable(db: AsyncEngine, story_id: str, turn: int | None = None) -> RecordedTurn:
@@ -497,7 +505,34 @@ async def read_regenerable(db: AsyncEngine, story_id: str, turn: int | None = No
         render_character_ids=tuple(replies[-1].payload.get("render_character_ids") or ()),
         viewpoint=op.viewpoint,
         generation_settings=recorded if isinstance(recorded, dict) else None,
+        corrected_from=said.get("corrected_from"),
     )
+
+
+async def read_correctable(db: AsyncEngine, story_id: str, turn: int) -> RecordedTurn:
+    """The head turn of ``story_id`` as ``correct`` replaces it (FR-RESP-14; #598): ``turn``
+    must be the story's latest active turn (409 ``not_latest_turn``: a later turn committed, or
+    the turn was rewound) and not a correction itself (409 ``already_corrected``); a turn
+    without a reply or an actor's input is 422 ``nothing_to_regenerate``, as for
+    ``read_regenerable``. Nothing is written."""
+    async with db.connect() as conn:
+        head = await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+    if head is None:
+        raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+    latest = int(head) - 1
+    if turn != latest:
+        raise NotLatestTurn(
+            f"turn {turn} is not the story's latest turn ({latest}); only history rewrite "
+            "changes it",
+            {"story_id": story_id, "turn": turn, "latest": latest},
+        )
+    recorded = await read_regenerable(db, story_id, turn)
+    if recorded.corrected_from is not None:
+        raise AlreadyCorrected(
+            f"turn {turn} is a correction and cannot be corrected again",
+            {"story_id": story_id, "turn": turn, "corrected_from": recorded.corrected_from},
+        )
+    return recorded
 
 
 def joined_input(say: str | None, do: str | None) -> str:
@@ -519,12 +554,14 @@ def stage_turn(
     finish_reason: str | None,
     fallback_used: bool = False,
     rejected: Sequence[GuardrailOutputRejected] = (),
+    corrected_from: str | None = None,
 ) -> None:
     """Stage the input beat (1) and the reply beat (2) on the turn operation; the texts an
-    output policy rejected on the way (#68) go between them, as audit records of beat 2."""
+    output policy rejected on the way (#68) go between them, as audit records of beat 2.
+    ``corrected_from`` (#598): the operation of the turn a correction replaces."""
     op.append(
         "player_input",
-        PlayerInput(text=joined_input(say, do), say=say, do=do),
+        PlayerInput(text=joined_input(say, do), say=say, do=do, corrected_from=corrected_from),
         provenance=Provenance.PLAYER,
         character_id=actor_character_id,
         beat=INPUT_BEAT,
@@ -566,6 +603,7 @@ __all__ = [
     "WindowRow",
     "generation_of",
     "joined_input",
+    "read_correctable",
     "read_regenerable",
     "read_story_cast",
     "read_turn_inputs",

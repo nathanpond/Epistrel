@@ -196,6 +196,29 @@ def test_first_and_second_person() -> None:
     assert _surfaces("Are you well?", JENNI, _context(beats=beats)) == [("you", TOM)]
 
 
+def test_the_inputs_actor_is_addressed() -> None:
+    """#483: a 1:1 reply's "you" is the turn's input actor (``addressed``), whose beat is not in
+    the window while the turn is checked: with no scene and an empty window, and in a scene the
+    actor is not part of. Complement: without it, "you" has no antecedent; with a third person
+    in the window, it is ambiguous, never guessed."""
+    (alone,) = resolve_mentions("I saw you.", JENNI, _context())[1:]
+    assert (alone.entity_id, alone.reason and alone.reason.code) == (
+        None,
+        ReasonCode.NO_ANTECEDENT,
+    )
+    addressed = frozenset({CAL})
+    assert _surfaces("I saw you.", JENNI, _context(addressed=addressed)) == [
+        ("I", JENNI),
+        ("you", CAL),
+    ]
+    scene = _context(present=frozenset({JENNI}), addressed=addressed)
+    assert _surfaces("Are you well?", JENNI, scene) == [("you", CAL)]
+    beats = [ContextBeat("Hi.", TOM)]
+    (you,) = resolve_mentions("you", JENNI, _context(beats=beats, addressed=addressed))
+    assert you.entity_id is None
+    assert you.candidates == tuple(sorted((CAL, TOM)))
+
+
 def test_pronouns_bind_to_the_nearest_compatible_entity() -> None:
     context = _context()
     # Same sentence, gender-compatible: one candidate.

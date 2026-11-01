@@ -31,9 +31,27 @@ the structured genesis's ``director`` items, #149's ``deferred_items``), never a
 definition. ``age_inputs`` builds the age repair's: the guidance, the custom instructions, the
 scene and each introduced character with its clue.
 
+**Tracked values** (#187, FR-TURN-11; owner decision 2026-10-30): with the story's
+``states.level`` at ``on``, a character render's ``## Tracked values`` comes from its
+``CharacterContext`` (the player-visible States it may change, the effect syntax, never a
+value), and the narrator's from ``orchestrator.structured.effects.narrator_lines`` (every State,
+hidden ones included, with its value at the turn's start and its constraints).
+
+**External data** (#208, FR-EXT-5): a value a provider answered reaches only the narrator, as
+one fenced block per pinned value in ``## External data`` (``external_data``,
+``orchestrator.providers.sanitize``); its ``## Tracked values`` line points at the block and
+carries no value. A character render never gets the section (``check-character-context``
+classifies it narrator-only): it learns a value only as a belief through ``build_context``.
+
+**Time** (#200, FR-CLOCK-11): a character render's ``## Your sense of time`` is its
+``CharacterContext.time_belief`` (its own time belief, never the clock); the narrator's
+``## Time`` names the objective time as the turn starts (``RenderSections.clock_now``, which
+``check-character-context`` classifies narrator-only).
+
 **The cap** (``render.prompt_token_budget``, ``len // 4`` tokens): over it, retrieved items
 are dropped from the end first, then canon lines, then working memory from the oldest beat
-(``## Just now`` counts against the cap and is never dropped). The
+(``## Just now``, ``## Tracked values`` and ``## External data`` count against the cap and are
+never dropped). The
 belief state and the private memories sit with the definition and the pins (U-31's top tier):
 they are never dropped before a retrieved item (they are bounded at the source,
 ``context.BELIEFS_MAX`` and ``context.PRIVATE_MAX``).
@@ -83,6 +101,24 @@ class RenderSections:
     belief_steps: bool = False
     """#168 (FR-TURN-12): the rendering character keeps its own beliefs, so its prompt carries
     ``## How to change your mind`` (the step contract and the ``think`` cite instruction)."""
+    tracked: tuple[str, ...] = ()
+    """#187: ``## Tracked values``: counted against the cap, never dropped by it."""
+    tracked_syntax: str = ""
+    """#187: the effect syntax and its example (with ``tracked``)."""
+    external: tuple[str, ...] = ()
+    """#208: the narrator's ``## External data``, one fenced block per pinned provider value
+    (``PinnedReads.blocks``): counted against the cap, never dropped by it, never a
+    character's (``character_inputs`` empties it)."""
+    clock_contract: bool = False
+    """#194: the story runs the world clock, so the render's prompt carries ``## Time`` (time
+    advances, ``time`` steps and ``flashback``)."""
+    clock_now: str = ""
+    """#200: the narrator's objective time as the turn starts; never a character's
+    (``character_inputs`` passes it nowhere: a character gets its own ``time_belief``)."""
+    pending_outcomes: tuple[str, ...] = ()
+    """#209: the narrator's ``## Awaiting the game``, the changes the last turns asked of the
+    consumer with no outcome yet (``effects.pending_outcomes``): counted against the cap, never
+    dropped by it, never a character's (``character_inputs`` empties it)."""
 
 
 RESOLUTION_STEERING = (
@@ -96,6 +132,14 @@ KNOWLEDGE_STEERING = (
     "along; keep what that character says and does consistent with having known it."
 )
 """The could-have-known steer (FR-COMMIT-11, #165): the render after a soft flag only."""
+
+TIME_STEERING = (
+    "Nobody here knows exactly what time it is. Have the scene establish the current time "
+    "naturally (someone checks a phone or a watch, a clock strikes), and do not say that any "
+    "appointment has arrived."
+)
+"""The establish-time steer (FR-CLOCK-18, #197): the narrator's renders after a
+``possibly_due`` pause, until the anchor is refined. Never a character's input."""
 
 
 def tokens(text: str) -> int:
@@ -113,6 +157,10 @@ def _size(sections: RenderSections) -> int:
         *sections.segments,
         *sections.working_memory,
         *sections.just_now,
+        *sections.tracked,
+        sections.tracked_syntax,
+        *sections.external,
+        *sections.pending_outcomes,
         *sections.retrieved,
         *sections.canon,
     )
@@ -174,6 +222,13 @@ def character_inputs(
             scene=context.scene,
             working_memory=context.working_memory,
             just_now=context.just_now,
+            tracked=context.tracked,
+            tracked_syntax=context.tracked_syntax,
+            # #208: provider content is the narrator's alone; a character learns a value only
+            # as a belief through build_context (#170).
+            external=(),
+            # #209 (FR-EXT-21 (e)): a character learns an outcome only by perception.
+            pending_outcomes=(),
             retrieved=context.retrieved,
             canon=context.canon,
         ),
@@ -192,6 +247,8 @@ def character_inputs(
         ],
         own_age=context.own_age,
         beliefs=list(context.belief_lines),
+        # #200 (FR-CLOCK-11): the character's own sense of time, never the clock.
+        time_belief=context.time_belief or "",
         private_memories=list(context.private_memories),
         pinned_memories=list(s.pins),
         summary_segments=list(s.segments),
@@ -200,6 +257,7 @@ def character_inputs(
         resolution_steering=s.resolution_steering,
         length_target=s.length_target,
         belief_steps=s.belief_steps,
+        clock_contract=s.clock_contract,
         player_input=_perceived_player(actor, context),
         scene=s.scene,
         working_memory=list(s.working_memory),
@@ -207,6 +265,8 @@ def character_inputs(
         others_present=list(others_present),
         interjections=interjections,
         player_requests=list(player_requests),
+        tracked_values=list(s.tracked),
+        tracked_syntax=s.tracked_syntax,
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
     )
@@ -238,6 +298,12 @@ def narrator_inputs(
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
         open_references=list(open_references),
+        tracked_values=list(s.tracked),
+        tracked_syntax=s.tracked_syntax,
+        external_data=list(s.external),
+        pending_outcomes=list(s.pending_outcomes),
+        clock_contract=s.clock_contract,
+        clock_now=s.clock_now,
     )
 
 
@@ -276,6 +342,7 @@ __all__ = [
     "KNOWLEDGE_STEERING",
     "PLAYER",
     "RESOLUTION_STEERING",
+    "TIME_STEERING",
     "RenderSections",
     "age_inputs",
     "capped",

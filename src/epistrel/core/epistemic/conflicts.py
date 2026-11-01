@@ -35,6 +35,14 @@ itself is #166's to repair) conflict when:
 
 Only affirmed effects take part: a negation ("she leaves") changes no object two ways.
 
+**Shared States** (#188, S-SIMULTANEOUS M6; ``detect_state_conflicts``). Two primaries' declared
+effects on one State value (``StateClaim``: the State and its scope key) conflict the same way:
+when, folded together, they break it although each fits alone (two purchases one purse cannot
+cover, one held item handed over twice), or they set it to two different values. The caller
+decides that (``breaks``: the folded bounds belong to ``core.states``). Their group's object is
+``state:<name>`` (``:<scope key>`` for a per-character State), its rule ``state``, adjudicated by
+the same tie-break.
+
 **Grouping.** Each conflict is keyed by the contested **object**: the shared subject (a place for
 one item, a state for one door), else the shared object (two holders of one item), else the item
 of the possession/placement pair. Effects clashing over one object form one group (``Conflict``,
@@ -47,7 +55,7 @@ Pure: no I/O, no story text in any log (invariant 3); this module logs nothing.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from epistrel.core.propositions.model import Polarity, Proposition
@@ -59,6 +67,9 @@ POSSESSION_PLACEMENT = "possession_placement"
 """The rule of the core possession/placement pair."""
 PLACEMENT = "placement"
 """The rule of one object placed in two places no containment fact relates (#549)."""
+STATE = "state"
+"""The rule of two primaries' effects one shared State cannot take together (#188)."""
+STATE_OBJECT_PREFIX = "state:"
 POSSESSION = frozenset({HOLDS, HELD_BY})
 _DEFAULT_OPTIONS = Options()
 
@@ -80,11 +91,35 @@ class Effect:
 
 
 @dataclass(frozen=True, slots=True)
+class StateClaim:
+    """One primary's declared effect on a State value (#188): the beat, the acting character,
+    its rank in request order, the State's name and scope key, and the effect's index in its
+    beat."""
+
+    beat: int
+    character_id: str
+    rank: int
+    state: str
+    scope_key: str | None = None
+    index: int = 0
+    claim_id: str | None = None
+    player: bool = False
+
+    def key(self) -> tuple[int, int, str]:
+        return (self.rank, self.beat, self.claim_id or f"{self.index}")
+
+    @property
+    def object_id(self) -> str:
+        scope = "" if self.scope_key is None else f":{self.scope_key}"
+        return f"{STATE_OBJECT_PREFIX}{self.state}{scope}"
+
+
+@dataclass(frozen=True, slots=True)
 class Conflict:
     """The effects that clash over one object, in request order, and the rules that found it."""
 
     object_id: str
-    effects: tuple[Effect, ...]
+    effects: tuple[Effect | StateClaim, ...]
     rules: tuple[str, ...]
 
     @property
@@ -256,10 +291,27 @@ def detect_conflicts(
             if rule not in rules.setdefault(obj, []):
                 rules[obj].append(rule)
     conflicts = [
-        Conflict(obj, tuple(sorted(group, key=Effect.key)), tuple(rules[obj]))
+        Conflict(obj, tuple(sorted(group, key=lambda e: e.key())), tuple(rules[obj]))
         for obj, group in groups.items()
     ]
     return sorted(conflicts, key=lambda c: (c.effects[0].key(), c.object_id))
+
+
+def detect_state_conflicts(
+    effects: Sequence[StateClaim], *, breaks: Callable[[Sequence[StateClaim]], bool]
+) -> list[Conflict]:
+    """The turn's conflicts over shared State values (see the module docstring): one per value
+    two or more characters change where ``breaks`` (the effects in request order) says the
+    value cannot take them together, in the order of their first effect. Pure."""
+    groups: dict[str, list[StateClaim]] = {}
+    for e in sorted(effects, key=StateClaim.key):
+        groups.setdefault(e.object_id, []).append(e)
+    found = [
+        Conflict(obj, tuple(group), (STATE,))
+        for obj, group in groups.items()
+        if len({e.character_id for e in group}) > 1 and breaks(group)
+    ]
+    return sorted(found, key=lambda c: (c.effects[0].key(), c.object_id))
 
 
 def needs_containment(effects: Sequence[Effect]) -> bool:
@@ -275,10 +327,14 @@ def needs_containment(effects: Sequence[Effect]) -> bool:
 __all__ = [
     "PLACEMENT",
     "POSSESSION_PLACEMENT",
+    "STATE",
+    "STATE_OBJECT_PREFIX",
     "Conflict",
     "Effect",
+    "StateClaim",
     "clash",
     "detect_conflicts",
+    "detect_state_conflicts",
     "needs_containment",
     "placement_pair",
 ]

@@ -54,7 +54,8 @@ class Outcome:
 
 
 class Surface:
-    """``create_story``, ``respond``, ``history`` and ``get_story`` on one surface."""
+    """``create_story``, ``respond``, ``history``, the inspection and State reads, the clock,
+    scheduled-event and reconciliation reads and ``get_story`` on one surface."""
 
     def __init__(self, name: str, client: httpx.AsyncClient, engine: Engine) -> None:
         self.name = name
@@ -133,8 +134,9 @@ class Surface:
         self, kind: str, story_id: str, *, principal: str | None = None, **params: Any
     ) -> Outcome:
         """``GET /stories/{id}/inspect/<kind>`` (``ledger``, ``beliefs``, ``divergences``,
-        ``exposures``; #178) or ``Engine.inspect_<kind>``: ``params`` are the query parameters
-        or the library's keywords (``viewpoint`` among them; omitted when ``None``)."""
+        ``exposures``; #178; ``external-facts``, #207) or ``Engine.inspect_<kind>``: ``params``
+        are the query parameters or the library's keywords (``viewpoint`` among them; omitted
+        when ``None``)."""
         if self.name == "rest":
             query = {k: _query(v) for k, v in params.items() if v is not None}
             headers = bearer() | ({"X-Epistrel-Principal": principal} if principal else {})
@@ -150,13 +152,121 @@ class Surface:
             "beliefs": routes.BeliefsBody,
             "divergences": routes.DivergencesBody,
             "exposures": routes.ExposuresBody,
+            "external-facts": routes.ExternalFactsBody,
         }
 
         async def call() -> dict[str, Any]:
-            method = getattr(self.engine, f"inspect_{kind}")
+            method = getattr(self.engine, f"inspect_{kind.replace('-', '_')}")
             keywords = {"viewpoint": None, **params}
             found = await method(RequestContext(principal=principal), story_id, **keywords)
             return _dump(bodies[kind].of(found))
+
+        return await _library(call, 200)
+
+    async def write_belief(
+        self, story_id: str, body: dict[str, Any], principal: str = AUTHOR
+    ) -> Outcome:
+        """``POST /admin/stories/{id}/beliefs`` or ``Engine.write_belief`` (#160; #654)."""
+        if self.name == "rest":
+            return _rest(
+                await self.client.post(
+                    f"/admin/stories/{story_id}/beliefs", json=body, headers=_headers(principal)
+                )
+            )
+        from epistrel.api.routes.admin.beliefs import BeliefWritten
+        from epistrel.core.epistemic.author import BeliefRequest
+
+        async def call() -> dict[str, Any]:
+            written = await self.engine.write_belief(
+                RequestContext(principal=principal), story_id, BeliefRequest.model_validate(body)
+            )
+            return _dump(BeliefWritten.of(written))
+
+        return await _library(call, 201)
+
+    async def states(
+        self, story_id: str, *, principal: str | None = None, **params: Any
+    ) -> Outcome:
+        """``GET /stories/{id}/states`` or ``Engine.get_states`` (#186): ``params`` are the
+        query parameters (``viewpoint``, ``actor_character_id``) or the library's keywords."""
+        if self.name == "rest":
+            query = {k: _query(v) for k, v in params.items() if v is not None}
+            headers = bearer() | ({"X-Epistrel-Principal": principal} if principal else {})
+            return _rest(
+                await self.client.get(f"/stories/{story_id}/states", params=query, headers=headers)
+            )
+        from epistrel.api.routes.states import StatesBody
+
+        async def call() -> dict[str, Any]:
+            context = RequestContext(principal=principal)
+            found = await self.engine.get_states(context, story_id, **params)
+            return _dump(StatesBody.of(found), as_routed=True)
+
+        return await _library(call, 200)
+
+    async def state(self, story_id: str, name: str, **params: Any) -> Outcome:
+        """``GET /stories/{id}/states/{name}`` or ``Engine.get_state`` (#186), as ``states``
+        (``as_of`` too)."""
+        if self.name == "rest":
+            query = {k: _query(v) for k, v in params.items() if v is not None}
+            return _rest(
+                await self.client.get(
+                    f"/stories/{story_id}/states/{name}", params=query, headers=bearer()
+                )
+            )
+        from epistrel.api.routes.states import StateViewBody
+
+        async def call() -> dict[str, Any]:
+            found = await self.engine.get_state(RequestContext(), story_id, name, **params)
+            return _dump(StateViewBody.of(found), as_routed=True)
+
+        return await _library(call, 200)
+
+    async def clock(self, story_id: str) -> Outcome:
+        """``GET /stories/{id}/clock`` or ``Engine.get_clock`` (#193)."""
+        if self.name == "rest":
+            return _rest(await self.client.get(f"/stories/{story_id}/clock", headers=bearer()))
+        from epistrel.api.routes.clock import ClockBody
+
+        async def call() -> dict[str, Any]:
+            return _dump(
+                ClockBody.of(await self.engine.get_clock(RequestContext(), story_id)),
+                as_routed=True,
+            )
+
+        return await _library(call, 200)
+
+    async def scheduled_events(self, story_id: str, viewpoint: str | None = None) -> Outcome:
+        """``GET /stories/{id}/scheduled-events`` or ``Engine.list_scheduled_events`` (#196):
+        ``viewpoint`` is ``?viewpoint=`` or the library's keyword."""
+        if self.name == "rest":
+            params = {"viewpoint": viewpoint} if viewpoint else {}
+            return _rest(
+                await self.client.get(
+                    f"/stories/{story_id}/scheduled-events", params=params, headers=bearer()
+                )
+            )
+        from epistrel.api.routes.scheduled_events import ScheduledEventsBody
+
+        async def call() -> dict[str, Any]:
+            found = await self.engine.list_scheduled_events(
+                RequestContext(), story_id, viewpoint=viewpoint
+            )
+            return _dump(ScheduledEventsBody.of(found), as_routed=True)
+
+        return await _library(call, 200)
+
+    async def reconciliation(self, story_id: str) -> Outcome:
+        """``GET /stories/{id}/reconciliation`` or ``Engine.reconciliation`` (#210)."""
+        if self.name == "rest":
+            return _rest(
+                await self.client.get(f"/stories/{story_id}/reconciliation", headers=bearer())
+            )
+
+        async def call() -> dict[str, Any]:
+            return _dump(
+                await self.engine.reconciliation(RequestContext(), story_id), as_routed=True
+            )
 
         return await _library(call, 200)
 
@@ -218,8 +328,11 @@ def _rest(response: httpx.Response) -> Outcome:
     return Outcome(response.status_code, body=body)
 
 
-def _dump(model: BaseModel) -> dict[str, Any]:
-    dumped: dict[str, Any] = model.model_dump(mode="json", exclude_unset=True)
+def _dump(model: BaseModel, *, as_routed: bool = False) -> dict[str, Any]:
+    """``model`` as JSON. ``as_routed``: every field, as FastAPI serializes a response model by
+    default (a read whose route does not set ``response_model_exclude_unset``), so the whole
+    body compares equal across the surfaces; else the fields set (the original comparison)."""
+    dumped: dict[str, Any] = model.model_dump(mode="json", exclude_unset=not as_routed)
     return dumped
 
 

@@ -22,16 +22,22 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel import Engine
 from epistrel.config import Settings
+from epistrel.core import outbox as core_outbox
 from epistrel.core.context import RequestContext
+from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.erasure import erase as erase_module
 from epistrel.core.erasure.erase import ErasureRequest
 from epistrel.core.erasure.index import rebuild_scope
 from epistrel.core.erasure.redact import Redactor
 from epistrel.core.erasure.verify import verify
+from epistrel.core.events.operation import Operation
+from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
 from epistrel.core.ids import new_ulid
 from epistrel.core.ports import Ports
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from tests import erasure_support as e
 from tests import genesis_support as g
+from tests import provider_support as ps
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.respond_support import body, new_story, played, respond, respond_client
@@ -563,6 +569,87 @@ async def test_a_multi_word_name_is_erased_by_its_words(
 MARISOL = ("Marisol Quenby", "Marisol", "Quenby")
 
 
+async def test_requested_and_outbox_effects_are_erased(
+    erasure_settings: Settings, engine: AsyncEngine
+) -> None:
+    """#209, #210: a ``requested_effect`` event's ``reason`` (an effect asked of the consumer)
+    and an outbox row's ``effect`` (one dispatched to a write-capable provider) are story text:
+    both are indexed, and an erasure of Marisol Quenby leaves no residue in ``events`` or
+    ``external_effect_outbox``. The ``intended`` row naming her is cancelled before the erasure
+    (never sent, FR-EXT-14); the claimed one keeps its status and stays listed, redacted to
+    ``{outbox_id, provider, status}`` (#211).
+    Complement: before the erasure the scan finds her in both tables."""
+    name = ps.unique_name("bank")
+    await ps.register(engine, ps.write_capable_spec(name))
+    async with respond_client(erasure_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Marisol Quenby", "Ty")
+        lib.models.stub.script("generation", ["Marisol Quenby waves at Ty."])
+        await played(client, story, body(ids["Wren"], "Hi Marisol."))
+        await ps.bind(engine, story, name, {"player": "p-1"})
+        ps.ScriptedProvider(name).attach(lib)
+        rows = [new_ulid(), new_ulid()]
+        async with Operation(
+            engine, story_id=story, kind=OperationKind.TURN, principal="p-author"
+        ) as op:
+            op.append("player_input", {"text": "pay her"}, provenance=Provenance.PLAYER)
+            op.append(
+                REQUESTED_EFFECT,
+                RequestedEffect(
+                    effect_id=new_ulid(),
+                    kind="change",
+                    state="gold",
+                    scope_key=None,
+                    delta=-5,
+                    reason="paid Marisol Quenby for the map",
+                ),
+                provenance=Provenance.ENGINE,
+                beat=2,
+            )
+            op.append("message_rendered", {"text": "The coins change hands."})
+
+            async def write(conn: AsyncConnection) -> None:
+                await core_outbox.write_intended(
+                    conn,
+                    op,
+                    [
+                        core_outbox.Intended(
+                            id=row_id,
+                            provider_name=name,
+                            value_name="gold",
+                            scope_key=None,
+                            effect={
+                                "kind": "change",
+                                "state": "gold",
+                                "delta": -5,
+                                "reason": f"a gift for Marisol ({n})",
+                            },
+                            beat=2,
+                        )
+                        for n, row_id in enumerate(rows)
+                    ],
+                )
+
+            op.add_commit_step(write)
+            await op.commit()
+        claimed = await outbox_job.claim(engine, rows[1], registry=lib.in_process_providers)
+        assert isinstance(claimed, outbox_job.Claimed)
+        before = await e.residue(engine, story, MARISOL)
+        assert before["events"] > 0
+        assert before["external_effect_outbox"] == 2
+
+        await e.erase(client, "character", ids["Marisol Quenby"], story)
+    left = await e.residue(engine, story, MARISOL)
+    assert (left["events"], left["external_effect_outbox"]) == (0, 0)
+    found = {r.id: r for r in await ps.outbox_rows(engine, story)}
+    assert (found[rows[0]].status, found[rows[1]].status) == ("cancelled", "claimed")
+    # #211: the claimed row is redacted to its id, provider and status (its effect emptied).
+    assert found[rows[1]].effect == {}
+    assert found[rows[1]].erased_at is not None
+    listed = (await core_outbox.listings(engine, story)).listings
+    assert [entry.outbox_id for entry in listed] == [rows[1]]
+    await ps.drop_outbox_jobs(engine, story)
+
+
 async def test_the_residue_scan_reports_what_is_left(
     erasure_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -747,9 +834,12 @@ def _stored_as_given(name: str, *, objects: bool = True, policies: bool = True) 
     body["cast"]["roles"][0]["state_initial_values"] = {"mood": f"{at}'s calm"}
     body["starting_state"].update(
         {
-            "states": [{"name": f"{at}'s trust", "initial": "wary"}],
-            "clock": {"start": "1987-10-24T18:00:00", "note": f"{at} winds the clocks."},
-            "scheduled_events": [{"at": "1987-10-24T21:00:00", "what": f"{at} meets Bobby."}],
+            # Typed since #202: a State's alias, a band's name and an event's name hold her.
+            "states": [
+                {"name": "mood", "type": "text", "scope": "character", "aliases": [f"{at}'s trust"]}
+            ],
+            "clock": {"bands": [[f"{at}'s hour", "00:00", "24:00"]]},
+            "scheduled_events": [{"proposition": f"{at} meets Bobby.", "planned": 180}],
             "predicates": [{"name": "trusts", "docs": f"{at} trusts Bobby."}],
             "closed_sets": [{"predicate": "trusts", "subject": "mother", "members": [at, "Bobby"]}],
             # Typed since #149's publish check (#131's declarations): a rule names predicates
@@ -773,9 +863,9 @@ def _stored_as_given(name: str, *, objects: bool = True, policies: bool = True) 
 OBJECT_PATHS = frozenset(
     {
         "cast.roles[0].state_initial_values.mood",
-        "starting_state.states[0].name",
-        "starting_state.clock.note",
-        "starting_state.scheduled_events[0].what",
+        "starting_state.states[0].aliases[0]",
+        "starting_state.clock.bands[0][0]",
+        "starting_state.scheduled_events[0].proposition",
         "starting_state.predicates[0].docs",
         "starting_state.closed_sets[0].members[0]",
     }
@@ -861,9 +951,9 @@ async def _erased_from_the_scenario(
         start = document["starting_state"]
         policy = document["story_settings_defaults"]["policies"][0]
         assert document["cast"]["roles"][0]["state_initial_values"]["mood"] == f"{at}'s calm"
-        assert start["states"][0]["name"] == f"{at}'s trust"
-        assert start["clock"]["note"] == f"{at} winds the clocks."
-        assert start["scheduled_events"][0]["what"] == f"{at} meets Bobby."
+        assert start["states"][0]["aliases"] == [f"{at}'s trust"]
+        assert start["clock"]["bands"][0][0] == f"{at}'s hour"
+        assert start["scheduled_events"][0]["proposition"] == f"{at} meets Bobby."
         assert start["predicates"][0]["docs"] == f"{at} trusts Bobby."
         assert start["closed_sets"][0]["members"] == [at, "Bobby"]
         assert start["rules"][0] == {"when": "trusts", "then": "knows"}

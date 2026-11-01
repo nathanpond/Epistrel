@@ -83,6 +83,7 @@ from epistrel.core.profiles.schema import (
     PROSPECTIVE,
     RELEVANT,
     DependencyRule,
+    Module,
     ProfileSettings,
     Purposes,
     Quality,
@@ -120,6 +121,7 @@ from epistrel.orchestrator.models.registry import (
     REGENERATION,
     SALIENCE_DETECTION,
     STORY_PURPOSES,
+    TIME_ESTIMATION,
 )
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
 from epistrel.testing import pauses
@@ -153,6 +155,7 @@ from tests.profile_support import (
     undelivered_levels,
     undelivered_modules,
     violating,
+    withholding,
 )
 from tests.respond_support import body as respond_body
 from tests.respond_support import generation_calls, respond_client
@@ -173,12 +176,14 @@ LITE_ROUTED = set(STORY_PURPOSES) - {
     SALIENCE_DETECTION.name,
     EXTRACTION_BACKSTOP.name,
     REGENERATION.name,
+    TIME_ESTIMATION.name,
 }
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
 ``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
 ``entailment``, ``consolidation`` (#143) the consolidation module, ``salience_detection``
 (#146) commitment, ``extraction_backstop`` (#148) verification at ``extraction`` and
-``regeneration`` (#151) the repair ladder, which Lite has off; unnamed, each inherits the
+``regeneration`` (#151) the repair ladder, which Lite has off, and ``time_estimation`` (#199) a
+structured turn's narrated skips; unnamed, each inherits the
 deployment's model configuration, as every purpose does under ``Structured (M4)``."""
 
 
@@ -292,7 +297,7 @@ class _Untagged(BaseModel):
 
 
 @pytest.mark.part("M3", "FR-PROF-2,3,4")
-async def test_u_28__schema(engine: AsyncEngine) -> None:
+async def test_u_28__schema(engine: AsyncEngine, withheld_module: Module) -> None:
     """Every setting of the profile schema carries its three tags: behavioral or
     data-producing, interpretive or prospective, quality-relevant or not (complement: a fixture
     schema's settings that lack a tag, or carry two of a kind, are each reported). Every setting
@@ -438,9 +443,12 @@ async def test_c_16__crud(scratch: Space) -> None:
         )
         assert (created["version"], created["current_version"]) == (1, 1)
         assert (created["settings"], created["config_revision"]) == (SETTINGS, revision)
+        assert created["warnings"] == []  # #456: the validator's, on the write's answer only
         read = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
         assert read == {
-            k: v for k, v in created.items() if k not in ("config_revision", "idempotency_key")
+            k: v
+            for k, v in created.items()
+            if k not in ("config_revision", "idempotency_key", "warnings")
         }
         listed = await ok(await client.get(PROFILES, headers=READ))
         assert [item["id"] for item in listed["items"]] == [profile, *SEEDED_PROFILES]
@@ -791,7 +799,9 @@ async def test_c_16__two_stage(scratch: Space) -> None:
         assert await configuration_rows(scratch.db) == still
 
     # -- a creation the scenario's recommendation is not met by: held, then confirmed
-    lacking = undelivered_modules()[0].name
+    with withholding() as withheld:  # every module is delivered since #203
+        lacking = undelivered_modules()[0].name
+    assert lacking == withheld.name
     lite = Configuration(LITE_PRESET_ID, 1, parse_settings(lite_settings()))
     facts = RuntimeFacts(models={}, templates={})
     recommended = Recommendation(capabilities=(lacking, "lite"), recommended_by="SCN@1")
@@ -969,7 +979,7 @@ async def test_u_28__effective(scratch: Space) -> None:
         # -- what cannot run is refused and nothing is stored; what can is stored
         unchanged = await configuration_rows(scratch.db)
         refused(
-            await _overrides(client, story, naming(undelivered_modules()[0])),
+            await _overrides(client, story, undelivered()),
             422,
             "invalid_profile",
         )
@@ -1231,7 +1241,7 @@ async def test_c_17__dependencies(stub_settings: Settings, engine: AsyncEngine) 
     async with respond_client(stub_settings, engine) as (client, _):
         base = await ok(await client.post(PROFILES, json=profile_body(), headers=headers(A)), 201)
         path = f"{PROFILES}/{base['id']}"
-        for module in undelivered_modules():
+        with withholding() as module:  # every module is delivered since #203
             for method, url, body in (
                 ("POST", PROFILES, profile_body(settings=naming(module))),
                 ("PUT", path, {"name": "Brisk Lite", "settings": naming(module)}),
@@ -1309,7 +1319,7 @@ async def test_settings_are_checked_at_the_boundary(
             "validation_error",
             "body.settings.models.purposes.generation.base_url",
         ),
-        ({"models": {"purposes": {"time_estimation": {"model": "m"}}}}, "invalid_profile", ""),
+        ({"models": {"purposes": {"image_prompt": {"model": "m"}}}}, "invalid_profile", ""),
         (
             nest("models.purposes.generation.model", "a\x00b"),
             "validation_error",
@@ -1333,7 +1343,7 @@ async def test_settings_are_checked_at_the_boundary(
                     {
                         "module": "models",
                         "level": None,
-                        "setting": "models.purposes.time_estimation",
+                        "setting": "models.purposes.image_prompt",
                     }
                 ]
             with pytest.raises((InvalidRequest, InvalidProfile)):

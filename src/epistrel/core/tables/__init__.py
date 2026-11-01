@@ -45,6 +45,11 @@ from epistrel.core.tables.memories import memories
 from epistrel.core.tables.model_config import model_config
 from epistrel.core.tables.offboarding import offboarding_jobs
 from epistrel.core.tables.operations import operations
+from epistrel.core.tables.outbox import (
+    external_effect_outbox,
+    outbox_outcomes,
+    reconciliation_marks,
+)
 from epistrel.core.tables.ownership import entity_relations, ownership_events
 from epistrel.core.tables.personas import personas
 from epistrel.core.tables.policies import policies
@@ -70,9 +75,18 @@ from epistrel.core.tables.propositions import (
     predicates,
     propositions,
 )
+from epistrel.core.tables.providers import external_providers, story_provider_bindings
 from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.scheduled_events import scheduled_events
+from epistrel.core.tables.states import (
+    external_values,
+    state_changes,
+    state_definitions,
+    state_proposals,
+    state_values,
+)
 from epistrel.core.tables.stories import stories
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
 from epistrel.core.tables.turn_queue import turn_queue
@@ -104,6 +118,9 @@ __all__ = [
     "escalations",
     "events",
     "exposures",
+    "external_effect_outbox",
+    "external_providers",
+    "external_values",
     "extraction_shadow",
     "facts",
     "gate_threshold_history",
@@ -120,6 +137,7 @@ __all__ = [
     "nested_belief_state",
     "offboarding_jobs",
     "operations",
+    "outbox_outcomes",
     "overflow_episodes",
     "ownership_events",
     "personas",
@@ -131,14 +149,21 @@ __all__ = [
     "proposition_changes",
     "propositions",
     "rating_check_jobs",
+    "reconciliation_marks",
     "recurring_tasks",
     "relationships",
     "scenario_catalog",
     "scenario_versions",
     "scene_state",
+    "scheduled_events",
+    "state_changes",
+    "state_definitions",
+    "state_proposals",
+    "state_values",
     "stories",
     "story_heads",
     "story_profile_overrides",
+    "story_provider_bindings",
     "story_texts",
     "subject_references",
     "thunks",

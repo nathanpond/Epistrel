@@ -32,7 +32,9 @@ The bar (``tests.reactive_support``): Cal (the player) asks; Bobby and Jenni are
 - ``test_s_reactive__budget``: a budget that cannot fit another primary plus its reservation
   defers a default-reactive character's escalation with reason ``budget``.
 
-M6's State clauses are M6's.
+- ``test_s_reactive__m6`` (#187): with the bar's stock tracked as a State, a reaction naming it
+  escalates the default bartender, and the fixed bartender is limited with no State change;
+  complement: the same reaction with no State tracked stays reactive.
 """
 
 from __future__ import annotations
@@ -43,9 +45,11 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.states import StateDefinition
 from tests import multi_support as ms
 from tests import perception_support as ps
 from tests import reactive_support as rs
+from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.event_support import rows, scalar
 from tests.respond_support import body, respond, respond_client
@@ -447,3 +451,95 @@ async def test_s_reactive__budget(
         ]
         assert turn["roles"][b["Sam"]] == {"role": "reactive", "source": "default"}
         assert turn["budget"]["used"] <= minimum
+
+
+STOCK = StateDefinition.model_validate(
+    {
+        "name": "beer_stock",
+        "type": "number",
+        "scope": "story",
+        "initial_value": 10,
+        "constraints": {"non_negative": True},
+        "aliases": ("keg", "beer"),
+        "authorization": {"sources": ["any_character"]},
+    }
+)
+"""The bar's stock of beer, tracked as a State (#187)."""
+EYES_KEG = "Sam eyes the keg."
+
+
+async def _stock_bar(client: Any, engine: AsyncEngine, *, tracked: bool) -> rs.Bar:
+    b = await rs.bar(client, engine)
+    if tracked:
+        await ss.set_level(engine, b.story_id, "on")
+        await ss.define_all(engine, b.story_id, STOCK)
+    return b
+
+
+@pytest.mark.part("M6", "FR-MULTI-9,10")
+async def test_s_reactive__m6(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """A reaction that would change a tracked State escalates its reactor (#187): with the bar's
+    stock tracked, Jenni's render narrating Sam eyeing the keg escalates the default bartender
+    to a primary render, and the reaction itself writes no change. Complement: the same
+    reaction in a bar that tracks no stock stays reactive. A fixed bartender is limited and
+    listed in ``escalation_deferred`` (``needed: state``); the narrated beer's stock change
+    (Jenni's prose of Sam serving) is caught, and no State change is recorded for him."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        jenni = rs.render(
+            beat("do", "Jenni leans on the bar."), reactions=[rs.reaction("Sam", EYES_KEG)]
+        )
+
+        # -- Tracked: the default bartender escalates; the reaction writes nothing.
+        b = await _stock_bar(client, engine, tracked=True)
+        stub.reset()
+        ms.renders_for(stub, "Jenni", jenni)
+        ms.renders_for(stub, "Sam", rs.render(beat("say", "What'll it be?", intent="sincere")))
+        turn = await _play(client, b, "Jenni", say="Jenni, a drink?")
+        assert rs.character_renders(stub) == ["Jenni", "Sam"]
+        assert turn["roles"][b["Sam"]] == {"role": "primary", "source": "escalated"}
+        # The reaction itself does not stand: it is limited while Sam renders for himself.
+        assert {n.text for n in await rs.narrated(engine, b.story_id)} == {
+            "Sam looks up but says nothing."
+        }
+        assert await ss.value(engine, b.story_id, "beer_stock") == 10
+        assert "state_effects" not in turn
+
+        # -- Complement: no stock tracked, the same reaction stays reactive.
+        b = await _stock_bar(client, engine, tracked=False)
+        stub.reset()
+        ms.renders_for(stub, "Jenni", jenni)
+        turn = await _play(client, b, "Jenni", say="Jenni, a drink?")
+        assert rs.character_renders(stub) == ["Jenni"]
+        assert turn["roles"][b["Sam"]] == {"role": "reactive", "source": "default"}
+        narrated = await rs.narrated(engine, b.story_id)
+        assert [(n.character_id, n.text) for n in narrated] == [(b["Sam"], EYES_KEG)]
+
+        # -- The fixed bartender: limited, deferred, and no State change for him.
+        b = await _stock_bar(client, engine, tracked=True)
+        await rs.set_role(client, b.story_id, b["Sam"], "reactive", fixed=True)
+        stub.reset()
+        ms.renders_for(
+            stub,
+            "Jenni",
+            rs.render(
+                beat("do", f"Jenni waves at the bar. {BEER}"),
+                reactions=[rs.reaction("Sam", EYES_KEG)],
+            ),
+        )
+        turn = await _play(client, b, "Jenni", say="Sam, a beer please.")
+        assert rs.character_renders(stub) == ["Jenni"]
+        assert turn["escalation_deferred"] == [
+            {"character_id": b["Sam"], "reason": "fixed_role", "needed": "state"},
+        ]
+        narrated = await rs.narrated(engine, b.story_id)
+        assert {n.text for n in narrated} == {"Sam looks up but says nothing."}
+        assert BEER not in turn["message"]["text"]
+        assert await ss.value(engine, b.story_id, "beer_stock") == 10
+        assert not await ss.change_rows(engine, b.story_id)
+        assert "state_effects" not in turn

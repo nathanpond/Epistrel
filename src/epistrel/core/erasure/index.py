@@ -57,7 +57,7 @@ with (``core.erasure.records``). ``tests/integration/test_subject_index.py`` che
 ``information_schema``: a new story-content table without a registration (or a registered
 writer that never calls the indexer) fails it. Tables M4+ adds register here when they land
 (#131's predicate registry, propositions and entities did, #133's facts and #135's memories,
-#143's reflections among them, and #146's thunks; beliefs, States and the outbox will).
+#143's reflections among them, #146's thunks, beliefs, #185's States and #210's outbox).
 ``EXEMPT_TABLES`` names the story and catalog tables that are not indexed, and why.
 
 ``drop_references``/``drop_many`` remove a record's rows; every delete path of an indexed record
@@ -680,6 +680,7 @@ _PARTITIONS = "epistrel.core.epistemic.partitions"
 _TRANSITIONS = "epistrel.core.epistemic.transitions"
 _EXPOSURES = "epistrel.core.epistemic.exposure"
 _DIVERGENCES = "epistrel.core.epistemic.divergences"
+_STATES = "epistrel.core.states"
 
 SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
@@ -791,6 +792,22 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # Divergences (#166): the speaker and the asserted and believed propositions' subject and
     # object characters are declared subjects.
     SubjectWriter("divergences", (_DIVERGENCES,), f"{_RECORDS}:read_divergences"),
+    # States (#185): a declaration's name, aliases, unit and text initial value, and a change's
+    # reason and text values (positional); a character-scoped change declares its character.
+    SubjectWriter("state_definitions", (_STATES,), f"{_RECORDS}:read_state_definitions"),
+    SubjectWriter("state_changes", (_STATES,), f"{_RECORDS}:read_state_changes"),
+    SubjectWriter("state_proposals", (f"{_STATES}.proposals",), f"{_RECORDS}:read_state_proposals"),
+    # Scheduled events (#196): no text of their own; the participants and a character owner
+    # are declared subjects.
+    SubjectWriter(
+        "scheduled_events",
+        ("epistrel.core.world_clock.stops",),
+        f"{_RECORDS}:read_scheduled_events",
+    ),
+    # The outbox (#210): an effect's texts (the render's reason, positional); a character-scoped
+    # value declares its character. Its writer is the outbox module (intent, dispatcher and
+    # intake writes alike).
+    SubjectWriter("external_effect_outbox", ("epistrel.core.outbox",), f"{_RECORDS}:read_outbox"),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
@@ -807,6 +824,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "client_events": "ingest de-duplication: client ids and the ids of the events written",
     "audit_log": "deployment audit records: identifiers and outcomes (docs/04's M4 clause)",
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
+    "story_provider_bindings": "a story's ids at its providers (#204): opaque game identifiers "
+    "(an account or player id), never prose",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",
     "guardrail_check_results": "verdicts by record key and policy id",
     "promissory_ledger": "the promissory ledger (#146): ids, positions, kinds and discharge "
@@ -831,6 +850,16 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "refolded by erasure's rebuilt stage (#159)",
     "nested_belief_state": "a projection of nested beliefs, which are erased: ids, levels and "
     "positions, refolded by erasure's rebuilt stage (#167)",
+    "state_values": "a projection of State changes, which are erased and redacted: ids, folded "
+    "values and positions, refolded by erasure's rebuilt stage (#185)",
+    "external_values": "a projection of external_read events, which are indexed: ids, a "
+    "provider's typed value and positions, refolded by erasure's rebuilt stage (#205)",
+    "outbox_outcomes": "a provider's answers for outbox rows (#210) and the consumer's for "
+    "consumer-applied effects (#217): kinds, the typed resulting values or why an answer is "
+    "unknown, hashes and times; never the raw body or story prose (an erasure that names the "
+    "effect empties the payload, erase._erase_outbox)",
+    "reconciliation_marks": "why an outbox row is listed for reconciliation (#211): ids, reason "
+    "codes, times and the resolving action's id; no story text",
     # Deployment tables (#334: the coverage test enumerates every table with text or JSON).
     "alembic_version": "the schema migration's revision id",
     "schema_meta": "schema bookkeeping keys and values",
@@ -843,6 +872,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "engine_profiles": "an engine profile's name and owner principal (configuration)",
     "engine_profile_versions": "engine-profile dial values (numbers and enums)",
     "model_config": "model endpoints, model names, parameters and an encrypted key",
+    "external_providers": "deployment configuration (#204): provider names, request templates "
+    "with secret references, policies; no story content",
     "entity_relations": "entity ids, principals and free-text relation names",
     "ownership_events": "ownership changes: entity ids, principals, relation names",
     "offboarding_jobs": "a principal's offboarding: ids, actions, counts and its report of ids",

@@ -40,12 +40,29 @@ takes nothing else, and ``python -m tools.gates check-character-context`` checks
 - **Retrieved context and canon** (#141, #133): retrieval for ``character:<id>``, whose
   viewpoint filter (#159) composes into every arm. The assembler takes only that already
   filtered set (``core.retrieval.filtered.ViewpointFiltered``, U-31). Every ``age`` canon fact
-  about a character is left out: true ages travel only as below.
+  about a character is left out: true ages travel only as below. #200 (ADR-167): with the
+  clock on, so is every fact on a clock predicate (``time_is``, ``time_of_day_band``,
+  ``elapsed_since``, ``scheduled_status``, ``clock_anchor``, ``current_time``) and every canon
+  ``scheduled`` fact the character does not hold (``time_belief.hidden_canon``).
+- **Your sense of time** (#200, FR-CLOCK-11; the story runs the clock): the character's time
+  belief as text (``core.world_clock.time_belief``: derived from the story's
+  ``time_awareness`` unless an observation, testimony or a gap overrides it), the time it
+  perceived in the scene, and the schedules it holds with the time left as it believes it
+  ("your meeting: 17:00, about 5½ hours from now"). The objective clock reaches the director's
+  context and verification only: a character's prompt never shows it where it differs from
+  the belief.
 - **Your private memories** (#172, FR-VERIFY-9, FR-EPI-11; per-character partitions only): the
   character's own ``think`` memories, at most ``PRIVATE_MAX``, those retrieval ranked first, then
   the most recent, each "you thought: …". They sit in U-31's pins tier (never cut by the prompt
   cap), so a later render can resurface a recorded state (a grounded callback,
   ``core.epistemic.resurface``) rather than invent one. Omitted when there are none.
+- **Tracked values** (#187, FR-TURN-11; owner decision 2026-10-30): with the story's
+  ``states.level`` at ``on``, the player-visible States the character may change (their
+  ``authorization.sources`` names ``any_character`` or ``character:<id>``;
+  ``core.states.effects.may_declare``), each with its name, type, scope, unit, aliases and
+  allowed values, then the effect syntax with one example. No value is shown: the character's
+  knowledge of a value reaches it only as its beliefs (FR-STATE-8). Absent with ``states.level``
+  anything else, or with no such State.
 - **Ages** (FR-CAT-12, FR-RESP-12, S-AGE-ASSIGNMENT M5; per-character partitions only): the
   character's own true age ("You are 34."). Every other present character on the ``## Scene``
   line gets only an apparent band (``age_band``: "early twenties"), or the exact age when the
@@ -88,6 +105,7 @@ from epistrel.core.epistemic import exposure as exposures
 from epistrel.core.epistemic import nested, partitions, perception, testimony
 from epistrel.core.epistemic import scene as scenes
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.membership import POSITION_FIELDS, Position
 from epistrel.core.memory import records
 from epistrel.core.memory.records import WorkingBeat
 from epistrel.core.profiles.capabilities import module_on
@@ -195,8 +213,11 @@ class CharacterContext:
     """#172: "you thought: …" lines, the character's own ``think`` memories."""
     player_requests: tuple[str, ...] = ()
     """#180's section (empty until it lands)."""
-    time_belief: None = None
-    """M6's own time belief (FR-CLOCK-11)."""
+    time_belief: str | None = None
+    """#200 (FR-CLOCK-11): ``## Your sense of time``, the character's time belief as text, the
+    time it perceived in the scene and the schedules it holds with the time left as it believes
+    it (``core.world_clock.time_belief``); ``None`` when the story runs no clock. The only time
+    input to a character's prompt: never the objective clock."""
     partitioned: bool = False
     """Built under per-character partitions: the render then takes no turn section that is not
     viewpoint-scoped (the rolling summary, the text pins; #544, ``prompt.character_inputs``)."""
@@ -207,6 +228,10 @@ class CharacterContext:
     player_heard: tuple[str, ...] = ()
     """#572: what the character perceived of the input short of its words: an envelope ("Wren
     whispers something to Marcus") or an eavesdropper's part, as working-memory lines."""
+    tracked: tuple[str, ...] = ()
+    """#187: ``## Tracked values``, the States the character may change (no value)."""
+    tracked_syntax: str = ""
+    """#187: the effect syntax and its example (with ``tracked``)."""
     needed: tuple[Needed, ...] = field(default=(), compare=False)
     """The exposures this context needed, which the turn's commit resolves."""
     retrieval: RetrievalResult | None = field(default=None, compare=False)
@@ -274,7 +299,15 @@ class TurnState:
 
 
 def statement(p: Proposition, predicates: Mapping[str, str], names: Mapping[str, str]) -> str:
-    """A proposition as a context line's statement: ``<subject> [not] <predicate> <object>``."""
+    """A proposition as a context line's statement: ``<subject> [not] <predicate> <object>``;
+    a ``state_value`` (#191) as ``<subject>'s <State> is [not] <value>`` (a story State's as
+    ``the <State> is …``), its State named through ``names``."""
+    if predicates.get(p.predicate_id) == STATE_VALUE_NAME and p.literal is not None:
+        state = p.qualifiers.get("state")
+        label = names.get(state, "tracked value") if isinstance(state, str) else "tracked value"
+        owner = "the" if p.subject_id == state else f"{names.get(p.subject_id, p.subject_id)}'s"
+        negated = " not" if p.polarity.value == "negated" else ""
+        return f"{owner} {label} is{negated} {p.literal.value}"[:TEXT_MAX]
     words = [names.get(p.subject_id, p.subject_id)]
     if p.polarity.value == "negated":
         words.append("not")
@@ -342,6 +375,9 @@ def compose(
     player_say: str | None = None,
     player_do: str | None = None,
     player_heard: Sequence[str] = (),
+    tracked: Sequence[str] = (),
+    tracked_syntax: str = "",
+    time_belief: str | None = None,
 ) -> CharacterContext:
     """The context's sections from already-filtered inputs (see the module docstring). Pure."""
     if working.viewpoint != f"{CHARACTER_VIEWPOINT_PREFIX}{character_id}":
@@ -367,6 +403,9 @@ def compose(
         player_say=player_say,
         player_do=player_do,
         player_heard=tuple(player_heard),
+        tracked=tuple(tracked),
+        tracked_syntax=tracked_syntax if tracked else "",
+        time_belief=time_belief,
     )
 
 
@@ -384,17 +423,33 @@ class _Cast:
 
 
 async def _cast(conn: AsyncConnection, story_id: str) -> _Cast:
+    from epistrel.core import world_clock  # here: the clock reads States, which import this
+
     found = await conn.execute(
-        select(characters.c.id, characters.c.name, characters.c.is_player, characters.c.true_age)
+        select(
+            characters.c.id,
+            characters.c.name,
+            characters.c.is_player,
+            characters.c.true_age,
+            *(characters.c[f"modeled_{n}"] for n in POSITION_FIELDS),
+        )
         .where(characters.c.story_id == story_id)
         .order_by(characters.c.ordinal)
     )
+    # #193: the age a character is now, its true age plus the full years on the world clock
+    # since its creation position (the guardrails' ``current_age``).
+    elapsed = await world_clock.elapsed_since(conn, story_id)
     names: dict[str, str] = {}
     ages: dict[str, int | None] = {}
     players: set[str] = set()
     for row in found:
         names[str(row.id)] = str(row.name)
-        ages[str(row.id)] = None if row.true_age is None else int(row.true_age)
+        created = Position.of_columns(dict(row._mapping), "modeled") or Position(0)
+        ages[str(row.id)] = (
+            None
+            if row.true_age is None
+            else int(row.true_age) + world_clock.full_years(elapsed(created))
+        )
         if row.is_player:
             players.add(str(row.id))
     entity_of: dict[str, str] = {}
@@ -410,6 +465,21 @@ async def _cast(conn: AsyncConnection, story_id: str) -> _Cast:
             entity_of[str(entity.character_id)] = str(entity.id)
             character_of[str(entity.id)] = str(entity.character_id)
     return _Cast(names, ages, frozenset(players), entity_of, character_of, entity_names)
+
+
+STATE_VALUE_NAME = "state_value"
+"""#191: the core predicate of a State's value, rendered as one (``statement``)."""
+
+
+async def _state_names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    """#191: the story's States by id, as their ``state_value`` beliefs name them."""
+    from epistrel.core.states import definitions
+
+    return {
+        str(d.id): d.name.replace("_", " ")
+        for d in await definitions(conn, story_id)
+        if d.id is not None
+    }
 
 
 PLAYER_PENDING = "pending:player_input"
@@ -688,11 +758,31 @@ async def _scene_line(
     return f"Location: {where}." + (f" Present: {', '.join(listed)}." if listed else "")
 
 
+async def _tracked(
+    conn: AsyncConnection, story_id: str, character_id: str, settings: ProfileSettings
+) -> tuple[list[str], str]:
+    """#187: the character's ``## Tracked values`` (see the module docstring)."""
+    from epistrel.core import states
+    from epistrel.core.profiles import schema
+    from epistrel.core.states import effects
+
+    level = schema.level_of(settings, states.MODULE)
+    if level != states.ON or not schema.is_delivered(states.MODULE, level):
+        return [], ""
+    found = [
+        d for d in await states.definitions(conn, story_id) if effects.may_declare(d, character_id)
+    ]
+    if not found:
+        return [], ""
+    return [effects.character_line(d) for d in found], effects.syntax(found, character=True)
+
+
 async def build_context(
     conn: AsyncConnection, character_id: str, state: TurnState
 ) -> CharacterContext:
     """``character_id``'s generation context for this turn (see the module docstring)."""
     from epistrel.core.retrieval.pipeline import RetrievalQuery, retrieve
+    from epistrel.core.world_clock.time_belief import hidden_canon, time_belief
 
     started = time.perf_counter()
     story_id = state.story_id
@@ -742,6 +832,10 @@ async def build_context(
         settings=settings,
     )
     hidden = _hidden_ages(retrieval, frozenset(cast.character_of))
+    # #200 (ADR-167): the clock's canon and the schedules the character does not hold are the
+    # director's; the character knows the time only as its own time belief.
+    hidden |= await hidden_canon(conn, story_id, character_id, retrieval.canon)
+    believed = await time_belief(conn, story_id, character_id, Position(state.turn))
     retrieved: list[str] = []
     canon: list[str] = []
     for item in retrieval.context.items:
@@ -760,7 +854,7 @@ async def build_context(
     if partitioned:
         registry = await load(conn, story_id)
         predicates = {pid: p.name for pid, p in registry.predicates.items()}
-        names = {**cast.entity_names, **cast.names}
+        names = {**cast.entity_names, **cast.names, **await _state_names(conn, story_id)}
         about = list(dict.fromkeys((*retrieval.resolution.entities, *retrieval.participants)))
         needed = await _needed(conn, state, character_id, about, registry)
         pending_beliefs, pending_heard = _needed_lines(needed, predicates, names, cast.names)
@@ -791,6 +885,7 @@ async def build_context(
         + min(len(nested_lines), NESTED_MAX)
         + min(len(speech_lines), NESTED_MAX),
     }
+    tracked, tracked_syntax = await _tracked(conn, story_id, character_id, settings)
     return compose(
         character_id,
         working=_seal(window, viewpoint),
@@ -811,6 +906,9 @@ async def build_context(
         player_say=player_say,
         player_do=player_do,
         player_heard=player_heard,
+        tracked=tracked,
+        tracked_syntax=tracked_syntax,
+        time_belief=None if believed is None else believed.text(),
     )
 
 

@@ -737,6 +737,7 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     ),
     "story_settings_defaults.turn_concurrency": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.player_authority": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.co_author_knowledge": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.default_output_viewpoint": (
         FieldClass.configuration,
         Use.story_setting,
@@ -1131,7 +1132,7 @@ async def test_c_15__story_creation(settings: Settings, engine: AsyncEngine) -> 
         assert set(card["counts"]) == {"errors", "conflicts", "warnings", "deferred", "inactive"}
         assert set(card["counts"]["deferred"]) == {"by_class", "by_capability"}
         assert card["counts"]["deferred"]["by_capability"] == lg.counted(lg.expected_deferred(body))
-        assert card["unavailable"] == list(scenarios.M3_UNAVAILABLE)
+        assert card["unavailable"] == scenarios.lite_unavailable()
         mother_card = card["cast"][0]
         assert (mother_card["kind"], mother_card["role_id"], mother_card["name"]) == (
             "catalog",

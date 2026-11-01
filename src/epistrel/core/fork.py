@@ -33,6 +33,8 @@ independent copy under new ids, isolated from the source from the moment it exis
   turn committing meanwhile is wholly in or wholly out (FR-CONC-10). A serialization failure is
   retried (``SNAPSHOT_ATTEMPTS``) after a jittered, doubling pause (``snapshot_backoff_s``), so
   the retries leave the contention that failed them (#510); then 503 ``database_unavailable``.
+  Under an idempotent call the key's row is locked as the snapshot's first statement, so the
+  call's own lease renewal waits for the copy rather than failing its bind (#637).
 - **The new story.** Status ``active`` (an archived source can be forked), its settings,
   rating, engine profile and ``config_revision`` copied (a retired rating or a deleted profile
   too: a fork continues its story, so it is not a new assignment; #106), owned by the requester
@@ -47,6 +49,11 @@ independent copy under new ids, isolated from the source from the moment it exis
   mention (accepted). Then the ``post_commit`` membership hooks run on the fork with cause
   ``fork`` (#65's registry): one change per source membership of the copied operations, each
   now ``active``.
+- **External effects** (#211, FR-EXT-13): the outbox rows of the copied operations are copied
+  as records (``executable = false``: never claimed, never swept), with new ids (so a copy never
+  shares the source's idempotency key) and their outcome records; the response lists the
+  source's rows still ``intended``, ``claimed`` or ``unknown`` at the snapshot
+  (``effects_pending_in_source``).
 
 ``at_turn`` defaults to the head (the chain's tip); above it, or below zero, is 422. An unknown
 or ambiguous chain is 409 ``unknown_chain`` (#66). The expected revision, when given, is the
@@ -79,7 +86,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, projections, timeline
+from epistrel.core import idempotency, pause, projections, timeline, timeline_effects
 from epistrel.core.enums import (
     Authority,
     EventCategory,
@@ -123,6 +130,8 @@ from epistrel.core.tables import (
     story_heads,
     transcript_messages,
 )
+from epistrel.core.timeline_effects import PendingEffect
+from epistrel.core.turns.staged import close_in_fork
 from epistrel.core.variants import ChainRef, ChainSelection, ChainSelector, fork_selection
 from epistrel.testing import crash
 
@@ -157,7 +166,8 @@ the copied turns, ``lite_summary_segments`` (#72) by folding the copied events, 
 segment's ``superseded`` state is the fork's own (a merged parent past the fork point is not
 copied, and its children are active in the fork), the structured projections
 (``relationships``, ``placement``, ``scene_state``; #137) by folding the copied canon, and
-``belief_state`` (#159) and ``nested_belief_state`` (#167) by folding the copied beliefs."""
+``belief_state`` (#159) and ``nested_belief_state`` (#167) by folding the copied beliefs, and
+``state_values`` (#185) by folding the copied State changes."""
 
 FORK_SUFFIX = " (fork)"
 
@@ -289,6 +299,11 @@ class Forked:
     forked_from: ForkOrigin
     characters: tuple[ForkCharacter, ...] = ()
     counts: dict[str, int] = field(default_factory=dict)
+    effects_pending_in_source: tuple[PendingEffect, ...] = ()
+    """#211 (FR-EXT-13): the source's external effects the copied turns wrote that were still
+    ``intended``, ``claimed`` or ``unknown`` at the fork's snapshot, with the source's outbox
+    ids: they may still happen in the source. The fork's copies are records only, never
+    dispatched."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -367,6 +382,11 @@ async def _copy(
 ) -> Forked:
     """The whole copy, inside ``conn``'s transaction (REPEATABLE READ from its first read)."""
     await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    # The key the copy binds at its end is locked first, so this call's own lease renewal
+    # cannot commit under the snapshot and fail the bind (#637).
+    call = idempotency.current_call()
+    if call is not None:
+        await call.hold(conn)
     row = (await conn.execute(select(stories).where(stories.c.id == source))).one_or_none()
     if row is None:
         raise StoryNotFound(f"story {source} does not exist", {"story_id": source})
@@ -413,6 +433,7 @@ async def _copy(
     counts.update(await _rebuild_structured(conn, fork_id))
 
     cast = await _cast(conn, fork_id)
+    pending = await timeline_effects.pending_in_source(conn, source, [op for op, _ in copied])
     origin = ForkOrigin(
         story_id=source,
         revision=revision,
@@ -423,9 +444,11 @@ async def _copy(
     # A fork copies no subject-reference rows: its copied records are indexed again, under
     # their new ids (FR-ADMIN-6; #123).
     await reindex_story(conn, fork_id)
+    # #212 (FR-EXT-19): a staged turn copied incomplete is closed in the fork ("outcome not
+    # known in this story"); its effect is held only as a non-executable record, and listed.
+    await close_in_fork(conn, fork_id, principal)
     for statement in _TEARDOWN:
         await conn.exec_driver_sql(statement)
-    call = idempotency.current_call()
     if call is not None:
         await call.bind(conn, _Genesis(genesis))
     crash.hit("before_commit", CRASH_KIND)
@@ -438,6 +461,7 @@ async def _copy(
         forked_from=origin,
         characters=cast,
         counts=counts,
+        effects_pending_in_source=tuple(pending),
     )
 
 
@@ -731,6 +755,39 @@ OVERRIDES: dict[str, dict[str, str]] = {
             "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
         ),
     },
+    # States (#185): a change's character (``scope_key``) is the fork's copy of it, and the
+    # effects it waits on (#216) the fork's copies, and a settlement's intent row (#216) the
+    # fork's copy of it (``NULL`` when it was not copied).
+    "state_changes": {
+        "scope_key": f'{_ID}(t."scope_key"::text)',
+        "settles_change_id": _mapped_or_null("settles_change_id"),
+        "prerequisite_effect_ids": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.prerequisite_effect_ids) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
+    # Scheduled events (#196): the owner (a character id, or ``author``/``world``), the
+    # participants and (#198) the shared owners are the fork's copies of the characters.
+    "scheduled_events": {
+        "owner": f'{_ID}(t."owner"::text)',
+        "participants": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.participants) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+        "shared_owners": (
+            f"CAST(ARRAY(SELECT {_ID}(s.id::text) FROM unnest(t.shared_owners) "  # noqa: S608
+            "WITH ORDINALITY AS s(id, n) ORDER BY s.n) AS char(26)[])"
+        ),
+    },
+    # The outbox (#210, #211; FR-EXT-13): a fork never copies an executable effect; its copies
+    # are records only (the fork's response lists the ones pending at the fork point), and a
+    # settlement's outcome event (#217) is the fork's copy, or none when it was not copied.
+    "external_effect_outbox": {
+        "executable": "false",
+        "outcome_event_id": _mapped_or_null("outcome_event_id"),
+        # #218: a compensating row names the fork's copy of the row it answers.
+        "compensates": _mapped_or_null("compensates"),
+    },
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {
         "proposition_ids": (
@@ -775,6 +832,15 @@ _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa
 ROW_FILTERS: dict[str, str] = {
     events.name: f"t.id IN {_EVENT_IDS}",
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
+    # The outbox's outcome records (#210) follow the outbox rows the fork copies, and (#217) a
+    # consumer-applied effect's follow its copied ``requested_effect`` (whose effect id a fork
+    # keeps: a payload id is mapped only when the fork copies a row with that id).
+    "outbox_outcomes": (
+        f"(t.outbox_id::text IN (SELECT old_id FROM {_MAP} "  # noqa: S608
+        "WHERE kind = 'external_effect_outbox') OR t.effect_id::text IN "
+        f"(SELECT e.payload->>'effect_id' FROM events e JOIN {_MAP} m ON m.old_id = e.id "
+        "WHERE m.kind = 'event' AND e.type = 'requested_effect'))"
+    ),
 }
 """Which source rows a table copies beyond ``story_id``: by default the rows of the copied
 operations when the table has an ``operation_id`` column, else every row of the story."""

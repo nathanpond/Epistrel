@@ -136,6 +136,7 @@ from epistrel.core.propositions.registry import (
     file_identity_proposal,
     load,
 )
+from epistrel.core.propositions.vocabulary import SCHEDULED
 from epistrel.core.resolution.identity import pair_of
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, entities, events, predicates, propositions
@@ -903,6 +904,22 @@ async def _written(conn: AsyncConnection, story_id: str, ids: Iterable[str]) -> 
     return {str(r.id): _fact_of(r) for r in found}
 
 
+async def citing(conn: AsyncConnection, story_id: str, event_ids: Iterable[str]) -> list[Fact]:
+    """Every fact version of the story whose ``source_event_ids`` cites one of ``event_ids``
+    (#207's external-facts inspection: the references #205 committed to an ``external_read``),
+    oldest first by id."""
+    wanted = sorted(set(event_ids))
+    if not wanted:
+        return []
+    f = facts.alias("f")
+    found = await conn.execute(
+        _select(f)
+        .where(f.c.story_id == story_id, f.c.source_event_ids.overlap(wanted))
+        .order_by(f.c.id)
+    )
+    return [_fact_of(r) for r in found]
+
+
 def refuse_holder(holder: str | None, field_name: str = "holder") -> None:
     """FR-EPI-8 (#169): canon has one holder. A write naming any other (a character's id, a
     viewpoint) is 422 ``viewpoint_cannot_assign_truth``: a character's divergent view is an owned
@@ -983,6 +1000,12 @@ async def commit_fact(
         await file_identity_proposal(
             conn, story_id, pair, reason="canon_same_as", fact_ids=[fact.id]
         )
+    if fact.predicate_id == SCHEDULED and fact.commit_state is FactCommitState.COMMITTED:
+        # #196 (FR-CLOCK-9): a canon scheduled event is an event of ``scheduled_events``,
+        # written with its fact (here: the clock reads canon).
+        from epistrel.core.world_clock import stops
+
+        await stops.on_canon_fact(conn, story_id, fact, operation, beat=beat, slot_k=slot_k)
     return fact
 
 
@@ -1470,6 +1493,7 @@ __all__ = [
     "canon_links",
     "canon_refs",
     "check_viewpoint",
+    "citing",
     "commit_fact",
     "default_authority",
     "hidden_from",

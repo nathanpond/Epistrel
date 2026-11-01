@@ -11,7 +11,14 @@ from pydantic import BaseModel, Field
 from epistrel.api.deps import ContextDep, EngineDep, RespondAsyncDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
-from epistrel.api.routes.history import AudienceFilterValue, ItemModel, item_model
+from epistrel.api.routes.clock import TurnClockBody
+from epistrel.api.routes.history import (
+    AudienceFilterValue,
+    ItemModel,
+    NoticeBody,
+    StateEffectModel,
+    item_model,
+)
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
@@ -191,6 +198,33 @@ class DeferredCharacterBody(BaseModel):
     fixed: bool
 
 
+class ReconciliationCountBody(BaseModel):
+    """#210: how many effects the story's reconciliation status lists."""
+
+    count: int = Field(ge=0)
+
+
+class RequiredEffectBody(BaseModel):
+    """#211 (FR-EXT-14): an external effect a timeline edit could not undo, or would not
+    re-send: the outbox row (the provider idempotency key), its provider and status, and the
+    value it changes (absent on a row an erasure redacted). It stays in the reconciliation
+    status (``GET /stories/{id}/reconciliation``) until resolved; nothing is compensated."""
+
+    outbox_id: str
+    provider: str
+    status: str
+    value: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+    @classmethod
+    def of(cls, effect: Any) -> RequiredEffectBody:
+        return cls(
+            outbox_id=effect.outbox_id,
+            provider=effect.provider,
+            status=effect.status,
+            value=effect.value,
+        )
+
+
 class RespondResponse(MutationResponse):
     """One finished turn: the reply, the turn's beats for the resolved viewpoint, its position,
     the story's new revision, the model calls it made, where its time went, and the
@@ -258,6 +292,34 @@ class RespondResponse(MutationResponse):
     reconcile: list[ReconcileBody] = Field(default_factory=list, exclude_if=lambda r: not r)
     """A structured turn's reconciled concurrent commitments (#177, FR-MULTI-3); absent when
     nothing contradicted."""
+    state_effects: list[StateEffectModel] = Field(default_factory=list, exclude_if=lambda e: not e)
+    """The State changes the turn committed (#187, FR-RESP-7) with their old and new values, a
+    ``hidden`` State's only when the request names ``omniscient``; absent when none."""
+    settled_effects: list[StateEffectModel] = Field(
+        default_factory=list, exclude_if=lambda e: not e
+    )
+    """#217 (FR-EXT-21 (e)): the State changes late settlements committed between the previous
+    turn and this one (``source: settlement``; a ``hidden`` State's only for ``omniscient``);
+    absent when none."""
+    reconciliation: ReconciliationCountBody | None = Field(
+        default=None, exclude_if=lambda r: r is None
+    )
+    """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
+    (``GET /stories/{id}/reconciliation``); absent while the story has never dispatched an
+    effect to a write-capable provider."""
+    reconciliation_required: list[RequiredEffectBody] = Field(
+        default_factory=list, exclude_if=lambda r: not r
+    )
+    """#211 (FR-EXT-14): a regenerate's (or a turn written over a rewound tail's) claimed,
+    ``unknown`` or confirmed external effects of the turns it took out of the active timeline;
+    absent when none."""
+    clock: TurnClockBody | None = Field(default=None, exclude_if=lambda c: c is None)
+    """The world clock before and after the turn (FR-CLOCK-13; #193): ``{before, after}``, each
+    ``{offset, display}``; absent when the story runs the clock off."""
+    notices: list[NoticeBody] = Field(default_factory=list, exclude_if=lambda n: not n)
+    """#598 (FR-RESP-14): one ``implausible_knowledge`` notice per presupposition of the
+    ``co_author`` player's narration the narrated character could not know (under
+    ``co_author_knowledge = confirm``); absent when none."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -301,6 +363,16 @@ class RespondResponse(MutationResponse):
             deferred_characters=[DeferredCharacterBody(**d) for d in result.deferred_characters],
             reduced_characters=list(result.reduced_characters),
             reconcile=[ReconcileBody(**r) for r in result.reconcile],
+            state_effects=[StateEffectModel(**e) for e in result.state_effects],
+            settled_effects=[StateEffectModel(**e) for e in result.settled_effects],
+            clock=None if result.clock is None else TurnClockBody.of(result.clock),
+            reconciliation=None
+            if result.reconciliation is None
+            else ReconciliationCountBody(**result.reconciliation),
+            reconciliation_required=[
+                RequiredEffectBody(**r) for r in result.reconciliation_required
+            ],
+            notices=[NoticeBody(**n) for n in result.notices],
             budget=(
                 None
                 if result.budget is None

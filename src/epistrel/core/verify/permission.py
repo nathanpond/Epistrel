@@ -36,30 +36,44 @@ decision) is ``other_character_secret``, as it would be for the narrator's own r
 player's character stays ``player_character``. The reactor's thoughts never reach this rule: a
 narrated thought is dropped before verification (``core.epistemic.roles``).
 
+**The hand-over exception** (FR-VERIFY-11; #519). A render's affirmed ``holds`` of the player's
+character, of an item, whose detected transfer (``core.verify.detect``'s transfer table) names
+the render's own character as the giver ("Jenni hands Cal the key." in Jenni's render), is that
+character's own observable action: permitted with basis ``own``. The player's character only
+receives the item. Anything else about the player's character is unchanged: "Cal picks up the
+key" (Cal acting), "Cal takes the key from Jenni" (no giver is named for a taking: the taker
+acts) and a hand-over by another character all stay ``player_character``.
+
 **Ownership.** ``owner_of`` derives the subject's owner from ``entities.character_id`` and
 ``characters.is_player``: ``player_character``, ``modeled_character`` (an entity with a
-character row), ``external`` (the predicate is owned by an external provider) or ``world``
+character row), ``external`` (the predicate is owned by an external provider, or the claim is
+the value of an externally owned State) or ``world``
 (anything else: places, items, an unmodeled person, who is scene texture). Every
 character-typed argument is inspected, not only the subject: Bobby asserting he is Jenni's
 sibling introduces Jenni's backstory too.
 
 **The matrix (M4).** In precedence order, one reason per denial:
 
-- ``external_value``: the predicate is externally owned (FR-EXT-8): denied to everyone, the
-  author included;
+- ``external_value``: the predicate is externally owned (FR-EXT-8), or (#207, FR-EXT-3) the
+  claim is a ``state_value`` of an externally owned State (``core.states.verify.external_claim``):
+  denied to everyone, the author included;
 - the author may introduce anything else (``author``);
 - ``locked_canon``: the claim's (subject, predicate) has a current ``author_locked`` fact, or
   it sets a character's definition-locked field (``age``, ``name``, ``appearance_of``,
   ``visual_identity_of``: the definition's true age, name, appearance and visual identity);
-- ``state_change``: a change to a story State outside a validated effect (FR-STATE-5): never
-  fires in M4 (States arrive in M6);
+- ``state_change``: a change to a story State outside a validated effect (FR-STATE-5,
+  FR-VERIFY-12; #187): a ``do`` or narration sentence that changes a tracked State (its name,
+  an alias, its unit or its entity, with a change verb of #148's possession, transfer or
+  consumption tables) while the beat declares no effect on it (``state_change``, from
+  ``core.states.effects.narrated``). Its repair reason is ``state_undeclared``;
 - ``player_character``: a render or a director pass asserting the player character's actions,
   speech, thoughts or backstory;
 - ``other_character_secret``: a render asserting another modeled character's secrets,
   backstory, actions or thoughts, or a director pass asserting anything about a modeled
   character beyond an arrival or an identity (#171: a director's ``same_as`` linking one
   non-player modeled character to an unmodeled entity, "the stranger is Bobby", is permitted
-  with basis ``identity``);
+  with basis ``identity``; #200: that one passes out, falls asleep or wakes, ``unconscious``,
+  is the world's to narrate, basis ``world``);
 - ``player_authority``: player input about another character (``player_authority =
   own_character``, or anything but an observable action under ``co_author``): the player's text
   stands and is not repaired, but it is never canonized;
@@ -109,7 +123,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import RecordProvenance
-from epistrel.core.propositions.model import Predicate, PredicateOwner, Proposition
+from epistrel.core.propositions.model import Polarity, Predicate, PredicateOwner, Proposition
 from epistrel.core.propositions.registry import Registry, load
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet, register_rebase_check
@@ -128,6 +142,10 @@ OwnerKind = Literal["modeled_character", "player_character", "world", "external"
 PLACEMENT_PREDICATES: tuple[str, ...] = ("located_at", "present_at")
 """An arrival's predicates (by name; both core)."""
 PERSON = "person"
+
+WORLD_ON_CHARACTERS: frozenset[str] = frozenset({"unconscious"})
+"""#200 (FR-CLOCK-15): what a director pass may narrate of a non-player modeled character (by
+name; core): that it passes out, falls asleep, wakes or comes to (basis ``world``)."""
 
 LOCKED_FIELDS: frozenset[str] = frozenset({"age", "name", "appearance_of", "visual_identity_of"})
 """The predicates a character definition fixes (true age, name, appearance, visual identity):
@@ -187,6 +205,10 @@ class Asserter:
     character_id: str | None = None
     reactor: str | None = None
     """#176: the character a ``reactive`` asserter narrates (FR-MULTI-9)."""
+    narrates: str | None = field(default=None, compare=False)
+    """#598 (from #518): the character a ``co_author`` asserter's beat narrates, whose own
+    change-cued action may change its fluents (``orchestrator.verify.verifier.mover_of``). Not
+    part of the asserter's identity: the permission check reads the claim's subject."""
 
     def __post_init__(self) -> None:
         if self.kind in ("character", "reactive", "player", "co_author") and not self.character_id:
@@ -276,6 +298,13 @@ class PermissionFacts:
     """The claim's text matched protected content (#148's detector)."""
     resolves: str | None = None
     """The open thunk the claim resolves (#146's resolution exemption), or ``None``."""
+    giver: str | None = None
+    """#519: the entity a detected transfer names as handing the item over (``DetectedClaim
+    .giver``), or ``None`` (see "The hand-over exception")."""
+    state_change: bool = False
+    """#187: the claim changes a tracked State's value with no validated effect."""
+    external_state: bool = False
+    """#207: the claim is a ``state_value`` of an externally owned State (FR-EXT-3)."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -292,8 +321,11 @@ def _argument_ids(claim: Proposition) -> list[str]:
 
 def owner_of(claim: Proposition, facts: PermissionFacts) -> SubjectOwner:
     """The claim subject's owner: the player character, a modeled character, an external
-    provider (an externally owned predicate) or the world."""
-    if facts.predicate is not None and facts.predicate.owner is PredicateOwner.EXTERNAL:
+    provider (an externally owned predicate, or #207 a ``state_value`` of an externally owned
+    State) or the world."""
+    if facts.external_state or (
+        facts.predicate is not None and facts.predicate.owner is PredicateOwner.EXTERNAL
+    ):
         return SubjectOwner("external")
     found = facts.entities.get(claim.subject_id)
     if found is not None and found.modeled:
@@ -322,6 +354,8 @@ def permission(
         name in LOCKED_FIELDS and subject_owner.kind in ("modeled_character", "player_character")
     ):
         return Denied(Reason.LOCKED_CANON)
+    if facts.state_change:
+        return Denied(Reason.STATE_CHANGE)
     if facts.resolves is not None:
         return Permitted(Basis.RESOLUTION)
     modeled = [
@@ -337,6 +371,10 @@ def permission(
             # #171 (FR-PROP-7): a narrated reveal that an unmodeled entity is a modeled
             # character ("the stranger is Bobby"); two characters as one is M7's merge.
             return _texture(facts, Basis.IDENTITY)
+        if name in WORLD_ON_CHARACTERS and len(modeled) == 1:
+            # #200 (FR-CLOCK-15): the scene narrates a character passing out, falling asleep
+            # or waking: the world's to say, as an arrival is.
+            return _texture(facts, Basis.WORLD)
         if modeled:
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         return _texture(facts, Basis.WORLD)
@@ -344,6 +382,9 @@ def permission(
         return _reactive(claim, asserter, subject_owner, facts, modeled, name)
     own = asserter.character_id
     others = [e for e in modeled if e.character_id != own]
+    if asserter.kind == "character" and _hands_over(claim, facts, own):
+        # #519: the hand-over exception (see the module docstring).
+        return _texture(facts, Basis.OWN)
     mine = next((e for e in facts.entities.values() if e.character_id == own), None)
     if asserter.kind in ("player", "co_author") and (mine is None or mine.is_player):
         # Player input for the player's own character (FR-AUTH-3: input for a character the
@@ -364,6 +405,17 @@ def permission(
     if arrival and subject_owner.character_id != own and not facts.allow_new_arrivals:
         return Denied(Reason.POLICY)
     return _texture(facts, Basis.OWN if subject_owner.character_id == own else Basis.TEXTURE)
+
+
+def state_change(asserter: Asserter, *, validated: bool) -> Permission:
+    """#187 (FR-VERIFY-12, FR-STATE-5): whether ``asserter`` may change a tracked State's value
+    as narrated: the author may; anyone else only through a validated effect (``validated``),
+    else ``state_change`` at its precedence slot (``PermissionFacts.state_change``)."""
+    if asserter.kind == "author":
+        return Permitted(Basis.AUTHOR)
+    if validated:
+        return Permitted(Basis.OWN)
+    return Denied(Reason.STATE_CHANGE)
 
 
 def _reactive(
@@ -388,6 +440,28 @@ def _reactive(
     if others and name != "spoke_to":
         return Denied(Reason.OTHER_CHARACTER_SECRET)
     return _texture(facts, Basis.REACTIVE)
+
+
+def _hands_over(claim: Proposition, facts: PermissionFacts, own: str | None) -> bool:
+    """#519: ``claim`` is an affirmed ``holds`` of the player's character, of an item no
+    modeled character is, handed over by the render's own character (``facts.giver``)."""
+    if facts.predicate is None or facts.predicate.name != "holds" or facts.giver is None:
+        return False
+    if claim.polarity is not Polarity.AFFIRMED or claim.object_id is None:
+        return False
+    giver = facts.entities.get(facts.giver)
+    subject = facts.entities.get(claim.subject_id)
+    item = facts.entities.get(claim.object_id)
+    return (
+        giver is not None
+        and own is not None
+        and giver.character_id == own
+        and subject is not None
+        and subject.is_player
+        and subject.character_id != own
+        and (item is None or not item.modeled)
+        and set(_argument_ids(claim)) == {claim.subject_id, claim.object_id}
+    )
 
 
 def _texture(facts: PermissionFacts, basis: Basis) -> Permission:
@@ -463,12 +537,13 @@ async def facts_for(
     through_position: tuple[int, int] | None = None,
     protected: bool = False,
     resolves: str | None = None,
+    giver: str | None = None,
 ) -> PermissionFacts:
     """The structured data ``claim``'s permission is decided over (the claim's entities and
     the asserter's own), its canon reads keyed."""
     conn = lookup.conn
     predicate = registry.get(claim.predicate_id)
-    ids = _argument_ids(claim)
+    ids = _argument_ids(claim) + ([giver] if giver is not None else [])
     own = [
         c
         for c in (
@@ -506,14 +581,18 @@ async def facts_for(
                 through_position=through_position,
             )
             placed = placed or bool(found)
+    from epistrel.core.states.verify import external_claim
+
     return PermissionFacts(
         entities=known,
         predicate=predicate,
+        external_state=await external_claim(conn, story_id, claim),
         locked=any(f.author_locked for f in locks),
         placed=placed,
         allow_new_arrivals=await arrival_policy(conn, story_id),
         protected=protected,
         resolves=resolves,
+        giver=giver,
     )
 
 
@@ -532,6 +611,7 @@ class _Call:
     protected: bool
     code: str
     resolves: str | None = None
+    giver: str | None = None
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -566,11 +646,13 @@ async def check(
     registry: Registry | None = None,
     remember: bool = True,
     resolves: str | None = None,
+    giver: str | None = None,
 ) -> Permission | None:
     """``claim``'s permission for ``asserter`` over the story's structured data, its canon
     reads keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The
     answer is recorded for the turn's rebase re-check unless ``remember`` is off. ``resolves``
-    names the open thunk the claim resolves (the resolution exemption)."""
+    names the open thunk the claim resolves (the resolution exemption); ``giver`` the entity a
+    detected transfer names as handing the item over (the hand-over exception)."""
     if await options_for(conn, story_id) is None:
         return None
     facts = await facts_for(
@@ -582,6 +664,7 @@ async def check(
         through_position=through_position,
         protected=protected,
         resolves=resolves,
+        giver=giver,
     )
     found = permission(claim, asserter, owner_of(claim, facts), facts)
     if remember:
@@ -596,6 +679,7 @@ async def check(
                 protected,
                 found.code(),
                 resolves,
+                giver,
             ),
         )
     return found
@@ -621,6 +705,7 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             protected=call.protected,
             remember=False,
             resolves=call.resolves,
+            giver=call.giver,
         )
         if again is None or again.code() != call.code:
             log.debug("rebase re-check: a permission changed (%d checked)", len(calls))
@@ -656,4 +741,5 @@ __all__ = [
     "permission",
     "recheck",
     "recorded",
+    "state_change",
 ]

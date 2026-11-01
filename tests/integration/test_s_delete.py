@@ -11,10 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
+from epistrel.core import outbox as core_outbox
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
-from epistrel.core.enums import OpenSlot, OperationKind, Provenance
+from epistrel.core.enums import OpenSlot, OperationKind, Provenance, StateChangeSource
 from epistrel.core.epistemic import divergences, nested, transitions
 from epistrel.core.errors import GuardrailViolation
 from epistrel.core.events import Operation
@@ -25,15 +26,19 @@ from epistrel.core.membership import Position
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.states import proposals as state_proposals
 from epistrel.core.stories import STORY_ID_EXCEPTIONS, STORY_TABLES
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turns import beats
 from epistrel.core.verify import shadow
+from epistrel.core.world_clock import stops as scheduled
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import timers
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_KIND
 from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
+from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from tests import (
     canon_support,
     escalation_support,
@@ -41,6 +46,8 @@ from tests import (
     memory_support,
     nested_support,
     partition_support,
+    provider_support,
+    state_support,
 )
 from tests import erasure_support as erasure
 from tests import genesis_support as g
@@ -351,6 +358,118 @@ async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_i
 
         op.add_commit_step(speak)
         await op.commit()
+    # States (#185): a character-scoped declaration and a change for the character, written
+    # with the module on (prompt-only) and then the override dropped again.
+    with state_support.delivered():
+        await state_support.set_level(engine, story_id, "prompt_only")
+        await state_support.define(engine, story_id, state_support.gold())
+        await state_support.change(
+            engine,
+            story_id,
+            state_support.delta(
+                "gold", 5, scope_key=character_id, source=StateChangeSource.CONSUMER
+            ),
+            kind=OperationKind.CONTROL,
+        )
+        await state_support.set_level(engine, story_id, None)
+    # A provider binding (#204): the story's ids at a registered provider.
+    provider = provider_support.unique_name("deleted")
+    await provider_support.register(engine, provider_support.in_process_spec(provider))
+    await provider_support.bind(engine, story_id, provider, {"player": "p-1"})
+    # A recorded external read (#205): its event and its ``external_values`` row.
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal="p-author",
+        bumps_revision=True,
+    ) as op:
+        op.append(
+            "external_read",
+            {
+                "provider": provider,
+                "value_name": "gold",
+                "state_id": new_ulid(),
+                "scope_key": character_id,
+                "query_hash": "0" * 64,
+                "value": 7,
+                "raw_hash": "0" * 64,
+                "read_at": clock.now().isoformat(),
+            },
+            provenance=Provenance.SYSTEM,
+        )
+        await op.commit()
+
+    # An engine-proposed State (#192), written by the analysis's writer in a maintenance
+    # operation.
+    proposal_op = Operation(
+        engine, story_id=story_id, kind=OperationKind.MAINTENANCE, principal="p-author"
+    )
+
+    async def propose(conn: AsyncConnection) -> None:
+        candidate = state_proposals.Candidate(name="arrows", suggested_unit="arrows")
+        candidate.evidence.append(state_proposals.Evidence(1, new_ulid(), None, "12 arrows"))
+        await state_proposals.write(
+            conn, proposal_op, story_id, [candidate], proposal_op.operation_id
+        )
+
+    async with proposal_op:
+        proposal_op.add_commit_step(propose)
+        await proposal_op.commit()
+    # A scheduled event (#196): its version row, written with its lifecycle event.
+    async with Operation(
+        engine,
+        story_id=story_id,
+        kind=OperationKind.CONTROL,
+        principal="p-author",
+        bumps_revision=True,
+    ) as event_op:
+
+        async def schedule(conn: AsyncConnection) -> None:
+            await scheduled.create(
+                conn,
+                event_op,
+                story_id,
+                proposition_id=new_ulid(),
+                planned=60,
+                owner="world",
+                participants=[character_id],
+                position=Position(0),
+            )
+
+        event_op.add_commit_step(schedule)
+        await event_op.commit()
+    # The outbox (#210): a turn's effect for a write-capable provider, dispatched and confirmed
+    # (its row and its outcome record; the outcome table is append-only outside a deletion).
+    bank = provider_support.unique_name("deleted")
+    await provider_support.register(engine, provider_support.write_capable_spec(bank))
+    await provider_support.bind(engine, story_id, bank, {"player": "p-1"})
+    outbox_id = new_ulid()
+
+    async def intend(conn: AsyncConnection, op: Operation) -> None:
+        await core_outbox.write_intended(
+            conn,
+            op,
+            [
+                core_outbox.Intended(
+                    id=outbox_id,
+                    provider_name=bank,
+                    value_name="gold",
+                    scope_key=None,
+                    effect={"kind": "change", "state": "gold", "delta": -5, "reason": "dues"},
+                    beat=2,
+                )
+            ],
+        )
+
+    await canon_support.run(engine, story_id, intend)
+    registry = InProcessRegistry()
+    fake = provider_support.ScriptedProvider(bank)
+    registry.register(bank, read=fake.read, write=fake.write)
+    assert await outbox_job.dispatch(engine, outbox_id, registry=registry) == "confirmed"
+    # Its reconciliation mark (#211): a confirmed effect listed for reconciliation.
+    async with engine.begin() as conn:
+        assert await core_outbox.mark(conn, story_id, outbox_id, "reconciliation_required")
 
 
 def _due() -> datetime:

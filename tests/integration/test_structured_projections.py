@@ -40,6 +40,7 @@ from tests.canon_support import World, at, commit, run, world
 from tests.canon_support import supersede as supersede_fact
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.fork_support import fork
+from tests.openapi_support import assert_documented, lists_code
 from tests.projection_support import swap, truncate, untruncate
 from tests.respond_support import respond_client
 from tests.retrieval_support import statements
@@ -392,6 +393,37 @@ async def test_i_01__structured_viewpoint(engine: AsyncEngine, settings: Setting
         assert profile.json()["placement"]["location"]["entity_id"] == kitchen
         await _refused(client, f"/stories/{story}/entities/{'0' * 26}/profile", 404, "not_found")
         await _refused(client, f"/stories/{story}/scene?as_of=9", 422, "validation_error")
+
+
+SCENE = "/stories/{story_id}/scene"
+PROFILE = "/stories/{story_id}/entities/{entity_id}/profile"
+
+
+async def test_scene_reads_declare_viewpoint_unresolved(
+    engine: AsyncEngine, settings: Settings
+) -> None:
+    """The scene and the entity profile (FR-RET-6, FR-API-1) declare 422 `viewpoint_unresolved`
+    beside `validation_error` in the committed document (#536), and a read naming a viewpoint
+    that is not one of the cast answers it in the declared shape. Complement: the same reads
+    for `omniscient` answer 200, also as declared."""
+    for path in (SCENE, PROFILE):
+        assert lists_code("GET", path, 422, "viewpoint_unresolved"), path
+        assert lists_code("GET", path, 422, "validation_error"), path
+    w = await world(engine)
+    story, ann = w.story_id, w.people["Ann"]
+    stranger = f"character:{'0' * 26}"
+    async with respond_client(settings, engine) as (client, _):
+        for path, url in (
+            (SCENE, f"/stories/{story}/scene"),
+            (PROFILE, f"/stories/{story}/entities/{ann}/profile"),
+        ):
+            refused = await client.get(url, params={"viewpoint": stranger}, headers=bearer())
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "viewpoint_unresolved"
+            assert_documented(refused, "GET", path)
+            read = await client.get(url, params={"viewpoint": "omniscient"}, headers=bearer())
+            assert read.status_code == 200, read.text
+            assert_documented(read, "GET", path)
 
 
 async def _refused(client: httpx.AsyncClient, url: str, status: int, code: str) -> None:

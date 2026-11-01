@@ -24,6 +24,7 @@ from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from tests.auth_support import auth_settings
 from tests.concurrency_support import set_pins
 from tests.event_support import rows
+from tests.openapi_support import assert_documented, declared
 from tests.policy_support import unique, words
 from tests.projection_support import truncate
 from tests.respond_support import (
@@ -87,8 +88,9 @@ def code(response: httpx.Response) -> str:
 
 
 async def test_body_validation(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """Malformed bodies are 422 and write nothing; a kind M2 does not record is
-    ``unsupported_event_kind`` naming M6."""
+    """Malformed bodies are 422 and write nothing; a kind ingest does not record is
+    ``unsupported_event_kind`` (#217: ``outcome`` is recorded now, so one naming no effect is a
+    ``validation_error``)."""
     async with respond_client(stub_settings, engine) as (client, _):
         story, ids = await new_story(client)
         before = await footprint(engine, story)
@@ -109,12 +111,9 @@ async def test_body_validation(stub_settings: Settings, engine: AsyncEngine) -> 
             refused = await ingest(client, story, *events)
             assert refused.status_code == 422, (events, refused.text)
             assert code(refused) == "validation_error"
-        for kind in ("outcome", "state_change"):
-            refused = await ingest(client, story, {"client_event_id": "g", "kind": kind})
-            assert refused.status_code == 422, refused.text
-            assert code(refused) == "unsupported_event_kind"
-            assert "M6" in refused.json()["error"]["message"]
-            assert refused.json()["error"]["details"]["milestone"] == "M6"
+        refused = await ingest(client, story, {"client_event_id": "g", "kind": "outcome"})
+        assert refused.status_code == 422, refused.text
+        assert code(refused) == "validation_error"
         unknown = await ingest(client, story, {"client_event_id": "h", "kind": "dream"})
         assert code(unknown) == "unsupported_event_kind"
         assert await footprint(engine, story) == before
@@ -259,6 +258,35 @@ async def test_mixed_replay_and_new(stub_settings: Settings, engine: AsyncEngine
         assert (
             len(await rows(engine, "SELECT 1 FROM client_events WHERE story_id = :s", s=story)) == 3
         )
+
+
+INGEST = "/stories/{story_id}/ingest"
+
+
+async def test_replayed_batch_answers_a_declared_200(
+    stub_settings: Settings, engine: AsyncEngine
+) -> None:
+    """The committed document declares ingest's 200 (FR-RESP-10, FR-API-1; #533) with the
+    `IngestResponse` body beside 201 and 202, and a resent batch's 200 (every result
+    `replayed`) and a mixed batch's 200 validate against it. Complement: the first send is the
+    declared 201."""
+    assert declared("POST", INGEST, 200)["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/IngestResponse"
+    }
+    declared("POST", INGEST, 201)
+    declared("POST", INGEST, 202)
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await new_story(client)
+        first = await ingest(client, story, narration("r1"), player("r2", ids[PLAYER]))
+        assert first.status_code == 201, first.text
+        assert_documented(first, "POST", INGEST)
+        resent = await ingest(client, story, narration("r1"), player("r2", ids[PLAYER]))
+        assert resent.status_code == 200, resent.text
+        assert [r["replayed"] for r in resent.json()["results"]] == [True, True]
+        assert_documented(resent, "POST", INGEST)
+        mixed = await ingest(client, story, narration("r1"), narration("r3"))
+        assert mixed.status_code == 200, mixed.text
+        assert_documented(mixed, "POST", INGEST)
 
 
 async def test_concurrent_duplicates_record_once(

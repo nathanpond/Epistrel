@@ -25,7 +25,9 @@ Its text is classified by the reaction lexicon (``detectors/reaction.json``) and
 detectors' tables: a thought (``inner_state.json``'s cues) is never narrated for another character
 (dropped); speech is allowed only as a brief interjection when the story allows it (at most
 ``interjection_max_words`` whitespace tokens); speech beyond that, a decision, or an effect
-(possession, transfer, placement, movement: the detectors' verb tables) **escalates** the
+(possession, transfer, placement, movement: the detectors' verb tables), or #187 (FR-MULTI-9,
+FR-STATE-5) a mention of a tracked State (its name, an alias, its unit: ``Bounds.state_terms``),
+**escalates** the
 character to a primary render, or, when escalation is unavailable (a fixed role; the budget, which
 the caller decides), is **limited** to a non-verbal reaction (``limited_text``) and the character
 is listed in ``escalation_deferred``. A ``silent`` character gets no narrated reaction at all, a
@@ -33,8 +35,8 @@ primary renders itself, and the player's character is never a reaction's subject
 
 ``prose_reactions`` finds a reaction narrated in a primary's ``do`` prose: a sentence whose subject
 is another present character (its name first) and whose verb is one of the lexicon's (or an effect
-or thought verb); every other sentence stays the primary's (an action by another character is
-#144's denial).
+or thought verb), or which names a tracked State (#187); every other sentence stays the
+primary's (an action by another character is #144's denial).
 """
 
 from __future__ import annotations
@@ -327,6 +329,18 @@ class Bounds:
     max_words: int = INTERJECTION_MAX_WORDS
     player_id: str | None = None
     primaries: frozenset[str] = field(default_factory=frozenset)
+    state_terms: tuple[str, ...] = ()
+    """#187: how prose names the story's tracked States (case-folded names, aliases, units): a
+    reaction that names one would change it, which only a primary render may declare."""
+
+
+STATE = "state"
+"""#187: a reaction's category when it names a tracked State (it escalates like an effect)."""
+
+
+def names_state(text: str, terms: Sequence[str]) -> bool:
+    """Whether ``text`` names one of the tracked States' ``terms``."""
+    return bool(terms) and _pattern(terms).search(" ".join(text.casefold().split())) is not None
 
 
 def judge(reaction: Reaction, bounds: Bounds) -> Bound:
@@ -353,6 +367,9 @@ def judge(reaction: Reaction, bounds: Bounds) -> Bound:
         return _trigger(role, "speech", category)
     if category in ("decision", "effect"):
         return _trigger(role, category, category)
+    if names_state(reaction.text, bounds.state_terms):
+        # #187 (FR-MULTI-9): a reaction that would change a tracked State escalates.
+        return _trigger(role, STATE, STATE)
     return Bound(Outcome.ACCEPT, category=category)
 
 
@@ -370,10 +387,13 @@ def limited_text(name: str) -> str:
 _SENTENCE = re.compile(r"[^.!?\n]+[.!?]*")
 
 
-def prose_reactions(text: str, others: Mapping[str, str]) -> list[tuple[str, str, int, int]]:
+def prose_reactions(
+    text: str, others: Mapping[str, str], state_terms: Sequence[str] = ()
+) -> list[tuple[str, str, int, int]]:
     """The reactions ``text`` (a primary's ``do``) narrates: ``(character id, sentence, start,
     end)`` for each sentence whose first words are another present character's name (``others``:
-    name → id) and which holds a reaction, speech, decision, effect or thought verb."""
+    name → id) and which holds a reaction, speech, decision, effect or thought verb, or names a
+    tracked State (``state_terms``, #187)."""
     found: list[tuple[str, str, int, int]] = []
     by_name = sorted(others.items(), key=lambda kv: -len(kv[0]))
     for match in _SENTENCE.finditer(text):
@@ -388,7 +408,7 @@ def prose_reactions(text: str, others: Mapping[str, str]) -> list[tuple[str, str
                 len(folded) == len(lead) or not folded[len(lead)].isalnum()
             ):
                 rest = stripped[len(name) :]
-                if reaction_verb(rest):
+                if reaction_verb(rest) or names_state(rest, state_terms):
                     start = match.start() + (len(sentence) - len(sentence.lstrip()))
                     found.append((cid, stripped, start, start + len(stripped)))
                 break
@@ -425,6 +445,7 @@ __all__ = [
     "ROLES",
     "SILENT",
     "SOURCES",
+    "STATE",
     "Bound",
     "Bounds",
     "Outcome",
@@ -436,6 +457,7 @@ __all__ = [
     "judge",
     "lexicon",
     "limited_text",
+    "names_state",
     "prose_reactions",
     "quoted",
     "reaction_verb",

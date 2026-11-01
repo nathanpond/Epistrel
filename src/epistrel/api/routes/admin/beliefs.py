@@ -19,8 +19,9 @@ from pydantic import BaseModel
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
+from epistrel.core.enums import BeliefTransitionKind
 from epistrel.core.epistemic.author import BeliefRequest, BeliefWrite
-from epistrel.core.epistemic.partitions import Belief
+from epistrel.core.epistemic.partitions import Acquisition, Belief
 from epistrel.core.epistemic.transitions import Transition
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Proposition
@@ -45,8 +46,11 @@ class PositionBody(BaseModel):
 class AuthoredBeliefBody(BaseModel):
     """The belief after the call: its kind (``first_order``, or ``nested`` with its attributed
     holder and depth, #167), proposition, dual confidence, accessibility and hold state, the
-    transition that produced it (``provenance``), the positions between which the holder holds
-    it, valid-time (story-minutes) and its lineage."""
+    transition that produced it (``provenance``) with that transition's kind
+    (``provenance_kind``: ``author`` for a belief this call produced; one it changed in place
+    keeps the transition that produced it) and testimony source (``provenance_source_character``,
+    ``null`` unless the kind is ``testimony``; #654), the positions between which the holder
+    holds it, valid-time (story-minutes) and its lineage."""
 
     id: str
     holder_character_id: str
@@ -61,6 +65,8 @@ class AuthoredBeliefBody(BaseModel):
     accessibility: float
     state: str
     provenance: str
+    provenance_kind: BeliefTransitionKind
+    provenance_source_character: str | None
     held_from: PositionBody
     held_to: PositionBody | None
     valid_from: int | None
@@ -68,7 +74,7 @@ class AuthoredBeliefBody(BaseModel):
     lineage_id: str
 
     @classmethod
-    def of(cls, belief: Belief) -> AuthoredBeliefBody:
+    def of(cls, belief: Belief, acquisition: Acquisition) -> AuthoredBeliefBody:
         return cls(
             id=belief.id,
             holder_character_id=belief.holder_character_id,
@@ -83,6 +89,8 @@ class AuthoredBeliefBody(BaseModel):
             accessibility=belief.accessibility,
             state=belief.state.value,
             provenance=belief.provenance,
+            provenance_kind=acquisition.kind,
+            provenance_source_character=acquisition.source_character_id,
             held_from=PositionBody.of(belief.held_from),
             held_to=None if belief.held_to is None else PositionBody.of(belief.held_to),
             valid_from=belief.valid_from,
@@ -128,7 +136,7 @@ class BeliefWritten(MutationResponse):
     @classmethod
     def of(cls, written: BeliefWrite) -> BeliefWritten:
         return cls(
-            belief=AuthoredBeliefBody.of(written.belief),
+            belief=AuthoredBeliefBody.of(written.belief, written.acquired),
             transition=TransitionBody.of(written.transition),
             closed=list(written.closed),
             operation_id=written.operation_id,

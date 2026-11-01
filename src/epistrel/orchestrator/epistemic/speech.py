@@ -210,6 +210,8 @@ def own_backstory(c: CheckedClaim) -> bool:
     result = c.result
     if result is None or result.speech is None or result.self_attested:
         return False
+    if result.schedule is not None:
+        return False  # #198: a new plan's belief cites its canon fact (``schedules``)
     speech = result.speech
     return (
         speech.classification == speech_acts.SINCERE

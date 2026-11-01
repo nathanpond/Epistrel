@@ -107,6 +107,17 @@ class ContentCategory(StrEnum):
     heard Bobby say …"). The rendering character's partition only, never another's, never a
     scalar, a provenance or a divergence."""
     UTTERANCE_TEXT = "utterance_text"
+    TRACKED_VALUES = "tracked_values"
+    """A structured render's ``## Tracked values`` (#187, FR-TURN-11): for a character's render,
+    the player-visible States it may change (name, type, scope, unit, aliases, allowed values)
+    and the effect syntax, never a value; for the narrator's, every State with its current
+    value and constraints."""
+    EXTERNAL_DATA = "external_data"
+    """A value an external-data provider answered (FR-EXT-5, NFR-SEC-2; #208): untrusted content,
+    typed and cleaned by ``orchestrator.providers.sanitize`` and rendered only as a fenced,
+    labelled data block (``<external name=… tier=…>…</external>``), never as instructions; the
+    payload's JSON keys never. The narrator's render takes it (a character learns a value only
+    as a belief, #170); never a purpose that judges or compresses the story's own records."""
     """The say a witness heard (#162): the speaker's name, the words as the witness perceived
     them, the visible manner, the claims they carry and the intent as the witness reads it."""
 
@@ -247,6 +258,15 @@ class GenerationInputs(InputSchema):
     beliefs: Annotated[list[str], C.BELIEF_STATE] = Field(default_factory=list, max_length=200)
     """A structured character render's ``## What you believe`` (FR-TURN-8; #170): its own belief
     state (``core.epistemic.context.CharacterContext.belief_lines``)."""
+    time_belief: Annotated[str, C.BELIEF_STATE] = Field(default="", max_length=4_000)
+    """A structured character render's ``## Your sense of time`` (FR-CLOCK-11; #200): its own
+    time belief, the time it perceived in the scene and the schedules it holds
+    (``CharacterContext.time_belief``); never the objective clock. Empty when the story runs no
+    clock and in every other prompt."""
+    clock_now: Annotated[str, C.SCENE] = Field(default="", max_length=300)
+    """The narrator's objective time (#200, FR-CLOCK-11): the clock as the turn starts, as the
+    anchor shows it ("Saturday, 17:30 (evening)"); never a character's (a character knows the
+    time only as its own belief, ``time_belief``)."""
     private_memories: Annotated[list[str], C.WORKING_MEMORY] = Field(
         default_factory=list, max_length=20
     )
@@ -272,6 +292,10 @@ class GenerationInputs(InputSchema):
     """A structured character render's step contract (FR-TURN-12, FR-TURN-8; #168,
     ``steps_contract.j2``): the fixed ``## How to change your mind`` section, present when the
     rendering character keeps its own beliefs (per-character partitions)."""
+    clock_contract: Annotated[bool, C.CONSTRAINT] = False
+    """A structured render's time contract (FR-CLOCK-6,7,17; #194, ``clock_contract.j2``): the
+    fixed ``## Time`` section (time advances, ``time`` steps, ``flashback``), present when the
+    story runs the world clock."""
     player_input: PlayerInput
     player_authority: Annotated[Literal["", "own_character", "co_author"], C.CONSTRAINT] = ""
     """A Lite prompt's ``## Player authority`` (FR-RESP-11; #180): the story's setting, rendered
@@ -280,6 +304,33 @@ class GenerationInputs(InputSchema):
     player_requests: Annotated[list[str], C.PLAYER_INPUT] = Field(
         default_factory=list, max_length=16
     )
+    tracked_values: Annotated[list[str], C.TRACKED_VALUES] = Field(
+        default_factory=list, max_length=64
+    )
+    """A structured render's ``## Tracked values`` (#187): one line per State the render may
+    change (a character's: player-visible ones it is authorized for, no value; the narrator's:
+    every State with its value at the turn's start and its constraints). A Lite prompt's
+    (#203, FR-LITE-5): one line per player-visible State with its value, shown only."""
+    lite_time: Annotated[list[str], C.SCENE] = Field(default_factory=list, max_length=65)
+    """A Lite prompt's ``## Time`` (#203, FR-LITE-5): the world clock as the turn starts and the
+    open canon scheduled events with their planned times (``orchestrator.lite.context``); empty
+    with the clock off and in every structured prompt (whose renders take ``clock_now`` and
+    ``time_belief``)."""
+    tracked_syntax: Annotated[str, C.TRACKED_VALUES] = Field(default="", max_length=1_000)
+    """#187: how to declare a State effect, with one example (present with ``tracked_values``)."""
+    external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(
+        default_factory=list, max_length=64
+    )
+    """The narrator's ``## External data`` (#208, FR-EXT-5): one fenced block per value the turn
+    pinned from a provider (``sanitize.render_block``); never in a character's render (#170,
+    ``check-character-context``)."""
+    pending_outcomes: Annotated[list[str], C.TRACKED_VALUES] = Field(
+        default_factory=list, max_length=64
+    )
+    """The narrator's ``## Awaiting the game`` (#209, FR-EXT-9, FR-EXT-21 (e)): the changes the
+    last three turns asked the consumer to apply with no outcome reported yet, a hint never to
+    narrate one as done; never in a character's render (a character learns an outcome only by
+    perception; ``check-character-context``)."""
     """A structured character render's ``## The player asks of you`` (FR-RESP-11; #180): under
     ``player_authority = own_character``, what the player's input described this character
     doing, saying or (never written) thinking, as requests the render complies with or refuses
@@ -388,6 +439,11 @@ class GuardrailCheckInputs(InputSchema):
     text: Annotated[str, C.CHECKED_TEXT]
     policy_prompt: Annotated[str, C.POLICY_TEXT]
     subjects: list[Subject] = Field(default_factory=list)
+    external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(
+        default_factory=list, max_length=64
+    )
+    """#208: provider values the checked text was written from, as fenced data blocks (data to
+    check against, never instructions to the checker)."""
 
 
 class LiteSummaryInputs(InputSchema):
@@ -896,6 +952,11 @@ class ExtractionInputs(InputSchema):
         default_factory=list
     )
     scene_context: SceneContext = Field(default_factory=SceneContext)
+    external_data: Annotated[list[str], C.EXTERNAL_DATA] = Field(
+        default_factory=list, max_length=64
+    )
+    """#208: provider values the passage was written from, as fenced data blocks (data, never
+    instructions; the claims are the passage's own)."""
 
 
 class ExtractedClaim(BaseModel):
@@ -928,6 +989,55 @@ class EmbeddingInputs(InputSchema):
     """One text to embed (FR-EMBED-1; #138): a memory's text, or a retrieval query's."""
 
     text: Annotated[str, C.MEMORY_TEXT]
+
+
+TIME_ESTIMATE_MAX_MINUTES = 525_960 * 10
+"""The longest duration one ``time_estimation`` answer may propose (ten years: the render
+schema's ``MAX_SKIP_MINUTES``)."""
+TIME_ESTIMATION_TEXT_MAX = 2_000
+"""The longest narrated text, or activity context, one ``time_estimation`` request carries."""
+TIME_ESTIMATION_MAX_TIMES = 20
+"""The most established times one ``time_estimation`` request carries."""
+CLOCK_TIME_PATTERN = r"^([0-9]{1,2}:[0-5][0-9])?$"
+"""A time of day as ``HH:MM`` (empty: none), in a ``time_estimation`` request or answer."""
+
+
+class TimeEstimationInputs(InputSchema):
+    """One undeclared narrated skip (FR-CLOCK-7; #199): the sentence that implies elapsed time,
+    what the scene established about the activity, the times the story established ("the movie
+    started at 19:10 and runs about two hours") and the clock as the turn starts ("19:40",
+    #201). Never a definition, a memory, a policy, an age, a provider's value or eval text."""
+
+    narrated_text: Annotated[str, C.RENDER_TEXT] = Field(max_length=TIME_ESTIMATION_TEXT_MAX)
+    activity_context: Annotated[str, C.SCENE] = Field(
+        default="", max_length=TIME_ESTIMATION_TEXT_MAX
+    )
+    established_times: Annotated[list[str], C.SCENE] = Field(
+        default_factory=list, max_length=TIME_ESTIMATION_MAX_TIMES
+    )
+    clock: Annotated[str, C.SCENE] = Field(
+        default="", pattern=CLOCK_TIME_PATTERN, examples=["19:40"]
+    )
+    """The time of day as the turn starts ("19:40"; empty: the clock does not fix it). With it,
+    the model may answer with a clock time and the engine does the arithmetic (#201)."""
+
+
+class TimeEstimate(BaseModel):
+    """The structured result of one ``time_estimation`` call, reason first so the model works
+    the skip out before it commits to a time (#201). The time is either ``ends_at``, the clock
+    time the skip ends at ("the alarm is set for 06:30", or a start plus how long the activity
+    runs), from which the engine counts the minutes against the clock across midnight
+    (``orchestrator.structured.time_estimation.resolved_minutes``); or ``minutes``, how long the
+    skip lasts. The defaults (no time at confidence 0) are the most conservative answer: an
+    estimate under ``core.world_clock.skips.MIN_CONFIDENCE`` is no estimate, and the skip is
+    removed (NFR-PERF-7 (5))."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    reason: str = Field(default="", max_length=500)
+    ends_at: str | None = Field(default=None, pattern=CLOCK_TIME_PATTERN)
+    minutes: int | None = Field(default=None, ge=0, le=TIME_ESTIMATE_MAX_MINUTES)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 # -- purposes ---------------------------------------------------------------------------------
@@ -1062,7 +1172,8 @@ GUARDRAIL_CHECK = Purpose(
     input_schema=GuardrailCheckInputs,
     template="guardrail_check.j2",
     hot_path=True,
-    never_receives=_EVERYTHING - {C.CHECKED_TEXT, C.POLICY_TEXT, C.SUBJECT_TRUE_AGE},
+    never_receives=_EVERYTHING
+    - {C.CHECKED_TEXT, C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.EXTERNAL_DATA},
     response_schema=GuardrailVerdict,
 )
 
@@ -1222,9 +1333,10 @@ EXTRACTION_BACKSTOP = Purpose(
     input_schema=ExtractionInputs,
     template="extraction.j2",
     hot_path=True,
-    # The render's own beats (or the composed message) and its scene only: never another
-    # story's text, a belief, a definition, a memory, a policy, an age or eval text.
-    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    # The render's own beats (or the composed message), its scene and the provider values it
+    # was written from (#208, fenced data) only: never another story's text, a belief, a
+    # definition, a memory, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE, C.EXTERNAL_DATA},
     response_schema=ExtractionResult,
 )
 
@@ -1246,13 +1358,30 @@ REGENERATION = Purpose(
 """``regeneration`` (#151): the repair ladder's constrained rewrite of one beat. Its answer is a
 ``response_schema`` the ladder passes (``orchestrator.repair.ladder.RegeneratedBeat``)."""
 
-RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
-    ReservedPurpose(
-        "time_estimation",
-        "Best-guess duration of a narrated skip.",
-        "M6",
-        defaults_to="extraction_backstop",
+TIME_ESTIMATION = Purpose(
+    name="time_estimation",
+    description=(
+        "Proposes a best-guess duration, with its reason and a confidence, for a narrated skip "
+        "a beat implies but does not declare, from what the scene established; optional work "
+        "within the turn budget (FR-CLOCK-7)."
     ),
+    # FR-MODEL-2: defaults to the extraction backstop's model (its own row, then the
+    # backstop's, then the default's).
+    default_model_key=EXTRACTION_BACKSTOP.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=TimeEstimationInputs,
+    template="time_estimation.j2",
+    hot_path=True,
+    # The skip's sentence and what the scene established only: never a definition, a belief, a
+    # memory, a policy, an age, a provider's value (#208: ``external_data`` stays out) or eval
+    # text.
+    never_receives=_EVERYTHING - {C.RENDER_TEXT, C.SCENE},
+    response_schema=TimeEstimate,
+)
+"""``time_estimation`` (#199): one call per undeclared narrated skip
+(``orchestrator.structured.time_estimation.estimate``)."""
+
+RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
     ReservedPurpose("image_generation", "The image-generation port (FR-IMG-1).", "M8", kind="port"),
@@ -1416,6 +1545,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         SALIENCE_DETECTION,
         EXTRACTION_BACKSTOP,
         REGENERATION,
+        TIME_ESTIMATION,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -1442,6 +1572,7 @@ __all__ = [
     "ADJUDICATION_MAX_CLAIMS",
     "ADJUDICATION_MAX_RECORDS",
     "BELIEF_ADJUDICATION",
+    "CLOCK_TIME_PATTERN",
     "CONSOLIDATION",
     "CONSOLIDATION_MAX_RECORDS",
     "CONSOLIDATION_STATEMENTS_MAX",
@@ -1469,6 +1600,10 @@ __all__ = [
     "SALIENCE_QUOTE_MAX",
     "STORY_PURPOSES",
     "SUBJECT_LABEL_PATTERN",
+    "TIME_ESTIMATE_MAX_MINUTES",
+    "TIME_ESTIMATION",
+    "TIME_ESTIMATION_MAX_TIMES",
+    "TIME_ESTIMATION_TEXT_MAX",
     "AdjudicationBelief",
     "AdjudicationDecision",
     "AdjudicationPriors",
@@ -1538,6 +1673,8 @@ __all__ = [
     "SuggestionPolicy",
     "TiebreakBeat",
     "TiebreakConflict",
+    "TimeEstimate",
+    "TimeEstimationInputs",
     "TranscriptLine",
     "declared_paths",
     "field_categories",

@@ -191,6 +191,33 @@ Labels: degraded 6, valid 194.
 - `structured_output-plain-0162`: `{"origin": "paraphrase", "inputs": {"say": "Maren, how far is it to the next town?", "inject": "none"}, "expected": "valid"}`
 - `structured_output-plain-0174`: `{"origin": "paraphrase", "inputs": {"say": "What's the road like going north?", "inject": "none"}, "expected": "valid"}`
 
+## `time_estimation/cases.jsonl` (e09, 200 cases)
+
+Families: drive 29, flight 29, meal 29, movie 29, sleep 28, wait 28, work-shift 28.
+
+Labels: explicit 67, implicit 81, inferred 52.
+
+- `time_estimation-drive-0001`: `{"narrated_text": "Cal drives for forty-five minutes along the coast road.", "activity_context": "Cal sets off from Ashford in the car.", "established_times": [], "acceptable_minutes": [41, 49], "notes": "explicit: forty-five minutes of driving"}`
+- `time_estimation-drive-0016`: `{"narrated_text": "After an hour on the motorway, Wren pulls into Fairhaven.", "activity_context": "Wren is driving north to Fairhaven.", "established_times": [], "acceptable_minutes": [54, 66], "notes": "explicit: an hour on the road"}`
+- `time_estimation-drive-0017`: `{"narrated_text": "Bobby drives the 100 miles to Westwick on the highway.", "activity_context": "Bobby gets on the highway at Kestrel Bay.", "established_times": [], "acceptable_minutes": [80, 140], "notes": "implicit: 100 highway miles at 45-75 mph"}`
+- `time_estimation-flight-0006`: `{"narrated_text": "Hugo waits out the layover until the connecting flight departs.", "activity_context": "Hugo is travelling to Toronto with a change of planes.", "established_times": ["The connecting flight to Toronto departs at 13:30.", "The clock reads 11:00."], "acceptable_minutes": [142, 158], "notes": "inferred: the connection leaves in 150 minutes"}`
+- `time_estimation-flight-0019`: `{"narrated_text": "The flight from London to New York lands.", "activity_context": "Maren boards the flight from London to New York.", "established_times": [], "acceptable_minutes": [420, 540], "notes": "implicit: London to New York by air"}`
+- `time_estimation-flight-0021`: `{"narrated_text": "The flight to Oslo takes four hours, and Raj reads most of the way.", "activity_context": "Raj settles into a window seat on the flight to Oslo.", "established_times": [], "acceptable_minutes": [216, 264], "notes": "explicit: a 240-minute flight"}`
+- `time_estimation-meal-0015`: `{"narrated_text": "Owen spends an hour cooking a vegetable stew, then serves it.", "activity_context": "Owen starts cooking in the kitchen.", "established_times": [], "acceptable_minutes": [54, 66], "notes": "explicit: an hour of cooking"}`
+- `time_estimation-meal-0024`: `{"narrated_text": "Elias cooks a bowl of pasta and sets it on the table.", "activity_context": "Elias starts cooking in the kitchen.", "established_times": [], "acceptable_minutes": [12, 40], "notes": "implicit: how long a bowl of pasta takes to make"}`
+- `time_estimation-meal-0026`: `{"narrated_text": "Linda and Elias finish breakfast and push back their chairs.", "activity_context": "Linda and Elias sit down to breakfast at the inn.", "established_times": [], "acceptable_minutes": [15, 60], "notes": "implicit: a sit-down breakfast"}`
+- `time_estimation-movie-0009`: `{"narrated_text": "Ann and Hugo sit through the whole double feature.", "activity_context": "The cinema is showing two films back to back tonight.", "established_times": [], "acceptable_minutes": [180, 300], "notes": "implicit: two feature films"}`
+- `time_estimation-movie-0014`: `{"narrated_text": "Owen and Marcus watch an episode together.", "activity_context": "Owen puts on an hour-long crime drama.", "established_times": [], "acceptable_minutes": [40, 65], "notes": "implicit: one episode of an hour-long crime drama"}`
+- `time_estimation-movie-0021`: `{"narrated_text": "They watch until the credits roll.", "activity_context": "Hugo and Marcus are watching Paper Lanterns on the couch.", "established_times": ["The movie started at 21:00.", "It runs two hours.", "The clock reads 21:30."], "acceptable_minutes": [86, 94], "notes": "inferred: a 120-minute film, 30 minutes in"}`
+- `time_estimation-sleep-0010`: `{"narrated_text": "Felix sleeps for eight hours and wakes feeling better.", "activity_context": "Felix goes to bed.", "established_times": [], "acceptable_minutes": [432, 528], "notes": "explicit: eight hours of sleep"}`
+- `time_estimation-sleep-0019`: `{"narrated_text": "Wren naps for twenty minutes on the sofa.", "activity_context": "Wren lies down on the sofa after lunch.", "established_times": [], "acceptable_minutes": [18, 22], "notes": "explicit: a 20-minute nap"}`
+- `time_estimation-sleep-0028`: `{"narrated_text": "Jenni and Priya fall asleep on the couch and wake at dawn.", "activity_context": "Jenni and Priya are watching a film late at night, half asleep.", "established_times": ["The clock reads 23:30.", "The sun rises at 05:30."], "acceptable_minutes": [324, 396], "notes": "inferred: asleep from 23:30 to sunrise at 05:30"}`
+- `time_estimation-wait-0008`: `{"narrated_text": "Ines waits at the level crossing while the freight train passes.", "activity_context": "Ines is walking home when the barrier comes down.", "established_times": [], "acceptable_minutes": [2, 10], "notes": "implicit: a train passing a crossing"}`
+- `time_estimation-wait-0021`: `{"narrated_text": "Linda waits in the queue at the post office until served.", "activity_context": "Linda joins a short queue at the post office in Ashford.", "established_times": [], "acceptable_minutes": [5, 30], "notes": "implicit: a short queue"}`
+- `time_estimation-wait-0025`: `{"narrated_text": "Elias waits forty minutes for the bus.", "activity_context": "Elias reaches the bus stop in Dunmore.", "established_times": [], "acceptable_minutes": [36, 44], "notes": "explicit: forty minutes at the stop"}`
+- `time_estimation-work-shift-0003`: `{"narrated_text": "Wren works until the end of the shift.", "activity_context": "Wren is working at the bakery.", "established_times": ["Wren's shift started at 06:00.", "Shifts at the bakery are six hours long.", "The clock reads 07:00."], "acceptable_minutes": [285, 315], "notes": "inferred: a 6-hour shift, 60 minutes in"}`
+- `time_estimation-work-shift-0026`: `{"narrated_text": "Ruth works the night shift at the hospital and goes home at dawn.", "activity_context": "Ruth is a nurse on nights this week.", "established_times": [], "acceptable_minutes": [480, 720], "notes": "implicit: a night shift"}`
+
 ## `claim_detection/cases.jsonl` (e10, 300 cases)
 
 Families: identity 40, identity-declared 8, identity-message 12, possession 48, possession-message 12, protected 48, protected-message 12, quantity 48, quantity-message 12, time 48, time-message 12.

@@ -127,8 +127,6 @@ from epistrel.core.propositions.model import (
     Proposition,
 )
 from epistrel.core.propositions.registry import Registry, auto_register, load
-from epistrel.core.resolution.context import load_time_basis
-from epistrel.core.resolution.time import story_time_at
 from epistrel.core.settings_schema import CommitmentSettings
 from epistrel.core.tables import deployment_state, entities, events, operations, predicates
 from epistrel.core.tables.commitments import promissory_ledger, thunks
@@ -1057,8 +1055,14 @@ async def minimal_commit(
         raise InvalidRequest("a minimal commit needs the reference's known argument", {})
     at = thunk.valid_time
     if at is None:
-        basis = await load_time_basis(conn, story_id)
-        at = story_time_at(thunk.narrative_turn or operation.narrative_turn or 0, basis)
+        from epistrel.core import world_clock  # here: the clock reads States, which import this
+
+        where = (
+            Position(thunk.narrative_turn, thunk.turn_variant or 0, 0, thunk.beat or 0)
+            if thunk.narrative_turn is not None
+            else Position(operation.narrative_turn or 0, operation.turn_variant or 0)
+        )
+        at = await world_clock.story_time_at(conn, story_id, where)
     fact = await canon.commit_fact(
         conn,
         story_id,

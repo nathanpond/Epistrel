@@ -8,7 +8,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 
 import pytest
 from pydantic import ValidationError
@@ -111,11 +110,14 @@ def test_regex_searches_ignoring_case() -> None:
 
 def test_regex_past_its_deadline_is_a_violation() -> None:
     """Catastrophic backtracking cannot stall the caller: the search misses its deadline, the
-    policy counts as broken (fail closed), and the next search runs on a fresh pool."""
+    policy counts as broken (fail closed), and the next search runs on a fresh pool.
+
+    The text does not match, so a search left to finish (seconds over 26 ``a``s, against a
+    50 ms deadline) answers ``[]``: ``["slow"]`` can only come from the deadline. That proves
+    the caller was not stalled without a wall-clock bound a loaded host could miss, and a
+    regression fails rather than hangs (#446)."""
     slow = policy({"type": "regex", "patterns": [r"(a+)+$"]}, policy_id="slow")
-    started = time.perf_counter()
-    assert _ids("a" * 25 + "!", slow) == ["slow"]
-    assert time.perf_counter() - started < 1.0
+    assert _ids("a" * 26 + "!", slow) == ["slow"]
     fine = policy({"type": "regex", "patterns": ["b"]}, policy_id="fine")
     assert _ids("abc", fine) == ["fine"]
     assert _ids("xyz", fine) == []
@@ -160,15 +162,15 @@ def test_process_exits_after_a_regex_timeout() -> None:
         "p = policy({'type': 'regex', 'patterns': ['(a+)+$']}, applies_to=(Target.TEXT_INPUT,))\n"
         "print(len(evaluate('a' * 40 + '!', [p], Target.TEXT_INPUT)))\n"
     )
-    started = time.monotonic()
     child = subprocess.Popen(
         [sys.executable, "-c", script], stdout=subprocess.PIPE, text=True, start_new_session=True
     )
     try:
-        stdout, _ = child.communicate(timeout=30)
+        # The abandoned search over 40 ``a``s would spin for hours: exiting within the
+        # communicate timeout is the "exits promptly" check, generous for a loaded host (#446).
+        stdout, _ = child.communicate(timeout=60)
         assert child.returncode == 0
         assert stdout.strip() == "1"
-        assert time.monotonic() - started < 15
         with pytest.raises(ProcessLookupError):
             os.killpg(child.pid, 0)
     finally:

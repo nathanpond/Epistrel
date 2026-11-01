@@ -70,7 +70,9 @@ from epistrel.core.profiles import effective, impact, schema
 from epistrel.core.profiles.effective import Configuration, EffectiveConfig, StoryProfile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactReport, TwoStageRequest, TwoStageResult
+from epistrel.core.profiles.reservation import SafetyFacts
 from epistrel.core.profiles.schema import PATCH_SCHEMA, ProfileSettings, Purposes, SettingsPatch
+from epistrel.core.profiles.validate import safety_warnings
 from epistrel.core.settings_schema import ConfigClass
 from epistrel.core.tables import deployment_state, engine_profiles, stories
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -205,15 +207,18 @@ async def _report(
     before: Configuration,
     after: Configuration,
     facts: RuntimeFacts,
+    safety: SafetyFacts | None = None,
 ) -> tuple[ImpactReport, bool]:
-    """The one-story report of the change, and whether its upgrade is unavailable."""
+    """The one-story report of the change, and whether its upgrade is unavailable; ``safety``:
+    what its ``budget_warnings`` count (#456)."""
     change = impact.delta(before, after, facts)
     history = await impact.with_history(conn, [story_id]) if change.increases else set()
     sizes = await impact.transcripts(conn, history)
     entry = impact.affected(
         story_id, change, history=story_id in history, transcript=sizes.get(story_id, (0, 0))
     )
-    return impact.single_report(entry, change), entry.upgrade_unavailable
+    warned = safety_warnings(after.settings, safety)
+    return impact.single_report(entry, change, budget_warnings=warned), entry.upgrade_unavailable
 
 
 async def _bump(conn: AsyncConnection, story_id: str, revision: int, **values: Any) -> None:
@@ -232,6 +237,7 @@ async def _staged(
     ignore_warnings: bool,
     kept: StoryProfile,
     write: Callable[[], Awaitable[EffectiveConfig]] | None = None,
+    safety: SafetyFacts | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
     """The write through #109's two stages (``impact.two_stage``, which logs the report): the
     one-story report of ``change`` (the configuration now, and the one the story would run
@@ -245,7 +251,7 @@ async def _staged(
 
     async def report() -> ImpactReport:
         nonlocal unavailable
-        found, unavailable = await _report(conn, story_id, before, after, facts)
+        found, unavailable = await _report(conn, story_id, before, after, facts, safety)
         return found
 
     async def apply(_: ImpactReport) -> EffectiveConfig:
@@ -273,8 +279,10 @@ async def assign_profile(
     principal: str,
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
+    safety: SafetyFacts | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
-    """Assign ``request.profile_id`` to the story (see the module docstring)."""
+    """Assign ``request.profile_id`` to the story (see the module docstring); ``safety``: what
+    the report's ``budget_warnings`` count (#456)."""
     async with db.begin() as conn:
         row = await _lock(conn, story_id, also=request.profile_id)
         current = await effective.effective_configuration(conn, story_id, validate=False)
@@ -293,6 +301,7 @@ async def assign_profile(
                 facts=facts,
                 ignore_warnings=request.ignore_warnings,
                 kept=current,
+                safety=safety,
             )
         target = await effective.assignable(conn, request.profile_id, version=pin)
         try:
@@ -354,6 +363,7 @@ async def assign_profile(
             ignore_warnings=request.ignore_warnings,
             kept=current,
             write=write,
+            safety=safety,
         )
 
 
@@ -386,8 +396,10 @@ async def set_overrides(
     principal: str,
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
+    safety: SafetyFacts | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
-    """Apply ``request.settings`` to the story's overrides (see the module docstring)."""
+    """Apply ``request.settings`` to the story's overrides (see the module docstring);
+    ``safety``: what the report's ``budget_warnings`` count (#456)."""
     field = ("body", "settings")
     async with db.begin() as conn:
         row = await _lock(conn, story_id)
@@ -421,6 +433,7 @@ async def set_overrides(
                 facts=facts,
                 ignore_warnings=request.ignore_warnings,
                 kept=current,
+                safety=safety,
             )
         _refuse_archived(row, story_id)
 
@@ -452,6 +465,7 @@ async def set_overrides(
             ignore_warnings=request.ignore_warnings,
             kept=current,
             write=write,
+            safety=safety,
         )
 
 

@@ -63,6 +63,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import Ulid
 from epistrel.core.ownership import Owner, Principal
 from epistrel.core.profiles.impact import CAMEL_CASE, TwoStageRequest
+from epistrel.core.providers import ProviderBindings
 from epistrel.core.tables import character_catalog, personas
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 
@@ -371,6 +372,12 @@ class StoryFromScenario(TwoStageRequest):
         "`system`). Recorded, never interpreted.",
     )
     projection: Projection = "card"
+    provider_bindings: ProviderBindings = Field(
+        default_factory=dict,
+        description="The story's ids at its external-data providers (#204): "
+        "`{provider: {external_ids}}`, each provider registered and each binding giving every "
+        "`{binding.<key>}` its manifest uses (422 `binding_incomplete`).",
+    )
 
 
 def is_scenario_body(body: Any) -> bool:
@@ -414,6 +421,9 @@ MaterializedOutcome = Literal[
     "belief_conflict",
     "visibility_conflict",
     "seed_audience_unfilled",
+    "state",
+    "clock",
+    "event",
 ]
 """What structured genesis did with an item (#149): ``canon`` (facts written), ``memory`` (a
 seed memory written), ``deferred`` (a part waits for a capability the story lacks),
@@ -422,7 +432,9 @@ or a name override recorded), ``rule`` (a story rule registered). With partition
 ``belief`` (first-order beliefs seeded), ``nested`` (nested beliefs seeded), ``belief_conflict``
 (a belief lost to another of the same holder and layer), ``visibility_conflict`` (the same fact
 from a higher source with another audience won) and ``seed_audience_unfilled`` (an audience
-token named an unfilled role or the player's, and was dropped)."""
+token named an unfilled role or the player's, and was dropped). With States and the clock
+(#202): ``state`` (a State declared, or a role's initial values seeded), ``clock`` (the starting
+clock seeded) and ``event`` (a scheduled event created)."""
 
 
 class OutcomeCounts(BaseModel):

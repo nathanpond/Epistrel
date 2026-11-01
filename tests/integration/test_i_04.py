@@ -20,12 +20,17 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.memory import records
 from epistrel.core.memory.consolidation import Window
 from epistrel.core.ratings import RatingFields, create_rating
+from epistrel.core.states import external as external_states
 from epistrel.core.stories import create_story, delete_story
 from epistrel.core.variants import ChainRef
 from epistrel.core.views import corrected_history
 from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests import consolidation_support as cs
+from tests import effect_support as es
+from tests import multi_support as ms
+from tests import provider_support as ps
+from tests import state_support as ss
 from tests.auth_support import auth_settings
 from tests.concurrency_support import (
     assert_single_chain,
@@ -42,9 +47,12 @@ from tests.memory_support import derived_memory
 from tests.projection_support import snapshot, truncate, untruncate
 from tests.respond_support import PLAYER, body, played, respond_client
 from tests.respond_support import new_story as new_rest_story
+from tests.respond_support import respond as respond_turn
 from tests.story_support import READ, WRITE
+from tests.structured_turn_support import beat, structured_story
 
 PRINCIPAL = "p-author"
+NEXT_TURN = "SELECT next_turn_index FROM stories WHERE id = :s"
 
 
 @pytest.fixture
@@ -795,3 +803,68 @@ async def test_i_04__derived(
     assert loose in {r.id for r in kept}
     await untruncate(engine, story)
     assert {"Bobby is busy.", "Bobby keeps a log."} <= await view()
+
+
+@pytest.mark.part("M6", "FR-STORE-17")
+async def test_i_04__m6(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """Recorded ``external_read`` events replay deterministically, never calling a provider:
+    with the provider failing every read, a projection rebuild refolds ``external_values`` to
+    exactly what the turn recorded, and a fork copies the events and rebuilds the same
+    reconstruction. Outside a turn, Core reads the recorded version (the read's own event);
+    a truncation past the turn takes its read out of the timeline and the untruncation brings
+    it back.
+
+    Complement asserted: the live read did happen once, at the turn (the adapter's count)."""
+    name = ps.unique_name("ledger")
+    await ps.register(engine, ps.in_process_spec(name))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = ps.ScriptedProvider(name).attach(epistrel)
+        fake.script("gold", 300)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "on")
+        gold = await ps.external_gold(engine, story, name)
+        before_turn = int(await scalar(engine, NEXT_TURN, s=story)) - 1
+        stub.reset()
+        es.narrator(stub, es.render(beat("narration", "Rain taps. Cal has 300 gold left.")))
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the edge.")))
+        answer = await respond_turn(client, story, body(cal, None, do="checks his purse"))
+        assert answer.status_code == 200, answer.text
+        assert len(fake.reads) == 1
+        recorded = await ps.reconstruction(engine, story)
+        assert [(r[5], r[6], r[7], r[8]) for r in recorded] == [(300, "read", "gold", "Cal")]
+        (read,) = await ps.external_reads(engine, story)
+
+        # From here on every live read fails: nothing below may make one.
+        fake.script("gold", ps.Fail())
+        await projections.rebuild(engine, story)
+        assert await ps.reconstruction(engine, story) == recorded
+        forked = await fork(engine, story)
+        assert await ps.reconstruction(engine, forked.story_id) == recorded
+        (copied,) = await ps.external_reads(engine, forked.story_id)
+        mapped = {c.source_id: c.id for c in forked.characters}
+        assert copied.payload["scope_key"] == mapped[cal]
+        assert {k: v for k, v in copied.payload.items() if k not in ("state_id", "scope_key")} == {
+            k: v for k, v in read.payload.items() if k not in ("state_id", "scope_key")
+        }
+        assert len(fake.reads) == 1
+
+        # Core's read outside a turn: the recorded version, following the turn's membership.
+        async def recorded_value() -> dict[Any, Any]:
+            async with engine.connect() as conn:
+                found = await external_states.pinned_values(conn, story, [gold], [(gold.id, cal)])
+            return {k: (p.value, p.event_id) for k, p in found.items()}
+
+        assert await recorded_value() == {(gold.id, cal): (300, read.id)}
+        await truncate(engine, story, before_turn)
+        assert await recorded_value() == {}
+        await untruncate(engine, story)
+        assert await recorded_value() == {(gold.id, cal): (300, read.id)}
+        assert len(fake.reads) == 1
+        await ss.set_level(engine, story, None)

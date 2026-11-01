@@ -69,11 +69,11 @@ from tests.profile_support import (
     UNAVAILABLE_WARNINGS,
     configuration_rows,
     merged,
-    naming,
     nest,
     profile_body,
     store_overrides,
-    undelivered_modules,
+    undelivered,
+    withholding,
 )
 from tests.respond_support import body as respond_body
 from tests.respond_support import generation_calls, respond_client
@@ -394,7 +394,7 @@ async def test_assignment_runs_in_two_stages(stub_settings: Settings, engine: As
         again = await _assign(client, story, quiet, key, ignoreWarnings=True)
         assert (again.headers.get("Idempotent-Replay"), again.json()) == ("true", done)
         shown = await ok(await client.get(f"/stories/{story}", headers=READ))
-        assert shown["engine_profile"] == {"id": quiet, "version": 1}
+        assert shown["engine_profile"] == {"id": quiet, "version": 1, "pinned": False}
         played = await ok(await _play(client, story, actor))
         assert played["profile"] == {"id": quiet, "version": 1}
         # The turn reports the story's configuration revision at its start: the assignment's.
@@ -555,7 +555,7 @@ async def test_overrides_are_a_merge_patch(stub_settings: Settings, engine: Asyn
         bad = refused(await _override(client, story, nest(WINDOW, "lots")), 422, "validation_error")
         assert bad["details"]["field"] == f"body.settings.{WINDOW}"
         refused(
-            await _override(client, story, naming(undelivered_modules()[0])),
+            await _override(client, story, undelivered()),
             422,
             "invalid_profile",
         )
@@ -708,15 +708,17 @@ async def test_a_preview_answers_what_the_overrides_write_would(scratch: Space) 
         assert error["details"]["field"] == "body.overrides.budgets.calls"
         error = refused(await _override(client, story, unknown), 422, "validation_error")
         assert error["details"]["field"] == "body.settings.budgets.calls"
-        module = undelivered_modules()[0]
-        assert module.switch is not None
-        gone = nest(module.switch, None)
-        previewed = refused(
-            await _preview(client, story, {"overrides": gone}), 422, "invalid_profile"
-        )
-        patched = refused(await _override(client, story, gone), 422, "invalid_profile")
+        with withholding() as module:  # every module is delivered since #203
+            assert module.switch is not None
+            gone = nest(module.switch, None)
+            previewed = refused(
+                await _preview(client, story, {"overrides": gone}), 422, "invalid_profile"
+            )
+            patched = refused(await _override(client, story, gone), 422, "invalid_profile")
         assert previewed["details"]["undelivered"] == patched["details"]["undelivered"]
-        assert [u["setting"] for u in patched["details"]["undelivered"]] == [module.switch]
+        # The deployment's defaults name the withheld module too (#113: every delivered
+        # setting), so the refusal names it as its group.
+        assert [u["module"] for u in patched["details"]["undelivered"]] == [module.name]
         assert await configuration_rows(scratch.db) == settled
 
 
@@ -875,7 +877,11 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
         assert {r[0]: r[1] for r in pins} == {plain: 1, polished: None}
         for story, version in ((plain, 1), (polished, 2)):
             shown = await ok(await client.get(f"/stories/{story}", headers=READ))
-            assert shown["engine_profile"] == {"id": profile, "version": version}, story
+            assert shown["engine_profile"] == {
+                "id": profile,
+                "version": version,
+                "pinned": story == plain,
+            }, story
 
 
 # -- M3's interim rule on a story's own writes ---------------------------------------------------
@@ -994,7 +1000,7 @@ async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch
                 assert "polish" not in result["capabilities"]
             assert tuple(await _story_row(scratch.db, lived)) == tuple(start)
             shown = await ok(await client.get(f"/stories/{lived}", headers=READ))
-            assert shown["engine_profile"] == {"id": shared, "version": 1}
+            assert shown["engine_profile"] == {"id": shared, "version": 1, "pinned": True}
 
             # -- complement: the same writes reach a story without history
             for story, send in ((patched, patch), (moved, assign)):
@@ -1235,7 +1241,7 @@ async def test_profile_defaults_are_the_bottom_layer(scratch: Space) -> None:
         refused(
             await client.put(
                 "/admin/settings",
-                json={PROFILE_DEFAULTS: naming(undelivered_modules()[0])},
+                json={PROFILE_DEFAULTS: undelivered()},
                 headers=headers(),
             ),
             422,

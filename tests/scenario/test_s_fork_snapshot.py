@@ -13,11 +13,12 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import fork as forking
-from epistrel.core import timeline
+from epistrel.core import idempotency, timeline
 from epistrel.core.errors import DatabaseUnavailable
 from tests.concurrency_support import assert_single_chain, revision, set_pins
 from tests.event_support import new_story, play_turn, scalar
 from tests.fork_support import Content, content, fork
+from tests.idempotency_support import key_row
 
 TURNS = 30
 FORKS = 8
@@ -165,6 +166,59 @@ async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.M
         await fork(engine, story)
     assert len(calls) == 1
     assert done.story_id
+
+
+@pytest.mark.part("M2", "FR-CONC-10")
+async def test_s_fork_snapshot__own_lease_renewal(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#637: a keyed fork whose copy outlasts several of its own lease renewals commits on its
+    first snapshot attempt and binds its key: the key's row is locked first, so a renewal waits
+    for the copy instead of committing under the snapshot and failing the bind (a serialization
+    failure on every attempt, then 503). Complement: the renewal ran again once the fork
+    committed (the lease moved past where it stood during the copy)."""
+    story = await new_story(engine)
+    await play_turn(engine, story, "turn 1")
+    monkeypatch.setattr(idempotency, "LEASE_S", 0.15)  # a renewal every 0.05 s
+    monkeypatch.setattr(forking, "snapshot_backoff_s", lambda failures, rng=None: 0.0)
+    original_select = forking._select_operations
+    original_copy = forking._copy
+    attempts: list[int] = []
+    leases: list[Any] = []
+
+    async def slow_select(conn: AsyncConnection, *args: Any) -> Any:
+        await asyncio.sleep(0.3)
+        return await original_select(conn, *args)
+
+    async def counted(*args: Any, **kwargs: Any) -> Any:
+        attempts.append(1)
+        return await original_copy(*args, **kwargs)
+
+    monkeypatch.setattr(forking, "_select_operations", slow_select)
+    monkeypatch.setattr(forking, "_copy", counted)
+    key = f"fork-own-lease-{story}"
+    call = idempotency.IdempotentCall(
+        engine,
+        scope=idempotency.Scope.STORY,
+        scope_id=story,
+        key=key,
+        operation="fork",
+        principal=PRINCIPAL,
+        codec=idempotency.ResultCodec.of(dict[str, int]),
+        wait_s=10.0,
+    )
+    await call.claim({"n": 1})
+    try:
+        with idempotency.calling(call):
+            done = await fork(engine, story)
+        leases.append((await key_row(engine, key)).lease_until)
+        await asyncio.sleep(0.2)
+        leases.append((await key_row(engine, key)).lease_until)
+    finally:
+        await call.release()
+    assert attempts == [1]
+    assert (await key_row(engine, key)).operation_id == done.operation_id
+    assert leases[1] > leases[0]
 
 
 def test_snapshot_backoff_doubles_with_jitter() -> None:

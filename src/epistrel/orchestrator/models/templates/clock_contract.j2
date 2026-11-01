@@ -1,0 +1,15 @@
+{#- The time contract (FR-CLOCK-6,7,17, FR-TURN-11; #194), included by the structured renders
+before ``## Your part``: a fixed section (``clock_contract``, category ``constraint``), present
+only when the story runs the world clock. It tells the model how to declare time that passes
+beyond what a beat says and does (a ``time_advance`` effect), how ``time`` steps place it
+between what happens (a character's render), and how a beat that recalls an earlier time marks
+itself ``flashback``; the engine times and checks all of it and never trusts it. -#}
+{% if clock_contract %}
+## Time
+Story time passes as the beats are spoken and done. When more time passes than a beat says and does ("twenty minutes later she arrives"), declare it on that beat as an effect `{"kind": "time_advance", "state": "world_clock", "minutes": 20, "reason": "the drive"}`.
+{% if voiced_characters %}
+To place it between what happens, declare `time` steps (numbered with your other steps, citing nothing), name a step in each `say` or `do` (`step`) and in the advance (`step`).
+{% endif %}
+A beat that recalls an earlier time sets `"flashback": true`: its times are not the present, and it moves no time.
+
+{% endif %}

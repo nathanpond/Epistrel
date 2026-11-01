@@ -61,7 +61,9 @@ canonizes, and a ``say`` claim only when it is about the speaker's own actions o
 (otherwise it stays an utterance label, FR-TURN-5). A ``Denied`` claim is never canonized:
 it ``needs_repair`` with ``repair_tag = "unpermitted"`` (#151's ladder), except
 ``player_authority``, whose player text stands; it is listed in ``report()["denied"]`` with its
-reason, and its verdict entry carries the permission code.
+reason, and its verdict entry carries the permission code. #207 (FR-EXT-3): a ``contradicted``
+value of an externally owned State in a render or narration (no ``believer``) is asked too, and
+keeps its ``denied:external_value``: a value only the provider decides is no one's to introduce.
 
 **Viewpoint-aware: the speaker's beliefs** (FR-VERIFY-2,5,10, FR-TURN-6,7,8; #166). A
 character's first-person ``say`` claim (``verify(..., believer=, intent=)``; the player's own
@@ -87,6 +89,35 @@ error, a lie and a joke stand, and none of the last two canonizes. The dimension
 ``VerifyResult.speech`` and on ``turn_report.verify`` (omniscient reads only); the pipeline
 writes what they license at the commit (``orchestrator.epistemic.speech``). Partitions off, or
 verification off, there is no belief dimension and no classification.
+
+**Schedule statements** (FR-CLOCK-19,10; #198). A ``scheduled`` claim of a turn's beat is
+classified first (``schedules``, a ``core.world_clock.schedule_statements.Book``; ``verify(...,
+schedule_change=)``: the beat's change language or declared ``reschedule``), before #166's
+three-way verify. A **create** is checked and canonized as any novel claim is (the canon event
+is the speaker's; the commit gives the speaker its belief). A **change** is ``supported`` (rule
+``coverage``, citing the event): it is neither canonized nor classified as speech, and the commit
+reschedules the event. A **report** of an existing event takes its objective relation from the
+event's planned time (``supported``, or ``contradicted`` by ``instant_identity`` citing the
+event's canon proposition: an event happens at one time), then runs the speaker's belief
+dimension as any first-person claim; a report never canonizes, and neither does a statement
+about a plan that is no event and not the speaker's own (a character's world claim). The result
+carries the classification (``VerifyResult.schedule``).
+
+**Time claims by speaker** (FR-CLOCK-10,15, FR-TURN-6; #200). With the clock on, a clock check
+(``time_is``, ``time_of_day_band``, ``elapsed_since``, ``scheduled_status``) from narration,
+the director or the composed message is objective (#195's anchor). A character's own one is
+checked twice: objectively as above, and, as its belief dimension, against its time belief
+(``core.world_clock.time_belief``, through ``check_with``'s ``belief(A)`` holder; ``say``,
+``think``, and a ``do`` acting on its belief: a time a ``do`` shows, the wall clock, is what is
+seen, ``own_time_claim``), then classified by intent as any first-person claim. A belief the
+time belief contradicts is the speaker's own contrary knowledge (a deceptive claim against it is
+a lie); one it holds stands while the clock leaves the claim undecided (a guess under an
+unanchored clock), and, sincere and said as a time by a speaker who knows the time (``exact``
+awareness, no override), anchors the clock as narration does (``_anchors``); a guess never
+does. The profile's ``clock.time_claims`` (``VerifyConfig.time_claims``) gates the belief
+dimension: off, a character's time claim is checked as narration's is (objectively only, as
+#195 and #194 shipped). A narrated pass-out or waking
+changes its subject's ``unconscious`` fluent from the beat (``mover``, #518).
 
 **Within one turn** a ``Verifier`` is built per turn: identical ``(claim, records)`` requests
 reuse the first validated answer (the structured call's deterministic step), escalations run one
@@ -119,23 +150,33 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
-from epistrel.core.epistemic import resurface
+from epistrel.core.epistemic import perception, resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
 from epistrel.core.profiles.effective import effective_configuration
-from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.profiles.schema import ON as ON_LEVEL
+from epistrel.core.profiles.schema import ProfileSettings, is_delivered, level_of
 from epistrel.core.propositions.model import (
     Bound,
     Granularity,
     Instant,
+    Polarity,
     Proposition,
     TemporalKind,
 )
-from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
+from epistrel.core.propositions.vocabulary import (
+    CLOCK_CHECKS,
+    SCHEDULED,
+    STATE_VALUE,
+    TIME_IS,
+    TIME_OF_DAY_BAND,
+)
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import load_time_basis
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT, VerifySettings
+from epistrel.core.states.effects import STATE_UNDECLARED, Finding
 from epistrel.core.tables import entities
 from epistrel.core.verify import permission as permissions
 from epistrel.core.verify import rules, speech_acts, yield_queries
@@ -161,6 +202,9 @@ from epistrel.core.verify.rules import (
     VerdictKind,
     VerdictReason,
 )
+from epistrel.core.visibility import Visibility
+from epistrel.core.world_clock import schedule_statements as schedules
+from epistrel.core.world_clock.anchor import Anchor
 from epistrel.observability import stages
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer, routing
@@ -213,10 +257,41 @@ repair reads or substitutes the hidden value."""
 (``core.commit.reconcile``): ``contradicted``, repaired with an ``avoid_binding`` constraint."""
 """The repair tag of a novel claim its asserter may not introduce (#151's ladder)."""
 NEVER_CANONIZES = frozenset({"think"})
+ANCHORING = frozenset({TIME_IS, TIME_OF_DAY_BAND})
+"""#195: the clock checks whose objective statement anchors the clock."""
+ANCHORS = frozenset({"director", "author"})
+"""#195 (#144): the asserters whose statement anchors the clock (objective narration)."""
+ENGINE = Visibility(scope="engine")
 """Beat channels whose claims never canonize."""
 SAY = "say"
+DO = "do"
+MOVERS = frozenset({"character", "player"})
+"""#518: the asserters whose own ``do`` may change their character's fluents (``mover_of``)."""
+CO_AUTHOR_ASSERTER = "co_author"
+"""#598: the ``co_author`` player's narration of another character (``mover_of``; #564's
+narrated ``say``, never a hallucination)."""
 PARTITIONS_MODULE = "partitions"
 """``character_knowledge.partitions``: the belief dimension runs only under it (#166)."""
+TIME_CLAIMS = "time_claims"
+"""#200: the profile flag ``clock.time_claims`` (#106): a character's time claims are checked
+against its time belief only under it."""
+CLOCK_CHECKED = frozenset(CLOCK_CHECKS)
+"""#200: the clock checks a character's time claim is checked against its time belief on."""
+TIME_CHANNELS = frozenset({"say", "think", "do"})
+"""#200: the channels whose clock check is the character's own (its belief relation)."""
+SEEN_TIMES = frozenset({TIME_IS, TIME_OF_DAY_BAND})
+"""#200: the clock checks a ``do`` beat states as what is seen (a wall clock, the light): checked
+objectively and observed by who perceives the beat (#164), never against the actor's belief.
+A ``do``'s ``elapsed_since`` or ``scheduled_status`` is the actor acting on its belief."""
+
+
+def own_time_claim(predicate_id: str, channel: str | None) -> bool:
+    """#200: whether a character's clock check on ``channel`` is its own, checked against its
+    time belief (see ``TIME_CHANNELS`` and ``SEEN_TIMES``)."""
+    if predicate_id not in CLOCK_CHECKED or channel not in TIME_CHANNELS:
+        return False
+    return not (channel == DO and predicate_id in SEEN_TIMES)
+
 
 BUILT_IN_PARAMS = ModelParams(temperature=0.0, max_tokens=100)
 """The entailment call's own params; the story's ``entailment`` route's params win."""
@@ -225,6 +300,55 @@ UNNORMALIZED_SHAPE = PredicateShape("auto", UNKNOWN, UNKNOWN, UNKNOWN)
 NEIGHBORHOOD_DEPTH = 1
 """The neighborhood an entailment call adds to the fetched records: the claim subject's own
 facts, in both directions."""
+
+
+def speaker_of(asserter: Asserter) -> str:
+    """#198: who makes a schedule statement: the character (a render's, the player's own, a
+    reaction's reactor), ``world`` for a director's or narration's beat, ``author`` for the
+    author's; nobody (``""``) for the ``co_author`` player's narration of another character."""
+    if asserter.kind == "director":
+        return schedules.OWNER_WORLD
+    if asserter.kind == "author":
+        return schedules.OWNER_AUTHOR
+    if asserter.kind == "reactive":
+        return asserter.reactor or ""
+    if asserter.kind == "co_author":
+        return ""
+    return asserter.character_id or ""
+
+
+def time_belief_ref(verdict: Verdict) -> str | None:
+    """#200: the ``time_belief:<basis>`` a belief verdict was decided by (the speaker's time
+    belief, ``core.world_clock.time_belief``), or ``None``."""
+    from epistrel.core.world_clock.time_belief import REF_PREFIX
+
+    return next(
+        (
+            e.owner_ref
+            for e in verdict.evidence
+            if e.owner_ref is not None and e.owner_ref.startswith(REF_PREFIX)
+        ),
+        None,
+    )
+
+
+def mover_of(asserter: Asserter | None, channel: str | None, *, change: bool) -> str | None:
+    """#518 (FR-PROP-9): the character whose own fluents a claim may change from its start
+    (``core.verify.rules``' ``fluent_change``): the acting character of a ``do`` beat, a
+    character's render or the player's own action, when the claim states a change
+    (``change``: ``DetectedClaim.change_cue``, declared or found by the movement detector).
+    ``None`` for anything else: a ``say`` (a lie moves no one), narration, reactive narration,
+    an extraction-only claim and a claim about another character keep the contradiction rules'
+    answer. #598 (FR-RESP-14, ADR-174): a ``co_author`` player may narrate any character
+    acting, so the character its ``do`` beat narrates (``Asserter.narrates``) is that beat's
+    mover."""
+    if not change or asserter is None or channel != DO:
+        return None
+    if asserter.kind == CO_AUTHOR_ASSERTER:
+        return asserter.narrates
+    if asserter.kind not in MOVERS:
+        return None
+    return asserter.character_id
 
 
 # -- settings --------------------------------------------------------------------------------
@@ -241,6 +365,14 @@ class VerifyConfig:
     safe_disposition: SafeDisposition = "repair"
     entailment_max_records: int = VerifySettings().entailment_max_records
     neighborhood_max_facts: int = VerifySettings().neighborhood_max_facts
+    clock: bool = False
+    """#195: the story runs the world clock (``clock.level`` on or ``prompt_only``, delivered):
+    its clock checks anchor the clock, and ``time_is`` is the clock's, not a fact."""
+    time_claims: bool = False
+    """#200 (FR-CLOCK-10): with the clock ``on`` (#203: never ``prompt_only``), the profile's
+    ``clock.time_claims`` (delivered): a character's own time claim (``say``, ``think``,
+    ``do``) is checked against its time belief. Off, it is checked as narration's is:
+    objectively only."""
 
     @property
     def on(self) -> bool:
@@ -256,6 +388,9 @@ class VerifyConfig:
         v = profile.verification
         d = deployment or VerifySettings()
         structured = profile.pipeline == "structured"
+        clock = level_of(profile, "clock")
+        claims = level_of(profile, TIME_CLAIMS)
+        clocked = clock is not None and is_delivered("clock", clock)
         return cls(
             level=v.level if structured else "off",
             entailment_gate=v.entailment_gate,
@@ -263,6 +398,12 @@ class VerifyConfig:
             safe_disposition=v.safe_disposition,
             entailment_max_records=d.entailment_max_records,
             neighborhood_max_facts=d.neighborhood_max_facts,
+            clock=clocked,
+            # #203: the prompt-only clock verifies no time claim.
+            time_claims=clocked
+            and clock == ON_LEVEL
+            and claims is not None
+            and is_delivered(TIME_CLAIMS, claims),
         )
 
     @classmethod
@@ -336,6 +477,19 @@ class VerifyResult:
     recall: resurface.RecallCheck | None = None
     """#172: a first-person recall's check against the speaker's own records (FR-VERIFY-9):
     grounded (``supported``, rule ``recall``) or a confabulation (repaired)."""
+    state_finding: Finding | None = None
+    """#187 (FR-STATE-5,6, FR-VERIFY-12): a State effect or a narrated State change the beat
+    must fix (``core.states.effects.Finding``): always repaired, its tag the repair tag."""
+    schedule: schedules.Statement | None = None
+    """#198 (FR-CLOCK-19): a ``scheduled`` claim's classification: a create, a change or a
+    report (``core.world_clock.schedule_statements``)."""
+
+    @property
+    def schedule_kind(self) -> str | None:
+        """``create``, ``change`` or ``report`` (``None``: no schedule statement)."""
+        if self.schedule is None:
+            return None
+        return type(self.schedule).__name__.lower()
 
     @property
     def confabulated(self) -> bool:
@@ -394,7 +548,10 @@ class VerifyResult:
     def needs_repair(self) -> bool:
         """Whether #151 repairs the claim: contradicted, undecided under ``repair``, or novel
         and not permitted (``repair_tag``); under partitions (#166) a hallucination always
-        (unless surfaced), and never a sincere error, a lie or a joke."""
+        (unless surfaced), and never a sincere error, a lie or a joke; #187: a State finding
+        always."""
+        if self.state_finding is not None:
+            return True
         if self.think_leak is not None or self.confabulated:
             return True  # #172: under every profile (the channel is private)
         if self.recall is not None:
@@ -413,7 +570,11 @@ class VerifyResult:
     def repair_tag(self) -> str | None:
         """``unpermitted`` for a denied novel claim #151 repairs (FR-VERIFY-12);
         ``resolution_conflict`` for a binding reconciliation rejected (#154); ``hallucination``
-        for a first-person claim with no legitimate basis (#166)."""
+        for a first-person claim with no legitimate basis (#166); #187: a State finding's tag
+        (``state_constraint``, ``effect_unresolved``, ``state_undeclared``: a ``state_change``
+        denial)."""
+        if self.state_finding is not None:
+            return self.state_finding.tag
         if self.think_leak is not None:
             return THINK_LEAK
         if self.confabulated:
@@ -423,6 +584,8 @@ class VerifyResult:
         if self.hallucinated:
             return HALLUCINATION
         denied = self.denied
+        if denied is not None and denied.reason is permissions.Reason.STATE_CHANGE:
+            return STATE_UNDECLARED
         return UNPERMITTED if denied is not None and denied.repaired else None
 
     @property
@@ -458,9 +621,25 @@ class VerifyResult:
             | ({"cause": HIDDEN_CONFLICT} if self.hidden_conflict else {})
             | ({"cause": THINK_LEAK, "private_ref": self.think_leak} if self.think_leak else {})
             | ({"recall": self.recall.payload()} if self.recall is not None else {})
+            | (
+                {"cause": self.state_finding.tag, "state": self.state_finding.payload()}
+                if self.state_finding is not None
+                else {}
+            )
             | ({"speech": self.speech.payload()} if self.speech is not None else {})
             | ({"attribution": self.attribution.payload()} if self.attribution is not None else {})
+            | ({"schedule": self._schedule_payload()} if self.schedule is not None else {})
         )
+
+    def _schedule_payload(self) -> dict[str, Any]:
+        """#198: the statement's class, its event and whether a change was refused."""
+        found = self.schedule
+        event = getattr(found, "event", None)
+        return {
+            "kind": self.schedule_kind,
+            "event_id": None if event is None else event.event_id,
+            "refused_change": bool(getattr(found, "refused_change", False)),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +691,7 @@ class ClaimSource(Protocol):
         holder: Holder,
         viewpoint: str,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> tuple[Verdict, list[Record]] | None: ...
 
     async def neighbors(
@@ -532,6 +712,7 @@ class ClaimSource(Protocol):
         position: tuple[int, int] | None,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -570,6 +751,7 @@ class RecordsSource:
         holder: Holder,
         viewpoint: str,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> tuple[Verdict, list[Record]] | None:
         del viewpoint
         found = rules.check(
@@ -580,6 +762,7 @@ class RecordsSource:
             holder=holder,
             position=position,
             options=self.options,
+            mover=mover,
         )
         return found, list(self.records)
 
@@ -600,6 +783,7 @@ class RecordsSource:
         position: tuple[int, int] | None,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -610,6 +794,7 @@ class RecordsSource:
             allow_new_arrivals=self.allow_new_arrivals,
             protected=protected,
             resolves=resolves,
+            giver=giver,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -658,6 +843,7 @@ class CanonSource:
         holder: Holder,
         viewpoint: str,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> tuple[Verdict, list[Record]] | None:
         fetched: list[Record] = []
         found = await rules.verify(
@@ -671,6 +857,7 @@ class CanonSource:
             viewpoint=viewpoint,
             remember=self.remember,
             fetched=fetched,
+            mover=mover,
         )
         return None if found is None else (found, fetched)
 
@@ -697,6 +884,7 @@ class CanonSource:
         position: tuple[int, int] | None,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -709,6 +897,7 @@ class CanonSource:
             registry=await self.registry(),
             remember=self.remember,
             resolves=resolves,
+            giver=giver,
         )
 
     async def anchor(
@@ -1238,21 +1427,33 @@ class TimeFrame:
     An anchored story reads in calendar dates (``2012-05-10``, ``2012-05-10 09:15``). An
     unanchored one reads as an offset from its start ("2 days 3 hours after the story's
     start"), because the engine never picks a date the story has not established
-    (FR-CLOCK-3)."""
+    (FR-CLOCK-3). #195: a story the world clock partially anchors reads through
+    ``Anchor.display``, its known components and ranges with the offset ("Saturday, between
+    02:50 and 09:50 (2 hours after the story's start)"), so no prompt prints a date or minute
+    the anchor does not fix."""
 
     epoch: datetime | None = None
     minute_zero: int = 0
+    anchor: Anchor | None = None
 
     @classmethod
     def of(cls, basis: TimeBasis) -> TimeFrame:
-        return cls(epoch=basis.epoch, minute_zero=basis.minute_zero)
+        return cls(epoch=basis.epoch, minute_zero=basis.minute_zero, anchor=basis.anchor)
+
+    def _anchored(self, minute: int) -> str | None:
+        """The partial anchor's reading of ``minute`` with its offset (``None``: no anchor, or
+        one that knows nothing there)."""
+        if self.anchor is None:
+            return None
+        found = self.anchor.display(minute - self.minute_zero)
+        return None if found is None else f"{found} ({self._offset(minute)})"
 
     def moment(self, minute: int) -> str:
         """``minute`` as a date (with its time of day unless midnight), or as an offset from
         the story's start."""
         when = self._calendar(minute)
         if when is None:
-            return self._offset(minute)
+            return self._anchored(minute) or self._offset(minute)
         if when.hour == 0 and when.minute == 0:
             return when.strftime("%Y-%m-%d")
         return when.strftime("%Y-%m-%d %H:%M")
@@ -1262,6 +1463,9 @@ class TimeFrame:
         ``at 2012-05-10 09:00 (to the hour)``, ``at 2012-05-10 09:15``."""
         when = self._calendar(at)
         if when is None:
+            anchored = self._anchored(at)
+            if anchored is not None:
+                return f"at {anchored}"
             if granularity is Granularity.MINUTE:
                 return f"at {self._offset(at)}"
             return f"at {self._offset(at)} (to the {granularity.value})"
@@ -1424,6 +1628,9 @@ class Verifier:
         """Seconds spent in entailment calls (#155's ``latency_ms_by_stage.entailment``)."""
         self.introductions: Introductions | None = None
         """The turn's minted places and objects (#479), named in prompts and the report."""
+        self.schedules: schedules.Book | None = None
+        """#198: the story's canon scheduled events a ``scheduled`` claim is classified over
+        (``None``: no classification, as before #198)."""
 
     async def verify(
         self,
@@ -1439,41 +1646,99 @@ class Verifier:
         believer: str | None = None,
         intent: str | None = None,
         cites: Sequence[str] = (),
+        giver: str | None = None,
+        change: bool = False,
+        schedule_change: bool = False,
     ) -> VerifyResult | None:
         """``claim``'s verdict as ``viewpoint`` may know it, at narrative ``position`` (canon
         written at or before it); ``None`` when the story's verification is off. A claim that
         ends ``novel`` passes ``asserter``'s permission check (``protected``: the claim's text
         matched protected content, #148's detector; ``resolves``: the open thunk the claim fills,
-        #146's resolution exemption) before it can be canonized or repaired. ``believer`` (#166:
+        #146's resolution exemption; ``giver``: a detected transfer's giver, #519's hand-over
+        exception) before it can be canonized or repaired. ``believer`` (#166:
         the speaker of a first-person ``say``) adds the belief dimension and the classification,
-        with the beat's declared ``intent`` and its ``think``'s ``cites``."""
+        with the beat's declared ``intent`` and its ``think``'s ``cites``. ``change`` (#518): the
+        claim states a change, so the ``do`` beat's actor may change its own fluent
+        (``mover_of``). ``schedule_change`` (#198): the beat states an explicit change of a
+        schedule (see "Schedule statements")."""
         if not self.config.on:
             return None
         checking = time.perf_counter()
+        where = ref or ClaimRef()
+        statement = await self._statement(claim, asserter, schedule_change)
+        if isinstance(statement, schedules.Change):
+            cited = statement.event.event_id
+            found_change = VerifyResult(
+                claim,
+                Verdict(
+                    VerdictKind.SUPPORTED,
+                    evidence=(rules.Evidence(rules.Rule.COVERAGE, proposition_id=cited),),
+                ),
+                VerdictKind.SUPPORTED,
+                asserter=asserter,
+                schedule=statement,
+            )
+            self.results.append((where, found_change))
+            return found_change
+        mover = mover_of(asserter, where.channel, change=change)
+        if (
+            mover is None
+            and change
+            and asserter is not None
+            and asserter.kind in ANCHORS
+            and perception.changes_consciousness(claim)
+        ):
+            # #200: narration that someone passes out or wakes changes that subject's
+            # ``unconscious`` fluent from the beat (#518's ``fluent_change``).
+            mover = claim.subject_id
         found = await self.source.deterministic(
-            claim, holder=holder, viewpoint=viewpoint, position=position
+            claim, holder=holder, viewpoint=viewpoint, position=position, mover=mover
         )
         if found is None:
             return None
         # NFR-PERF-2's span: the deterministic path alone, before any model fallback (#153).
         stages.observe("verify", time.perf_counter() - checking)
         verdict, fetched = found
-        where = ref or ClaimRef()
         at = _At(viewpoint, position, holder)
-        result = await self._settle(claim, verdict, fetched, at, where, top=True)
+        if isinstance(statement, schedules.Report) and statement.event is not None:
+            result = await self._reported(claim, statement.event)
+        else:
+            result = await self._settle(claim, verdict, fetched, at, where, top=True)
         if (
             result.kind is VerdictKind.NOVEL
             and viewpoint != OMNISCIENT
             and believer is None
             and where.channel not in (SAY, *NEVER_CANONIZES)
         ):
-            result = await self._hidden(result, claim, holder, position)
+            result = await self._hidden(result, claim, holder, position, mover)
         if asserter is not None and result.kind is VerdictKind.NOVEL:
             result = await self._permit(
-                result, claim, asserter, at, protected=protected, resolves=resolves
+                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
             )
+        elif (
+            asserter is not None
+            and believer is None
+            and result.kind is VerdictKind.CONTRADICTED
+            and claim.predicate_id == STATE_VALUE
+        ):
+            # #207 (FR-EXT-3, FR-VERIFY-12): a render's value of an externally owned State that
+            # is not the pinned one is unpermitted (``denied:external_value``) as well as
+            # contradicted; a character's first-person claim (``believer``) is its belief's.
+            denied = await self._permit(
+                result, claim, asserter, at, protected=protected, resolves=resolves, giver=giver
+            )
+            if (
+                denied.denied is not None
+                and denied.denied.reason is permissions.Reason.EXTERNAL_VALUE
+            ):
+                result = denied
         if believer is not None and self.beliefs is not None:
-            result = await self._speech(result, claim, believer, intent, cites, position)
+            narrated = asserter is not None and asserter.kind == CO_AUTHOR_ASSERTER
+            result = await self._speech(
+                result, claim, believer, intent, cites, position, narrated=narrated
+            )
+        if statement is not None:
+            result = dataclasses.replace(result, schedule=statement)
         self.results.append((where, result))
         if result.surfaced:
             self.rendered[id(result)] = await self._render_claim(claim)
@@ -1486,18 +1751,46 @@ class Verifier:
         )
         return result
 
+    async def _statement(
+        self, claim: Proposition, asserter: Asserter | None, explicit: bool
+    ) -> schedules.Statement | None:
+        """#198: a ``scheduled`` claim's classification (see "Schedule statements"); ``None``
+        for any other claim, a negated one, or with no ``schedules`` book."""
+        if (
+            self.schedules is None
+            or asserter is None
+            or claim.predicate_id != SCHEDULED
+            or claim.polarity is not Polarity.AFFIRMED
+        ):
+            return None
+        return await self.schedules.statement(claim, speaker_of(asserter), explicit)
+
+    async def _reported(self, claim: Proposition, event: Any) -> VerifyResult:
+        """#198: a report's objective relation: the event's planned time (see "Schedule
+        statements")."""
+        assert self.schedules is not None  # noqa: S101 - a report comes from the book
+        zero = await self.schedules.minute_zero()
+        if schedules.same_time(event, claim, zero):
+            kind, rule = VerdictKind.SUPPORTED, rules.Rule.COVERAGE
+        else:
+            kind, rule = VerdictKind.CONTRADICTED, rules.Rule.INSTANT_IDENTITY
+        verdict = Verdict(kind, evidence=(rules.Evidence(rule, proposition_id=event.event_id),))
+        return VerifyResult(claim, verdict, kind)
+
     async def _hidden(
         self,
         result: VerifyResult,
         claim: Proposition,
         holder: Holder,
         position: tuple[int, int] | None,
+        mover: str | None = None,
     ) -> VerifyResult:
         """#169 (FR-EPI-8): a novel claim that canon hidden from its viewpoint contradicts (the
         engine's check, not the character's) would give a determined fact a second value: it
-        is ``contradicted``, citing nothing (``HIDDEN_CONFLICT``)."""
+        is ``contradicted``, citing nothing (``HIDDEN_CONFLICT``). #518: the engine's check
+        takes the same ``mover``, so a fluent change is one in both."""
         found = await self.source.deterministic(
-            claim, holder=holder, viewpoint=OMNISCIENT, position=position
+            claim, holder=holder, viewpoint=OMNISCIENT, position=position, mover=mover
         )
         if found is None or found[0].kind is not VerdictKind.CONTRADICTED:
             return result
@@ -1607,9 +1900,14 @@ class Verifier:
         intent: str | None,
         cites: Sequence[str],
         position: tuple[int, int] | None,
+        *,
+        narrated: bool = False,
     ) -> VerifyResult:
         """``result`` with the claim's belief dimension and classification (see the module
-        docstring)."""
+        docstring). ``narrated`` (#564, FR-RESP-14): the ``co_author`` player's narrated
+        ``say``, player authority: never a hallucination (it is never repaired), so a claim with
+        no legitimate basis in the speaker's beliefs is a ``sincere_error`` that stands, with no
+        belief written."""
         beliefs = self.beliefs
         at = None if beliefs is None else beliefs.position(position)
         if beliefs is None or at is None:
@@ -1631,9 +1929,13 @@ class Verifier:
                     for e in found.evidence
                     if e.fact_id is not None and e.proposition_id is not None
                 )
+        # #200: a clock check the speaker's time belief contradicts is against what it knows
+        # of the time (its own contrary knowledge: a deceptive one is a lie).
+        timed = time_belief_ref(found)
+        knows_time = found.kind is VerdictKind.CONTRADICTED and timed is not None
         hidden = None
         open_ = result.kind not in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
-        if open_ and declared != speech_acts.JOKING:
+        if open_ and declared != speech_acts.JOKING and timed is None:
             # #171: asked for a belief-consistent claim too, so an established false belief
             # beyond the speaker's view ("I've never met that stranger", canon holding that the
             # stranger is Bobby) is a sincere error, labelled false, and stands.
@@ -1648,17 +1950,36 @@ class Verifier:
             intent=intent_in,
             canon=result.kind,
             belief=found.kind,
-            contrary=bool(contrary or known),
+            contrary=bool(contrary or known or knows_time),
             hidden=hidden,
         )
         licence = None
         if speech_acts.needs_licence(inputs):
             licence = await beliefs.licence(claim, believer, at, cites)
         decision = speech_acts.classify(inputs, licensed=licence is not None)
+        if narrated and decision.hallucinated:
+            # #564: the player's narration stands as said; its label agrees (never repaired).
+            decision = dataclasses.replace(
+                decision, classification=speech_acts.SINCERE_ERROR, write=None
+            )
         speech = SpeechAct(
             believer, at, declared, found, decision, contrary, hidden, licence, known, inferred
         )
         found_result = dataclasses.replace(result, speech=speech)
+        if (
+            result.reason is VerdictReason.PROVIDER_UNKNOWN
+            and decision.belief_relation == "consistent"
+            and not decision.hallucinated
+        ):
+            # #206 (FR-EXT-11): an existing belief keeps its semantics while the provider's
+            # value is Unknown: a belief-consistent claim of it stands as said, its objective
+            # relation unresolved (only new objective assertions take the safe disposition).
+            found_result = dataclasses.replace(found_result, disposition=None)
+        if timed is not None and open_ and decision.belief_relation == "consistent":
+            # #200 (FR-CLOCK-10): a character's time claim its time belief holds stands as
+            # said while the clock leaves it undecided (a guess under an unanchored clock):
+            # the character's word is checked against what it can know, not the clock.
+            found_result = dataclasses.replace(found_result, disposition=None)
         if (
             decision.hallucinated
             and self.config.safe_disposition == "surface"
@@ -1774,20 +2095,57 @@ class Verifier:
         *,
         protected: bool,
         resolves: str | None = None,
+        giver: str | None = None,
     ) -> VerifyResult:
         found = await self.source.permission(
-            claim, asserter, position=at.position, protected=protected, resolves=resolves
+            claim,
+            asserter,
+            position=at.position,
+            protected=protected,
+            resolves=resolves,
+            giver=giver,
         )
         anchor = None
         if isinstance(found, Permitted):
             anchor = await self.source.anchor(claim, viewpoint=at.viewpoint, position=at.position)
         return dataclasses.replace(result, asserter=asserter, permission=found, anchored_to=anchor)
 
+    def _anchors(self, r: VerifyResult, ref: ClaimRef) -> bool:
+        """#200: a character's time statement anchors the clock as narration's does when the
+        story checks time claims, the speaker knows the time (its belief is derived from
+        ``exact`` awareness, no override and no gap), it said the time sincerely and its
+        belief holds it, and said it as a time, not a guess ("must be around noon" never
+        anchors)."""
+        from epistrel.core.world_clock.time_belief import REF_PREFIX, said_time
+
+        speech = r.speech
+        if (
+            not self.config.time_claims
+            or speech is None
+            or r.claim is None
+            or ref.channel not in TIME_CHANNELS
+            or speech.decision.classification != speech_acts.SINCERE
+            or speech.decision.belief_relation != "consistent"
+            or time_belief_ref(speech.belief) != f"{REF_PREFIX}awareness:exact"
+        ):
+            return False
+        literal = r.claim.literal
+        if r.claim.predicate_id == TIME_IS and literal is not None:
+            _, hedged, _ = said_time(str(literal.value), Anchor.unanchored().clockwork)
+            return not hedged
+        return True
+
     def canon_requests(self) -> list[CanonRequest]:
         """The turn's permitted novel claims to canonize at its commit, in verification order
         (``core.canon.canonize.canonize_all`` dedupes identical ones): never a denied claim, a
-        ``think`` claim, or a ``say`` claim that is not about the speaker's own actions or
-        backstory."""
+        ``think`` claim, a ``say`` claim that is not about the speaker's own actions or
+        backstory, or a claim on an owner-lookup predicate (#191: ``state_value``, whose canon
+        is the State's fold). #195: with the clock on, an objective (director's or author's)
+        ``time_is`` or ``time_of_day_band`` statement that narrows the anchor (verdict
+        ``novel``) is a ``clock_anchor`` commitment (``anchors_clock``, ``visibility =
+        engine``); with it off, ``time_is`` canonizes as in M4. #200: so does a character's
+        sincere, belief-consistent time statement from ``exact`` awareness (``_anchors``); a
+        guess never does."""
         found: list[CanonRequest] = []
         for ref, r in self.results:
             permitted = r.permitted
@@ -1797,6 +2155,29 @@ class Verifier:
                 continue
             if not r.canonizes:  # #166: a lie, a joke or a hallucination never canonizes
                 continue
+            if r.schedule is not None and not isinstance(r.schedule, schedules.Create):
+                continue  # #198: a change reschedules, a report never writes canon
+            predicate_id = r.claim.predicate_id
+            if owner_lookup(predicate_id) is not None:
+                if self.config.clock and predicate_id in ANCHORING:
+                    objective = r.asserter.kind in ANCHORS and ref.channel not in (
+                        SAY,
+                        *NEVER_CANONIZES,
+                    )
+                    if objective or self._anchors(r, ref):
+                        found.append(
+                            CanonRequest(
+                                claim=r.claim,
+                                provenance=r.asserter.provenance,
+                                visibility=ENGINE,
+                                beat=ref.beat,
+                                claim_id=ref.claim_id,
+                                anchors_clock=True,
+                            )
+                        )
+                    continue
+                if not (conditional_owner(predicate_id) and not self.config.clock):
+                    continue  # #191: an owner's value (a State's) is never a fact
             if ref.channel == SAY and permitted.basis is not Basis.OWN:
                 continue
             found.append(

@@ -51,7 +51,10 @@ from epistrel.core import (
     variants,
 )
 from epistrel.core import control as control_ops
+from epistrel.core import outbox as core_outbox
+from epistrel.core import providers as core_providers
 from epistrel.core import story_settings as settings_store
+from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
 from epistrel.core.catalog import kinds as catalog_kinds
@@ -65,7 +68,15 @@ from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
-from epistrel.core.enums import EntryStatus, ExposureState, StoryStatus, ThunkState
+from epistrel.core.enums import (
+    EntryStatus,
+    ExposureState,
+    MemoryKind,
+    OperationKind,
+    RetrievalTier,
+    StoryStatus,
+    ThunkState,
+)
 from epistrel.core.epistemic import author as belief_author
 from epistrel.core.epistemic import inspection, partitions
 from epistrel.core.erasure import boundary as erasure_boundary
@@ -93,6 +104,7 @@ from epistrel.core.idempotency import (
     QueuedOriginal,
     Replayed,
     ResultCodec,
+    StagedOriginal,
 )
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
@@ -113,7 +125,7 @@ from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import ImpactPreviewRequest, ImpactReport, TwoStageResult
-from epistrel.core.profiles.reservation import safety_minimum
+from epistrel.core.profiles.reservation import SafetyFacts, outcome_calls, safety_minimum
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
@@ -124,6 +136,9 @@ from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
 from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
+from epistrel.core.states import api as state_api
+from epistrel.core.states import external as external_states
+from epistrel.core.states import proposals as state_proposals
 from epistrel.core.tables import events
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
@@ -136,6 +151,8 @@ from epistrel.core.viewpoint import (
     resolve_viewpoint,
     with_requested,
 )
+from epistrel.core.world_clock import scheduled as scheduled_events
+from epistrel.core.world_clock import service as clock_service
 from epistrel.observability import instrument
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
@@ -149,12 +166,14 @@ from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
+from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
+from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
@@ -173,6 +192,7 @@ from epistrel.orchestrator.jobs.worker import (
 )
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.schemas import (
+    CorrectRequest,
     RegenerateRequest,
     RegenerateResult,
     RespondRequest,
@@ -194,8 +214,13 @@ from epistrel.orchestrator.policies.schemas import (
     PolicyReplacement,
     StoryPolicyItem,
 )
+from epistrel.orchestrator.providers import bindings as provider_binding
+from epistrel.orchestrator.providers import in_process as provider_in_process
+from epistrel.orchestrator.providers import registry as provider_registry
+from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.structured import pipeline as structured_turn
+from epistrel.orchestrator.structured import staged as staged_turns
 from epistrel.orchestrator.verify import extraction as extraction_job
 from epistrel.testing import crash
 
@@ -265,6 +290,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
         status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 201,
     ),
     "regenerate": ResultCodec.of(RegenerateResult),
+    # #598 (FR-RESP-14): the latest turn replaced with new input.
+    "correct": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
     # A predicate proposal's decision (#131): approving is a configuration change.
     "approve_predicate": ResultCodec.of(predicate_registry.Decision, revision_field=_CONFIG),
@@ -279,6 +306,26 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
     # #176: a character's participation role (a story configuration write).
     "set_participation": ResultCodec.of(stories.ParticipationSet, revision_field=_CONFIG),
+    # #193: the world clock moved forward between turns, and its settings changed.
+    "advance_clock": ResultCodec.of(clock_service.ClockMoved),
+    "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
+    # #196: a scheduled event created, rescheduled or cancelled between turns.
+    "create_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten, status=201),
+    "reschedule_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
+    "cancel_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
+    # #186: a State set and a State declared between turns, and a definition changed.
+    "set_state": ResultCodec.of(state_api.StateWritten),
+    "define_state": ResultCodec.of(state_api.StateDeclared, status=201),
+    "update_state_definition": ResultCodec.of(
+        state_api.StateDefinitionWrite, revision_field=_CONFIG
+    ),
+    # #192: an analysis requested, and a proposal approved or dismissed.
+    "analyze_state_proposals": ResultCodec.of(state_proposals.AnalysisQueued, status=202),
+    "approve_state_proposal": ResultCodec.of(state_proposals.ProposalApproved, status=201),
+    "dismiss_state_proposal": ResultCodec.of(state_proposals.ProposalDismissed),
+    # #218: the explicit reconciliation actions (settle-now, a compensating effect).
+    "settle_now": ResultCodec.of(settlement_job.SettledNow),
+    "compensate": ResultCodec.of(settlement_job.Compensated, status=201),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -307,6 +354,17 @@ CODECS: dict[str, ResultCodec[Any]] = {
         model_config.ConfigWrite, status=204, revision_field=_CONFIG
     ),
     "retry_reembed": ResultCodec.of(ReembedRetry, revision_field=_CONFIG),
+    # External-data providers (#204): deployment-scoped registrations, and a story's binding.
+    "register_external_provider": ResultCodec.of(
+        provider_registry.ProviderWrite, status=201, revision_field=_CONFIG
+    ),
+    "replace_external_provider": ResultCodec.of(
+        provider_registry.ProviderWrite, revision_field=_CONFIG
+    ),
+    "delete_external_provider": ResultCodec.of(
+        provider_registry.ProviderWrite, status=204, revision_field=_CONFIG
+    ),
+    "bind_provider": ResultCodec.of(provider_binding.BindingWrite),
     # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
     "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
     "promote_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
@@ -617,6 +675,9 @@ class Engine:
         # EPISTREL_MEDIA_ROOT, or S3; prepared at start-up by ``prepare_media``), the signer of
         # content URLs and of the moderation hook's requests, and the ffmpeg seam that takes a
         # video's poster from its first frame and probes videos (tests replace it).
+        # This process's in-process provider callables (#204;
+        # ``register_in_process_provider``).
+        self.in_process_providers = provider_in_process.InProcessRegistry()
         self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
@@ -667,6 +728,8 @@ class Engine:
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
         erasure_reconcile_job.bind(self._reconcile_run)
+        # #210: the outbox dispatcher sends through this Engine's in-process callables.
+        outbox_job.bind(self.in_process_providers)
         if mode == "api":
             self._recovery = asyncio.create_task(self._recover())
             return
@@ -714,6 +777,8 @@ class Engine:
             media_sweep_job.bind(None)
         if erasure_reconcile_job.bound() == self._reconcile_run:
             erasure_reconcile_job.bind(None)
+        if outbox_job.bound() is self.in_process_providers:
+            outbox_job.bind(None)
         reconcile, self._reconcile_task = self._reconcile_task, None
         if reconcile is not None and not reconcile.done():
             reconcile.cancel()
@@ -795,6 +860,14 @@ class Engine:
                     replayed=True,
                 )
                 return found
+            except StagedOriginal as original:
+                # #213 (FR-EXT-17): the original committed a staged turn and died; this retry
+                # resumes it from its last committed stage and answers its finished response.
+                try:
+                    value = await self._resume_staged(call, original.operation_id)
+                except BaseException:
+                    await call.release()
+                    raise
             except BaseException:
                 await call.release()
                 raise
@@ -805,6 +878,19 @@ class Engine:
             crash.hit("after_commit_before_response", operation)
             finished: T = await call.finish(value)
             return finished
+
+    async def _resume_staged(self, call: IdempotentCall, operation_id: str) -> Any:
+        """#213: resume the staged turn ``operation_id`` for a same-key retry (it took the key
+        over: ``StagedOriginal``), store its recomposed finished response under the key with
+        the turn's ``response`` stage, and answer it."""
+        value = await staged_turns.resume_for_response(
+            self.db,
+            operation_id,
+            registry=self.in_process_providers,
+            wait_s=IDEMPOTENCY_WAIT_S,
+        )
+        await staged_turns.store_response_of(self.db, operation_id, call, value)
+        return value
 
     @staticmethod
     def require_principal(ctx: RequestContext) -> str:
@@ -832,11 +918,13 @@ class Engine:
         origin: str,
         concurrency: Concurrency,
         respond_async: bool,
+        operation_kind: OperationKind = OperationKind.TURN,
     ) -> T:
         """Queue a turn that found its story busy under ``queue``, hand it the request's
         ``Idempotency-Key``, start the drainer, and wait for the turn (long-poll up to
         ``turn_deadline``; ``respond_async``: not at all) — then its result, its error, or 202
-        (``TurnAccepted``) with the turn still queued."""
+        (``TurnAccepted``) with the turn still queued. ``operation_kind``: the queued
+        operation's (an ingest batch starting with a ``state_change`` starts with a slot)."""
         principal = self.require_principal(ctx)
         call = idempotency.current_call()
         await turn_gate.enqueue(
@@ -851,6 +939,7 @@ class Engine:
             origin=origin,
             queue_max=concurrency.queue_max,
             hand_over=call.hand_over if call is not None else None,
+            operation_kind=operation_kind,
         )
         self.drainer.kick(story_id)
         assert ctx.idempotency_key is not None  # noqa: S101 - every call is keyed (#61)
@@ -958,6 +1047,7 @@ class Engine:
                     concurrency=concurrency,
                     planned=item.request.get("turn_budget"),
                     lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
                 ),
             )
             return
@@ -1381,6 +1471,57 @@ class Engine:
             cursor=cursor,
         )
 
+    @refuses_nul()
+    async def get_fact(
+        self, ctx: RequestContext, story_id: str, fact_id: str, *, viewpoint: str | None = None
+    ) -> Fact:
+        """One fact version of the story by id (#535), ``omniscient`` only (403
+        ``omniscient_required`` otherwise): any version, superseded ones included. 404
+        ``fact_not_found`` for an id that is no version of this story's; 409 ``module_off`` for
+        a Lite story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await mutation.read_fact(self.db, story_id, fact_id)
+
+    @refuses_nul()
+    async def list_memories(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        kind: MemoryKind | None = None,
+        retrieval_tier: RetrievalTier | None = None,
+        holder_character_id: str | None = None,
+        from_turn: int | None = None,
+        to_turn: int | None = None,
+        quarantined: bool | None = None,
+        pinned: bool | None = None,
+        limit: int = mutation.DEFAULT_LIST_LIMIT,
+        cursor: str | None = None,
+    ) -> mutation.MemoryPage:
+        """The story's memories on its active timeline (#531), ``omniscient`` only (403
+        ``omniscient_required`` otherwise): a page of ``limit`` by id, ``cursor`` continuing,
+        filtered by ``kind``, ``retrieval_tier``, ``holder_character_id``, a narrative-turn
+        range (``from_turn``..``to_turn``), ``quarantined`` and ``pinned``; a consolidation
+        output carries its provenance (window and source memories). 404 for an unknown
+        story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+        return await mutation.list_memories(
+            self.db,
+            story_id,
+            kind=kind,
+            retrieval_tier=retrieval_tier,
+            holder_character_id=holder_character_id,
+            from_turn=from_turn,
+            to_turn=to_turn,
+            quarantined=quarantined,
+            pinned=pinned,
+            limit=limit,
+            cursor=cursor,
+        )
+
     @library_only("a precondition every story mutation runs (`X-Epistrel-Expected-Revision`)")
     async def check_expected_revision(self, ctx: RequestContext, story_id: str) -> int:
         """Every story-scoped mutation starts here: a stale ``ctx.expected_revision`` is 409
@@ -1438,10 +1579,12 @@ class Engine:
         """One operation through the history API (FR-CONC-6): kind, status, position, the
         story's revision once it committed, attempts, origin and, within the result window,
         its stored result. A result made for a viewpoint is returned only to a read naming
-        that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named viewpoint is 409
-        ``idempotency_conflict``. Unknown is 404. An operation of a story the erasure reconciler
-        holds blocked is 503 ``erasure_pending`` like every other read of that story (#333): its
-        stored result may carry what the pending erasure removes. So is one whose
+        that viewpoint (``viewpoint`` or ``ctx.viewpoint``); another named character viewpoint
+        is 409 ``idempotency_conflict``, and an ``omniscient`` read omits the result but keeps
+        the eval hooks and read-set keys (#534). Unknown is 404. An operation of a story the
+        erasure reconciler holds blocked is 503 ``erasure_pending`` like every other read of
+        that story (#333): its stored result may carry what the pending erasure removes. So is
+        one whose
         deployment-scoped stored result, or creation report, a pending catalog-scope erasure
         reaches (#346)."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
@@ -1701,6 +1844,9 @@ class Engine:
                     respond_async=respond_async,
                 )
 
+            # A story that needs a provider it has no binding to fails closed before anything
+            # is recorded (#204; #205's reads rely on it).
+            await provider_binding.require_bound(self.db, story_id)
             if await self._plays_structured(story_id):
                 # The story's effective configuration runs the structured pipeline (#150).
                 return await structured_turn.respond(
@@ -1713,6 +1859,7 @@ class Engine:
                     gate=gate,
                     queue_turn=queue_turn,
                     lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
                 )
             return await lite.respond(
                 self.db,
@@ -1758,7 +1905,9 @@ class Engine:
         409 ``client_event_conflict`` (different payload), writing nothing. Every new event's
         text passes the input gate on its own before anything is recorded. Under turn
         concurrency (#63) the batch is one turn: refused while a generated turn runs under
-        ``reject``, queued as one ``turn_queue`` row under ``queue`` (as ``respond``)."""
+        ``reject``, queued as one ``turn_queue`` row under ``queue`` (as ``respond``). A batch
+        of ``outcome`` events (#217) is recorded position-less, never waits for a turn, and
+        enqueues each deciding outcome's late settlement (FR-EXT-21)."""
         principal = self.require_principal(ctx)
 
         async def gate(groups: Sequence[ingest.GateGroup]) -> None:
@@ -1773,7 +1922,10 @@ class Engine:
 
         async def run(ctx: RequestContext) -> ingest.IngestResult:
             async def queue_batch(
-                operation_id: str, queued: dict[str, Any], concurrency: Concurrency
+                operation_id: str,
+                queued: dict[str, Any],
+                concurrency: Concurrency,
+                operation_kind: OperationKind = OperationKind.TURN,
             ) -> ingest.IngestResult:
                 return await self._queue(
                     ctx,
@@ -1786,6 +1938,7 @@ class Engine:
                     origin=ingest.INGESTED,
                     concurrency=concurrency,
                     respond_async=respond_async,
+                    operation_kind=operation_kind,
                 )
 
             return await _metered(
@@ -1799,6 +1952,7 @@ class Engine:
                     idempotency_key=ctx.idempotency_key,
                     expected_revision=ctx.expected_revision,
                     queue_batch=queue_batch,
+                    settle=settlement_job.enqueue,
                 ),
             )
 
@@ -1975,6 +2129,29 @@ class Engine:
             as_of=as_of,
             limit=limit,
             after_id=after_id,
+        )
+
+    @refuses_nul()
+    async def inspect_external_facts(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None,
+        as_of: int | None = None,
+        limit: int = external_states.INSPECT_LIMIT_DEFAULT,
+        after_id: str | None = None,
+    ) -> external_states.ExternalFactPage:
+        """The story's snapshotted external facts (FR-ADMIN-5, FR-EXT-2,4;
+        ``inspect/external-facts``; #207): each ``external_read`` on the active timeline with
+        the facts that cite it, an omniscient read (422 ``viewpoint_unresolved`` / 403
+        ``omniscient_required``) that calls no provider. A page by id (``limit``,
+        ``after_id``); ``as_of`` keeps the reads positioned through a turn. No partitions gate:
+        a story with no reads answers an empty page."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await external_states.inspect(
+            self.db, story_id, as_of=as_of, limit=limit, after_id=after_id
         )
 
     # -- the structured projections (FR-STORE-3, FR-RET-6; #137) ---------------------------------
@@ -2188,18 +2365,30 @@ class Engine:
         guardrail calls G it reserves (the input check of a turn whose actor has no
         character-scoped input policy) and the safety minimum: ``1 + G`` for Lite, ``1 + B + C +
         G`` for a structured story (#156: its render's extraction and its composed message's
-        detection, ``core.profiles.reservation``)."""
+        detection, ``core.profiles.reservation``), ``+ O`` for one whose turns may be staged
+        (#214: a bound synchronous write-capable provider; the formula's cap counts O too)."""
         concurrency = await turn_gate.read_concurrency(self.db, story_id)
         guardrails = await policy_store.story_guardrails(self.db, story_id)
         reserved = {
             GUARDRAIL_INPUT: guardrails.calls_input,
             GUARDRAIL_OUTPUT: guardrails.calls_output,
         }
+        outcome = 0
+        if concurrency.configuration is not None:
+            async with self.db.connect() as conn:
+                synchronous = await core_providers.synchronous_bound(conn, story_id)
+            outcome = outcome_calls(
+                concurrency.configuration.settings,
+                synchronous=synchronous,
+                guardrail_output=guardrails.calls_output,
+            )
         cap, source = effective_max_calls(
             concurrency.max_model_calls_per_turn, None, sum(reserved.values())
         )
         if concurrency.max_model_calls_per_turn is not None:
             source = concurrency.calls_source
+        else:
+            cap += outcome
         return EffectiveBudget(
             max_model_calls_per_turn=cap,
             source=source,
@@ -2212,6 +2401,7 @@ class Engine:
                     concurrency.configuration.settings,
                     guardrail_input=guardrails.calls_input,
                     guardrail_output=guardrails.calls_output,
+                    outcome=outcome,
                 )
             ),
         )
@@ -2529,6 +2719,7 @@ class Engine:
             )
 
         async def run(ctx: RequestContext) -> RegenerateResult:
+            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
             if await self._plays_structured(story_id):
                 # A structured story's regenerate (#154): the commit boundary reverts what the
                 # replaced variant committed.
@@ -2541,6 +2732,7 @@ class Engine:
                     principal=principal,
                     gate=gate,
                     lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
                 )
             return await lite.regenerate(
                 self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
@@ -2558,6 +2750,78 @@ class Engine:
             },
         )
 
+    async def correct(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: CorrectRequest,
+        *,
+        output_viewpoint: str | None = None,
+    ) -> RegenerateResult:
+        """Replace the story's latest turn with new input (FR-RESP-14; #598, ADR-174): one
+        ``turn`` operation that rewinds to before ``request.turn`` and plays
+        ``request.player_input`` as its next variant, so a crash leaves the original active.
+        The replaced turn becomes a dormant continuation (``swap`` restores it); a confirmed
+        external effect of it is not undone, and comes back as ``reconciliation_required``
+        (FR-EXT-14). A turn that is not the latest is 409 ``not_latest_turn``, a turn a
+        correction wrote 409 ``already_corrected``, both with nothing written; the new turn's
+        notices are ``correctable: false``. The replacement is gated (#56); otherwise as
+        ``regenerate``: a busy story is 423 ``story_busy`` and queued turns fail with
+        ``timeline_changed``."""
+        principal = self.require_principal(ctx)
+        ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
+
+        async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
+            return await self.gate_input(
+                ctx,
+                story_id,
+                EntryPoint.CORRECT,
+                [GateText(lite.INPUT_LOCATOR, text)],
+                actor=actor,
+                budget=budget,
+                reserved=1,
+                reserve_output_for=renders,
+            )
+
+        async def run(ctx: RequestContext) -> RegenerateResult:
+            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
+            regenerating = request.regenerating()
+            if await self._plays_structured(story_id):
+                return await structured_turn.regenerate(
+                    self.db,
+                    self.models,
+                    ctx,
+                    story_id,
+                    regenerating,
+                    principal=principal,
+                    gate=gate,
+                    lexical=lexical_backend(self.settings.lexical_backend),
+                    providers=self.in_process_providers,
+                    correction=request,
+                )
+            return await lite.regenerate(
+                self.db,
+                self.models,
+                ctx,
+                story_id,
+                regenerating,
+                principal=principal,
+                gate=gate,
+                correction=request,
+            )
+
+        return await self._keyed(
+            ctx,
+            "correct",
+            run,
+            story_id=story_id,
+            material={
+                "story_id": story_id,
+                "body": _body(request),
+                "viewpoint": ctx.viewpoint,
+            },
+        )
+
     @refuses_nul()
     async def list_stories(
         self,
@@ -2566,13 +2830,18 @@ class Engine:
         status: StoryStatus | None = None,
         owner: str | None = None,
         relation: str | Sequence[str] = (),
+        engine_profile: str | None = None,
+        engine_profile_version: int | None = None,
     ) -> list[stories.StoryView]:
-        """Every story, newest first, unless the request filters: by ``status``, by ``owner``
-        (a principal), or by ``relation`` (each ``name:principal``, or ``name:`` for any
-        principal; repeated filters all hold). Owners and relations narrow a list only when
-        asked (FR-AUTH-8). A story the erasure reconciler holds blocked is listed with its
-        status but without its name and settings until the reapply settles it (#348): every
-        call naming it is refused, and the list must not serve what the erasure removes."""
+        """Every story, newest first, each with its ``engine_profile`` ``{id, version,
+        pinned}``, unless the request filters: by ``status``, by ``owner`` (a principal), by
+        ``relation`` (each ``name:principal``, or ``name:`` for any principal; repeated filters
+        all hold), or by ``engine_profile`` (the stories running under it at any version, or
+        only at ``engine_profile_version``, which needs ``engine_profile``; #527). Owners and
+        relations narrow a list only when asked (FR-AUTH-8). A story the erasure reconciler
+        holds blocked is listed with its status but without its name and settings until the
+        reapply settles it (#348): every call naming it is refused, and the list must not serve
+        what the erasure removes."""
         if not self._erasure_marked:
             await self._mark_erasures()
         found = await stories.list_stories(
@@ -2580,6 +2849,8 @@ class Engine:
             status=status,
             owner=ownership.owner_filter(owner),
             relations=[ownership.parse_relation_filter(value) for value in relation],
+            engine_profile=engine_profile,
+            engine_profile_version=engine_profile_version,
         )
         return [
             dataclasses.replace(story, name=None, settings={})
@@ -2705,6 +2976,501 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    # -- the world clock (FR-CLOCK-1,5,13; #193) ----------------------------------------------
+
+    @refuses_nul()
+    async def get_clock(self, ctx: RequestContext, story_id: str) -> clock_service.ClockView:
+        """The story's world clock as it stands (FR-CLOCK-13): its offset in minutes from the
+        story's start and its display (``+HHh MMm``, then the anchor's known components), its
+        partial anchor (#195), the level
+        the story runs it at (``off``: inert, ``prompt_only``, ``on``), its mode and its
+        settings. 404 for an unknown story."""
+        return await clock_service.read_clock(self.db, story_id)
+
+    async def advance_clock(
+        self, ctx: RequestContext, story_id: str, request: clock_service.ClockAdvanceRequest
+    ) -> clock_service.ClockMoved:
+        """Move the story's world clock forward between turns, as the consumer (FR-CLOCK-13):
+        ``minutes``, or ``to`` an offset from the story's start, in an inter-turn slot after
+        the last turn (a truncation to that turn or earlier discards it). Answers the clock
+        before and after. 422 ``clock_backward`` for a backward move (nothing is written; use a
+        truncation), ``clock_unanchored`` for a time of day ``"HH:MM"`` the anchor cannot
+        place; 409 ``module_off`` with the clock off, ``story_archived``, ``story_paused`` or
+        ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> clock_service.ClockMoved:
+            await self.check_expected_revision(ctx, story_id)
+            return await clock_service.advance_clock(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "advance_clock",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def update_clock(
+        self, ctx: RequestContext, story_id: str, patch: Mapping[str, Any]
+    ) -> clock_service.ClockSettingsWrite:
+        """Change the world clock's settings (FR-CLOCK-5): ``mode`` (``paced`` or ``manual``),
+        ``pacing_table``, ``max_unprompted_skip_minutes``, ``stop_at_due_events``,
+        ``time_awareness``, ``bands`` and ``calendar``. A story configuration write: each
+        changed setting records one ``config_changes`` row (``state:world_clock.<setting>``;
+        ``pacing_table`` prospective, the others interpretive) and the story's
+        ``config_revision`` moves by one; a patch that changes nothing writes nothing. 422 for
+        an unknown setting, an invalid value or ``mode: external`` (#209); 409
+        ``story_archived``."""
+        principal = self.require_principal(ctx)
+        body = dict(patch)
+
+        async def run(ctx: RequestContext) -> clock_service.ClockSettingsWrite:
+            return await clock_service.update_clock(self.db, story_id, body, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "update_clock",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": body},
+        )
+
+    # -- scheduled events (FR-CLOCK-9,19; #196) -------------------------------------------------
+
+    @refuses_nul()
+    async def list_scheduled_events(
+        self, ctx: RequestContext, story_id: str, *, viewpoint: str | None = None
+    ) -> scheduled_events.ScheduledEventList:
+        """The scheduled events ``viewpoint`` holds (FR-CLOCK-9): ``omniscient``, every canon
+        event as the story stands (its status, planned offset, owner, participants, place,
+        grace and the offset it stopped the clock at); ``character:<id>``, the canon events
+        the character participates in and, under per-character partitions, its belief-only
+        schedules (labelled ``belief``: they never stop the clock). 422
+        ``viewpoint_unresolved``; 404 for an unknown story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await scheduled_events.list_events(self.db, story_id, viewpoint=ctx.viewpoint)
+
+    async def create_scheduled_event(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: scheduled_events.ScheduledEventCreate,
+    ) -> scheduled_events.ScheduledEventWritten:
+        """Create a canon scheduled event between turns (FR-CLOCK-9; REST 201): its name, its
+        planned time (an offset, or ``"HH:MM"`` the anchor places), its participants, place
+        and owner (``author`` or ``world``), at the next inter-turn slot ``N⁺k``; it is
+        ``pending`` and stops the clock once when an advance reaches it with stops on. 422 for
+        an unknown participant or place, ``clock_unanchored`` for a time of day the anchor
+        cannot place; 409 ``module_off`` with the clock off, ``story_archived``,
+        ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> scheduled_events.ScheduledEventWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await scheduled_events.create_event(
+                self.db, story_id, request, principal=principal, idempotency_key=ctx.idempotency_key
+            )
+
+        return await self._keyed(
+            ctx,
+            "create_scheduled_event",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def reschedule_scheduled_event(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        event_id: str,
+        request: scheduled_events.ScheduledEventReschedule,
+    ) -> scheduled_events.ScheduledEventWritten:
+        """Reschedule a scheduled event (FR-CLOCK-9,19): it is ``pending`` again at its new
+        time and may stop the clock once more, and/or replace the characters it is shared with
+        (``shared_owners``, #198; 422 ``viewpoint_unresolved`` for one outside the cast). Only
+        its owner, a shared owner, the author or the world may change it; the consumer acts as
+        the author. 404 for an unknown event; 422
+        (``reason: event_settled``) for a cancelled or completed one; 409 ``module_off``,
+        ``story_archived``, ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> scheduled_events.ScheduledEventWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await scheduled_events.reschedule_event(
+                self.db,
+                story_id,
+                event_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "reschedule_scheduled_event",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "event": event_id, "body": _body(request)},
+        )
+
+    async def cancel_scheduled_event(
+        self, ctx: RequestContext, story_id: str, event_id: str
+    ) -> scheduled_events.ScheduledEventWritten:
+        """Cancel a scheduled event (FR-CLOCK-9): it is ``cancelled`` and never stops the
+        clock. 404 for an unknown event; 422 (``reason: event_settled``) for a cancelled or
+        completed one; 409 ``module_off``, ``story_archived``, ``story_paused`` or
+        ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> scheduled_events.ScheduledEventWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await scheduled_events.cancel_event(
+                self.db,
+                story_id,
+                event_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "cancel_scheduled_event",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "event": event_id},
+        )
+
+    # -- story States (FR-STATE-3,9, FR-RESP-12; #186) ------------------------------------------
+
+    @refuses_nul()
+    async def get_states(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+    ) -> state_api.StatesView:
+        """The story's States for one output viewpoint (FR-STATE-9, FR-RESP-12): ``viewpoint``
+        (or ``ctx.viewpoint``) when named, else ``actor_character_id``, else the story's
+        default; 422 ``viewpoint_unresolved`` when none resolves. A character viewpoint is
+        never given a ``hidden`` State (it is left out, its own scoped value too); ``omniscient``
+        reads every State. The world clock is under ``clock`` only. 409 ``module_off`` with
+        ``states.level`` off; 404 for an unknown story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await state_api.read_states(
+            self.db, story_id, viewpoint=ctx.viewpoint, actor_character_id=actor_character_id
+        )
+
+    @refuses_nul()
+    async def get_state(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+        as_of: str | None = None,
+    ) -> state_api.StateView:
+        """One State for one output viewpoint (as ``get_states``), folded through ``as_of``:
+        ``"N"`` (turn N's end, without its inter-turn slots) or ``"N+k"`` (with slots 1..k);
+        the head when ``None``. A hidden State read without ``omniscient`` is 404 exactly as an
+        unknown name (as is ``world_clock``, read with ``get_clock``). 409 ``module_off`` with
+        ``states.level`` off."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await state_api.read_state(
+            self.db,
+            story_id,
+            name,
+            viewpoint=ctx.viewpoint,
+            actor_character_id=actor_character_id,
+            as_of=as_of,
+        )
+
+    async def set_state(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        request: state_api.StateSetRequest,
+    ) -> state_api.StateWritten:
+        """Set a story-owned State between turns, as the consumer (FR-STATE-9): a ``value`` or a
+        ``delta``, for ``scope_key``'s value of a per-character State, with a ``reason``. An
+        inter-turn slot operation at ``N⁺k`` after the last completed turn (a truncation to N
+        or earlier discards it); it bumps the timeline revision and answers the old and new
+        value and the ``position``. Waits for a turn in flight under ``queue`` and is 423
+        ``story_busy`` under ``reject``. 422 ``state_constraint_violation``,
+        ``state_readonly_external``, ``state_unpermitted`` (``reason: source``),
+        ``state_derived``, ``validation_error`` (``reserved_state`` for ``world_clock``); 409
+        ``module_off``, ``story_archived``, ``story_paused`` or ``revision_conflict``. Nothing
+        is written on a refusal."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_api.StateWritten:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_api.set_state(
+                self.db,
+                story_id,
+                name,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_state",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "state": name, "body": _body(request)},
+        )
+
+    async def define_state(
+        self, ctx: RequestContext, story_id: str, request: state_api.StateDefineRequest
+    ) -> state_api.StateDeclared:
+        """Declare a State on a running story, as the consumer (FR-STATE-3): an inter-turn slot
+        operation at ``N⁺k`` (a truncation to N or earlier discards the declaration and frees
+        its name). It bumps the timeline revision and answers the stored definition and its
+        ``position`` (REST 201). 409 ``state_name_taken`` for a name an active State holds,
+        ``module_off``, ``story_archived``, ``story_paused`` or ``revision_conflict``; 422
+        ``validation_error`` for a shape error or ``world_clock`` (``reserved_state``); 423
+        ``story_busy`` as ``set_state``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_api.StateDeclared:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_api.define_state(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "define_state",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def update_state_definition(
+        self, ctx: RequestContext, story_id: str, name: str, patch: Mapping[str, Any]
+    ) -> state_api.StateDefinitionWrite:
+        """Change State ``name``'s definition (FR-STATE-3): a JSON merge patch over its mutable
+        members, a story configuration change (``config_revision`` + 1, one ``config_changes``
+        row per member, ``state:<name>.<member>``; no timeline revision). ``constraints``,
+        ``authorization``, ``transfer``, ``rules`` and ``visibility`` are interpretive (a turn
+        checked under the old ones is re-checked), ``aliases``, ``unit``, ``silent`` and
+        ``reservation_expiry_minutes`` prospective. 422 ``validation_error`` (``immutable_field``
+        for the State's identity; ``reserved_state`` for ``world_clock``) or
+        ``state_constraint_violation`` when the current value breaks the new constraints; 409
+        ``module_off`` or ``story_archived``."""
+        principal = self.require_principal(ctx)
+        body = dict(patch)
+
+        async def run(ctx: RequestContext) -> state_api.StateDefinitionWrite:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_api.update_state_definition(
+                self.db, story_id, name, body, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "update_state_definition",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "state": name, "body": body},
+        )
+
+    # -- engine-proposed States (FR-STATE-3; #192) ------------------------------------------------
+
+    async def analyze_state_proposals(
+        self, ctx: RequestContext, story_id: str
+    ) -> state_proposals.AnalysisQueued:
+        """Ask the engine what the story has been counting (FR-STATE-3): an on-demand analysis
+        of the whole history, handed to a worker as a ``state_proposal_analysis`` job (REST 202
+        ``{job_id, operation_id}``; the request is a ``maintenance`` operation, which moves no
+        revision). It proposes each quantity unit or possessed object that recurs in three or
+        more turns and no State tracks; it never creates a State. 409 ``module_off`` with
+        ``states.level`` off, ``story_archived``, ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def start(conn: AsyncConnection, payload: state_proposals.AnalysisPayload) -> str:
+            return await job_queue.enqueue(
+                conn, state_proposals.ANALYSIS_KIND, payload, story_id=payload.story_id
+            )
+
+        async def run(ctx: RequestContext) -> state_proposals.AnalysisQueued:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_proposals.request_analysis(
+                self.db, story_id, principal=principal, start_job=start
+            )
+
+        return await self._keyed(
+            ctx,
+            "analyze_state_proposals",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id},
+        )
+
+    @refuses_nul()
+    async def list_state_proposals(
+        self, ctx: RequestContext, story_id: str
+    ) -> state_proposals.ProposalList:
+        """The story's State proposals (FR-STATE-3), oldest first: each one's suggested name,
+        type, scope, unit or entity, its evidence (the beats it recurs in), its status
+        (``proposed``, ``approved``, ``dismissed``) and the analysis that proposed it. 409
+        ``module_off`` with ``states.level`` off; 404 for an unknown story."""
+        return await state_proposals.list_proposals(self.db, story_id)
+
+    @refuses_nul()
+    async def reconciliation(
+        self, ctx: RequestContext, story_id: str
+    ) -> core_outbox.Reconciliation:
+        """The story's reconciliation status (FR-EXT-10,14,18; #210): every effect dispatched to
+        a write-capable provider that Epistrel cannot report as applied, oldest first, each with
+        its outbox id (the provider idempotency key), provider, value, status, ``reason``
+        (``unconfirmed``, ``failed``, ``unknown``, ...), since when, the effect and its latest
+        recorded outcome. A confirmed or cancelled effect is not listed. 404 for an unknown
+        story."""
+        return await core_outbox.listings(self.db, story_id)
+
+    async def settle_now(
+        self, ctx: RequestContext, story_id: str, outbox_id: str
+    ) -> settlement_job.SettledNow:
+        """Settle a listed effect now (FR-EXT-22; #218): for an effect listed
+        ``late_success_after_expiry``, ``confirmed_discarded_origin`` or
+        ``settlement_conflict``, re-verify its transfer against current state at this moment
+        (availability, ownership, the State bounds) and apply it at the next inter-turn slot as a
+        late settlement (``source = settlement``), resolving the listing; ``result: queued``
+        while an incomplete staged turn holds the slot. 409 ``settle_refused {reasons}`` when
+        re-verification fails (nothing changes); 404 ``not_found`` (``reason: no_listing``) for
+        an effect not listed so; 409 ``module_off``, ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> settlement_job.SettledNow:
+            await self.check_expected_revision(ctx, story_id)
+            return await settlement_job.settle_now(
+                self.db,
+                story_id,
+                outbox_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                registry=self.in_process_providers,
+            )
+
+        return await self._keyed(
+            ctx,
+            "settle_now",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "outbox_id": outbox_id},
+        )
+
+    async def compensate(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        outbox_id: str,
+        request: core_outbox.CompensateRequest,
+    ) -> settlement_job.Compensated:
+        """Compensate a listed effect (FR-EXT-22; #218): issue ``request.effect`` (#187's
+        ``{state, scope_key?, delta | value, reason}`` on an externally owned State) as a new
+        ``intended`` outbox row naming the listed one (``compensates``), on a new inter-turn slot
+        operation, dispatched like any other (REST 201). The listed effect shows ``status:
+        compensated`` until the compensating row is confirmed. 422 ``provider_read_only`` when
+        the State's provider is not write-capable, ``state_unpermitted`` for a State no external
+        provider owns; 404 ``not_found`` (``reason: no_listing``) for an effect not listed
+        ``late_success_after_expiry``, ``confirmed_discarded_origin`` or
+        ``settlement_conflict``; 409 ``module_off``, ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> settlement_job.Compensated:
+            await self.check_expected_revision(ctx, story_id)
+            return await settlement_job.compensate(
+                self.db,
+                story_id,
+                outbox_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "compensate",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "outbox_id": outbox_id, "body": _body(request)},
+        )
+
+    async def approve_state_proposal(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        proposal_id: str,
+        request: state_proposals.StateProposalApproveRequest,
+    ) -> state_proposals.ProposalApproved:
+        """Approve a proposed State (FR-STATE-3): declare it as suggested, with
+        ``request.definition`` on top (``created_by = proposal``), at the next inter-turn slot
+        ``N⁺k`` as ``define_state`` does, and mark the proposal ``approved`` (REST 201). 404
+        ``not_found`` (``reason: no_pending_proposal``) unless the proposal is pending; the
+        refusals of ``define_state`` otherwise."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_proposals.ProposalApproved:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_proposals.approve(
+                self.db,
+                story_id,
+                proposal_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "approve_state_proposal",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "proposal": proposal_id, "body": _body(request)},
+        )
+
+    async def dismiss_state_proposal(
+        self, ctx: RequestContext, story_id: str, proposal_id: str
+    ) -> state_proposals.ProposalDismissed:
+        """Dismiss a proposed State (FR-STATE-3): it is never proposed again. 404 ``not_found``
+        (``reason: no_pending_proposal``) unless the proposal is pending; 409 ``module_off``,
+        ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> state_proposals.ProposalDismissed:
+            await self.check_expected_revision(ctx, story_id)
+            return await state_proposals.dismiss(
+                self.db, story_id, proposal_id, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "dismiss_state_proposal",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "proposal": proposal_id},
         )
 
     async def set_character_weight(
@@ -3247,6 +4013,114 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+
+    # -- external-data providers (FR-EXT-1,6; #204) -------------------------------------------
+    # Deployment-scoped registrations (each write an interpretive configuration change, read
+    # afresh by the next operation that resolves the provider), and each story's bindings.
+
+    @refuses_nul()
+    async def list_external_providers(
+        self, ctx: RequestContext
+    ) -> tuple[int, list[core_providers.ProviderRow]]:
+        """``config_revision`` and every registered provider (manifests as registered: template
+        text and secret references, never a secret)."""
+        return await provider_registry.listing(self.db)
+
+    @refuses_nul()
+    async def get_external_provider(
+        self, ctx: RequestContext, name: str
+    ) -> tuple[int, core_providers.ProviderRow]:
+        """``config_revision`` and one registered provider (404 when unknown)."""
+        return await provider_registry.entry(self.db, name)
+
+    async def register_external_provider(
+        self, ctx: RequestContext, registration: ProviderRegistration
+    ) -> provider_registry.ProviderWrite:
+        """Register a provider (201): its manifest is validated against the deployment's
+        ``provider_allowed_hosts`` (422 ``invalid_manifest``); a name already registered is 409
+        ``provider_exists``."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "register_external_provider",
+            lambda _: provider_registry.register(self.db, registration, principal=principal),
+            material={"body": _body(registration)},
+        )
+
+    async def replace_external_provider(
+        self, ctx: RequestContext, name: str, spec: ProviderSpec
+    ) -> provider_registry.ProviderWrite:
+        """Replace a provider's registration; it takes effect at the next operation that
+        resolves the provider (FR-EXT-6). A replacement that changes nothing writes nothing."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "replace_external_provider",
+            lambda _: provider_registry.replace(self.db, name, spec, principal=principal),
+            material={"name": name, "body": _body(spec)},
+        )
+
+    async def delete_external_provider(
+        self, ctx: RequestContext, name: str
+    ) -> provider_registry.ProviderWrite:
+        """Delete a provider (REST 204); 409 ``provider_in_use`` while a story's State names
+        it. Stories' bindings to it are kept (identifiers only)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "delete_external_provider",
+            lambda _: provider_registry.delete(self.db, name, principal=principal),
+            material={"name": name},
+        )
+
+    def register_in_process_provider(
+        self,
+        name: str,
+        *,
+        read: provider_in_process.ReadCallable,
+        write: provider_in_process.WriteCallable | None = None,
+    ) -> None:
+        """Register this process's callables for the ``in_process`` provider ``name``
+        (library-only, not story-scoped; the provider's ``external_providers`` row is still
+        required). Another process (a separate worker) has none: there a read is an adapter
+        error and a write stays ``intended`` (#206, #210)."""
+        self.in_process_providers.register(name, read=read, write=write)
+
+    async def bind_provider(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        request: core_providers.BindingRequest,
+    ) -> provider_binding.BindingWrite:
+        """Bind the story to provider ``name`` with its external ids (idempotent: the same ids
+        again change nothing). 422 ``binding_incomplete`` for ids that leave a
+        ``{binding.<key>}`` of the manifest uncovered; 404 for an unregistered provider. A story
+        whose ``required_providers`` genesis kept inactive gets it live (#204)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "bind_provider",
+            lambda _: provider_binding.bind_story(
+                self.db, story_id, name, request, principal=principal
+            ),
+            story_id=story_id,
+            material={"name": name, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def provider_bindings(
+        self, ctx: RequestContext, story_id: str
+    ) -> list[core_providers.ProviderBinding]:
+        """The story's bindings to its providers, by provider name."""
+        return await provider_binding.story_bindings(self.db, story_id)
+
+    @refuses_nul()
+    async def provider_binding(
+        self, ctx: RequestContext, story_id: str, name: str
+    ) -> core_providers.ProviderBinding:
+        """The story's binding to provider ``name`` (404 when it has none)."""
+        return await provider_binding.story_binding(self.db, story_id, name)
 
     # -- the character catalog (FR-CAT-1,3,9; FR-SCN-10; FR-API-6; #103) ----------------------
     # Deployment-scoped: each write is one transaction recording a story-less ``control``
@@ -4537,14 +5411,23 @@ class Engine:
         else the requesting principal (FR-AUTH-5). Its settings may name any delivered module;
         what they leave out takes the default. 422 ``validation_error`` for their shape, 422
         ``invalid_profile`` for an undelivered module or level or a missing dependency
-        (FR-PROF-2,4); nothing is written."""
+        (FR-PROF-2,4); nothing is written. The answer warns (``warnings``:
+        ``below_safety_minimum``, #456) as ``validate_profile`` does."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> profiles.ProfileWrite:
+            return await profiles.create(
+                self.db,
+                request,
+                principal=principal,
+                purposes=self.purposes,
+                safety=await self._safety_facts(),
+            )
+
         return await self._keyed(
             ctx,
             "create_profile",
-            lambda _: profiles.create(
-                self.db, request, principal=principal, purposes=self.purposes
-            ),
+            run,
             material={"body": _body(request)},
         )
 
@@ -4611,6 +5494,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
+                safety=await self._safety_facts(),
             )
 
         return await self._keyed(
@@ -4632,14 +5516,23 @@ class Engine:
         """A new profile, owned by ``request.owner`` or else the requesting principal, at
         version 1 with the settings of the profile's latest version (``version``: that one's).
         A preset or a deleted profile copies like any other; 404 for an unknown profile or
-        version."""
+        version. The answer warns as a creation's does (#456)."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> profiles.ProfileWrite:
+            return await profiles.copy_profile(
+                self.db,
+                profile_id,
+                request,
+                principal=principal,
+                version=version,
+                safety=await self._safety_facts(),
+            )
+
         return await self._keyed(
             ctx,
             "copy_profile",
-            lambda _: profiles.copy_profile(
-                self.db, profile_id, request, principal=principal, version=version
-            ),
+            run,
             material={"profile_id": profile_id, "version": version, "body": _body(request)},
         )
 
@@ -4693,6 +5586,19 @@ class Engine:
 
     # -- a story's configuration: fingerprint, preview (FR-PROF-5,7,16; #109) ------------------
 
+    async def _safety_facts(self, story_id: str | None = None) -> SafetyFacts:
+        """What a profile's safety minimum counts beside its settings, for the budget warnings
+        of profile writes and impact reports (#456): the deployment's global model-assisted
+        policies, as ``validate_profile`` counts them; for a story's own report (``story_id``,
+        #214), whether it has a bound synchronous write-capable provider, so its minimum counts
+        the outcome step (O). A profile surface passes no story: O = 0 there."""
+        gi, go = await policy_store.deployment_guardrail_calls(self.db)
+        synchronous = False
+        if story_id is not None:
+            async with self.db.connect() as conn:
+                synchronous = await core_providers.synchronous_bound(conn, story_id)
+        return SafetyFacts(guardrail_input=gi, guardrail_output=go, synchronous=synchronous)
+
     async def _runtime_facts(self) -> RuntimeFacts:
         """The model each delivered purpose resolves to and the prompt templates' hashes: what
         a fingerprint needs from the Orchestrator."""
@@ -4715,6 +5621,7 @@ class Engine:
             request,
             facts=await self._runtime_facts(),
             purposes=self.purposes,
+            safety=await self._safety_facts(story_id),
         )
 
     @refuses_nul()
@@ -4762,6 +5669,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
+                safety=await self._safety_facts(story_id),
             )
 
         return await self._keyed(
@@ -4797,6 +5705,7 @@ class Engine:
                 principal=principal,
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
+                safety=await self._safety_facts(story_id),
             )
 
         return await self._keyed(

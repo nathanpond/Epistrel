@@ -41,6 +41,7 @@ from epistrel.core.settings_schema import (
     SequenceOrder,
 )
 from epistrel.core.viewpoint import AudienceFilter
+from epistrel.core.world_clock.service import TurnClock
 from epistrel.orchestrator.models.metrics import ModelCall
 
 MAX_INPUT_CHARS = 8_000
@@ -182,7 +183,8 @@ class RespondRequest(BaseModel):
     ``director``); needs per-character renders (409 ``module_off`` otherwise)."""
     simultaneous_tie_break: str | None = Field(default=None, pattern=TIE_BREAK_PATTERN)
     """#175: how this ``simultaneous`` turn settles conflicting actions, over the story's
-    setting (``request_order``, ``director``; ``state:<name>`` is 422 ``not_yet`` until M6);
+    setting (``request_order``, ``director`` or #188's ``state:<name>``, which falls back to
+    request order with ``tie_break_state_invalid`` when it names no number State);
     needs per-character renders (409 ``module_off`` otherwise)."""
     roles: dict[Ulid, ParticipationRole] | None = Field(default=None, max_length=MAX_ROLES)
     """#176 (FR-MULTI-7): this turn's participation role per present character, over its stored
@@ -250,6 +252,45 @@ class RegenerateRequest(BaseModel):
     output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
     prompt_params: GenerationSettings | None = None
     budget: BudgetOverride | None = None
+
+
+class CorrectRequest(BaseModel):
+    """``POST /stories/{id}/correct`` and ``Engine.correct`` (FR-RESP-14; #598, ADR-174).
+
+    ``turn`` must be the story's latest active turn (409 ``not_latest_turn`` otherwise) and not
+    itself a correction (409 ``already_corrected``). ``player_input`` replaces the turn's input:
+    the story is rewound to before the turn and the replacement played, in one operation, and
+    the replaced turn becomes a dormant continuation (``swap`` restores it). The actor is the
+    turn's. ``render_character_ids``, ``output_viewpoint`` and ``prompt_params`` override the
+    values the turn was played with; omitted, the recorded ones are reused. ``budget`` is this
+    call's own (#69)."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [{"turn": 3, "player_input": {"do": "Jenni searches the desk."}}]
+        },
+    )
+
+    turn: StrictInt = Field(ge=1)
+    player_input: PlayerInputBody
+    render_character_ids: list[Ulid] | None = Field(
+        default=None, min_length=1, max_length=MAX_RENDER_CHARACTERS
+    )
+    output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
+    prompt_params: GenerationSettings | None = None
+    budget: BudgetOverride | None = None
+
+    def regenerating(self) -> RegenerateRequest:
+        """The regenerate of the latest turn this correction runs, with replacement input."""
+        return RegenerateRequest(
+            turn=self.turn,
+            render_character_ids=self.render_character_ids,
+            output_viewpoint=self.output_viewpoint,
+            prompt_params=self.prompt_params,
+            budget=self.budget,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +415,9 @@ class RespondResult:
     before #113."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    clock: TurnClock | None = None
+    """The world clock before and after the turn (FR-CLOCK-13; #193); ``None`` when the story
+    runs the clock off (and in a result stored before #193)."""
     order: list[str] = field(default_factory=list)
     """#174: a structured turn with several primaries, their ids in the order they rendered
     (the request's, or the director's); empty otherwise."""
@@ -400,6 +444,26 @@ class RespondResult:
     reconcile: list[dict[str, Any]] = field(default_factory=list)
     """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
     winner_beat, loser_beat, rule}``; empty when nothing contradicted."""
+    state_effects: list[dict[str, Any]] = field(default_factory=list)
+    settled_effects: list[dict[str, Any]] = field(default_factory=list)
+    """#217 (FR-EXT-21 (e)): the State changes late settlements committed in the inter-turn
+    slots since the previous response, each as ``state_effects`` lists a change (``source:
+    settlement``), a ``hidden`` State's only for ``omniscient``; empty when none."""
+    reconciliation: dict[str, int] | None = None
+    """#210 (FR-EXT-10): ``{count}``, how many effects the story's reconciliation status lists
+    (``GET /stories/{id}/reconciliation``); ``None`` when the story has no outbox row."""
+    reconciliation_required: list[dict[str, Any]] = field(default_factory=list)
+    """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the turns
+    the commit took out of the active timeline (a regenerate's retired variant, a rewound tail
+    written over), ``{outbox_id, provider, status, value?}``; empty when none."""
+    notices: list[dict[str, Any]] = field(default_factory=list)
+    """#598 (FR-RESP-14): a structured turn under ``player_authority = co_author`` and
+    ``co_author_knowledge = confirm``, one ``implausible_knowledge`` notice per presupposition of
+    the player's narration the narrated character had no path to, ``{id, kind, character_id,
+    claim_text, turn, correctable, external_effects}``; empty when none."""
+    """#187 (FR-RESP-7): the State changes a structured turn committed, ``{state, scope_key,
+    old_value, new_value, reason, source, contingency, status}``, a ``hidden`` State's only for
+    ``omniscient``; empty otherwise."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,6 +482,7 @@ __all__ = [
     "TURN_OVERRIDES",
     "BudgetOverride",
     "BudgetReport",
+    "CorrectRequest",
     "DegradationStep",
     "FinishedMessage",
     "GuardrailReport",

@@ -19,7 +19,8 @@ sees what the render's earlier beats established and nothing later.
   (``located_at``/``present_at`` a place), a perception path (#161: the character is at that
   place, inside it or containing it). Anything else (novel, contradicted, undecided, an
   unnormalizable sketch, no path) rejects the step (``unverified_object``,
-  ``no_perception_path``): no entailment call, the safe disposition. A render that invents the
+  ``no_perception_path``; #206: ``provider_unknown`` for an external value pinned ``Unknown``,
+  FR-EXT-11): no entailment call, the safe disposition. A render that invents the
   observed fact itself is refused by its permission (#144) before the step is reached, so the
   overlay never holds it.
 - ``believe``: it cites only verified earlier steps (or records: an event, a fact, an utterance,
@@ -31,6 +32,9 @@ sees what the render's earlier beats established and nothing later.
   ``observation``, a fact → ``discovery``, a belief → ``inference``.
 - ``act``: owns the beats that name it; verified when reached (its beats are verified as
   beats).
+- ``time`` (#194, FR-CLOCK-17): a step for timing alone. It owns the beats naming it like an
+  ``act``, cites nothing and is never verified as a belief step: it is accepted when reached and
+  writes nothing (a time advance attaches to it, ``core.world_clock.timing``).
 
 **What a verdict does.** A verified ``believe`` joins the speaker's belief record set for the
 rest of the turn (``BeliefSource.stage``, ``replay.stage_path``), so a later ``say`` of what it
@@ -72,10 +76,15 @@ from epistrel.core.propositions.model import Proposition
 
 log = logging.getLogger(__name__)
 
-OBSERVE, BELIEVE, ACT = "observe", "believe", "act"
+OBSERVE, BELIEVE, ACT, TIME = "observe", "believe", "act", "time"
+OWNING = frozenset({ACT, TIME})
+"""The steps that own beats and are accepted when reached, never verified as beliefs."""
 SELF_ATTESTATION = "self_attestation"
 UNVERIFIED_OBJECT = "unverified_object"
 NO_PERCEPTION_PATH = "no_perception_path"
+PROVIDER_UNKNOWN = "provider_unknown"
+"""#206 (FR-EXT-11): the observed value is pinned ``Unknown`` this turn (its provider was
+unavailable): no one newly learns it."""
 ANTECEDENT_INVALID = "antecedent_invalid"
 UNNORMALIZABLE = "unnormalizable"
 LATER_CITE, UNVERIFIED_CITE, NO_CITE = "later_cite", "unverified_cite", "no_cite"
@@ -174,8 +183,8 @@ class StepVerifier:
         return self.verdicts
 
     async def _verify(self, step: Step) -> None:
-        if step.kind == ACT:
-            found = StepVerdict(step.index, ACT, True)
+        if step.kind in OWNING:
+            found = StepVerdict(step.index, step.kind, True)
         elif step.kind == OBSERVE:
             found = await self._observe(step)
         else:
@@ -422,7 +431,9 @@ __all__ = [
     "ACT",
     "BELIEVE",
     "OBSERVE",
+    "OWNING",
     "SELF_ATTESTATION",
+    "TIME",
     "Observed",
     "Step",
     "StepOracle",

@@ -32,6 +32,12 @@ an explicit ``eavesdrop_by``, whatever the barrier. The actor always perceives i
   ``wall`` as an envelope ("You hear a knock from the hallway").
 - At ``none`` (every M4 profile) nothing is routed: every cast member perceives everything
   (#129's gating; the shared-holder writer of #135 writes the memories).
+- **Consciousness** (#200, FR-CLOCK-15; owner decision 2026-10-28): a character canon holds
+  ``unconscious`` (asleep or passed out; ``SceneState.unconscious``, which
+  ``core.epistemic.scene`` loads from canon at the turn's start) perceives nothing at any level
+  (no memory, observation, exposure or testimony follows) but its own ``think``. A beat that
+  says someone passes out, falls asleep, wakes or comes to (its ``claims``) changes that from
+  the next beat, as a move does.
 
 **Qualifier validation** (``validate_qualifiers``, FR-TURN-13). Narrowing needs none (it can
 only remove perceivers), except that a whisper target who is not in the room is dropped
@@ -85,6 +91,7 @@ from epistrel.core.propositions.vocabulary import (
     BARRIERS,
     DEFAULT_BARRIER,
     ON_CHANNEL,
+    UNCONSCIOUS,
 )
 
 if TYPE_CHECKING:
@@ -218,6 +225,11 @@ class SceneState:
     languages: Mapping[str, frozenset[str]] = field(default_factory=dict)
     characters: frozenset[str] = frozenset()
     places: frozenset[str] = frozenset()
+    unconscious: frozenset[str] = frozenset()
+    """#200 (FR-CLOCK-15): the characters canon holds ``unconscious`` (asleep or passed out):
+    they perceive nothing while it holds."""
+    entity_of: Mapping[str, str] = field(default_factory=dict)
+    """Each character's entity id, by character id (a claim names the entity)."""
 
     def at(self, character_id: str | None) -> str | None:
         return None if character_id is None else self.placements.get(character_id)
@@ -259,6 +271,45 @@ class SceneState:
             else:
                 placements[character_id] = location
         return replace(self, placements=placements)
+
+    def conscious_after(self, claims: Iterable[Any]) -> SceneState:
+        """#200: the state after a beat whose ``claims`` state that someone passes out, falls
+        asleep (an affirmed ``unconscious``), wakes or comes to (a negated one), from the next
+        beat on (as a move does)."""
+        changes = consciousness_changes(claims, self.entity_of)
+        if not changes:
+            return self
+        out = set(self.unconscious)
+        for character_id, unconscious in changes:
+            if unconscious:
+                out.add(character_id)
+            else:
+                out.discard(character_id)
+        return replace(self, unconscious=frozenset(out))
+
+
+def changes_consciousness(claim: Any) -> bool:
+    """#200: whether ``claim`` (a proposition) states that its subject passes out, falls
+    asleep, wakes or comes to (``unconscious``, either polarity). The verifier asks this to let
+    a narrated change close the subject's ``unconscious`` fluent (#518's ``fluent_change``):
+    perception's predicate is named only here (``check-perception-authority``)."""
+    return claim is not None and getattr(claim, "predicate_id", None) == UNCONSCIOUS
+
+
+def consciousness_changes(
+    claims: Iterable[Any], entity_of: Mapping[str, str] | None = None
+) -> list[tuple[str, bool]]:
+    """``(character id, unconscious)`` for each ``unconscious`` claim of ``claims``, in order:
+    ``True`` from an affirmed one, ``False`` (awake) from a negated one. A subject that is no
+    character's entity is taken as the character id."""
+    character_of = {e: c for c, e in (entity_of or {}).items()}
+    found: list[tuple[str, bool]] = []
+    for claim in claims:
+        if not changes_consciousness(claim):
+            continue
+        subject = str(claim.subject_id)
+        found.append((character_of.get(subject, subject), claim.polarity.value == "affirmed"))
+    return found
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,7 +614,20 @@ def route_perception(
 ) -> list[Perceived]:
     """Who perceives ``beat`` and at what fidelity (see the module docstring); ``qualifiers``
     are the validated ones (``validate_qualifiers``; ``None``: the beat's own, validated
-    here). Pure: the same inputs always give the same answer."""
+    here). #200 (FR-CLOCK-15): an unconscious character (``SceneState.unconscious``) perceives
+    nothing but its own ``think``. Pure: the same inputs always give the same answer."""
+    found = _route(beat, scene_state, qualifiers, level)
+    if not scene_state.unconscious or beat.kind == "think":
+        return found
+    return [p for p in found if p.character_id not in scene_state.unconscious]
+
+
+def _route(
+    beat: RouteBeat,
+    scene_state: SceneState,
+    qualifiers: Qualifiers | None,
+    level: Level,
+) -> list[Perceived]:
     scene = scene_state
     if qualifiers is None:
         qualifiers, _ = validate_qualifiers(beat, scene, level)
@@ -710,6 +774,9 @@ def route_turn(
         )
         if beat.moves and mode != SIMULTANEOUS:
             current = current.moved(beat.moves)
+        if beat.claims and mode != SIMULTANEOUS:
+            # #200: a beat that says someone passes out or wakes changes who perceives the next.
+            current = current.conscious_after(beat.claims)
     return results
 
 
@@ -901,7 +968,9 @@ __all__ = [
     "RouteBeat",
     "SceneState",
     "SinkOperation",
+    "changes_consciousness",
     "co_located_set",
+    "consciousness_changes",
     "deliver",
     "draft_topology",
     "eavesdrop_path",

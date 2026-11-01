@@ -54,6 +54,7 @@ does not name its only institution. An author declares such rules where they hol
 | `dead`<br>`01JPRED0000000000000000009` | person → none | functional per (subject) | permanent | — | excludes `alive` | — | — | The subject has died (no object): from then on, permanently. Excludes `alive` over overlapping time and so closes its interval. |
 | `born`<br>`01JPRED0000000000000000010` | person → none | functional per (subject) | event | — | — | — | — | The subject's birth (no object): a unique event per person, so two different birth times contradict, while a coarser time compatible with canon does not. |
 | `injured`<br>`01JPRED0000000000000000028` | any → none | multi per (subject) | event | — | — | `cause` (id) | — | The subject was hurt at the instant (no object): an event, with the entity that caused it as the optional `cause`. Claim detection (#148) writes it for injury language. |
+| `unconscious`<br>`01JPRED0000000000000000041` | person → none | functional per (subject) | fluent | — | — | `kind` (str) | — | The subject is unconscious (no object), its `kind` `asleep` or `unconscious`; negated, awake. Claim detection (#148) writes it when narration or a beat says a character passes out, falls asleep, wakes or comes to, and waking closes it (#200, FR-CLOCK-15). Perception routing (#161) reads it from canon: an unconscious character perceives nothing, and the time it perceives excludes the span. |
 
 ## Kinship
 
@@ -104,7 +105,7 @@ does not name its only institution. An author declares such rules where they hol
 
 | Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
 |---|---|---|---|---|---|---|---|---|
-| `scheduled`<br>`01JPRED0000000000000000026` | any → event | multi per (subject) | event | — | — | `participants` (ids), `place` (id) | — | A planned event owned by the subject (an appointment, a deadline, a departure): its planned time is the valid-time instant, its `participants` and `place` qualifiers (FR-CLOCK-9). |
+| `scheduled`<br>`01JPRED0000000000000000026` | any → event | multi per (subject) | event | — | — | `participants` (ids), `place` (id) | scheduled_events | A planned event owned by the subject (an appointment, a deadline, a departure): its planned time is the valid-time instant, its `participants` and `place` qualifiers (FR-CLOCK-9). |
 
 ## Scene time
 
@@ -119,3 +120,20 @@ does not name its only institution. An author declares such rules where they hol
 | `on_channel`<br>`01JPRED0000000000000000031` | person → str | multi per (subject) | fluent | — | — | — | — | The subject is on a remote channel (a call in progress, a radio link), named by a free-text token (a `str` literal, no entity). Perception routing (#161) lets a `remote_channel` qualifier reach exactly the channel's participants, wherever they are. |
 | `spoke_to`<br>`01JPRED0000000000000000032` | person → person | multi per (subject) | event | — | — | — | — | The subject said something to the object at the instant: the observable envelope of an utterance (FR-TURN-2), which a character perceives without its words. |
 | `spoke`<br>`01JPRED0000000000000000033` | person → none | multi per (subject) | event | — | — | — | — | The subject said something (no object, no addressee) at the instant: the envelope of an utterance addressed to no one in particular. |
+
+## Tracked values
+
+| Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
+|---|---|---|---|---|---|---|---|---|
+| `state_value`<br>`01JPRED0000000000000000035` | any → any | functional per (subject, state) | fluent | — | — | `state` (id, key) | — | A story State's value (#191, FR-STATE-8, FR-VERIFY-7): the `state` qualifier is the State's id, the subject the character a per-character State belongs to (the State's own id for a story State), the object the value as a literal. Its canon is the State's fold at the claim's position (`core.states.verify`, an owner lookup), never a fact: an objective or narrator claim is `supported` when the fold equals it (a number within the State's tolerance) and `contradicted` otherwise. A character's belief about a value is an ordinary belief, acquired by observation or testimony. |
+| `agreed_to`<br>`01JPRED0000000000000000034` | any → any | multi per (subject) | event | — | — | — | — | The subject agreed to an action at the instant (#189, FR-STATE-11): the object is what the action is about (the item a sale pays for, else the other party). An action's preconditions read it as the counterparty's consent (`core.states.preconditions`). Consent is only an `agreed_to` a kept `say` or `do` beat of the subject declares, or a narrator beat declares; it is never inferred from prose. Negated, the subject refused. |
+
+## World clock
+
+| Predicate | Subject → object | Cardinality | Temporal | Direction | Exclusions, containment | Qualifiers | Projection | Semantics |
+|---|---|---|---|---|---|---|---|---|
+| `clock_anchor`<br>`01JPRED0000000000000000036` | any → str | multi per (subject) | event | — | — | — | — | A statement that anchors the world clock (#195, FR-CLOCK-3): the subject is the `world_clock` State's id, the object the components stated (a `str` literal holding the statement as JSON: admissible minutes of the day, weekday, year, month, day). It is a commitment written where the anchor is established, with `visibility = engine` (no character retrieval or context ever reads it); the clock's anchor at a position is the fold of the active anchor facts through it. |
+| `time_of_day_band`<br>`01JPRED0000000000000000037` | any → str | functional per (subject) | fluent | — | — | — | — | Which time-of-day band it is (a `str` literal naming one of the clock's bands: "morning", "evening"), about the scene's place. A clock check (#195): with the clock on it is answered by the anchor, `supported` only when every admissible time lies in the band and `contradicted` when none does; with the clock off it is `uncertain(no_clock)`. |
+| `elapsed_since`<br>`01JPRED0000000000000000038` | any → duration | functional per (subject, since) | fluent | — | — | `since` (int, key) | — | How long it has been (a `duration` literal in minutes) since the story-minute `since`. A clock check (#195): the clock's offset is exact, so it is `supported` within the clock's `elapsed_tolerance_factor` and `contradicted` outside it; with the clock off it is `uncertain(no_clock)`. |
+| `scheduled_status`<br>`01JPRED0000000000000000039` | event → str | functional per (subject) | fluent | — | — | — | — | A scheduled event's status (a `str` literal: `due`, `not_due`, `possibly_due`, `past`). A clock check (#195): `uncertain` until scheduled events are kept (#196, #197); with the clock off it is `uncertain(no_clock)`. |
+| `current_time`<br>`01JPRED0000000000000000040` | any → str | functional per (subject) | fluent | — | — | — | — | What time it is, as a holder came to believe it (#200, FR-CLOCK-15): the subject is the `world_clock` State's id, the object the time as read or told (a `str` literal: "15:00", "about four"), the valid-time the instant it was read or told. Viewpoint-free and held only as a belief, written through `transition()` with an `observation` (a watch or clock beat) or `testimony` antecedent: it overrides the time a character derives from the story's `time_awareness`, carried forward by the time the character perceives since (`core.world_clock.time_belief`). |

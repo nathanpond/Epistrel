@@ -17,10 +17,14 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   language; quantities (number words 0-999 and thousand/million multiples, digits, a unit or
   currency); time expressions (#139's ``find_time_expressions`` and a clock-time table);
   entity and alias mentions no declared proposition covers; and **protected-content** matching
-  (``core.verify.protected``: names, aliases and values hidden from the speaker). Each hit is a
+  (``core.verify.protected``: names, aliases and values hidden from the speaker; never over the
+  player's own input, whose text asserts only what it states, #567). Each hit is a
   #140 ``ClaimSketch`` and goes through ``normalize``: possession → ``holds``; transfer →
-  ``holds`` for the recipient (and a negated ``holds`` for the giver); consumption →
-  ``consumed``; injury → ``injured`` (its cause a qualifier); movement → ``located_at`` (a
+  ``holds`` for the recipient (and a negated ``holds`` for the giver; when the giver is the
+  clause's subject, the recipient's claim names it, ``giver``, #519); consumption →
+  ``consumed``; injury → ``injured`` (its cause a qualifier); consciousness (#200) →
+  ``unconscious`` (passing out or falling asleep, its ``kind``; waking or coming to a negated one
+  of the kind the subject is in, ``DetectionEnv.unconscious``); movement → ``located_at`` (a
   departure from a named place, "left the orchard", "out of the orchard": a negated
   ``located_at`` of it, #440; a departure with no place: a negated ``located_at`` of the
   current placement; a negated departure asserts nothing); a lone clock
@@ -29,7 +33,9 @@ its prose was declared. ``detect_render(beats, …)`` (once per render, every be
   ``do`` beat, a sentence-initial pronoun or none is the actor), the object the nearest one
   after it of the predicate's object type. A quantity in the clause of a possession, transfer or
   consumption claim is its ``quantity`` qualifier; alone it is a claim no predicate states yet
-  (``uncertain``, never a guess). A negation cue back to the clause start makes a claim
+  (``uncertain``, never a guess), unless it states a tracked State's balance (#191,
+  ``DetectionEnv.states``): then it is that State's ``state_value`` claim
+  (``core.states.verify.state_claim``). A negation cue back to the clause start makes a claim
   ``negated``; a question, a conditional or a modal suppresses the clause (nothing is asserted).
   A word the tables list is a noun, not a verb, after a determiner or a possessive ("her
   pocket"). A hit whose argument is an unresolved common noun ("the key" with no such entity) is
@@ -73,7 +79,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache
 from importlib import resources
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from epistrel.core.commit.sketch import ThunkSketch, fills
 from epistrel.core.propositions.model import (
@@ -99,6 +105,9 @@ from epistrel.core.verify.normalize import ClaimSketch, Unnormalizable, normaliz
 from epistrel.core.verify.protected import PrivateRecord, ProtectedIndex, match_thoughts
 from epistrel.core.verify.rules import VerdictReason
 
+if TYPE_CHECKING:
+    from epistrel.core.states.verify import TrackedState
+
 Layer = Literal["declared", "detector", "extraction"]
 LAYERS: tuple[Layer, ...] = ("declared", "detector", "extraction")
 Category = Literal[
@@ -111,6 +120,7 @@ Category = Literal[
     "consumption",
     "injury",
     "movement",
+    "consciousness",
     "time",
     "protected_content",
     "inner_state",
@@ -124,6 +134,7 @@ DETECTOR_CATEGORIES: tuple[Category, ...] = (
     "consumption",
     "injury",
     "movement",
+    "consciousness",
     "time",
     "protected_content",
     "inner_state",
@@ -135,6 +146,10 @@ RISK_CATEGORIES: frozenset[str] = frozenset(
     {"possession", "transfer", "quantity", "time", "protected_content"}
 )
 """A detector hit of one of these flags its beat for ``gated`` extraction."""
+ELAPSED = "elapsed"
+"""#199 (FR-CLOCK-7): the ``time`` detector's hit kind for a phrase narrating elapsed time
+(``BeatDetection.elapsed``): no claim and no flag; ``core.states.completeness.undeclared_skips``
+reads it as an undeclared skip when the beat declares no time advance."""
 INCOMPLETE = "incomplete"
 """The flag of a ``say``/``do`` beat that declared no proposition."""
 UNCOVERED_MENTION = "uncovered_mention"
@@ -151,6 +166,9 @@ MESSAGE = "message"
 THINK_REF = "think:"
 """The ``protected_ref`` prefix of a claim that leaks a private thought (#172)."""
 INNER_STATE_CHANNELS: frozenset[str] = frozenset({"say", "do", "narration", "message"})
+CHANGE_CATEGORIES: frozenset[str] = frozenset({"movement", "consciousness"})
+"""The detector categories whose verb states a change (#518's ``change_cue``; #200 adds
+consciousness: passing out, waking)."""
 """The beats the inner-state check reads (#172): every player-facing channel."""
 
 Span = tuple[int | None, int, int]
@@ -210,9 +228,13 @@ class Tables:
     quantity: Mapping[str, Any]
     time: Mapping[str, Any]
     cues: Mapping[str, Any]
+    states: tuple[VerbTable, ...] = ()
+    """#200: the verb tables of a subject's state (consciousness), detected as ``verbs`` are."""
 
 
 VERB_CATEGORIES = ("possession", "transfer", "consumption", "injury", "movement")
+STATE_CATEGORIES = ("consciousness",)
+"""#200: the state verb tables (``Tables.states``): passing out, falling asleep, waking."""
 
 
 def _table(name: str) -> dict[str, Any]:
@@ -221,27 +243,32 @@ def _table(name: str) -> dict[str, Any]:
     return loaded
 
 
+def _verb_table(category: str) -> VerbTable:
+    raw = _table(category)
+    lemmas = tuple(
+        Lemma(
+            str(e["lemma"]),
+            tuple(str(f) for f in e["forms"]),
+            {k: v for k, v in e.items() if k not in ("lemma", "forms")},
+        )
+        for e in raw["lemmas"]
+    )
+    options = {
+        k: v for k, v in raw.items() if k not in ("category", "language", "description", "lemmas")
+    }
+    return VerbTable(category, str(raw["predicate"]), lemmas, options)
+
+
 @cache
 def tables() -> Tables:
     """The English detector tables (``detectors/*.json``)."""
-    verbs = []
-    for category in VERB_CATEGORIES:
-        raw = _table(category)
-        lemmas = tuple(
-            Lemma(
-                str(e["lemma"]),
-                tuple(str(f) for f in e["forms"]),
-                {k: v for k, v in e.items() if k not in ("lemma", "forms")},
-            )
-            for e in raw["lemmas"]
-        )
-        options = {
-            k: v
-            for k, v in raw.items()
-            if k not in ("category", "language", "description", "lemmas")
-        }
-        verbs.append(VerbTable(category, str(raw["predicate"]), lemmas, options))
-    return Tables(tuple(verbs), _table("quantity"), _table("time"), _table("cues"))
+    return Tables(
+        tuple(_verb_table(c) for c in VERB_CATEGORIES),
+        _table("quantity"),
+        _table("time"),
+        _table("cues"),
+        tuple(_verb_table(c) for c in STATE_CATEGORIES),
+    )
 
 
 def _alternation(words: Sequence[str]) -> str:
@@ -252,7 +279,7 @@ def _alternation(words: Sequence[str]) -> str:
 @cache
 def _verb_patterns() -> tuple[tuple[VerbTable, Lemma, re.Pattern[str]], ...]:
     found = []
-    for table in tables().verbs:
+    for table in (*tables().verbs, *tables().states):
         for lemma in table.lemmas:
             pattern = re.compile(rf"(?<![\w'\u2019])(?:{_alternation(lemma.forms)})(?![\w'\u2019])")
             found.append((table, lemma, pattern))
@@ -361,6 +388,9 @@ class DetectBeat:
     text: str
     speaker: str = NARRATOR
     declared: tuple[DeclaredClaim, ...] = ()
+    flashback: bool = False
+    """#194 (FR-CLOCK-17): a flashback's time expressions are never checked against the present:
+    its clock times and time-of-day statements become no claim."""
 
 
 def shape_of(p: Proposition) -> tuple[Any, ...]:
@@ -399,6 +429,11 @@ class DetectedClaim:
     speaker's own assertion."""
     recalled: str | None = field(default=None, compare=False, repr=False)
     """#172: a ``recall`` claim's recalled content (never in a payload)."""
+    giver: str | None = None
+    """#519: the entity that hands the item over, on a transfer's affirmed ``holds`` of its
+    recipient when the giver is the clause's subject ("Jenni hands Cal the key"): the
+    permission check reads it (a render's own character handing the player's character an
+    item is that render's own action)."""
 
     @property
     def think_leak(self) -> bool:
@@ -413,6 +448,17 @@ class DetectedClaim:
     @property
     def protected(self) -> bool:
         return self.category == "protected_content"
+
+    @property
+    def change_cue(self) -> bool:
+        """#518: the claim states a change, so it may change its speaker's own fluent from its
+        start (``core.verify.rules``' ``fluent_change``): the render declared it, or the movement
+        detector found it (a verb of motion), or (#200) the consciousness detector (passing out,
+        waking). An extraction-only claim ("never set foot in the
+        cellar") states no change: it keeps the contradiction rules' answer."""
+        return self.layer == "declared" or (
+            self.category in CHANGE_CATEGORIES and "detector" in (self.layer, *self.merged)
+        )
 
     @property
     def matches(self) -> int:
@@ -451,6 +497,10 @@ class BeatDetection:
     hits: Mapping[str, int] = field(default_factory=dict)
     noise: int = 0
     flags: tuple[str, ...] = ()
+    elapsed: tuple[tuple[int, int], ...] = ()
+    """#199 (FR-CLOCK-7): the spans of the beat that narrate elapsed time (``elapsed_spans``; a
+    ``time`` hit of kind ``elapsed``, never a claim): none on a flashback, whose time is not the
+    present's."""
 
     @property
     def flagged(self) -> bool:
@@ -522,6 +572,14 @@ class DetectionEnv:
     private: tuple[PrivateRecord, ...] = ()
     """#172: the characters' private records (their ``think``s and belief statements) the
     thought side index and the inner-state check read (``core.verify.protected``)."""
+    states: tuple[TrackedState, ...] = ()
+    """#191: the story's States (``core.states.verify.tracked``): a lone quantity naming a
+    number State in a sentence that states a balance is a ``state_value`` claim."""
+    scope_keys: frozenset[str] = frozenset()
+    """#191: the story's characters, the scope keys of a per-character State."""
+    unconscious: Mapping[str, str] = field(default_factory=dict)
+    """#200: the entities canon holds unconscious at the turn's start, with the ``kind`` each
+    is in (``core.epistemic.scene.unconscious_kinds``): a waking ends that kind."""
 
     def with_private(self, records: Sequence[PrivateRecord]) -> DetectionEnv:
         """This environment with ``records`` added to its private records (a render's
@@ -616,6 +674,8 @@ class _Beat:
     uncovered: bool = False
     """An uncovered mention that became no claim (``UNCOVERED_MENTION``)."""
     sketches: list[tuple[str, ClaimSketch, tuple[int, int]]] = field(default_factory=list)
+    givers: dict[int, str] = field(default_factory=dict)
+    """#519: a transfer sketch's giver, by its index in ``sketches``."""
 
     def hit(self, category: str) -> None:
         self.hits[category] = self.hits.get(category, 0) + 1
@@ -723,6 +783,8 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
             continue
         if at > 0 and beat.tokens[at - 1].word in _DETERMINERS:
             continue
+        if lemma.options.get("bare") and _continues(beat, end, at):
+            continue  # #200: "came to the diner" is movement, "came to" alone a waking
         taken.append((start, end))
         token = beat.tokens[at]
         beat.hit(table.category)
@@ -735,6 +797,35 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
         if not made:
             beat.noise += 1
             beat.risky.add(table.category)
+
+
+def _continues(beat: _Beat, end: int, at: int) -> bool:
+    """Whether a word follows ``end`` in the clause of ``beat.tokens[at]``."""
+    clause = beat.tokens[at].clause
+    return any(t.start >= end and t.clause == clause for t in beat.tokens)
+
+
+def _consciousness(
+    beat: _Beat,
+    lemma: Lemma,
+    subject: str | None,
+    polarity: Polarity,
+    span: tuple[int, int],
+    env: DetectionEnv,
+) -> bool:
+    """#200: ``unconscious(subject)`` with its ``kind`` (see the module docstring); a waking is
+    a negated one of the kind the subject is in. A negated verb asserts nothing."""
+    if subject is None or polarity is Polarity.NEGATED:
+        return False
+    state = str(lemma.options.get("state", "unconscious"))
+    if state == "awake":
+        kind = env.unconscious.get(subject) or str(lemma.options.get("ends", "asleep"))
+        claim = _sketch(subject, "unconscious", None, Polarity.NEGATED, span, {"kind": kind})
+    else:
+        claim = _sketch(subject, "unconscious", None, polarity, span, {"kind": state})
+    beat.sketches.append(("consciousness", claim, span))
+    beat.used.add(subject)
+    return True
 
 
 def _sketch(
@@ -814,6 +905,8 @@ def _verb_claims(
         )
         beat.used |= {victim, *([subject] if subject else [])}
         return True
+    if category == "consciousness":
+        return _consciousness(beat, lemma, subject, polarity, span, env)
     if subject is None:
         return False
     if category == "movement":
@@ -898,6 +991,8 @@ def _transfer(
         return False
     item = str(items[0].entity_id)
     if recipient is not None:
+        if polarity is Polarity.AFFIRMED:
+            beat.givers[len(beat.sketches)] = subject
         beat.sketches.append(("transfer", _sketch(recipient, "holds", item, polarity, span), span))
     if polarity is Polarity.AFFIRMED:
         beat.sketches.append(
@@ -908,9 +1003,15 @@ def _transfer(
 
 
 def _quantity_hits(beat: _Beat) -> list[tuple[int, int, TypedLiteral]]:
+    return quantity_spans(beat.text)
+
+
+def quantity_spans(text: str) -> list[tuple[int, int, TypedLiteral]]:
+    """Every amount with a known unit in ``text`` (``forty arrows`` is not one: the unit table
+    is the detector's), as ``(start, end, quantity literal)``; the unit is its lemma."""
     q = tables().quantity
     found = []
-    for match in _quantity_pattern().finditer(beat.text):
+    for match in _quantity_pattern().finditer(text):
         number = parse_number(match.group("number"))
         if number is None:
             continue
@@ -919,6 +1020,12 @@ def _quantity_hits(beat: _Beat) -> list[tuple[int, int, TypedLiteral]]:
         literal = TypedLiteral(kind=LiteralKind.QUANTITY, value=number, unit=unit)
         found.append((match.start(), match.end(), literal))
     return found
+
+
+def parse_quantities(text: str) -> list[TypedLiteral]:
+    """The quantity literals in ``text`` (``quantity_spans`` without the offsets): #148's
+    deterministic parse, for a reader re-reading a detected span (#192's State proposals)."""
+    return [literal for _, _, literal in quantity_spans(text)]
 
 
 def render_quantity(literal: TypedLiteral) -> str:
@@ -993,6 +1100,136 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
                     span=match.span(),
                 ),
                 match.span(),
+            )
+        )
+    return found
+
+
+_AMOUNT: Final = (
+    r"(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty|"
+    r"thirty|forty|forty-five|fifty|sixty|ninety|a\s+few|a\s+couple\s+of|several|\d+|"
+    r"half\s+an?|another)"
+)
+_DURATION: Final = rf"{_AMOUNT}\s+(?:more\s+)?(?:minute|hour|day|week|month|year)s?"
+_PASSING: Final = (
+    r"(?:later|pass(?:es|ed)?|go(?:es)?\s+by|went\s+by|slip(?:s|ped)?\s+(?:by|away)|"
+    r"drag(?:s|ged)?\s+(?:on|by)|wear(?:s)?\s+on|wore\s+on|crawl(?:s|ed)?\s+by)"
+)
+_ACTIVITIES: Final = (
+    r"(?:movie|film|show|episode|game|match|evening|night|day|afternoon|morning|meal|dinner|"
+    r"lunch|breakfast|drive|ride|trip|journey|flight|shift|concert|play|lecture|class|meeting|"
+    r"party|walk|hike|session|book|chapter|wait)"
+)
+ELAPSED_PATTERNS: Final = (
+    # "twenty minutes later", "two hours pass", "an hour goes by"
+    rf"\b{_DURATION}\s+{_PASSING}\b",
+    # "for an hour", "after twenty minutes", "over the next two hours"
+    rf"\b(?:for|after|over|within)\s+(?:the\s+next\s+|nearly\s+|almost\s+|about\s+)?"
+    rf"{_DURATION}\b",
+    # "the drive takes twenty minutes", "they spend an hour"
+    rf"\b(?:take|takes|took|taking|spend|spends|spent|spending|last|lasts|lasted)\s+"
+    rf"(?:about\s+|nearly\s+|almost\s+|around\s+|another\s+)?{_DURATION}\b",
+    # "hours later", "some time later", "a while later"
+    r"\b(?:hours|minutes|days|weeks|much|some\s+time|a\s+while|not\s+long)\s+later\b",
+    # "the rest of the movie"
+    rf"\bthe\s+rest\s+of\s+the\s+{_ACTIVITIES}\b",
+    # "later that night"
+    r"\blater\s+that\s+(?:night|evening|day|morning|afternoon)\b",
+    # "the next morning", "the following day"
+    r"\bthe\s+(?:next|following)\s+(?:morning|day|evening|night|afternoon|week)\b",
+    # "until the diner closes", "until dawn", "until 6"
+    r"\b(?:until|till)\s+(?:the\s+[\w'\u2019]+\s+(?:closes|close|closed|ends|end|ended|"
+    r"finishes|finish|finished|is\s+over|was\s+over|comes|came|arrives|arrived|rolls|roll|"
+    r"rolled|runs\s+out|ran\s+out)|dawn|daybreak|sunrise|sunset|dusk|nightfall|morning|"
+    r"midnight|noon|late|evening|the\s+small\s+hours|the\s+early\s+hours|"
+    r"\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?(?![\w:]))",
+    # a subordinate clause: "by the time the kettle has boiled twice"
+    r"\bby\s+the\s+time\b",
+    # "the night wears on", "the afternoon slips away"
+    rf"\b(?:the\s+)?(?:night|hours|minutes|evening|afternoon|day|morning)\s+{_PASSING}\b",
+    # "wake at dawn", "woke to the morning"
+    r"\b(?:wake|wakes|woke|waking)\s+(?:up\s+)?(?:at|with|to|in)\s+(?:dawn|daybreak|"
+    r"sunrise|the\s+morning|first\s+light|noon)\b",
+    # "through the night"
+    r"\bthrough\s+the\s+(?:night|evening|afternoon|day)\b",
+)
+"""#199 (FR-CLOCK-7): the phrases that narrate elapsed time beyond a beat's spoken length,
+the ``time`` detector's ``elapsed`` hits (English, like every detector table)."""
+
+
+@cache
+def _elapsed_pattern() -> re.Pattern[str]:
+    return re.compile("|".join(f"(?:{p})" for p in ELAPSED_PATTERNS), re.IGNORECASE)
+
+
+def elapsed_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """#199: the ``[start, end)`` spans of ``text`` that narrate elapsed time ("they watch the
+    rest of the movie", "an hour later", "until the diner closes", "by the time …"), in text
+    order and never overlapping."""
+    return tuple(m.span() for m in _elapsed_pattern().finditer(text))
+
+
+_WEEKDAYS: Final = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _clock_statements(
+    beat: _Beat, env: DetectionEnv
+) -> list[tuple[str, ClaimSketch, tuple[int, int]]]:
+    """#195, with the world clock on only (a clock-off story detects as in M4): a greeting
+    naming a time-of-day band ("good evening") is a ``time_of_day_band`` claim, and "it is
+    (was) <weekday> [<band>]" or "it is <band>" a ``time_is`` claim of the day and band as
+    said; both of the scene's place, both clock checks (``core.world_clock.verify``)."""
+    from epistrel.core.world_clock.anchor import Anchor
+
+    anchor = env.basis.anchor
+    weekdays = anchor.clockwork.weekdays if isinstance(anchor, Anchor) else _WEEKDAYS
+    bands = [b[0].casefold() for b in env.basis.bands or ()] or [
+        "morning",
+        "afternoon",
+        "evening",
+        "night",
+    ]
+    band = "|".join(re.escape(b) for b in sorted(set(bands), key=len, reverse=True))
+    day = "|".join(re.escape(w) for w in sorted(weekdays, key=len, reverse=True))
+    found: list[tuple[str, ClaimSketch, tuple[int, int]]] = []
+    greeting = re.compile(rf"(?<![\w'\u2019])good\s+(?P<band>{band})(?![\w'\u2019])", re.I)
+    for match in greeting.finditer(beat.text):
+        if match.group("band").casefold() == "night":
+            continue  # a farewell, not a time of day
+        beat.hit("time")
+        found.append(
+            (
+                "time",
+                ClaimSketch(
+                    relation_text="time_of_day_band",
+                    subject_id=env.scene_entity,
+                    literal=TypedLiteral(
+                        kind=LiteralKind.STR, value=match.group("band").casefold()
+                    ),
+                    span=match.span(),
+                ),
+                match.span(),
+            )
+        )
+    stated = re.compile(
+        rf"(?<![\w'\u2019])it(?:\s+(?:is|was)|['\u2019]s)\s+(?:now\s+)?(?:a\s+)?"
+        rf"(?P<said>(?:{day})(?:\s+(?:{band}))?|(?:{band}))(?![\w'\u2019])",
+        re.I,
+    )
+    for match in stated.finditer(beat.text):
+        beat.hit("time")
+        found.append(
+            (
+                "time",
+                ClaimSketch(
+                    relation_text="time_is",
+                    subject_id=env.scene_entity,
+                    literal=TypedLiteral(
+                        kind=LiteralKind.STR, value=" ".join(match.group("said").split()).casefold()
+                    ),
+                    span=match.span("said"),
+                ),
+                match.span("said"),
             )
         )
     return found
@@ -1117,16 +1354,28 @@ def _detect_beat(
         )
     _verb_hits(work, env.registry, env)
     lone = _quantities(work)
-    lone += _times(work, env.scene_entity)
+    clocked = _times(work, env.scene_entity)
+    elapsed: tuple[tuple[int, int], ...] = ()
+    if not beat.flashback:
+        lone += clocked
+        elapsed = elapsed_spans(beat.text)
+        for _ in elapsed:
+            work.hit(ELAPSED)
+    if env.basis.advances is not None and not beat.flashback:
+        lone += _clock_statements(work, env)
     mention_claims = _mentions(work, _declared_ids(beat), env.scene_entity, seed=seed)
     found_claims: list[DetectedClaim] = []
-    for category, sketch, _span in [*work.sketches, *lone]:
+    for i, (category, sketch, _span) in enumerate([*work.sketches, *lone]):
+        tracked = _state_value(work, sketch, env) if category == "quantity" else None
+        if tracked is not None:
+            found_claims.append(_claim(index, beat, category, sketch, tracked))
+            continue
         found = _normalize_one(sketch, beat.speaker, position, env, context)
         if isinstance(found, Unnormalizable) and sketch.literal is None:
             work.noise += 1  # an unresolved common noun: noise, never a claim
             work.risky.add(category)
             continue
-        found_claims.append(_claim(index, beat, category, sketch, found))
+        found_claims.append(_claim(index, beat, category, sketch, found, work.givers.get(i)))
     for _category, sketch_or_reason, span in mention_claims:
         if isinstance(sketch_or_reason, Unnormalizable):
             found_claims.append(
@@ -1142,9 +1391,14 @@ def _detect_beat(
             continue
         found = _normalize_one(sketch_or_reason, beat.speaker, position, env, context)
         found_claims.append(_claim(index, beat, "entity_mention", sketch_or_reason, found))
-    # Every channel is scanned for protected content but a speaker's own ``think``.
+    # Every channel is scanned for protected content but a speaker's own ``think`` and the
+    # player's own input (#567): a hit claims the hidden record's proposition, which the
+    # player's text never states ("Who has the deed?" is no "Tom holds the deed"), and the
+    # input is never repaired, so the hit would stand as its assertion and reach every hearer
+    # by testimony. The composed message the player's character reads is still scanned.
     if not seed and not (beat.channel == "think" and beat.speaker != NARRATOR):
-        found_claims += _protected(work, env.protected_for(beat.speaker))
+        if message or beat.speaker != PLAYER:
+            found_claims += _protected(work, env.protected_for(beat.speaker))
         found_claims += _private(work, env, message=message)
     # A detector claim with a declared claim's shape is that claim (declared > detector).
     by_shape = {
@@ -1157,7 +1411,11 @@ def _detect_beat(
         # nested beliefs: not a second claim.
         if target is not None and (not claim.protected or claims[target].attribution is not None):
             old = claims[target]
-            claims[target] = replace(old, merged=tuple(dict.fromkeys((*old.merged, "detector"))))
+            claims[target] = replace(
+                old,
+                merged=tuple(dict.fromkeys((*old.merged, "detector"))),
+                giver=old.giver or claim.giver,  # #519: the text names who handed it over
+            )
             continue
         claims.append(claim)
         if claim.category in RISK_CATEGORIES:
@@ -1182,6 +1440,38 @@ def _detect_beat(
         hits=dict(work.hits),
         noise=work.noise,
         flags=tuple(flags),
+        elapsed=elapsed,
+    )
+
+
+def _state_value(beat: _Beat, sketch: ClaimSketch, env: DetectionEnv) -> Proposition | None:
+    """#191: a lone quantity as a ``state_value`` claim (``core.states.verify.state_claim``):
+    its subject the mention before it in its sentence (on a ``do`` beat with none, the actor),
+    negated by a negation cue in its clause; ``None`` when it is no State's balance."""
+    from epistrel.core.states.verify import state_claim
+
+    literal, span = sketch.literal, sketch.span
+    if (
+        not env.states
+        or literal is None
+        or span is None
+        or literal.kind is not LiteralKind.QUANTITY
+    ):
+        return None
+    at = _token_at(beat.tokens, span[0])
+    if at is None or isinstance(literal.value, str | bool):
+        return None
+    sentence = beat.tokens[at].sentence
+    words = [t for t in beat.tokens if t.sentence == sentence]
+    negated = _negated(beat.tokens, at)
+    return state_claim(
+        env.states,
+        literal.unit,
+        literal.value,
+        subject=_subject(beat, span[0], sentence),
+        scope_keys=env.scope_keys,
+        sentence=beat.text[words[0].start : words[-1].end],
+        polarity=Polarity.NEGATED if negated else Polarity.AFFIRMED,
     )
 
 
@@ -1191,6 +1481,7 @@ def _claim(
     category: str,
     sketch: ClaimSketch,
     found: Proposition | Unnormalizable,
+    giver: str | None = None,
 ) -> DetectedClaim:
     start, end = sketch.span or (0, len(beat.text))
     return DetectedClaim(
@@ -1202,6 +1493,7 @@ def _claim(
         proposition=found if isinstance(found, Proposition) else None,
         unnormalized=found if isinstance(found, Unnormalizable) else None,
         sketch=sketch,
+        giver=giver,
     )
 
 
@@ -1388,6 +1680,8 @@ def merge(
 
 __all__ = [
     "DETECTOR_CATEGORIES",
+    "ELAPSED",
+    "ELAPSED_PATTERNS",
     "INCOMPLETE",
     "LAYERS",
     "MESSAGE",
@@ -1410,8 +1704,11 @@ __all__ = [
     "detect_message",
     "detect_render",
     "detect_seed",
+    "elapsed_spans",
     "merge",
     "parse_number",
+    "parse_quantities",
+    "quantity_spans",
     "render_quantity",
     "shape_hash",
     "shape_of",

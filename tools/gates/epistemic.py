@@ -31,7 +31,16 @@ And one read rule (#167, FR-BELIEF-15, NFR-PRIV-1):
 - **the objective relation is a label**: ``nested.attribution_objective_relation`` (whether an
   attributed holder actually believes what a speaker attributed to it) is imported or called
   only by ``core/epistemic/nested.py`` (its definition) and the verifier that labels utterances
-  (``orchestrator/verify/verifier.py``), so it can never reach a speaker's context.
+  (``orchestrator/verify/verifier.py``), so it can never reach a speaker's context;
+- **the stored label is read only where it labels** (#563): the relation once computed is
+  stored on ``utterances``/``divergences`` rows (``attribution_objective_relation``, migrations
+  0074 and 0082), carried on ``AssertedClaim.attribution_objective`` and on
+  ``AttributionCheck.objective``. An attribute read of either column name on any object, of
+  ``.objective`` on an ``AttributionCheck`` (the class, a name annotated as or assigned from
+  one, or any receiver named ``attribution*``: by AST, so a name, not a type), or a ``getattr``
+  of them, is a finding outside ``LABEL_READERS``: the modules (or the functions within them)
+  that compute the label, write the utterance label or record the divergences. ``.objective``
+  on anything else (an eval's gold label, ``beliefs.objective()``) is not this relation.
 
 Run: ``python -m tools.gates check-epistemic-separation`` (exit 0 clean, 1 findings); enforced
 in CI by ``tests/gates/test_epistemic_separation.py``.
@@ -145,6 +154,109 @@ def _objective_reads(tree: ast.AST) -> Iterator[tuple[int, str]]:
             yield node.lineno, f"nested.{node.attr}"
 
 
+STORED_LABELS = frozenset({"attribution_objective_relation", "attribution_objective"})
+"""Attribute names that carry the stored label: the ``utterances``/``divergences`` column
+(migrations 0074, 0082) and ``AssertedClaim.attribution_objective`` (#563)."""
+CHECK_CLASS = "AttributionCheck"
+CHECK_FIELD = "objective"
+LABEL_READERS: dict[str, frozenset[str] | None] = {
+    # module -> the functions in it that may read the label (None: the whole module)
+    "src/epistrel/core/epistemic/nested.py": None,  # computes the relation
+    "src/epistrel/orchestrator/verify/verifier.py": None,  # AttributionCheck, the verifier
+    "src/epistrel/core/epistemic/divergences.py": None,  # the divergence records
+    "src/epistrel/core/turns/beats.py": frozenset(
+        {"attribution_objective_of", "write_utterances"}  # the utterance label
+    ),
+    "src/epistrel/orchestrator/structured/pipeline.py": frozenset({"_asserted"}),
+    "src/epistrel/orchestrator/epistemic/speech.py": frozenset({"speech_committed"}),
+}
+
+
+def _mentions_check(annotation: ast.expr | None) -> bool:
+    return annotation is not None and any(
+        (isinstance(n, ast.Name) and n.id == CHECK_CLASS)
+        or (isinstance(n, ast.Attribute) and n.attr == CHECK_CLASS)
+        or (isinstance(n, ast.Constant) and isinstance(n.value, str) and CHECK_CLASS in n.value)
+        for n in ast.walk(annotation)
+    )
+
+
+def _checks(tree: ast.AST) -> frozenset[str]:
+    """Names the module binds to an ``AttributionCheck``: annotated as one (a parameter, an
+    annotated assignment) or assigned from a call of it. Flow-insensitive, per module."""
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.arg) and _mentions_check(node.annotation):
+            bound.add(node.arg)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and _mentions_check(node.annotation)
+        ):
+            bound.add(node.target.id)
+        elif isinstance(node, ast.Assign | ast.NamedExpr) and isinstance(node.value, ast.Call):
+            func = node.value.func
+            if (isinstance(func, ast.Name) and func.id == CHECK_CLASS) or (
+                isinstance(func, ast.Attribute) and func.attr == CHECK_CLASS
+            ):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                bound.update(t.id for t in targets if isinstance(t, ast.Name))
+    return frozenset(bound)
+
+
+def _is_check(receiver: ast.expr, checks: frozenset[str]) -> bool:
+    """Whether ``receiver.objective`` reads an ``AttributionCheck``'s objective relation: the
+    class itself, a name bound to one, or anything named ``attribution*`` (``result.attribution``,
+    ``attribution``; the verifier's ``CheckResult.attribution`` is the one carrier)."""
+    if isinstance(receiver, ast.Name):
+        name = receiver.id
+    elif isinstance(receiver, ast.Attribute):
+        name = receiver.attr
+    else:
+        return False
+    return name in checks or name == CHECK_CLASS or name.lower().startswith("attribution")
+
+
+def _label_reads(tree: ast.AST) -> Iterator[tuple[int, str, tuple[str, ...]]]:
+    """Reads of the stored objective relation (#563), with their enclosing functions:
+    ``x.attribution_objective_relation`` / ``x.attribution_objective`` on anything,
+    ``.objective`` on an ``AttributionCheck`` (see ``_is_check``), and ``getattr`` of either."""
+    checks = _checks(tree)
+
+    def visit(node: ast.AST, scope: tuple[str, ...]) -> Iterator[tuple[int, str, tuple[str, ...]]]:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            scope = (*scope, node.name)
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            if node.attr in STORED_LABELS:
+                if not (isinstance(node.value, ast.Name) and node.value.id == "nested"):
+                    yield node.lineno, f".{node.attr}", scope  # nested.: the rule above
+            elif node.attr == CHECK_FIELD and _is_check(node.value, checks):
+                yield node.lineno, f"{CHECK_CLASS}.{CHECK_FIELD}", scope
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+        ):
+            attr = node.args[1].value
+            if attr in STORED_LABELS:
+                yield node.lineno, f"getattr(..., {attr!r})", scope
+            elif attr == CHECK_FIELD and _is_check(node.args[0], checks):
+                yield node.lineno, f"getattr({CHECK_CLASS}, {attr!r})", scope
+        for child in ast.iter_child_nodes(node):
+            yield from visit(child, scope)
+
+    yield from visit(tree, ())
+
+
+def _label_allowed(rel: str, scope: tuple[str, ...]) -> bool:
+    if rel not in LABEL_READERS:
+        return False
+    functions = LABEL_READERS[rel]
+    return functions is None or bool(functions & set(scope))
+
+
 def _names(tree: ast.AST, wanted: frozenset[str]) -> Iterator[tuple[int, str]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id in wanted:
@@ -175,6 +287,17 @@ def writes(root: Path = REPO_ROOT) -> list[str]:
                 "for the verifier only (FR-BELIEF-15, #167)"
                 for line, name in sorted(set(_objective_reads(tree)))
             )
+        findings.extend(
+            f"{rel}:{line}: reads the stored {name}; an attribution's objective relation is "
+            "for labelling and divergence only (FR-BELIEF-15, NFR-PRIV-1, #563)"
+            for line, name in sorted(
+                {
+                    (line, name)
+                    for line, name, scope in _label_reads(tree)
+                    if not _label_allowed(rel, scope)
+                }
+            )
+        )
         if rel.startswith(EPISTEMIC_SIDE.package + "/"):
             findings.extend(
                 f"{rel}:{line}: names {name}; a belief never writes canon (FR-EPI-3, #160)"

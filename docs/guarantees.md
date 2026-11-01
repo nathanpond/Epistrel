@@ -35,7 +35,7 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 | perception routing and audience filtering | `audience_filtering` | deterministic | — (tested, not measured) | `perception` at `co_location` or above; story setting `player_view = character` | — |
 | per-character render isolation | `multi_character_isolation` | deterministic | — (tested, not measured) | `multi_character` at `per_character` | — |
 | commitment and ledger mechanics | `commitment_mechanics` | deterministic | — (tested, not measured) | `commitment` | — |
-| clock pacing and stops | `clock_pacing` | deterministic | — (tested, not measured) | `clock` at `on` | — |
+| clock pacing and stops | `clock_pacing` | deterministic | — (tested, not measured) | `clock` at `on`; `scheduled_stops` | — |
 | timeline and concurrency operations | `timeline_concurrency` | deterministic | — (tested, not measured) | none (every profile) | — |
 | deterministic claim detectors | `claim_detectors` | deterministic | — (tested, not measured) | `verification` at `declared` or above | — |
 | generation | `generation` | model-dependent | NFR-QUAL-7 | none (every profile) | `generation` |
@@ -60,13 +60,15 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 - `viewpoint_filtering`: Under every profile, a character viewpoint never receives any character's `think` or `latent` content (FR-RESP-12).
 - `structural_knowledge_separation`: Without partitions, characters' knowledge is separated only by instructions in a shared prompt, so secrets seeded from the catalog or scenario are present in the shared context (FR-LITE-5).
 - `verification`: Only the claims detected in an output are checked; nothing else in its prose is.
+- `state_effect_validation`: Under `lite`, or with `states.level = prompt_only`, States are shown in the prompt and changed only through the State API (FR-LITE-5): a reply declares no effect, so none is validated.
 - `audience_filtering`: Provided only under the story setting `player_view = character` (the default): under `story` a character viewpoint receives every beat in full, never a `think` or `latent`, and its partition and memory are routed as under `character` (FR-RESP-13; #177). A profile's table cannot know a story's `player_view`, so it says what the default gives; a story's table (`GET /stories/{id}/guarantees`) reads it.
 - `multi_character_isolation`: Each character renders from its own partition and what it perceived of the turn so far: no character's output is derived from another character's private partition, `think` or `latent` (FR-MULTI-1). Under `combined`, one render speaks for every named character from the shared context.
-- `clock_pacing`: Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): pacing is shown in the prompt and nothing is checked.
+- `clock_pacing`: Under `lite`, the clock may run only in its prompt-only form (FR-LITE-5): it advances by pacing and is shown in the prompt, and nothing is checked or stopped. A due event stops the clock only when the profile's `clock.scheduled_stops` and the story's `stop_at_due_events` are both on; otherwise it is surfaced as overdue.
 - `claim_detectors`: Every detected claim is matched to a declared one or checked as a new claim: zero unchecked detected claims is a guarantee (FR-VERIFY-13). Complete detection is not: it is a measured rate (NFR-QUAL-10).
 - `generation`: Includes a regeneration after an output policy's violation (FR-GUARD).
 - `claim_extraction`: Complete detection is a measured rate, reported per layer and per `extraction_mode` (E-10). Under `gated`, the default, it runs only on the beats a detector flagged, and a shadow sample records what gating missed (FR-OBS-4).
 - `salience`: At `commitment.salience = rules`, salience is detected by rules only.
+- `time_estimation`: Under `lite` no time skip is estimated: the prompt-only clock advances by pacing only.
 - `belief_adjudication`: At `testimony = defaulted`, every acceptance follows the deterministic default of trust, priors and consistency, and no model is called.
 - `paraphrase_detection`: No purpose of its own is defined: the viewpoint checks of the render's claims (verification, could-have-known) catch what detection finds, and NFR-QUAL-1's zero-leak evals (Q-04's asymmetry, the private-thought suite) measure what reaches the output.
 - `rolling_summary`: NFR-QUAL-3 measures consolidation's reflections, not the rolling summary.
@@ -102,17 +104,17 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | proposition normalization of declared structure | `proposition_normalization` | deterministic | not provided |
 | verification of the claims detected in an output against the record | `verification` | deterministic | not provided |
 | contradiction rules on normalized propositions | `contradiction_rules` | deterministic | not provided |
-| State effect validation and permission checks | `state_effect_validation` | deterministic | not provided (M6) |
+| State effect validation and permission checks | `state_effect_validation` | deterministic | not provided |
 | perception routing and audience filtering | `audience_filtering` | deterministic | not provided |
 | per-character render isolation | `multi_character_isolation` | deterministic | not provided |
 | commitment and ledger mechanics | `commitment_mechanics` | deterministic | not provided |
-| clock pacing and stops | `clock_pacing` | deterministic | not provided (M6) |
+| clock pacing and stops | `clock_pacing` | deterministic | not provided |
 | timeline and concurrency operations | `timeline_concurrency` | deterministic | provided |
 | deterministic claim detectors | `claim_detectors` | deterministic | not provided |
 | generation | `generation` | model-dependent | provided |
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | not provided |
 | salience | `salience` | model-dependent | not provided |
-| time estimation | `time_estimation` | model-dependent | not provided (M6) |
+| time estimation | `time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | not provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
 | repair rendering | `repair_rendering` | model-dependent | not provided |
@@ -131,11 +133,13 @@ Without partitions, characters' knowledge is separated only by instructions in a
 
 Story settings whose only effect under this profile is a prompt instruction: `player_authority`. Under `lite`, `player_authority` (FR-RESP-11) only tells the model whose actions the player may narrate: nothing checks that the reply honours it.
 
+Under `lite`, the world clock and States run only in their prompt-only forms (FR-LITE-5), and nothing about them is checked: the prompt shows the current time, the scheduled events and the player-visible States' values, the clock advances by pacing, and States change only through the State API.
+
 Perception is `none` under this profile, so **no audience filtering applies**: a character viewpoint still never receives any character's `think` or `latent` content, and every other beat is returned in full (FR-RESP-12).
 
 ### Structured
 
-Profile `00000000000000000000PRF002`, version 2 as seeded.
+Profile `00000000000000000000PRF002`, version 3 as seeded.
 
 | Step | Id | Kind | Under this profile |
 |---|---|---|---|
@@ -145,17 +149,17 @@ Profile `00000000000000000000PRF002`, version 2 as seeded.
 | proposition normalization of declared structure | `proposition_normalization` | deterministic | provided |
 | verification of the claims detected in an output against the record | `verification` | deterministic | provided |
 | contradiction rules on normalized propositions | `contradiction_rules` | deterministic | provided |
-| State effect validation and permission checks | `state_effect_validation` | deterministic | not provided (M6) |
+| State effect validation and permission checks | `state_effect_validation` | deterministic | provided |
 | perception routing and audience filtering | `audience_filtering` | deterministic | provided |
 | per-character render isolation | `multi_character_isolation` | deterministic | provided |
 | commitment and ledger mechanics | `commitment_mechanics` | deterministic | provided |
-| clock pacing and stops | `clock_pacing` | deterministic | not provided (M6) |
+| clock pacing and stops | `clock_pacing` | deterministic | provided |
 | timeline and concurrency operations | `timeline_concurrency` | deterministic | provided |
 | deterministic claim detectors | `claim_detectors` | deterministic | provided |
 | generation | `generation` | model-dependent | provided |
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | provided |
-| time estimation | `time_estimation` | model-dependent | not provided (M6) |
+| time estimation | `time_estimation` | model-dependent | provided |
 | entailment fallback | `entailment_fallback` | model-dependent | provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |

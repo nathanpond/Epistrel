@@ -371,7 +371,7 @@ def check() -> int:
         print(problem, file=sys.stderr)
     if found:
         return EX_FAILED
-    pending = ", ".join(f"{req} ({story})" for req, story in checks.PENDING.items())
+    pending = ", ".join(f"{req} ({story})" for req, story in checks.PENDING.items()) or "none"
     print(f"evals agree with the guarantee table; pending suites: {pending}")
     return 0
 

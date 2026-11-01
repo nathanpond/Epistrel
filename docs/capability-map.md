@@ -23,8 +23,8 @@ guarantees, and the guarantee table, are derived from the same map.
 | Verification with claim extraction | `verification_extraction` | FR-VERIFY-13 | `verification` at `extraction` or above | yes | M4 |
 | Verification with entailment escalation | `verification_entailment` | FR-VERIFY-3 | `verification` at `entailment` | yes | M4 |
 | Commitment | `commitment` | FR-COMMIT | `commitment` | yes | M4, M5, M7 |
-| The world clock | `clock` | FR-CLOCK | `clock` at `on` | not yet | M6 |
-| States and external data | `states_external` | FR-STATE; FR-EXT | `states` at `on` | not yet | M6, M7 |
+| The world clock | `clock` | FR-CLOCK | `clock` at `on` | yes | M6 |
+| States and external data | `states_external` | FR-STATE; FR-EXT | `states` at `on` | yes | M6, M7 |
 | Per-character renders | `per_character_renders` | FR-MULTI | `multi_character` at `per_character` | yes | M5 |
 | Consolidation | `consolidation` | FR-MEM-3,6,9,10 | `consolidation` | yes | M4 |
 | Repair of a missing or invalid structured field | `required_field_repair` | FR-CAT-12; FR-STATE-5,6; FR-CLOCK-16 | none (wherever the field is required) | yes | M2, M6 |
@@ -43,7 +43,7 @@ guarantees, and the guarantee table, are derived from the same map.
 - `verification_extraction`: FR-VERIFY-13: its model extraction backstop.
 - `verification_entailment`: FR-VERIFY-3: its entailment escalation.
 - `clock`: Under `lite`, the clock applies only in the prompt-only form of FR-LITE-5.
-- `states_external`: Under `lite`, States apply only in the prompt-only form of FR-LITE-5, and no external-data provider is used.
+- `states_external`: Under `lite`, States apply only in the prompt-only form of FR-LITE-5, and no external-data provider is used. Directives on externally owned values (FR-EXT-8) arrive in M7.
 - `per_character_renders`: Player authority is a story setting (`player_authority`, FR-RESP-11): its structured effects run under the `structured` pipeline, and under `lite` it is a prompt instruction only. Story settings: `interaction_mode`, `sequence_order`, `simultaneous_tie_break`, `reactive_interjections`, `participation`, `player_authority`.
 - `required_field_repair`: A character's age (FR-CAT-12), a State effect (FR-STATE-5,6), a time stop (FR-CLOCK-16): wherever that field is required, whether or not verification is on.
 - `floor`: Every requirement area not listed above, including FR-STORE event storage and the transcript (FR-PROF-11), the rest of FR-CONC, FR-AUTH, FR-ADMIN including erasure, budgets (NFR-PERF-6,7), the catalog, and content ratings with their prompt guidance and the rest of FR-GUARD (FR-RATE, FR-GUARD): under every profile.

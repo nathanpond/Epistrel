@@ -78,12 +78,25 @@ rows (ordinal: role order; a catalog character's definition rendered from its sn
 ``render_definition``, its safe fallback and deflection style copied; a player's persona
 snapshot), one ``character_snapshots`` row per catalog character (its whole published
 version), the scenario's policies as ``story`` policies (``write_policies``, the Engine's),
-and a ``player`` relation per player principal (FR-AUTH-6). The opening narration is turn 1:
+a ``player`` relation per player principal (FR-AUTH-6), and the request's
+``provider_bindings`` (#204: each provider registered, each binding covering its manifest's
+``{binding.<key>}``). The scenario's ``required_providers`` are a live setting since #204
+delivered ``providers``; before any model call, each must be registered (422
+``provider_unregistered`` naming the missing ones). The opening narration is turn 1:
 a ``turn`` operation recording one ``message_rendered`` beat (provenance ``system``, no
 character, ``present_character_ids`` the characters of ``opening.roles_present``), stamped
 with the guardrail set in force (#118). A scenario with no opening (a companion copied alone,
 FR-CAT-10) has no turn 1. Under an idempotent call both operations bind the key (the first is
 its operation). Any failure rolls the whole transaction back.
+
+**The clock and States (#202).** The genesis operation's commit declares the story's
+``world_clock`` first (FR-CLOCK-1; #193: every story has one, inert while its profile runs the
+clock off), with the scenario's starting settings and anchor when the story runs the clock
+(``structured.clock_definition``); then the structured writer (facts, the seeded scheduled
+events); then the scenario's States and each role's initial values
+(``structured.write_states``); and last #188's ``validate_state_tie_break``, so a
+``state:<name>`` tie-break may name a State the scenario declares (422 ``validation_error``,
+``reason: tie_break_state_invalid``, otherwise).
 
 Nothing here consults an owner, a relation or a listing status (FR-AUTH-8).
 """
@@ -100,7 +113,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, insert, null, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import audit, clock, ownership
+from epistrel.core import audit, clock, ownership, providers
 from epistrel.core.catalog import personas as catalog_personas
 from epistrel.core.catalog.characters import version_card
 from epistrel.core.catalog.checks import (
@@ -169,8 +182,8 @@ from epistrel.core.events.types import (
 from epistrel.core.genesis import epistemic, merge, render, structured
 from epistrel.core.genesis.epistemic import SEED_MATERIALIZED
 from epistrel.core.genesis.materialize import (
-    PARTITIONS,
-    STRUCTURED,
+    CLOCK,
+    STATES,
     CastRole,
     Materialized,
     materialize,
@@ -193,7 +206,12 @@ from epistrel.core.genesis.models import (
     player_role_entries,
     resolve_personas,
 )
-from epistrel.core.genesis.settings_map import MULTI_CHARACTER, genesis_capabilities, is_used
+from epistrel.core.genesis.settings_map import (
+    MULTI_CHARACTER,
+    SETTING_CAPABILITIES,
+    genesis_capabilities,
+    is_used,
+)
 from epistrel.core.ids import new_ulid
 from epistrel.core.policies.model import Target
 from epistrel.core.ports import Ports
@@ -209,6 +227,7 @@ from epistrel.core.profiles.impact import (
 )
 from epistrel.core.profiles.schema import Purposes
 from epistrel.core.propositions.registry import load as load_registry
+from epistrel.core.providers import REQUIRED_PROVIDERS
 from epistrel.core.ratings import load_graph
 from epistrel.core.ratings.change import (
     Direction,
@@ -219,6 +238,7 @@ from epistrel.core.ratings.change import (
 )
 from epistrel.core.resolution.entities import EntitySpec, add_entities, character_spec
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, StorySettings
+from epistrel.core.states import define_state, validate_state_tie_break
 from epistrel.core.stories import (
     CharacterRef,
     CreatedStory,
@@ -226,6 +246,7 @@ from epistrel.core.stories import (
     rating_ref,
     resolve_story_rating,
     split_settings,
+    stored_tie_break,
 )
 from epistrel.core.tables import (
     character_catalog,
@@ -955,6 +976,11 @@ def _settings(
         values["player_view"] = defaults.player_view
     if defaults.player_authority is not None:
         values["player_authority"] = defaults.player_authority
+    if defaults.co_author_knowledge is not None:
+        values["co_author_knowledge"] = defaults.co_author_knowledge
+    if defaults.required_providers and is_used(SETTING_CAPABILITIES[REQUIRED_PROVIDERS]):
+        # Live since #204 delivered ``providers``: a turn needs each one bound.
+        values[REQUIRED_PROVIDERS] = list(defaults.required_providers)
     inactive = materialized.settings()
     if inactive:
         values[INACTIVE_KEY] = inactive
@@ -1190,16 +1216,18 @@ def creation_report_of(
 def deferred_of(found: Plan) -> list[DeferredItem]:
     """What the story keeps deferred: every item under Lite; under ``structured``, the items it
     did not materialize and the seed memories waiting for ``episodic`` (#149); with partitions,
-    the ``partitions`` items its branch consumed are not deferred either (#173)."""
+    the ``partitions`` items its branch consumed are not deferred either (#173), nor, with
+    States and the clock on, the ``states`` and ``clock`` items it seeded (#202)."""
     items = list(found.materialized.deferred)
     plan_ = found.structured
     if plan_ is None:
         return items
-    consumed = {STRUCTURED} if plan_.epistemic is None else {STRUCTURED, PARTITIONS}
+    consumed = set(plan_.capabilities)
     kept = [
         item
         for item in items
         if not (item.capability_needed in consumed and item.field_ref in plan_.materialized)
+        and not (item.capability_needed in (STATES, CLOCK) and item.field_ref in plan_.seeded)
     ]
     return [*kept, *plan_.deferred]
 
@@ -1499,6 +1527,34 @@ def _structured_step(
     return step
 
 
+def _clock_step(
+    story_id: str, op: Operation, planned: structured.Plan | None
+) -> Callable[[AsyncConnection], Awaitable[None]]:
+    """The story's ``world_clock`` (#193), seeded from the scenario when it runs the clock
+    (#202): the first commit step, before any fact or State."""
+
+    async def step(conn: AsyncConnection) -> None:
+        await define_state(conn, op, story_id, structured.clock_definition(planned), builtin=True)
+
+    return step
+
+
+def _states_step(
+    story_id: str, op: Operation, planned: structured.Plan | None, tie_break: Any
+) -> Callable[[AsyncConnection], Awaitable[None]]:
+    """The scenario's States and initial values (#202), then #188's tie-break check, which
+    reads them."""
+
+    async def step(conn: AsyncConnection) -> None:
+        if planned is not None:
+            await structured.write_states(conn, story_id, op, planned)
+        await validate_state_tie_break(
+            conn, story_id, tie_break, field="body.settings.simultaneous_tie_break"
+        )
+
+    return step
+
+
 def _opening_step(
     turn: Operation, seeded: epistemic.EpistemicPlan
 ) -> Callable[[AsyncConnection], Awaitable[None]]:
@@ -1717,6 +1773,8 @@ async def genesis(
             started.append(op)
             await insert_cast(conn, story_id, found, op.operation_id)
             await write_policies(conn, story_id, found.draft.story_settings_defaults.policies)
+            # The story's ids at its providers (#204), checked against each manifest.
+            await providers.bind_all(conn, story_id, request.provider_bindings)
             for player in sorted({m.principal for m in found.members if m.principal}):
                 await ownership.relate_in(
                     conn, EntityType.STORY, story_id, player, PLAYER, principal=principal
@@ -1751,12 +1809,17 @@ async def genesis(
                     ),
                 )
             await insert_deferred(conn, story_id, op.operation_id, found)
+            # #202: the world clock first (seeded from the scenario), the States last.
+            op.add_commit_step(_clock_step(story_id, op, found.structured))
             if found.structured is not None:
                 seeded = found.structured.epistemic
                 for act in () if seeded is None else seeded.acts:
                     # #173: each seeded item's author act, which its beliefs cite.
                     op.append(SEED_MATERIALIZED, SeedMaterialized(**act.payload()))
                 op.add_commit_step(_structured_step(story_id, op, found.structured))
+            op.add_commit_step(
+                _states_step(story_id, op, found.structured, stored_tie_break(found.settings))
+            )
             await op.write_in(conn)
             await conn.execute(
                 update(operations)
@@ -1821,6 +1884,11 @@ async def create_from_scenario(
 ) -> CreatedStory | CreationHeld:
     """Create a story from ``request`` (see the module docstring)."""
     found = await plan(db, request, ports=ports)
+    async with db.connect() as conn:
+        # Every provider the scenario requires is registered (#204), before any model call.
+        await providers.require_registered(
+            conn, found.draft.story_settings_defaults.required_providers
+        )
     await check_rating(db, found, rating_check, principal=principal)
     await gate(genesis_texts(found), found.rating_id, [m.true_age for m in found.members])
     profile_id, version, document_, warnings = await choose_profile(db, found)

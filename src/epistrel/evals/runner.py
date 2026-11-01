@@ -828,11 +828,12 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     started = time.perf_counter()
     try:
         loaded = job.cases.get(suite.name)
+        sample = sample_for(suite.name, job.sample, job.full)
         cases = _select(
-            loaded if loaded is not None else suite.load(job.sets_dir),
-            sample_for(suite.name, job.sample, job.full),
-            job.seed_base,
+            loaded if loaded is not None else suite.load(job.sets_dir), sample, job.seed_base
         )
+        if loaded is None:
+            cases += suite.companions(job.sets_dir, sample)
     except MalformedCase as exc:
         return SuiteResult.errored(suite, [str(exc)], list(job.seeds))
     if job.config.adapter == "stub":

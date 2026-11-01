@@ -223,29 +223,29 @@ PlayerAuthority = Literal["own_character", "co_author"]
 character (``own_character``: input about another character is a request) or narration of their
 observable actions (``co_author``), never their thoughts."""
 DEFAULT_PLAYER_AUTHORITY: PlayerAuthority = "own_character"
+CoAuthorKnowledge = Literal["confirm", "free"]
+"""FR-RESP-14 (#598, ADR-174): how the ``co_author`` player's narration of another character is
+held to what that character could know: a presupposition it had no path to is accepted under
+both, with an ``implausible_knowledge`` notice under ``confirm``."""
+DEFAULT_CO_AUTHOR_KNOWLEDGE: CoAuthorKnowledge = "confirm"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
-primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (a
-designated State such as initiative: M6's, accepted by the schema and refused 422 ``not_yet``
-until then, ``refuse_state_tie_break``)."""
+primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (#188: a
+numeric State of the story, such as initiative; the higher value at the turn's start wins,
+``core.states.validate_state_tie_break``)."""
 REQUEST_ORDER_TIE_BREAK = "request_order"
 STATE_TIE_BREAK_PREFIX = "state:"
+TIE_BREAK_STATE_INVALID = "tie_break_state_invalid"
+"""#188: a ``state:<name>`` tie-break that names no numeric State of the story: refused 422 when
+it is written, and a turn falls back to request order with this warning."""
 
 
-def refuse_state_tie_break(value: str | None, field: str) -> None:
-    """422 ``validation_error`` (``reason: not_yet``) for a ``state:<name>`` tie-break: the
-    designated-State tie-break is M6's (#175; FR-MULTI-8)."""
-    if value is not None and value.startswith(STATE_TIE_BREAK_PREFIX):
-        message = "a designated-State tie-break (state:<name>) is not delivered yet"
-        raise InvalidRequest(
-            message,
-            {
-                "field": field,
-                "reason": "not_yet",
-                "errors": [{"field": field, "message": message, "type": "value_error"}],
-            },
-        )
+def state_tie_break_name(value: object) -> str | None:
+    """The State a ``state:<name>`` tie-break names (``None`` for any other value)."""
+    if isinstance(value, str) and value.startswith(STATE_TIE_BREAK_PREFIX):
+        return value[len(STATE_TIE_BREAK_PREFIX) :]
+    return None
 
 
 TURN_QUEUE_MAX_MIN = 1
@@ -389,7 +389,7 @@ class StorySettings(BaseModel):
     """How a ``simultaneous`` turn settles two primaries' conflicting actions on one object
     (FR-MULTI-8; #175): ``request_order`` (the earlier-named primary's action stands),
     ``director`` (one optional narrator call chooses the winner; request order when it cannot
-    be made) or ``state:<name>`` (a designated State; M6, refused 422 ``not_yet`` until then).
+    be made) or ``state:<name>`` (a numeric State of the story; #188).
     ``None``: ``request_order``. The loser's action is repaired in character as an attempt. A
     request overrides it. Prospective."""
 
@@ -419,6 +419,17 @@ class StorySettings(BaseModel):
     viewpoint where partitions are on, and never their ``think``. Lite: an instruction in the
     prompt only. Genesis copies the scenario's ``story_settings_defaults.player_authority``.
     Interpretive: a structured turn's handling of its input depends on it (#64)."""
+
+    co_author_knowledge: Annotated[CoAuthorKnowledge, INTERPRETIVE] = DEFAULT_CO_AUTHOR_KNOWLEDGE
+    """How ``co_author`` narration of another character is held to what that character could
+    know (FR-RESP-14; #598, ADR-174): the could-have-known check reads only what the narrated
+    action presupposes, and a presupposition the character had no path to is accepted under both
+    values, recorded as the character's ``author_fiat`` knowledge. Under ``confirm`` (the
+    default) the response also carries one ``implausible_knowledge`` notice per such
+    presupposition, built from the player's words only; under ``free`` there is none. No effect
+    under ``own_character``, under Lite, or without per-character partitions. Genesis copies the
+    scenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices
+    depend on it."""
 
     @field_validator("default_output_viewpoint")
     @classmethod
@@ -1053,6 +1064,38 @@ class VerifySettings(BaseModel):
     with the model, for a promotion (#155)."""
 
 
+PROVIDER_HOSTS_MAX = 100
+PROVIDER_HOST_PATTERN = (
+    r"^(?:[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\]|[0-9A-Fa-f:]{2,45})(?::[0-9]{1,5})?$"
+)
+"""A host (a name, an IPv4 address, or an IPv6 address bare or in brackets), optionally with
+``:<port>``."""
+
+
+def _lower_host(value: str) -> str:
+    return value.lower()
+
+
+ProviderHost = Annotated[
+    str, Field(max_length=260, pattern=PROVIDER_HOST_PATTERN), AfterValidator(_lower_host)
+]
+
+
+class ProviderSettings(BaseModel):
+    """Which hosts an external-data provider's HTTP manifest may call (FR-EXT-1, FR-EXT-5;
+    #204), stored under ``deployment_state.settings``. ``provider_allowed_hosts`` lists hosts,
+    each optionally with ``:<port>``: a manifest URL's host (and its port, when the entry names
+    one) must match an entry exactly, at registration and again at call time after
+    substitution. Empty (the default) refuses every ``http`` provider. Prospective: a
+    registration or call checks the list when it runs."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    provider_allowed_hosts: Annotated[list[ProviderHost], PROSPECTIVE] = Field(
+        default_factory=list, max_length=PROVIDER_HOSTS_MAX
+    )
+
+
 DEFAULT_THUNKS_MAX_OPEN = 500
 THUNKS_MAX_OPEN_LIMIT = 100_000
 
@@ -1165,6 +1208,7 @@ class DeploymentSettings(
     EmbeddingSettings,
     RetrievalSettings,
     VerifySettings,
+    ProviderSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

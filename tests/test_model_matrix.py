@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from epistrel.core.profiles.schema import MAX_DEADLINE_MS
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.capability import check_prompt_params, context_prompt
 from epistrel.orchestrator.models.metrics import CallLog, ModelCall, Outcome
@@ -473,6 +474,45 @@ def test_a_deadline_override_is_reported() -> None:
     assert "**Turn deadline override (#454).**" in text
     assert f"| {mm.STRUCTURED_PATH}; turn deadline 300 s (override) |" in text
     assert f"| {mm.TURN_PATH} |" in text
+
+
+def test_the_deadline_override_scales_with_the_primaries() -> None:
+    """#588 (the owner's option (b)): a structured row's turn deadline override is
+    ``TURN_DEADLINE_S`` per primary the turn renders, capped at the profile schema's largest
+    ``deadline_ms``, so a three-character turn is measured rather than cut at 300 s; the
+    three-character drivers carry the scaled override, and a row records and reports the
+    override it used.
+
+    Complement asserted: a single-character structured row keeps 300 s, a Lite row has no
+    override, and a turn with no primary is refused."""
+    assert mm.measurement_deadline_ms(1) == mm.MEASUREMENT_DEADLINE_MS == 300_000
+    assert mm.measurement_deadline_ms(2) == 600_000
+    assert mm.measurement_deadline_ms(3) == MAX_DEADLINE_MS == 600_000
+    assert (
+        mm.measurement_deadline_ms(mm.THREE_CHARACTER_PRIMARIES) == mm.THREE_CHARACTER_DEADLINE_MS
+    )
+    with pytest.raises(ValueError, match="at least one primary"):
+        mm.measurement_deadline_ms(0)
+    overrides = {
+        kind: getattr(mm.driver_for(kind), "deadline_override_ms", None) for kind in mm.TURN_KINDS
+    }
+    assert overrides == {
+        "lite": None,
+        "structured": 300_000,
+        "repair": 300_000,
+        "three_character_sequential": 600_000,
+        "three_character_director": 600_000,
+        "three_character_default": 600_000,
+    }
+    three = row(
+        turn_kind="three_character_sequential",
+        turn_path=mm.THREE_CHARACTER_PATH,
+        deadline_override_ms=mm.THREE_CHARACTER_DEADLINE_MS,
+    )
+    assert asdict(three)["deadline_override_ms"] == 600_000
+    text = mm.render(mm.merge([], [three]))
+    assert f"| {mm.THREE_CHARACTER_PATH}; turn deadline 600 s (override) |" in text
+    assert "300 s per primary" in text
 
 
 def test_merge_failures_replaces_and_clears() -> None:

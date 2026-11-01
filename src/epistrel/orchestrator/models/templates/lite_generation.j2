@@ -9,7 +9,10 @@ facts), the pinned memories, the rolling summary, then the constant preamble: wh
 is voiced, in request order, and the one line that separates the characters' knowledge
 (FR-LITE-5: by instruction only), and on a guardrail regeneration one constraint line per
 violated output policy (#68); then the story's ``## Player authority`` instruction (#180,
-FR-RESP-11: its only Lite effect). Empty sections are left out. The verbatim window follows as chat messages, one per transcript
+FR-RESP-11: its only Lite effect). With the prompt-only clock and States (#203, FR-LITE-5),
+``## Time`` (the current time and the scheduled events) and ``## Tracked values`` (the
+player-visible States and their values) follow the rolling summary, shown only. Empty sections
+are left out. The verbatim window follows as chat messages, one per transcript
 row through the ``line`` macro (``prompts.render``), and the ``user`` block is the player input,
 the final ``user`` message. -#}
 {% macro line(entry) -%}
@@ -53,6 +56,20 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 ## Earlier in the story
 {% for segment in summary_segments %}
 {{ segment }}
+{% endfor %}
+
+{% endif %}
+{% if lite_time %}
+## Time
+{% for line in lite_time %}
+{{ line }}
+{% endfor %}
+
+{% endif %}
+{% if tracked_values %}
+## Tracked values
+{% for line in tracked_values %}
+- {{ line }}
 {% endfor %}
 
 {% endif %}

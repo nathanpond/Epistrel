@@ -5,8 +5,12 @@ that addresses no character, an open salient reference). The ``system`` block ho
 guidance (always first, FR-RATE-4), the custom instructions, the scenario text, the director's
 notes labelled apart from the facts (#122, FR-SCN-11: the narrator's context alone), the scene
 and who is present, the working memory as the narrator perceives it (omniscient, ``think``
-excluded), the retrieved context and the canon, then the narration contract and, on a
-guardrail regeneration, the constraint lines (#68). The ``user`` block is the player input. -#}
+excluded), the retrieved context and the canon, ``## Tracked values`` (#187: every State, hidden
+ones included, with its value at the turn's start and its constraints, and the effect syntax),
+``## External data`` (#208: an externally owned State's value only in its fenced block, data and
+never instructions), ``## The time now`` (#200: the objective clock as the turn starts, the
+narrator's alone), then the narration contract and, on a guardrail regeneration, the
+constraint lines (#68). The ``user`` block is the player input. -#}
 {% macro line(entry) -%}
 {% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
 {%- endmacro %}
@@ -62,6 +66,23 @@ guardrail regeneration, the constraint lines (#68). The ``user`` block is the pl
 {% endfor %}
 
 {% endif %}
+{% if tracked_values %}
+## Tracked values
+{% for line in tracked_values %}
+- {{ line }}
+{% endfor %}
+{{ tracked_syntax }}
+
+{% endif %}
+{% include "external_data.j2" %}
+{% if pending_outcomes %}
+## Awaiting the game
+The game was asked to make these changes; never narrate one as done unless its line says the game confirmed it:
+{% for line in pending_outcomes %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
 {% if open_references %}
 ## Settle now
 This turn left these open; narrate what settles each one, naming who or what it is, and declare it as a proposition:
@@ -70,6 +91,12 @@ This turn left these open; narrate what settles each one, naming who or what it 
 {% endfor %}
 
 {% endif %}
+{% if clock_now %}
+## The time now
+By the story's clock it is {{ clock_now }} as this turn starts. The characters know only the time they can know.
+
+{% endif %}
+{% include "clock_contract.j2" %}
 ## Your part
 You are the narrator. Never speak, think or act for {{ player_input.name }} or for any character.
 Answer with typed beats in order: `narration` (what the scene shows: places, arrivals, what happens) and `latent` (a fact of the world that is true but not shown, with who may know it).

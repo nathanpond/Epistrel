@@ -38,6 +38,7 @@ from epistrel.orchestrator.models.registry import (
     GuardrailVerdict,
     InputSchema,
     Purpose,
+    StructuredOutput,
 )
 from epistrel.orchestrator.models.stub import GARBAGE
 from epistrel.testing.ops import (
@@ -47,6 +48,7 @@ from epistrel.testing.ops import (
     make_policy,
     make_router,
 )
+from epistrel.tools import guarantees as guarantee_tool
 from epistrel.tools import model_guide
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.suite import (
@@ -657,4 +659,55 @@ def test_c_04__belief_adjudication_row() -> None:
     )
     assert [(n.module, n.level, n.only) for n in row.requires][-1] == ("testimony", "model", True)
     stale = guide.replace("### `belief_adjudication`", "### `withheld`")
+    assert stale != model_guide.render()
+
+
+@pytest.mark.part("M6", "FR-MODEL-2,13")
+def test_c_04__m6() -> None:
+    """The guide gains the ``time_estimation`` purpose's row (#199, #201) with its capability
+    floor, now that the clock that calls it is delivered (#203): the published model guide
+    equals the guide the purpose registry generates and ``--check`` passes; its summary row and
+    its section name the floor (parse-validate-retry structured output, an 8,192-token context)
+    and its default (the ``extraction_backstop`` row, then the default); it is delivered, not
+    reserved; the model matrix's table has its column. The guarantee table's ``time_estimation``
+    row is model-dependent (NFR-QUAL-9), names no milestone, and holds under the seeded
+    ``Structured`` profile (the clock ``on``) and not under Lite (the prompt-only clock
+    estimates nothing).
+
+    Complement: a guide missing the row is stale."""
+    root = Path(__file__).resolve().parents[2]
+    guide = (root / "docs" / "models.md").read_text("utf-8")
+    assert guide == model_guide.render()
+    assert model_guide.main(["--check"]) == 0
+    assert (
+        "| `time_estimation` | yes | `extraction_backstop` | `parse_validate_retry` | "
+        "8,192 tokens |" in guide
+    )
+    section = guide.split("### `time_estimation`", 1)[1].split("\n### ", 1)[0]
+    assert "the `extraction_backstop` row of `model_config`, then the `default` row" in section
+    assert "**Capability floor:** structured output" in section
+    assert "minimum context 8,192 tokens" in section
+    purpose = registry.DELIVERED["time_estimation"]
+    assert purpose.status is registry.PurposeStatus.DELIVERED
+    assert purpose.default_model_key == "extraction_backstop"
+    assert purpose.capability_floor.structured_output is StructuredOutput.PARSE_VALIDATE_RETRY
+    assert "time_estimation" not in {r.name for r in registry.RESERVED_PURPOSES}
+    matrix = (root / "docs" / "model-matrix.md").read_text("utf-8")
+    assert "| `time_estimation` |" in matrix
+
+    assert profile_schema.is_delivered("clock", profile_schema.ON)
+    row = GUARANTEE["time_estimation"]
+    assert (row.kind, row.metric, row.purposes, row.delivered_in) == (
+        Kind.model_dependent,
+        "NFR-QUAL-9",
+        ("time_estimation",),
+        None,
+    )
+    assert row.delivered
+    lite, structured = guarantee_tool.SEEDED
+    assert row.provided(structured.effective())
+    assert not row.provided(lite.effective())
+    assert guarantee_tool.problems() == []
+
+    stale = guide.replace("### `time_estimation`", "### `withheld`")
     assert stale != model_guide.render()

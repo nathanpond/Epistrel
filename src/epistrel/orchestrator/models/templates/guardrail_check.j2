@@ -14,6 +14,10 @@ You check text against one content policy. Answer only with a JSON object
 - {{ subject.label }}: age {{ subject.age }}{% if not subject.present %}, not present{% endif %}
 {% endfor %}
 {% endif %}
+{% if external_data %}
+
+{% endif %}
+{% include "external_data.j2" %}
 {% endblock %}
 {% block user %}
 {{ text }}

@@ -31,6 +31,10 @@ variant reports them as its ``context_ms`` and ``compose_ms`` columns, #182):
 - ``compose``: the turn's reconciliation of concurrent commitments (#177), the audience filter
   and the composition, the polish's model calls left out, once per turn.
 
+One more is a structured turn's external-data work (``EXTERNAL_STAGES``, #205):
+``external_read``, one live provider read, observed once per read (a pinned value's reuse
+observes nothing).
+
 The buckets are log-spaced from 1 ms to 60 s, with the gates' bounds as edges. Labels are the
 stage names only (invariant 3). This module imports nothing from the Engine, so
 ``epistrel.core`` may observe ``commit``.
@@ -57,6 +61,7 @@ Stage = Literal[
     "verify",
     "context",
     "compose",
+    "external_read",
 ]
 STAGES: tuple[Stage, ...] = (
     "queue_wait",
@@ -70,6 +75,10 @@ STAGES: tuple[Stage, ...] = (
 """The stages every committed turn observes once."""
 STRUCTURED_STAGES: tuple[Stage, ...] = ("retrieve", "verify")
 """The stages only a structured turn observes, once per retrieval and once per claim checked."""
+EXTERNAL_STAGES: tuple[Stage, ...] = ("external_read",)
+"""A structured turn's external-data reads (#205): ``external_read`` once per live provider
+read (``orchestrator.providers.pinned``), a pinned value's later uses observing nothing.
+FR-EXT-2's ``timings.external_read``."""
 MULTI_STAGES: tuple[Stage, ...] = ("context", "compose")
 """A structured turn's per-character stages: ``context`` once per character render, ``compose``
 once per turn (#182)."""
@@ -100,7 +109,8 @@ TURN_STAGE = Histogram(
     "epistrel_turn_stage_seconds",
     "Turn latency by stage: queue_wait, front_to_first_call, assemble, generate, "
     "policy_check, commit, post_commit; a structured turn's retrieve and verify, per call; "
-    "and its context, per character render, and compose, per turn.",
+    "its context, per character render, and compose, per turn; and external_read, per live "
+    "provider read.",
     ("stage",),
     buckets=STAGE_BUCKETS,
 )
@@ -122,6 +132,7 @@ def timed(stage: Stage) -> Iterator[None]:
 
 
 __all__ = [
+    "EXTERNAL_STAGES",
     "MULTI_STAGES",
     "STAGES",
     "STAGE_BUCKETS",

@@ -169,6 +169,7 @@ from epistrel.core.errors import (
     UnknownErasureCandidate,
 )
 from epistrel.core.events.registry import validate
+from epistrel.core.events.types import REQUESTED_EFFECT
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.memory import retirement
 from epistrel.core.ports import SummaryCompressor
@@ -210,6 +211,14 @@ from epistrel.core.tables.media import (
     subject_references,
 )
 from epistrel.core.tables.memories import memories
+from epistrel.core.tables.outbox import (
+    CANCELLED,
+    CLAIMED,
+    INTENDED,
+    UNKNOWN,
+    external_effect_outbox,
+    outbox_outcomes,
+)
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.tables.propositions import (
     closed_sets,
@@ -218,6 +227,14 @@ from epistrel.core.tables.propositions import (
     predicate_proposals,
     predicates,
     propositions,
+)
+from epistrel.core.tables.scheduled_events import scheduled_events
+from epistrel.core.tables.states import (
+    STORY_SCOPE_KEY,
+    state_changes,
+    state_definitions,
+    state_proposals,
+    state_values,
 )
 from epistrel.observability.logging import get_logger
 
@@ -1265,6 +1282,105 @@ async def _redact_policies(
     )
 
 
+async def _erase_outbox(
+    conn: AsyncConnection,
+    refs: Mapping[str, set[str]],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """The outbox (#210, #211; FR-EXT-14,21): an ``intended`` row that names the subject (its
+    effect's text, or a value scoped to an erased character) is cancelled before the erasure,
+    never sent; a ``claimed`` or ``unknown`` one (it may have reached the provider) stays
+    listed, redacted to ``{outbox_id, provider, status}``: its effect emptied and ``erased_at``
+    set, so its dispatch, if in flight, abandons and it is never sent again; every other row
+    that names the subject has its effect redacted in place. Nothing of the effect reaches the
+    ledger or a marker (the tally counts the table).
+
+    #217 (FR-EXT-21 (b), S-ERASURE-BOUNDARY M6): a ``confirmed`` row is redacted in place as
+    above (so its listing, ``confirmed_unsettled`` or a mark's, shows only the redacted effect),
+    and the outcome records of every named row, and of every consumer-applied effect whose
+    ``requested_effect`` names the subject, lose their payload and raw hash (``payload =
+    {}``)."""
+    named = sorted(refs.get(external_effect_outbox.name, set()))
+    effects = await _named_effects(conn, refs)
+    if not named and not effects:
+        return
+    o = external_effect_outbox.c
+    x = outbox_outcomes.c
+    if run.write:
+        await conn.execute(
+            update(external_effect_outbox)
+            .where(o.id.in_(named), o.status == INTENDED)
+            .values(status=CANCELLED)
+        )
+        await conn.execute(
+            update(external_effect_outbox)
+            .where(o.id.in_(named), o.status.in_((CLAIMED, UNKNOWN)))
+            .values(effect={}, erased_at=func.transaction_timestamp())
+        )
+        outcomes = await conn.execute(
+            update(outbox_outcomes)
+            .where(or_(x.outbox_id.in_(named), x.effect_id.in_(sorted(effects))))
+            .values(payload={}, raw_hash="")
+        )
+        for _ in range(int(outcomes.rowcount or 0)):
+            tally.record(outbox_outcomes.name)
+    await _redact_json_rows(
+        conn, external_effect_outbox, o.id, named, ("effect",), redactor, tally, write=run.write
+    )
+
+
+async def _named_effects(conn: AsyncConnection, refs: Mapping[str, set[str]]) -> set[str]:
+    """#217: the effect ids of the ``requested_effect`` events the erasure names (a
+    consumer-applied effect's outcome records name the effect, never the event)."""
+    named = sorted(refs.get(events.name, set()))
+    if not named:
+        return set()
+    e = events.c
+    return {
+        str(effect)
+        for effect in await conn.scalars(
+            select(e.payload["effect_id"].astext).where(e.id.in_(named), e.type == REQUESTED_EFFECT)
+        )
+        if effect
+    }
+
+
+async def _erase_scheduled(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """Scheduled events (#196): every version naming an erased character (a participant, the
+    owner or, #198, a shared owner) is deleted, each with a marker; the event's canon
+    ``scheduled`` fact goes with the facts (``_erase_facts``)."""
+    named = set(refs.get(scheduled_events.name, set()))
+    if not removed or not named:
+        return
+    c = scheduled_events.c
+    found = await conn.execute(
+        select(c.id, c.owner, c.participants, c.shared_owners).where(
+            c.story_id == story_id, c.id.in_(sorted(named))
+        )
+    )
+    for row in sorted(found, key=lambda r: str(r.id)):
+        named_here = {*(row.participants or ()), *(row.shared_owners or ())}
+        if row.owner not in removed and not named_here & removed:
+            continue
+        await _delete(
+            conn,
+            run,
+            tally,
+            scheduled_events.name,
+            str(row.id),
+            delete(scheduled_events).where(c.id == row.id),
+        )
+
+
 async def _redact_structured(
     conn: AsyncConnection,
     story_id: str,
@@ -1277,15 +1393,19 @@ async def _redact_structured(
     """The structured stores (#131): an erased character's entity loses its aliases (deleted,
     each with a marker); every other record naming the subject is redacted in place. A story
     predicate's name keeps its id as a suffix when redacted, so names stay unique per story.
-    Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135) and
-    thunks (#146) go first: see ``_erase_facts``, ``_erase_exposures``, ``_erase_divergences``,
-    ``_erase_beliefs``, ``_erase_memories`` and ``_erase_thunks``."""
+    Facts (#133), exposures (#164), divergences (#166), beliefs (#159), memories (#135),
+    thunks (#146) and States (#185) go first: see ``_erase_facts``, ``_erase_exposures``,
+    ``_erase_divergences``, ``_erase_beliefs``, ``_erase_memories``, ``_erase_thunks``,
+    ``_erase_states`` and (#210) ``_erase_outbox``."""
     await _erase_facts(conn, story_id, refs, removed, tally, run)
     await _erase_exposures(conn, story_id, refs, removed, tally, run)
     await _erase_divergences(conn, story_id, refs, removed, tally, run)
     await _erase_beliefs(conn, story_id, removed, tally, run, refs=refs)
     await _erase_memories(conn, story_id, refs, removed, redactor, tally, run)
     await _erase_thunks(conn, story_id, refs, removed, redactor, tally, run)
+    await _erase_states(conn, story_id, refs, removed, redactor, tally, run)
+    await _erase_scheduled(conn, story_id, refs, removed, tally, run)
+    await _erase_outbox(conn, refs, redactor, tally, run)
     owned = list(
         await conn.scalars(
             select(entity_aliases.c.id)
@@ -1339,6 +1459,115 @@ async def _redact_structured(
                 update(predicates)
                 .where(predicates.c.id == row.id)
                 .values(name=f"{renamed}_{str(row.id).lower()}")
+            )
+
+
+async def _erase_states(
+    conn: AsyncConnection,
+    story_id: str,
+    refs: Mapping[str, set[str]],
+    removed: set[str],
+    redactor: Redactor,
+    tally: _Tally,
+    run: _StoryRun,
+) -> None:
+    """States (#185; S-ERASURE-BOUNDARY M6): a State scoped to an erased character is removed
+    for them: every change scoped to them is deleted, each with a marker, and their
+    ``state_values`` rows with them (the projection; refolded again by the ``rebuilt`` stage).
+    Every other change or declaration that names the subject is redacted in place (a change's
+    reason and text values; a declaration's aliases, unit and text initial value, and its name,
+    which keeps its id as a suffix when redacted, as a predicate's does, so names stay unique)."""
+    c = state_changes.c
+    if removed:
+        scoped = list(
+            await conn.scalars(
+                select(c.id)
+                .where(c.story_id == story_id, c.scope_key.in_(sorted(removed)))
+                .order_by(c.id)
+            )
+        )
+        for change_id in scoped:
+            await _delete(
+                conn,
+                run,
+                tally,
+                state_changes.name,
+                str(change_id),
+                delete(state_changes).where(c.id == change_id),
+            )
+        if run.write:
+            v = state_values.c
+            await conn.execute(
+                delete(state_values).where(
+                    v.story_id == story_id,
+                    v.scope_key != STORY_SCOPE_KEY,
+                    v.scope_key.in_(sorted(removed)),
+                )
+            )
+        gone = {str(i) for i in scoped}
+    else:
+        gone = set()
+    await _redact_json_rows(
+        conn,
+        state_changes,
+        c.id,
+        set(refs.get(state_changes.name, set())) - gone,
+        ("reason", "value", "old_value", "new_value"),
+        redactor,
+        tally,
+        write=run.write,
+    )
+    named = sorted(refs.get(state_definitions.name, set()))
+    await _redact_json_rows(
+        conn,
+        state_definitions,
+        state_definitions.c.id,
+        named,
+        ("aliases", "unit", "initial_value"),
+        redactor,
+        tally,
+        write=run.write,
+    )
+    d = state_definitions.c
+    for row in await conn.execute(select(d.id, d.name).where(d.id.in_(named))):
+        words = predicate_words(str(row.name))
+        new = redactor.text(words, (state_definitions.name, str(row.id), "name"))
+        if new == words:
+            continue
+        tally.record(state_definitions.name, 1)
+        if run.write:
+            renamed = "_".join(new.replace("[", "").replace("]", "").split())
+            await conn.execute(
+                update(state_definitions)
+                .where(d.id == row.id)
+                .values(name=f"{renamed[:53]}_{str(row.id).lower()}")
+            )
+    # Engine-proposed States (#192): the suggested unit and the evidence's quotes in place, and
+    # the suggested name as a declaration's (its id keeps names unique per story).
+    proposed = sorted(refs.get(state_proposals.name, set()))
+    await _redact_json_rows(
+        conn,
+        state_proposals,
+        state_proposals.c.id,
+        proposed,
+        ("suggested_unit", "evidence"),
+        redactor,
+        tally,
+        write=run.write,
+    )
+    p = state_proposals.c
+    for row in await conn.execute(select(p.id, p.name).where(p.id.in_(proposed))):
+        words = predicate_words(str(row.name))
+        new = redactor.text(words, (state_proposals.name, str(row.id), "name"))
+        if new == words:
+            continue
+        tally.record(state_proposals.name, 1)
+        if run.write:
+            renamed = "_".join(new.replace("[", "").replace("]", "").split())
+            await conn.execute(
+                update(state_proposals)
+                .where(p.id == row.id)
+                .values(name=f"{renamed[:53]}_{str(row.id).lower()}")
             )
 
 

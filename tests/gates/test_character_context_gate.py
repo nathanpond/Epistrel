@@ -16,9 +16,12 @@ from pathlib import Path
 
 from tools.gates.__main__ import main as gates_main
 from tools.gates.character_context import (
+    CHARACTER_TEMPLATE,
     CONTEXT,
     CONTEXT_MODULE,
+    NARRATOR,
     SECTIONS,
+    TEMPLATES,
     TURN,
     UNSCOPED,
     main,
@@ -213,3 +216,32 @@ def test_a_partitioned_character_gets_only_its_context_and_the_turn_text() -> No
     assert shared["pinned_memories"] == ["SECTION-pins"]
     assert shared["summary_segments"] == ["SECTION-segments"]
     assert {SECTIONS[n] for n in shared if "SECTION-" in repr(shared[n])} == {TURN, UNSCOPED}
+
+
+# -- the narrator-only section (#208) -------------------------------------------------------------
+
+NARRATOR_BYPASS = '''"""Hands a character the provider values' fenced blocks."""
+
+
+def character_inputs(context: CharacterContext, sections):
+    return GenerationInputs(scene=context.scene, external_data=list(sections.external))
+'''
+
+
+def test_external_data_is_narrator_only(tmp_path: Path) -> None:
+    """#208: ``external_data`` is classified narrator-only: ``character_inputs`` passing it is a
+    finding, and so is the character template (or a template it includes) naming it.
+    Complement: the narrator template includes it and is not scanned."""
+    assert SECTIONS["external_data"] == NARRATOR
+    templates = tmp_path / TEMPLATES
+    templates.mkdir(parents=True)
+    (templates / CHARACTER_TEMPLATE).write_text('{% include "part.j2" %}\n', encoding="utf-8")
+    (templates / "part.j2").write_text("{{ external_data }}\n", encoding="utf-8")
+    (templates / "narrator_generation.j2").write_text("{{ external_data }}\n", encoding="utf-8")
+    root = _tree(tmp_path, {"src/epistrel/orchestrator/bypass.py": NARRATOR_BYPASS})
+    found = sorted(f.split(": ", 1)[1].split(";")[0] for f in scan(root))
+    assert found == [
+        "names the narrator-only section 'external_data'",
+        "passes the narrator-only section 'external_data' to a character",
+    ]
+    assert [f for f in scan(root) if "part.j2" in f]

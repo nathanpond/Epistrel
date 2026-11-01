@@ -82,7 +82,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.api.auth import EXEMPT_ROUTES
-from epistrel.api.openapi import DOCUMENTED_BODIES, TAG_NAMES, dumps
+from epistrel.api.openapi import DOCUMENTED_BODIES, SCHEMA_VERSION, TAG_NAMES, dumps
 from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.config import Settings
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
@@ -451,8 +451,8 @@ def schema_problems(schema: dict[str, Any], app: FastAPI) -> list[str]:
     problems: list[str] = []
     if schema.get("openapi") != "3.1.0":
         problems.append(f"openapi {schema.get('openapi')}")
-    if schema["info"].get("version") != "m3" or "servers" in schema:
-        problems.append("info.version must be m3 and there must be no servers")
+    if schema["info"].get("version") != SCHEMA_VERSION or "servers" in schema:
+        problems.append(f"info.version must be {SCHEMA_VERSION} and there must be no servers")
     components = _components(schema)
     for name in ("HTTPValidationError", "ValidationError"):
         if name in components:

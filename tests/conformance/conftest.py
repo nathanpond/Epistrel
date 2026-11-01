@@ -54,8 +54,8 @@ class Outcome:
 
 
 class Surface:
-    """``create_story``, ``respond``, ``history``, the inspection and State reads and
-    ``get_story`` on one surface."""
+    """``create_story``, ``respond``, ``history``, the inspection and State reads, the clock,
+    scheduled-event and reconciliation reads and ``get_story`` on one surface."""
 
     def __init__(self, name: str, client: httpx.AsyncClient, engine: Engine) -> None:
         self.name = name
@@ -179,7 +179,7 @@ class Surface:
         async def call() -> dict[str, Any]:
             context = RequestContext(principal=principal)
             found = await self.engine.get_states(context, story_id, **params)
-            return _dump(StatesBody.of(found))
+            return _dump(StatesBody.of(found), as_routed=True)
 
         return await _library(call, 200)
 
@@ -197,7 +197,55 @@ class Surface:
 
         async def call() -> dict[str, Any]:
             found = await self.engine.get_state(RequestContext(), story_id, name, **params)
-            return _dump(StateViewBody.of(found))
+            return _dump(StateViewBody.of(found), as_routed=True)
+
+        return await _library(call, 200)
+
+    async def clock(self, story_id: str) -> Outcome:
+        """``GET /stories/{id}/clock`` or ``Engine.get_clock`` (#193)."""
+        if self.name == "rest":
+            return _rest(await self.client.get(f"/stories/{story_id}/clock", headers=bearer()))
+        from epistrel.api.routes.clock import ClockBody
+
+        async def call() -> dict[str, Any]:
+            return _dump(
+                ClockBody.of(await self.engine.get_clock(RequestContext(), story_id)),
+                as_routed=True,
+            )
+
+        return await _library(call, 200)
+
+    async def scheduled_events(self, story_id: str, viewpoint: str | None = None) -> Outcome:
+        """``GET /stories/{id}/scheduled-events`` or ``Engine.list_scheduled_events`` (#196):
+        ``viewpoint`` is ``?viewpoint=`` or the library's keyword."""
+        if self.name == "rest":
+            params = {"viewpoint": viewpoint} if viewpoint else {}
+            return _rest(
+                await self.client.get(
+                    f"/stories/{story_id}/scheduled-events", params=params, headers=bearer()
+                )
+            )
+        from epistrel.api.routes.scheduled_events import ScheduledEventsBody
+
+        async def call() -> dict[str, Any]:
+            found = await self.engine.list_scheduled_events(
+                RequestContext(), story_id, viewpoint=viewpoint
+            )
+            return _dump(ScheduledEventsBody.of(found), as_routed=True)
+
+        return await _library(call, 200)
+
+    async def reconciliation(self, story_id: str) -> Outcome:
+        """``GET /stories/{id}/reconciliation`` or ``Engine.reconciliation`` (#210)."""
+        if self.name == "rest":
+            return _rest(
+                await self.client.get(f"/stories/{story_id}/reconciliation", headers=bearer())
+            )
+
+        async def call() -> dict[str, Any]:
+            return _dump(
+                await self.engine.reconciliation(RequestContext(), story_id), as_routed=True
+            )
 
         return await _library(call, 200)
 
@@ -259,8 +307,11 @@ def _rest(response: httpx.Response) -> Outcome:
     return Outcome(response.status_code, body=body)
 
 
-def _dump(model: BaseModel) -> dict[str, Any]:
-    dumped: dict[str, Any] = model.model_dump(mode="json", exclude_unset=True)
+def _dump(model: BaseModel, *, as_routed: bool = False) -> dict[str, Any]:
+    """``model`` as JSON. ``as_routed``: every field, as FastAPI serializes a response model by
+    default (a read whose route does not set ``response_model_exclude_unset``), so the whole
+    body compares equal across the surfaces; else the fields set (the original comparison)."""
+    dumped: dict[str, Any] = model.model_dump(mode="json", exclude_unset=not as_routed)
     return dumped
 
 

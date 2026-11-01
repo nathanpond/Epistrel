@@ -11,4 +11,4 @@
 - **Not covered:** skips the engine never estimates (a declared advance, a player's stated amount, a narrated clock time) and the authority decision (FR-CLOCK-8), which S-MOVIE and CLOCK-MONOTONIC test. The pacing-health signal plays the approved `scenarios` set and needs no set of its own.
 - **Review:** the owner reviews the digest (`docs/evals/sets-digest.md`, the `time_estimation/cases.jsonl` section, stratified by activity family) and records approval by replacing the line below with `approved by owner YYYY-MM-DD` in a commit of their own. Until then `--check-sets` passes on a branch and fails where approval is required (`EPISTREL_REQUIRE_APPROVED_SETS=1`). A content change after approval resets the line to pending. The set is approved before the local run's report counts as the exit evidence.
 
-approved by owner: pending
+approved by owner 2026-11-01

@@ -17,8 +17,11 @@ the player's input gave an amount for takes that amount (``source = player``); a
 undeclared one is estimated by the ``time_estimation`` purpose (``estimate``: one call per
 skip, optional work under #156's budget, pre-allocated so an earlier entailment call cannot
 starve it), becoming an advance with ``source = estimate`` and its ``estimate_meta``
-(``{reason, confidence, model, prompt_hash, initiated_by}``). A model-initiated skip that could
-never stand (the cap is 0, or no established activity) is refused without the call.
+(``{reason, confidence, model, prompt_hash, initiated_by}``). The request carries the clock as
+the turn starts; the model reasons first and answers with the clock time the skip ends at or
+an amount, and the engine does the clock arithmetic (``resolved_minutes``, #201). A
+model-initiated skip that could never stand (the cap is 0, or no established activity) is
+refused without the call.
 
 What a plan decides (``Decision``): **accept** (the advance stays, or joins the beat, with
 ``initiated_by``); **refuse** (FR-CLOCK-8: the beat is repaired to stay in the present, repair
@@ -100,8 +103,27 @@ class Estimate:
         }
 
 
+def clock_text(minute: int | None) -> str:
+    """The time of day ``minute`` as a ``time_estimation`` request's ``clock`` ("19:40"; empty:
+    the clock does not fix it)."""
+    if minute is None:
+        return ""
+    hours, minutes = divmod(minute, 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _minute_of(text: str | None) -> int | None:
+    if not text:
+        return None
+    hours, minutes = text.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
 def inputs_of(
-    narrated_text: str, activity_context: str = "", established_times: Sequence[str] = ()
+    narrated_text: str,
+    activity_context: str = "",
+    established_times: Sequence[str] = (),
+    clock_minute: int | None = None,
 ) -> TimeEstimationInputs:
     """A ``time_estimation`` request, each field cut to its bound."""
     return TimeEstimationInputs(
@@ -110,7 +132,26 @@ def inputs_of(
         established_times=[t[:TIME_ESTIMATION_TEXT_MAX] for t in established_times][
             -TIME_ESTIMATION_MAX_TIMES:
         ],
+        clock=clock_text(clock_minute),
     )
+
+
+def resolved_minutes(
+    found: TimeEstimate, clock_minute: int | None, day_minutes: int = 1440
+) -> int | None:
+    """The minutes an answer skips, the engine doing the clock arithmetic (#201): from the
+    clock to its ``ends_at`` (the next time the clock reads it, so across midnight; "24:00" is
+    midnight), else its ``minutes``. ``None`` when it skips nothing, or names a clock time the
+    engine cannot place (the clock does not fix the time of day, or the time is past the day's
+    end)."""
+    if found.ends_at:
+        ends_at = _minute_of(found.ends_at)
+        if clock_minute is None or ends_at is None or ends_at > day_minutes:
+            return None
+        left = (ends_at - clock_minute) % day_minutes
+    else:
+        left = found.minutes or 0
+    return left if left > 0 else None
 
 
 async def estimate(
@@ -119,15 +160,19 @@ async def estimate(
     narrated_text: str,
     activity_context: str = "",
     established_times: Sequence[str] = (),
+    clock_minute: int | None = None,
+    day_minutes: int = 1440,
     budget: TurnBudget,
     route: Route | None = None,
 ) -> Estimate | None:
     """One ``time_estimation`` call for an undeclared skip (FR-CLOCK-7): the estimate, or
     ``None`` when the model gave none the engine takes (an error, a refused budget, an
-    unparsable answer, 0 minutes, or a confidence under ``skips.MIN_CONFIDENCE``). The caller
-    has already asked the budget (``TurnBudget.try_optional``); #201's E-09 calls it directly
-    with an unbounded budget."""
-    inputs = inputs_of(narrated_text, activity_context, established_times)
+    unparsable answer, no time or 0 minutes, or a confidence under ``skips.MIN_CONFIDENCE``).
+    ``clock_minute`` is the time of day the scene is at (``None``: not fixed); the engine
+    resolves a clock-time answer against it (``resolved_minutes``). The caller has already
+    asked the budget (``TurnBudget.try_optional``); #201's E-09 calls it directly with an
+    unbounded budget."""
+    inputs = inputs_of(narrated_text, activity_context, established_times, clock_minute)
     _, _, messages = models.prepare(TIME_ESTIMATION.name, inputs)
     hashed = prompt_hash(messages)
     try:
@@ -146,11 +191,12 @@ async def estimate(
         return None
     if isinstance(found, Uncertain):
         return None
-    if found.minutes <= 0 or found.confidence < skips.MIN_CONFIDENCE:
+    minutes = resolved_minutes(found, clock_minute, day_minutes)
+    if minutes is None or found.confidence < skips.MIN_CONFIDENCE:
         return None
     # The configured model; with none configured, the adapter that answered (the stub's name).
     model = model or models.adapter.name
-    return Estimate(found.minutes, found.reason, found.confidence, model, hashed)
+    return Estimate(minutes, found.reason, found.confidence, model, hashed)
 
 
 # -- the plan ------------------------------------------------------------------------------------
@@ -424,6 +470,7 @@ __all__ = [
     "Estimate",
     "applied",
     "candidates",
+    "clock_text",
     "decide",
     "established_activities",
     "estimate",
@@ -432,6 +479,7 @@ __all__ = [
     "inputs_of",
     "mapping",
     "report",
+    "resolved_minutes",
     "stripped",
     "undeclared",
     "unestimated",

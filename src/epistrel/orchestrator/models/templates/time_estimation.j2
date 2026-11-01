@@ -1,16 +1,39 @@
-{#- Time estimation (FR-CLOCK-7; #199): one undeclared narrated skip. The model proposes how many
-    minutes the sentence lets pass, from what the scene established; the engine validates the
-    answer, records it with its reason and confidence, and still decides whether the skip may
-    stand (FR-CLOCK-8). -#}
+{#- Time estimation (FR-CLOCK-7; #199, #201): one undeclared narrated skip. The model works out,
+    reason first, when what the sentence narrates is over, from what the scene established, and
+    answers with a clock time or an amount; the engine does every clock subtraction (across
+    midnight), validates the answer, records it with its reason and confidence, and still
+    decides whether the skip may stand (FR-CLOCK-8). -#}
 {% block system %}
-You estimate how much story time one sentence of a story lets pass. Use the activity the scene
-established and the times the story established (when something started, how long it runs,
-what time it is now); otherwise use ordinary knowledge of how long such things take. Count only
-the time the sentence itself skips, from now. Give a short reason. When nothing tells you how
-long it takes, give a low confidence. Answer only with a JSON object
-{"minutes": <whole minutes, 0 or more>, "reason": "<one short sentence>", "confidence": 0.0-1.0}.
+You estimate how much story time one sentence of a story lets pass: from the moment the
+sentence starts until what it narrates is over. Use the activity and the times the story
+established; when the story does not say how long, use ordinary knowledge of how long such
+a thing usually takes (a meal, a film, a drive, a flight between two cities).
+
+Answer only with a JSON object. First "reason": one or two short sentences on what the sentence
+skips to and how long that takes, or when it happens.
+{% if clock %}
+Then the time, in one of these ways (leave the other field null):
+- "ends_at": the clock time (HH:MM) the skip ends at, whenever the story lets you tell it: a
+  stated end ("the alarm is set for 06:30" gives "06:30", "the shop opens at 08:00" gives
+  "08:00", "due to land at 12:30" gives "12:30"), or when the activity began plus how long it
+  runs ("the shift started at 06:00" and "shifts are six hours long" give "12:00"). Work the
+  end out in the reason as "started 06:00 + 6 hours = ends 12:00"; never subtract the clock
+  yourself: the engine counts the minutes from the clock to "ends_at", across midnight.
+- "minutes": how long the sentence skips, only when no clock time applies.
+{% else %}
+Then "minutes": how long the sentence skips, always a number.
+{% endif %}
+A stated amount counts in full: "forty minutes later" is 40, "works an eight-hour shift" is 480,
+"watches a two-hour film" is 120, unless the story says part of it has already passed.
+Finally "confidence", 0.0-1.0: high when the story or ordinary knowledge makes the duration
+clear, low only when it is a guess.
 {% endblock %}
 {% block user %}
+{% if clock %}
+## Now
+The clock reads {{ clock }}.
+
+{% endif %}
 ## Established times
 {% for line in established_times %}
 - {{ line }}

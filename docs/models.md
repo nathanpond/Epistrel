@@ -451,7 +451,7 @@ Proposes a best-guess duration, with its reason and a confidence, for a narrated
 - **Default model:** the `extraction_backstop` row of `model_config`, then the `default` row, per field, unless the purpose has its own
 - **Template:** `time_estimation.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
-- **Returns:** `TimeEstimate` (`minutes`, `reason`, `confidence`), validated strictly; its free text is author-facing
+- **Returns:** `TimeEstimate` (`reason`, `ends_at`, `minutes`, `confidence`), validated strictly; its free text is author-facing
 
 **Receives**
 
@@ -460,6 +460,7 @@ Proposes a best-guess duration, with its reason and a confidence, for a narrated
 | `narrated_text` | `render_text` |
 | `activity_context` | `scene` |
 | `established_times` | `scene` |
+| `clock` | `scene` |
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
 

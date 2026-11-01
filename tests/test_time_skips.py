@@ -259,13 +259,59 @@ def test_time_estimation_purpose() -> None:
     inputs = te.inputs_of(
         "They watch the rest of the movie in silence.",
         "I put on a two-hour movie for us at 19:10.",
-        ["The clock reads 19:40."],
+        ["The movie runs two hours."],
+        clock_minute=19 * 60 + 40,
     )
+    assert inputs.clock == "19:40"
     messages = render(purpose, inputs)
     text = "\n".join(m.content for m in messages)
-    for wanted in ("rest of the movie", "two-hour movie", "The clock reads 19:40."):
+    for wanted in ("rest of the movie", "two-hour movie", "The clock reads 19:40.", '"ends_at"'):
         assert wanted in text
-    assert registry.TimeEstimate().model_dump() == {"minutes": 0, "reason": "", "confidence": 0.0}
+    # The clock comes first, before the established times (#201: the live path's order).
+    assert text.index("The clock reads 19:40.") < text.index("The movie runs two hours.")
+    # No clock: no clock line, and the model is never asked for a clock time.
+    plain = "\n".join(m.content for m in render(purpose, te.inputs_of("An hour later.")))
+    assert "The clock reads" not in plain
+    assert '"ends_at"' not in plain
+    # #201: reason first, so the model works the skip out before it commits to a time.
+    assert list(registry.TimeEstimate.model_json_schema()["properties"]) == [
+        "reason",
+        "ends_at",
+        "minutes",
+        "confidence",
+    ]
+    assert registry.TimeEstimate().model_dump() == {
+        "reason": "",
+        "ends_at": None,
+        "minutes": None,
+        "confidence": 0.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("ends_at", "minutes", "clock", "day", "found"),
+    [
+        (None, 45, None, 1440, 45),  # an amount: no clock needed
+        (None, 45, 600, 1440, 45),
+        ("12:30", None, 8 * 60 + 45, 1440, 225),  # the engine subtracts
+        ("06:30", None, 23 * 60, 1440, 450),  # across midnight
+        ("24:00", None, 19 * 60, 1440, 300),  # "24:00" is midnight
+        ("00:00", None, 19 * 60, 1440, 300),
+        ("12:30", 60, 8 * 60 + 45, 1440, 225),  # a clock time wins over an amount
+        ("12:30", None, None, 1440, None),  # a clock time with no clock: not placed
+        ("08:45", None, 8 * 60 + 45, 1440, None),  # it skips nothing
+        ("25:00", None, 600, 1440, None),  # past the day
+        ("10:00", None, 18 * 60, 20 * 60, 12 * 60),  # a 20-hour day wraps at its own end
+        (None, 0, None, 1440, None),
+        (None, None, 600, 1440, None),  # no time at all
+    ],
+)
+def test_resolved_minutes(
+    ends_at: str | None, minutes: int | None, clock: int | None, day: int, found: int | None
+) -> None:
+    """#201: the engine, not the model, does the clock arithmetic."""
+    answer = registry.TimeEstimate(ends_at=ends_at, minutes=minutes, confidence=0.9)
+    assert te.resolved_minutes(answer, clock, day) == found
 
 
 class _Answering:
@@ -312,3 +358,25 @@ async def test_estimate_floor(minutes: int, confidence: float, taken: bool) -> N
         "stub",
     )
     assert found.meta("model")["initiated_by"] == "model"
+
+
+async def test_estimate_resolves_a_clock_time() -> None:
+    """#201: an ``ends_at`` answer becomes minutes counted from the request's clock, and the
+    prompt carries that clock; with no clock it is no estimate."""
+    answer = registry.TimeEstimate(reason="the alarm at 06:30", ends_at="06:30", confidence=0.9)
+    models = _Answering(answer)
+    found = await te.estimate(
+        models,  # type: ignore[arg-type]
+        narrated_text="He sleeps until the alarm goes off.",
+        established_times=["His alarm is set for 06:30."],
+        clock_minute=23 * 60,
+        budget=TurnBudget(),
+    )
+    assert found is not None
+    assert (found.minutes, found.reason) == (450, "the alarm at 06:30")
+    unplaced = await te.estimate(
+        models,  # type: ignore[arg-type]
+        narrated_text="He sleeps until the alarm goes off.",
+        budget=TurnBudget(),
+    )
+    assert unplaced is None

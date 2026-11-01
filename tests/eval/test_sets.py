@@ -84,7 +84,9 @@ def test_time_estimation_set_is_stratified_and_generated(tmp_path: Path) -> None
     assert {c.kind for c in cases} == set(KINDS)
     for case in cases:
         lo, hi = case.acceptable_minutes
-        assert lo <= case.stub_answer.minutes <= hi, case.id
+        minutes = case.stub_answer.minutes
+        assert minutes is not None, case.id
+        assert lo <= minutes <= hi, case.id
     assert "time_estimation/cases.jsonl" in labeled.STRATIFIED
     digest = labeled.digest_text(SETS)
     section = digest.split("## `time_estimation/cases.jsonl` (e09, 200 cases)", 1)[1]

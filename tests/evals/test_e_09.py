@@ -10,6 +10,10 @@ the ``clock`` module the suite delivers it for its own run and restores the deli
 - ``test_e_09__harness_misses``: an estimate the live path would not take is out of range: a
   model error, a confidence of 0.2 (under ``MIN_CONFIDENCE``) and one of 0.4 (under the
   structured layer's default ``uncertain_below``, 0.5); the same case answered at 0.9 is in.
+- ``test_e_09__harness_clock``: the clock-anchored cases answered with a clock time
+  (``ends_at``, the range's midpoint on from the case's clock, across midnight) are in range: the
+  suite sends the case's clock as the live path does (the request's ``clock``, first in the
+  prompt, never among the established times) and the engine does the subtraction (#201).
 - ``test_e_09__harness_pacing``: a scripted render that narrates "An hour later" with nothing
   establishing an activity is refused (FR-CLOCK-8) and counted as one removal: 2 in 4 turns over
   two seeds, 50 per 100 turns.
@@ -42,7 +46,7 @@ from epistrel.evals.suites.e09_time_estimation import (
 )
 from epistrel.evals.suites.scenario_play import ScenarioCase
 from epistrel.orchestrator.models.access import EVAL_SCOPE
-from epistrel.orchestrator.models.registry import TIME_ESTIMATION
+from epistrel.orchestrator.models.registry import TIME_ESTIMATION, TimeEstimate
 from epistrel.orchestrator.models.stub import FaultKind
 from epistrel.tools.generated import REPO_ROOT
 from tests.eval.suite_support import SEEDS, SETS, assert_floors_pass, by_id, stub_run
@@ -77,9 +81,10 @@ async def _run(
     *,
     failures: Path | None = None,
     error_case: str | None = None,
+    prompts: list[str] | None = None,
 ) -> SuiteResult:
     """``suite`` on the stub over in-memory ``cases``, two seeds; every model call of
-    ``error_case`` fails with an HTTP 500."""
+    ``error_case`` fails with an HTTP 500; ``prompts`` gains the ``time_estimation`` prompts."""
     async with stub_engine(pg_url, engine) as lib:
         if error_case is not None:
 
@@ -97,6 +102,12 @@ async def _run(
             cases={suite.name: cases},
             failures=failures,
         )
+        if prompts is not None:
+            prompts.extend(
+                "\n".join(m.content for m in c.messages)
+                for c in lib.models.stub.calls
+                if c.purpose == TIME_ESTIMATION.name
+            )
     assert report.errors == [], report.errors
     (result,) = report.suites
     assert result.errors == [], result.errors[:5]
@@ -162,6 +173,7 @@ async def test_e_09__harness_misses(pg_url: str, engine: AsyncEngine, tmp_path: 
     with the same in-range minutes that pass at confidence 0.9."""
     base = _estimation_cases()[0]
     lo, hi = base.acceptable_minutes
+    assert base.stub_answer.minutes is not None
     assert lo <= base.stub_answer.minutes <= hi
     cases: list[CaseModel] = [
         _variant(base, "ok", 0.9),
@@ -184,6 +196,43 @@ async def test_e_09__harness_misses(pg_url: str, engine: AsyncEngine, tmp_path: 
         assert record["observations"][WITHIN] is False
         assert record["detail"]["estimate"] is None
         assert record["output"] == "no estimate"
+
+
+class ClockAnswers(E09Suite):
+    """``e09`` with the stub answering each case with a clock time: the range's midpoint on
+    from the case's clock, as ``HH:MM`` (``ends_at``), no minutes."""
+
+    def stub_answers(self, case: CaseModel) -> Mapping[str, str]:
+        assert isinstance(case, TimeEstimationCase)
+        clock, _ = case.clock()
+        assert clock is not None
+        lo, hi = case.acceptable_minutes
+        hours, minutes = divmod((clock + (lo + hi) // 2) % 1440, 60)
+        answer = TimeEstimate(
+            reason="the clock time it ends", ends_at=f"{hours:02d}:{minutes:02d}", confidence=0.9
+        )
+        return {TIME_ESTIMATION.name: answer.model_dump_json()}
+
+
+ClockAnswers.name = "e09"
+
+
+@pytest.mark.part("M6", "FR-CLOCK-7,8; NFR-QUAL-9")
+async def test_e_09__harness_clock(pg_url: str, engine: AsyncEngine) -> None:
+    """Clock-time answers are in range, the engine counting from the case's clock (across
+    midnight); the clock reaches the prompt first, as the live path sends it."""
+    clocked = [c for c in _estimation_cases() if c.clock()[0] is not None]
+    assert {c.kind for c in clocked} == {"inferred"}
+    overnight = next(c for c in clocked if c.id == "time_estimation-sleep-0020")  # 23:00 -> 06:30
+    cases: list[CaseModel] = [overnight, *(c for c in clocked if c.family == "flight")]
+    prompts: list[str] = []
+    result = await _run(pg_url, engine, ClockAnswers(), cases, prompts=prompts)
+    assert by_id(result)[WITHIN].per_seed == [1.0, 1.0]
+    assert len(prompts) == len(cases) * len(SEEDS)
+    (sleep, *_) = [p for p in prompts if "Raj's alarm is set for 06:30." in p]
+    assert "The clock reads 23:00." in sleep
+    assert sleep.index("The clock reads 23:00.") < sleep.index("## Established times")
+    assert all(p.count("The clock reads") == 1 for p in prompts)
 
 
 TURN = {"stub_judge": "final", "stub_voice": 4, "expected": []}

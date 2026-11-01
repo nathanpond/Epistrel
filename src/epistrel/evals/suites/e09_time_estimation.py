@@ -6,7 +6,10 @@ what #199's ``time_estimation`` purpose receives for it (``narrated_text``, ``ac
 runs the live path's own call, ``orchestrator.structured.time_estimation.estimate``, with the
 route the suite's fixture story resolves for the purpose (a scratch story on the seeded
 ``Structured`` profile with ``clock.level = on``, ``CLOCK_ON``; built once in ``setup``). No
-render is generated, so only ``time_estimation`` reaches the run model.
+render is generated, so only ``time_estimation`` reaches the run model. A case's "The clock
+reads HH:MM." line is sent as the live path sends the clock (``TimeEstimationCase.clock``: the
+request's own ``clock``, first in the prompt, never among the established times), and the
+engine resolves a clock-time answer against it (#201).
 
 An estimate is **in range** when the engine took it and its minutes lie in the range. An
 estimate the live path would not take counts as out of range, as a turn would remove the skip
@@ -37,6 +40,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -88,6 +92,8 @@ PACING_CASES = 10
 PACING_SEED = 201
 PACING_PREFIX = "pacing-"
 CALL_DEADLINE_S = 300.0
+CLOCK_LINE = re.compile(r"The clock reads ([0-9]{1,2}):([0-5][0-9])\.")
+"""A case's clock line (the authoring module's wording)."""
 
 
 def family_id(family: str) -> str:
@@ -119,6 +125,20 @@ class TimeEstimationCase(CaseModel):
     @property
     def kind(self) -> str:
         return self.notes.split(":", 1)[0]
+
+    def clock(self) -> tuple[int | None, list[str]]:
+        """The case's clock as the live path sends it (#201): its "The clock reads HH:MM." line
+        becomes the request's ``clock`` (``scene_times`` never lists it), and the rest stay
+        established times, in order."""
+        minute: int | None = None
+        rest: list[str] = []
+        for line in self.established_times:
+            read = CLOCK_LINE.fullmatch(line)
+            if read is None:
+                rest.append(line)
+            else:
+                minute = int(read[1]) * 60 + int(read[2])
+        return minute, rest
 
     def within(self, minutes: int) -> bool:
         lo, hi = self.acceptable_minutes
@@ -229,11 +249,13 @@ class E09Suite(Suite):
         if isinstance(case, PacingCase):
             return await self._pacing(ctx, case)
         assert isinstance(case, TimeEstimationCase)  # noqa: S101 - load() validated it
+        clock_minute, times = case.clock()
         found = await time_estimation.estimate(
             ctx.models,
             narrated_text=case.narrated_text,
             activity_context=case.activity_context,
-            established_times=case.established_times,
+            established_times=times,
+            clock_minute=clock_minute,
             budget=TurnBudget(deadline_s=CALL_DEADLINE_S),
             route=self.route,
         )

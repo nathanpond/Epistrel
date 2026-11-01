@@ -4308,14 +4308,11 @@ async def play(
         ]
 
     def scene_times(read_: TurnRead, before: Sequence[TurnBeat]) -> list[str]:
-        """#199: the times the scene established, for a ``time_estimation`` request: the clock
-        as the turn starts (when the anchor fixes it), then the scene's earlier ``do`` beats
-        and this turn's earlier beats that state a time or an amount."""
+        """#199: the times the scene established, for a ``time_estimation`` request: the scene's
+        earlier ``do`` beats and this turn's earlier beats that state a time or an amount (the
+        clock as the turn starts is the request's own ``clock``, #201)."""
         found: list[str] = []
         read_clock = books[0].clock
-        if read_clock is not None and read_clock.minute is not None:
-            hours, minutes = divmod(read_clock.minute, 60)
-            found.append(f"The clock reads {hours:02d}:{minutes:02d}.")
         stating = [
             *read_.scene_doings,
             *((typed_do,) if typed_do else ()),
@@ -4394,6 +4391,8 @@ async def play(
                             established_times=scene_times(
                                 read_, [b for b in everything if b.beat < candidate.beat]
                             ),
+                            clock_minute=read_clock.minute,
+                            day_minutes=read_clock.clockwork.day_minutes,
                             budget=budget,
                             route=route,
                         )

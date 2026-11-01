@@ -998,13 +998,15 @@ TIME_ESTIMATION_TEXT_MAX = 2_000
 """The longest narrated text, or activity context, one ``time_estimation`` request carries."""
 TIME_ESTIMATION_MAX_TIMES = 20
 """The most established times one ``time_estimation`` request carries."""
+CLOCK_TIME_PATTERN = r"^([0-9]{1,2}:[0-5][0-9])?$"
+"""A time of day as ``HH:MM`` (empty: none), in a ``time_estimation`` request or answer."""
 
 
 class TimeEstimationInputs(InputSchema):
     """One undeclared narrated skip (FR-CLOCK-7; #199): the sentence that implies elapsed time,
-    what the scene established about the activity, and the times the story established ("the
-    clock reads 19:40", "the movie started at 19:10 and runs about two hours"). Never a
-    definition, a memory, a policy, an age, a provider's value or eval text."""
+    what the scene established about the activity, the times the story established ("the movie
+    started at 19:10 and runs about two hours") and the clock as the turn starts ("19:40",
+    #201). Never a definition, a memory, a policy, an age, a provider's value or eval text."""
 
     narrated_text: Annotated[str, C.RENDER_TEXT] = Field(max_length=TIME_ESTIMATION_TEXT_MAX)
     activity_context: Annotated[str, C.SCENE] = Field(
@@ -1013,18 +1015,28 @@ class TimeEstimationInputs(InputSchema):
     established_times: Annotated[list[str], C.SCENE] = Field(
         default_factory=list, max_length=TIME_ESTIMATION_MAX_TIMES
     )
+    clock: Annotated[str, C.SCENE] = Field(
+        default="", pattern=CLOCK_TIME_PATTERN, examples=["19:40"]
+    )
+    """The time of day as the turn starts ("19:40"; empty: the clock does not fix it). With it,
+    the model may answer with a clock time and the engine does the arithmetic (#201)."""
 
 
 class TimeEstimate(BaseModel):
-    """The structured result of one ``time_estimation`` call: the proposed duration in minutes,
-    a short reason and a confidence. The defaults (0 minutes at confidence 0) are the most
-    conservative answer: an estimate under ``core.world_clock.skips.MIN_CONFIDENCE`` is no
-    estimate, and the skip is removed (NFR-PERF-7 (5))."""
+    """The structured result of one ``time_estimation`` call, reason first so the model works
+    the skip out before it commits to a time (#201). The time is either ``ends_at``, the clock
+    time the skip ends at ("the alarm is set for 06:30", or a start plus how long the activity
+    runs), from which the engine counts the minutes against the clock across midnight
+    (``orchestrator.structured.time_estimation.resolved_minutes``); or ``minutes``, how long the
+    skip lasts. The defaults (no time at confidence 0) are the most conservative answer: an
+    estimate under ``core.world_clock.skips.MIN_CONFIDENCE`` is no estimate, and the skip is
+    removed (NFR-PERF-7 (5))."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    minutes: int = Field(default=0, ge=0, le=TIME_ESTIMATE_MAX_MINUTES)
     reason: str = Field(default="", max_length=500)
+    ends_at: str | None = Field(default=None, pattern=CLOCK_TIME_PATTERN)
+    minutes: int | None = Field(default=None, ge=0, le=TIME_ESTIMATE_MAX_MINUTES)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
@@ -1560,6 +1572,7 @@ __all__ = [
     "ADJUDICATION_MAX_CLAIMS",
     "ADJUDICATION_MAX_RECORDS",
     "BELIEF_ADJUDICATION",
+    "CLOCK_TIME_PATTERN",
     "CONSOLIDATION",
     "CONSOLIDATION_MAX_RECORDS",
     "CONSOLIDATION_STATEMENTS_MAX",

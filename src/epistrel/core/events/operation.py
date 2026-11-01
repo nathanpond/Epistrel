@@ -597,7 +597,6 @@ class Operation:
             o.story_id,
             o.kind,
             o.principal,
-            o.idempotency_key,
             o.viewpoint,
             o.origin,
             o.narrative_turn,
@@ -613,11 +612,16 @@ class Operation:
             o.status == OperationStatus.COMMITTED.value,
             o.turn_stage.is_not(None),
         )
+        # The idempotency key is read on its own, never in the row the story id comes from: the
+        # key is a client credential-like value and must not travel with ids that are logged.
+        key_query = select(o.idempotency_key).where(o.operation_id == operation_id)
         if isinstance(db, AsyncConnection):
             row = (await db.execute(query)).one_or_none()
+            key = await db.scalar(key_query)
         else:
             async with db.connect() as conn:
                 row = (await conn.execute(query)).one_or_none()
+                key = await conn.scalar(key_query)
         if row is None or row.story_id is None or row.narrative_turn is None:
             return None
         op = cls(
@@ -625,7 +629,7 @@ class Operation:
             story_id=str(row.story_id),
             kind=OperationKind(row.kind),
             principal=str(row.principal),
-            idempotency_key=row.idempotency_key,
+            idempotency_key=key,
             viewpoint=row.viewpoint,
             origin=row.origin,
             operation_id=operation_id,

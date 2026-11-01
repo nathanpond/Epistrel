@@ -75,8 +75,11 @@ def test_render_steps__structure() -> None:
         ([{"kind": "think", "text": "Hm.", "step": 3}, DO], GOOD, "step"),
     ]
     for beats, steps, message in bad:
-        with pytest.raises(ValidationError, match=message):
+        with pytest.raises(ValidationError, match=message) as refused:
             _render(beats, steps)
+        # #612: each refusal names its remedy, which the retry's correction carries.
+        (error,) = refused.value.errors()
+        assert error["msg"].endswith(")"), error["msg"]
     with pytest.raises(ValidationError, match="only a character"):
         _render([{"kind": "narration", "text": "Rain."}], [GOOD[2]], actor=None)
 

@@ -37,7 +37,7 @@ from epistrel.core.verify.protected import PrivateRecord, match_thoughts
 from tests.auth_support import auth_settings
 from tests.partition_support import execute
 from tests.respond_support import respond_client, system_of
-from tests.secrets_support import play, secret_story
+from tests.secrets_support import partitioned_street, play
 from tests.story_support import WRITE
 from tests.structured_turn_support import beat
 
@@ -120,7 +120,7 @@ async def run_sequence(
 ) -> list[str]:
     """One run of ``spec``: what leaked (empty: nothing), as ``<attempt>: <where>`` lines."""
     stub = lib.models.stub
-    story, ids = await secret_story(client, engine, "Wren", "Marcus", "Jenni", "Pip")
+    story, ids = await partitioned_street(client, engine, "Wren", "Marcus", "Jenni", "Pip")
     asked = ids["Marcus"]
     if spec.technique == "ask_minor":
         asked = ids["Pip"]

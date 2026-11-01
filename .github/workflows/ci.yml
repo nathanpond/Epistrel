@@ -140,8 +140,9 @@ jobs:
     # rest of tests/evals run as `eval`, `eval-e08-think`, `eval-e08` and `eval-harness`.
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    # 35, not 25 (#179): E-08's 300-case real-suite run is one file that took 21 minutes on a slow runner.
-    timeout-minutes: 35
+    # 50, not 35 (#179, then M6): E-08's 300-case real-suite run is one file that took 21 minutes on a
+    # slow runner, and the think-mode shard reached 34m58s and then the 35-minute cap on M6's PR.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:

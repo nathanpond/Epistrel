@@ -46,7 +46,7 @@ from tests import verify_support as vs
 from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
-from tests.secrets_support import lone_belief, play, secret_story
+from tests.secrets_support import lone_belief, partitioned_street, play
 from tests.structured_turn_support import beat, structured_story, turn_report
 
 pytestmark = pytest.mark.integration
@@ -217,7 +217,7 @@ async def test_s_extract_adversarial__m5(
     ((f), a reactive narration implying the reactor already knew a secret, is #176's slice.)"""
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
-        story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus")
+        story, ids = await partitioned_street(client, engine, "Jenni", "Bobby", "Marcus")
         dana, belief = await lone_belief(
             engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana"
         )
@@ -281,7 +281,7 @@ async def test_s_extract_adversarial__f(
     plain flinch is accepted as his narrated ``do``."""
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
-        story, ids = await secret_story(client, engine, "Jenni", "Bobby", "Marcus", "Dale")
+        story, ids = await partitioned_street(client, engine, "Jenni", "Bobby", "Marcus", "Dale")
         await ms.per_character(engine, story)
         dana, _ = await lone_belief(
             engine, story, ids["Marcus"], ids["Marcus"], "married_to", "Dana"

@@ -20,7 +20,7 @@ from tests.respond_support import body, respond
 from tests.structured_turn_support import render, turn_report
 
 
-async def secret_story(
+async def partitioned_street(
     client: httpx.AsyncClient, engine: AsyncEngine, *names: str
 ) -> tuple[str, dict[str, str]]:
     """A structured story (the first name the player) under partitions at perception ``full``,
@@ -94,4 +94,4 @@ async def play(
     return Played(found.json(), await turn_report(engine, story_id))
 
 
-__all__ = ["Played", "lone_belief", "play", "secret_story"]
+__all__ = ["Played", "lone_belief", "partitioned_street", "play"]

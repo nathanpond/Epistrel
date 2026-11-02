@@ -721,7 +721,8 @@ _OWNING = frozenset({"act", "time"})
 
 _NO_STEPS_REMEDY = " (leave `step` out, or declare the `steps` it names)"
 """#612: every step refusal names its remedy in parentheses, so the correction a retry is sent
-(at ``temperature=0``) can be acted on instead of repeated."""
+(a ``schema_error`` retry, at the call's own params since #685) can be acted on instead of
+repeated."""
 
 
 def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:

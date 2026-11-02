@@ -398,7 +398,8 @@ class VerifyConfig:
             safe_disposition=v.safe_disposition,
             entailment_max_records=d.entailment_max_records,
             neighborhood_max_facts=d.neighborhood_max_facts,
-            clock=clocked,
+            # #663: the prompt-only clock checks nothing and anchors nothing.
+            clock=clocked and clock == ON_LEVEL,
             # #203: the prompt-only clock verifies no time claim.
             time_claims=clocked
             and clock == ON_LEVEL

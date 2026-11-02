@@ -45,6 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.projections import rebuild
+from epistrel.core.propositions.vocabulary import CLOCK_ANCHOR
 from epistrel.orchestrator.models.stub import StubAdapter
 from tests import clock_support as ck
 from tests import effect_support as es
@@ -509,3 +510,53 @@ async def test_s_movie(
             do="I fall asleep on the couch",
         )
         assert found["clock"]["after"]["offset"] == at + 450
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-7,8")
+async def test_s_movie__prompt_only(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#663: at ``clock.level = prompt_only`` a structured story's clock is prompt text alone.
+    "They watch the rest of the movie in silence" (an undeclared skip) asks no estimator and
+    is never refused, and "It's 23:30", which the 19:40 anchor contradicts, is neither checked
+    nor repaired nor anchored. Complement asserted: ``test_s_movie`` estimates the same skip
+    at ``on``."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await movie(client, engine, stub)
+        # A placed scene: a time statement is then the M4 fact about it, as with the clock off.
+        apartment = await ps.place_entity(engine, story, "the apartment")
+        for who in ids.values():
+            await ps.put(engine, story, who, apartment)
+        await ck.set_clock(engine, story, "prompt_only")
+        anchors = await rows(
+            engine,
+            "SELECT count(*) AS n FROM facts WHERE story_id = :s AND predicate_id = :p",
+            s=story,
+            p=CLOCK_ANCHOR,
+        )
+        found = await night(
+            client,
+            stub,
+            story,
+            ids,
+            beat("narration", REST_OF_THE_MOVIE),
+            beat("narration", "It's 23:30."),
+        )
+        assert estimations(stub) == []
+        report = await turn_report(engine, story)
+        assert es.regenerations(stub) == []
+        assert report.get("repairs", []) == []
+        assert found["clock"]["after"]["offset"] == found["clock"]["before"]["offset"]
+        after = await rows(
+            engine,
+            "SELECT count(*) AS n FROM facts WHERE story_id = :s AND predicate_id = :p",
+            s=story,
+            p=CLOCK_ANCHOR,
+        )
+        assert after[0].n == anchors[0].n

@@ -87,16 +87,26 @@ from epistrel.core.world_clock.anchor import (
 )
 
 REF_PREFIX = "state:"
+ON_LEVEL = "on"
+"""#663: the clock level at which claims are checked against it."""
 KIND = "clock"
 REFINES: frozenset[str] = frozenset({TIME_IS, TIME_OF_DAY_BAND})
 """The checks whose statement, undecided, may narrow the anchor (anchoring statements)."""
 
 
 async def clock_on(conn: AsyncConnection, story_id: str) -> bool:
-    """The story runs the clock (``time_is``'s ``active`` test)."""
+    """The story runs the clock, ``on`` or ``prompt_only`` (what its prompts show of it)."""
     from epistrel.core.world_clock import clock_level
 
     return await clock_level(conn, story_id) is not None
+
+
+async def checks_on(conn: AsyncConnection, story_id: str) -> bool:
+    """#663: the story checks claims against the clock (``time_is``'s ``active`` test): only at
+    ``clock.level = on``; at ``prompt_only`` the clock is prompt text alone."""
+    from epistrel.core.world_clock import clock_level
+
+    return await clock_level(conn, story_id) == ON_LEVEL
 
 
 async def read(
@@ -110,7 +120,7 @@ async def read(
     the story does not run the clock."""
     from epistrel.core import world_clock
 
-    if not await clock_on(conn, story_id):
+    if not await checks_on(conn, story_id):
         return []
     found = await world_clock.settings(conn, story_id)
     clock = await world_clock.clock_definition(conn, story_id)
@@ -461,7 +471,7 @@ async def believed(
 
 
 CLOCK_LOOKUP = _ClockLookup()
-register_owner_lookup(TIME_IS, CLOCK_LOOKUP, active=clock_on, belief=believed)
+register_owner_lookup(TIME_IS, CLOCK_LOOKUP, active=checks_on, belief=believed)
 for _predicate in (TIME_OF_DAY_BAND, ELAPSED_SINCE, SCHEDULED_STATUS):
     register_owner_lookup(_predicate, CLOCK_LOOKUP, belief=believed)
 
@@ -470,6 +480,7 @@ __all__ = [
     "REFINES",
     "believed",
     "check_of",
+    "checks_on",
     "clock_on",
     "owned_value",
     "read",

@@ -235,6 +235,7 @@ from epistrel.core.profiles.effective import (
 )
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
+from epistrel.core.profiles.schema import ON as ON_LEVEL
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition, TemporalKind
@@ -1415,7 +1416,7 @@ class StagedSource:
             self._clock = (
                 conn is not None
                 and story_id is not None
-                and await clock_verify.clock_on(conn, story_id)
+                and await clock_verify.checks_on(conn, story_id)
             )
         return self._clock
 
@@ -4393,7 +4394,9 @@ async def play(
         at once by the deterministic rung (``unestimated_skip_removed``). Runs before the
         due-event check (``time_stops``), which every accepted skip then meets."""
         read_clock = books[0].clock
-        if read_clock is None:
+        if read_clock is None or read_clock.level != ON_LEVEL:
+            # #663: at ``prompt_only`` a skip is neither estimated nor refused.
+            budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
             return
         fresh = [b for b in target.beats if b.beat not in skip_seen]
         skip_seen.update(b.beat for b in fresh)
@@ -5360,7 +5363,11 @@ async def play(
                     )
                 if k == 0:
                     released[:] = [rendered_k]
-                wanted = 0 if books[0].clock is None else skipping.undeclared(rendered_k.beats)
+                wanted = (
+                    0
+                    if books[0].clock is None or books[0].clock.level != ON_LEVEL
+                    else skipping.undeclared(rendered_k.beats)
+                )
                 if wanted:
                     # #199: the render's undeclared skips' estimates, pre-allocated before its
                     # verification so an earlier entailment call cannot starve them.

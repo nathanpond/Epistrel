@@ -10,8 +10,8 @@ is first written, never recomputed: ``operation_id``, ``config_fingerprint``,
 ``profile_version`` (``<profile id>@<version>``), ``models`` (``{purpose: {id,
 reported_version}}``), ``rating_version_id`` (the story's content-rating version) and
 ``quality_status`` (the status string); an operation that recorded no configuration stamp
-leaves them null. ``compacted_at`` marks a rating whose message an opt-in compaction removed
-(M7: ``core.feedback.mark_compacted``); ``redacted_at`` marks one an erasure redacted (#124).
+leaves them null. ``pruned_at`` marks a rating whose message an opt-in pruning removed
+(M7: ``core.feedback.mark_pruned``); ``redacted_at`` marks one an erasure redacted (#124).
 
 ``feedback_history`` keeps every earlier value: a re-rating that changes something appends the
 value it replaces (``kind = replaced``), and a retraction appends the final value before the row
@@ -22,7 +22,7 @@ Both are audit-category records (FR-STORE-25, FR-FB-2): no story view, retrieval
 assembler reads them, and no event or operation records a rating. They are story-scoped (deleted
 with the story, ``core.stories.STORY_TABLES``; a fork does not copy them) and expire only by
 their own ``feedback_retention``. ``operation_id`` and ``message_id`` are plain ids, without
-foreign keys, so a compaction can remove the message and its operation while the rating stays.
+foreign keys, so a prune run can remove the message and its operation while the rating stays.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ message_feedback = Table(
     Column("models", JSONB, nullable=True),
     Column("rating_version_id", ulid_type(), nullable=True),
     Column("quality_status", Text, nullable=True),
-    Column("compacted_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("pruned_at", TIMESTAMP(timezone=True), nullable=True),
     Column("redacted_at", TIMESTAMP(timezone=True), nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False),

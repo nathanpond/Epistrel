@@ -5,7 +5,7 @@
 per erasure, appended and never rewritten: ``{erasure_id, subject: {kind, id}, scope, story_id,
 at, principal, operation_id, counts, scan_term_hashes, ledger_hash_prev, ledger_hash}``
 (identifiers, counts and keyed hashes, never a name). ``at`` is ISO 8601 UTC with microseconds.
-``ledger_hash`` is the SHA-256 of the line's canonical JSON without it (sorted keys, compact
+``ledger_hash`` is the SHA-256 of the line's canonical JSON without it (sorted keys, no-whitespace
 separators), and ``ledger_hash_prev`` is the previous line's ``ledger_hash`` (64 zeros for the
 first), so a changed, removed or reordered line breaks the chain. The directory lives on its own
 volume, outside the database and the backups it governs; the ``erasure_ledger`` table holds the
@@ -122,7 +122,7 @@ def _iso(moment: datetime) -> str:
 
 
 def canonical(document: Mapping[str, Any]) -> bytes:
-    """Sorted keys, compact separators, UTF-8: the bytes a line's hash is taken over."""
+    """Sorted keys, no-whitespace separators, UTF-8: the bytes a line's hash is taken over."""
     return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
 

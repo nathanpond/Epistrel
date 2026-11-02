@@ -50,7 +50,7 @@ def _unavailable(reason: str, **details: Any) -> ModerationUnavailable:
 
 
 def encode(payload: Mapping[str, Any]) -> bytes:
-    """The request body: compact JSON with sorted keys (the bytes the signature covers)."""
+    """The request body: minified JSON with sorted keys (the bytes the signature covers)."""
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 

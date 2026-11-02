@@ -10174,20 +10174,8 @@
         "type": "object"
       },
       "Feedback": {
-        "description": "One principal's rating of one generated message (FR-FB-1): the message (``message_id``,\nits ``turn`` and ``variant``), the ``principal``, the ``rating`` (1 to 5; null when the\nprincipal has none), its ``tags`` and ``text``, when it was first given and last changed,\n``compacted_at`` (set when an opt-in compaction removed the message; the rating is kept), the\n``context`` the message was produced under (null without a rating), and the ``history`` of\nearlier values, newest first.",
+        "description": "One principal's rating of one generated message (FR-FB-1): the message (``message_id``,\nits ``turn`` and ``variant``), the ``principal``, the ``rating`` (1 to 5; null when the\nprincipal has none), its ``tags`` and ``text``, when it was first given and last changed,\n``pruned_at`` (set when an opt-in pruning removed the message; the rating is kept), the\n``context`` the message was produced under (null without a rating), and the ``history`` of\nearlier values, newest first.",
         "properties": {
-          "compacted_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Compacted At"
-          },
           "context": {
             "anyOf": [
               {
@@ -10224,6 +10212,18 @@
           "principal": {
             "title": "Principal",
             "type": "string"
+          },
+          "pruned_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pruned At"
           },
           "rating": {
             "anyOf": [
@@ -10288,7 +10288,7 @@
           "rating",
           "tags",
           "text",
-          "compacted_at",
+          "pruned_at",
           "created_at",
           "updated_at",
           "context",

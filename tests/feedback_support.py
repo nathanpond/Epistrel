@@ -232,10 +232,15 @@ async def history_rows(engine: AsyncEngine, story_id: str) -> list[Any]:
     )
 
 
+REMOVAL_MARK = "pruned_at"
+"""The feedback read's field set when M7's pruning removed the rated message (#246's name; an
+M3 part reads it through this constant, since the M7 term is not M3's)."""
+
 __all__ = [
     "OPERATOR",
     "OTHER_RATER",
     "RATER",
+    "REMOVAL_MARK",
     "SEEDED_TAGS",
     "Played",
     "age_rating",

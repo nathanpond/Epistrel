@@ -17,8 +17,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | Area | Spec | ADRs |
 |---|---|---|
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
-| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
+| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175 |
+| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
 | FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
@@ -44,13 +44,13 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
-| FR-FB | §18.8 | 111 |
+| FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137 |
+| NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
-| NFR-REL | §20 | 045, 127 |
+| NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169 |
 | NFR-PORT | §20 | 150 |
@@ -237,6 +237,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 172 | A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it | Current | — |
 | 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
 | 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Current | — |
+| 175 | Compaction is renamed pruning | Current | — |
 
 ---
 
@@ -1832,6 +1833,14 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - S-PLAYER-AUTHORITY gains an M6 part. FR-RESP-14 is first gated at M6, beside M6's configuration-race scenario (S-CONFIG-RACE).
 - The Console shows notices with fix, clarify, and override actions.
 - A notice discloses nothing beyond the player's input, at the cost of noticing claims that canon happens to make true and false alike.
+
+---
+
+### ADR-175 — Compaction is renamed pruning
+**Status:** Accepted.
+**Context:** FR-STORE-32's operation permanently deletes chosen discarded tails and dormant in-story continuations from a story that opts into it. It was called "compaction", which readers confused with the Lite rolling summary (FR-LITE), which compresses old messages into the generation context and deletes nothing. The FR-FB-2 hook M3 shipped (#112) carried the old name too (`mark_compacted`, `message_feedback.compacted_at`).
+**Decision:** The operation is called **pruning** (the owner's decision, round two, 2026-10-10): "prune" as the verb, "a prune run" for one execution, `pruned` as the error code and feedback marker, "prune marker" and "prune policy", and the test ID S-PRUNE. "Purge" was considered and rejected, because the spec already uses it as an everyday verb (the media sweep purges unused bytes, idempotency results are purged, an unused profile is purged). The rename covers the specification (*01*–*04*), CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109) and the open issues. Rolling-summary wording ("compress") is a different concept and is unchanged.
+**Consequences:** #247 builds the operation under the new name. Earlier ADRs keep the word "compaction": they are history and are not rewritten. `tests/test_terminology.py::test_no_compaction_term` fails the build if the old term returns to the specification, CLAUDE.md, the README or the code (this log, and the erasure matcher's common-words list, where it is an ordinary English word, are exempt). Test: S-PRUNE (M7).
 
 ---
 

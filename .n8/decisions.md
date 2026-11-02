@@ -10755,3 +10755,9 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #620
 - **Batch E close-out:** weekly-p04 was dispatched on the branch (run 41413355016, `gh workflow run perf.yml -f suite=weekly-p04`). Its report is committed under perf/results/ when it lands, closing #665's evidence too.
   **Issue:** #619, #665
+
+## Ad-hoc — 2026-11-02 (#246, the planned rename)
+
+- **Change:** "Compaction" is renamed "pruning" across docs/01–04, CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109, the feedback read's `pruned_at`), the test ID (S-COMPACTION → S-PRUNE), the §13 lexicon's M7 term (`compaction` → `prune`) and the open issues and milestones. Invariant 6 is renamed with it, and #71's wording is kept otherwise: "Only erasure, opt-in pruning, audit-record retention expiry, and whole-story deletion remove events; erasure and pruning leave markers". Its meaning and its honor-system status are unchanged. ADR-175 records it. Earlier ledger entries and ADRs keep the old word as history.
+  **Why:** the owner's decision (round two, 2026-10-10), planned as #246. "Compaction" was confused with the Lite rolling summary.
+  **Affects:** M7 #247 and #248 (build under the new name, already drafted so). No other plan changes: a rename only, so no replan is needed.

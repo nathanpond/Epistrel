@@ -10506,3 +10506,23 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   **Issue:** #612, #588, #685
 - **Decision (gate):** CI on the PR is the full-suite gate, as in passes 1 and 2. A local full run takes about 2h18m, and the live row needed a quiet host first. Locally: the touched test files passed (render steps, U-23, same-turn belief, structured output, model matrix), as did ruff, format, mypy and lint-imports. Mutation checks: with each change's source stashed, `test_render_steps__no_steps_correction` fails.
   **Issue:** #612
+
+## /n8-exec M6 (verify fixes, pass 4) — 2026-11-02
+
+- **Decision (owner):** #685, option (iii) refined, in the owner's words "agree, do it": a `schema_error` retry runs at the call's own params, and a `parse_error` retry stays at `temperature=0`. If the rerun still fails, take (ii), deferring to #603, not (i). Branch `milestone/m6-verify-fixes-4` off `5d741e6`.
+  **Why:** in four failed runs, every attempt repeated the error at temperature 0. No requirement or ADR pinned the temperature-0 retry (an M2 choice, `structured.py`).
+  **Issue:** #685
+- **Decision:** the live rerun at `03de9f7` failed at turn 2: `beats.0.step: the render declares no steps (…)`, three times, 72,248 ms. Structured's generation temperature is 0.8, so the retries were sampled at 0.8 and still repeated the same structural error. The row is committed as measured. The temperature change stays: it is the owner's decision, and correct in general (a retry should not be a near-copy). It did not get this model through.
+  **Why:** the evidence says the repetition is the model's consistent behavior, not temperature. Per the owner's pre-agreed fallback, this is (ii).
+  **Issue:** #685, #588
+- **Decision (owner's fallback (ii)):** #588 and #685 move from M6 to M9 (#603, "must three-voice turns fit cydonia"). The record that this tier can't yet finish a three-voice turn is the committed failed-run row in `docs/model-matrix.{md,json}`. Neither issue is in this PR's `Closes`. With them moved, M6 has no open issues; `/n8-verify M6` closes it.
+  **Why:** the owner agreed to (ii) as the step after a failed (iii) rerun. A further engine-side lever, (i), would loosen FR-TURN-12, and the owner ruled it out.
+  **Issue:** #588, #685, #603
+- **Decision (gate):** CI on the PR is the full-suite gate, as in passes 1–3. Locally: `test_structured_output.py` 58 passed (mutation: 2 fail with the source stashed), and ruff, format and mypy are clean.
+  **Issue:** #685
+
+## Ad-hoc — 2026-11-02
+
+- **Change:** (1) A structured call's retry after a schema error now runs at the call's own params, not `temperature=0` (#685). (2) #588 (the cydonia three-character latency row) and #685 move from M6 to M9 under #603.
+  **Why:** the owner's decision on #685 (iii), then its pre-agreed fallback (ii) after the live rerun still failed.
+  **Affects:** M9 (#603 gains #588 and #685: the measurement and the model-compliance residual). Any plan that assumes temperature-0 structured retries (none found).

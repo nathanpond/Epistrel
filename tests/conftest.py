@@ -39,7 +39,6 @@ INTEGRATION_DIR = Path(__file__).resolve().parent / "integration"
 CHAOS_DIR = Path(__file__).resolve().parent / "chaos"
 DETERMINISM_DIR = Path(__file__).resolve().parent / "determinism"
 SMOKE_DIR = Path(__file__).resolve().parent / "smoke"
-SCENARIO_DIR = Path(__file__).resolve().parent / "scenario"
 P05_FILE = "test_p_05.py"
 PG_IMAGE = "pgvector/pgvector:pg16"
 MINIO_IMAGE = (
@@ -130,7 +129,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     census = [item for item in items if Path(str(item.fspath)).name == P05_FILE]
     if census:
         items[:] = [item for item in items if item not in census] + census
-    CENSUS.s_tests_collected = any(SCENARIO_DIR in Path(str(item.fspath)).parents for item in items)
     named = config.getoption("markexpr", "") or ""
     for marker in OPT_IN_MARKERS:
         if marker in named:
@@ -139,6 +137,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         if opt_in:
             config.hook.pytest_deselected(items=opt_in)
             items[:] = [item for item in items if not item.get_closest_marker(marker)]
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Record each test whose call phase passed, for P-05's census (#653)."""
+    if report.when == "call" and report.passed:
+        CENSUS.passed.add(report.nodeid)
 
 
 @pytest.fixture(scope="session", autouse=True)

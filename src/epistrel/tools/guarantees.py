@@ -6,9 +6,9 @@ FR-PROF-12, FR-MODEL-2; #132).
 
 The document states the boundary (*the model proposes; the engine validates structured claims,
 effects, and permissions*), then one table of every step (its kind, its metric or
-``unmeasured``, and the modules it needs), then one table per seeded profile (Lite and
-Structured at its latest version, read from ``core.seeds.profiles`` over the deployment's seeded
-defaults, with no database) saying which steps it provides, with the guarantees it does not
+``unmeasured``, and the modules it needs), then one table per preset (Lite, Standard, Full and
+Max at their latest versions, read from ``core.seeds.profiles`` over the deployment's seeded
+defaults, with no database; #227) saying which steps it provides, with the guarantees it does not
 provide in prose, where its perception is ``none`` that no audience filtering applies, and under
 ``lite`` the story settings whose only effect is a prompt instruction
 (``core.genesis.settings_map.PROMPT_ONLY``: ``player_authority``) and that the clock and States
@@ -99,15 +99,20 @@ class SeededProfile:
 
 SEEDED: tuple[SeededProfile, ...] = (
     SeededProfile(seeds.LITE_NAME, seeds.LITE_PRESET_ID, seeds.LITE_SETTINGS),
-    SeededProfile(
-        seeds.STRUCTURED_NAME,
-        seeds.STRUCTURED_PROFILE_ID,
-        seeds.STRUCTURED_SETTINGS,
-        seeds.STRUCTURED_VERSION,
-    ),
+    SeededProfile(seeds.STANDARD_NAME, seeds.STANDARD_PRESET_ID, seeds.STANDARD_SETTINGS),
+    SeededProfile(seeds.FULL_NAME, seeds.FULL_PRESET_ID, seeds.FULL_SETTINGS, seeds.FULL_VERSION),
+    SeededProfile(seeds.MAX_NAME, seeds.MAX_PRESET_ID, seeds.MAX_SETTINGS),
 )
-"""The seeded profiles, in seeding order, each at its latest version (#203: ``Structured``
-version 3; its earlier versions, ``Structured (M4)`` and M5's version 2, are not published)."""
+"""The presets (FR-PROF-3; #227), in the order Lite, Standard, Full, Max, each at its latest
+version as seeded (Full is the seeded ``Structured`` row's version 4; its earlier versions are
+not published)."""
+
+QUALIFIERS_NOTE = (
+    "Audience filtering at `co_location` routes each beat to the characters present: the "
+    "whisper, aside and eavesdrop qualifiers (FR-TURN-10) are not applied, so a whispered or "
+    "aside line reaches everyone in the place."
+)
+"""The footnote under a table whose perception is ``co_location`` (Standard; #227)."""
 
 
 def problems(
@@ -235,6 +240,8 @@ def _profile(profile: SeededProfile) -> list[str]:
             "pacing, and States change only through the State API.",
             "",
         ]
+    if schema.level_of(effective, "perception") == "co_location":
+        lines += [QUALIFIERS_NOTE, ""]
     if not audience.provided(effective) and schema.level_of(effective, "perception") is None:
         lines += [
             "Perception is `none` under this profile, so **no audience filtering applies**: a "

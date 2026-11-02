@@ -509,6 +509,7 @@ class ModelAccessLayer:
         budget: TurnBudget,
         variant: str | None = None,
         failures: list[str] | None = None,
+        keep_low_confidence: bool = False,
     ) -> T | Uncertain:
         """A validated ``schema`` instance or ``Uncertain`` (see ``structured.structured_call``)."""
         return await structured_call(
@@ -521,6 +522,7 @@ class ModelAccessLayer:
             budget=budget,
             variant=variant,
             failures=failures,
+            keep_low_confidence=keep_low_confidence,
         )
 
     async def probe(self, purpose: str) -> ProbeResult:

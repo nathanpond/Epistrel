@@ -22,7 +22,12 @@ from epistrel.core.context import RequestContext
 from epistrel.core.deployment import SettingsPatch, apply_settings
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import new_ulid, ulid_after
-from epistrel.core.settings_schema import DeploymentSettings, StorySettings, TurnQueueDefaults
+from epistrel.core.settings_schema import (
+    DeploymentSettings,
+    ModelTierSettings,
+    StorySettings,
+    TurnQueueDefaults,
+)
 from epistrel.core.story_settings import update_story_settings
 from tests.auth_support import auth_settings
 from tests.event_support import new_story as event_story
@@ -140,6 +145,7 @@ STORED: dict[str, Any] = {
     "protected_index_max": 4_999,
     "thunks_max_open": 499,
     "provider_allowed_hosts": ["api.game.test", "127.0.0.1:8080"],
+    "dependency_search_max_depth": 4,
 }
 """A non-default value of one setting or more in every section of the settings document
 (all of #315's three missing sections' settings among them)."""
@@ -155,7 +161,12 @@ async def test_a_write_keeps_every_other_section(
     Before #315 the retention, worker-health and erasure settings read as their defaults and
     the next write reset them."""
     views = {name: view for view in SECTIONS for name in view.model_fields}
-    assert {views[name] for name in STORED} == set(SECTIONS) - {TurnQueueDefaults}
+    # ``model_tiers`` (#227) takes only a model /admin/model-config lists: its round trip is
+    # test_presets_m7's.
+    assert {views[name] for name in STORED} == set(SECTIONS) - {
+        TurnQueueDefaults,
+        ModelTierSettings,
+    }
     async with respond_client(stub_settings, engine) as (client, _):
         start = (await client.get("/admin/settings", headers=READ)).json()
         assert all(start[name] != value for name, value in STORED.items())

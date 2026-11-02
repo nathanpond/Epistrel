@@ -274,6 +274,13 @@ async def list_profiles(
         WithJsonSchema(RELATION_FILTERS_SCHEMA),
     ] = None,
     include_deleted: Annotated[bool, Query(description="List deleted profiles too.")] = False,
+    preset: Annotated[
+        bool | None,
+        Query(
+            description="Only the presets (`true`: Lite, Standard, Full, Max as shipped, #227) "
+            "or only the other profiles (`false`)."
+        ),
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=MAX_PAGE)] = DEFAULT_PAGE,
     cursor: Annotated[
         str | None, Query(max_length=200, description="The previous page's `next_cursor`.")
@@ -286,6 +293,7 @@ async def list_profiles(
         include_deleted=include_deleted,
         limit=limit,
         cursor=cursor,
+        preset=preset,
     )
     return ProfileListBody.of(page)
 

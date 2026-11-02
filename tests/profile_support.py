@@ -27,15 +27,20 @@ from tools.gates.spec import expand_ids
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.capabilities import CAPABILITY_MAP
 from epistrel.core.profiles.schema import DependencyRule, Module, Requirement
-from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
+from epistrel.core.seeds.profiles import (
+    LITE_PRESET_ID,
+    MAX_PRESET_ID,
+    STANDARD_PRESET_ID,
+    STRUCTURED_M4_PROFILE_ID,
+)
 from tests.conftest import REPO_ROOT
 from tests.event_support import execute_in_tx, rows, scalar
 
 PROFILES = "/engine-profiles"
-SEEDED_PROFILES = [STRUCTURED_M4_PROFILE_ID, LITE_PRESET_ID]
+SEEDED_PROFILES = [MAX_PRESET_ID, STANDARD_PRESET_ID, STRUCTURED_M4_PROFILE_ID, LITE_PRESET_ID]
 """The profiles every database at head holds, as a listing orders them (newest first: equal
-creation times, so by id descending): the system-owned ``Structured (M4)`` and the Lite
-preset."""
+creation times, so by id descending): the presets Max, Standard, Full (the row seeded as
+``Structured (M4)``, #227) and Lite."""
 SETTINGS: dict[str, Any] = {
     "memory": {"rolling_summary": {"window_messages": 24, "compress_threshold_tokens": 3_000}},
     "pins": {"max_pinned": 20},

@@ -4995,8 +4995,10 @@ class Engine:
         catalog-scope one as one deployment operation that never touches a story. Certain
         mentions are erased; candidates (a common word of the name capitalised at the start of
         a sentence, ADR-154) only when ``confirm_candidates`` names them, by the ids a dry run
-        lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog, and
-        ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 503
+        lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog
+        without its ``story`` (#504: with it, its names are read from that story and erased
+        from the catalog's records), and ``unknown_erasure_candidate`` for a confirmed id the
+        erasure does not meet, or a story that does not hold that character; 503
         ``erasure_pending`` for a story the erasure reconciler holds blocked, dry run or not
         (#383), and for a catalog-scope request while a catalog-scope erasure is pending
         (#346); 404 for an unknown story or, on a real run, an unknown subject; 409
@@ -5015,11 +5017,16 @@ class Engine:
             # method has no ``story_id`` parameter, so ``gate_story_methods`` cannot see it.
             await self._erasure_gate(story_id)
             await check_expected_revision(self.db, story_id, ctx.expected_revision)
-        elif await self._catalog_block() is not None:
-            # A catalog-scope erasure, dry run or not, reads the whole catalog (its candidate
-            # snippets quote it): refused while another is pending there (#346, as #383).
-            async with self.db.connect() as conn:
-                await erasure_ledger.refuse_catalog_pending(conn)
+        else:
+            if request.subject.story is not None:
+                # #504: it reads the story's index for the subject's names.
+                await self._erasure_gate(request.subject.story)
+            if await self._catalog_block() is not None:
+                # A catalog-scope erasure, dry run or not, reads the whole catalog (its
+                # candidate snippets quote it): refused while another is pending there (#346,
+                # as #383).
+                async with self.db.connect() as conn:
+                    await erasure_ledger.refuse_catalog_pending(conn)
         compressor = self.ports.summary_compressor
         if request.dry_run:
             return await erasure.dry_run(
@@ -5143,9 +5150,15 @@ class Engine:
         scope: dict[str, Any] = (
             {"story": pending.story_id} if pending.story_id is not None else {"catalog": True}
         )
-        request = erasure.ErasureRequest.model_validate(
-            {"subject": {"kind": pending.subject_kind, "id": pending.subject_id}, "scope": scope}
-        )
+        subject: dict[str, Any] = {"kind": pending.subject_kind, "id": pending.subject_id}
+        if pending.story_id is None and pending.subject_kind == "character":
+            # #504: a story character erased from the catalog; the ledger names no story.
+            async with self.db.connect() as conn:
+                story = await erasure.character_story(conn, pending.subject_id)
+            if story is None:
+                return erasure_ledger.SUBJECT_MISSING
+            subject["story"] = story
+        request = erasure.ErasureRequest.model_validate({"subject": subject, "scope": scope})
         key = erasure.require_key(
             None
             if self.settings.config_key is None
@@ -5580,10 +5593,12 @@ class Engine:
         include_deleted: bool = False,
         limit: int = profiles.DEFAULT_PAGE,
         cursor: str | None = None,
+        preset: bool | None = None,
     ) -> profiles.ProfilePage:
         """Profiles at their latest version, newest first, presets included; deleted ones only
         with ``include_deleted``. ``owner`` and ``relation`` (``name:principal``, or ``name:``
-        for any principal) narrow the list only when given (FR-AUTH-8)."""
+        for any principal) narrow the list only when given (FR-AUTH-8); ``preset`` (#227) to
+        the presets (``true``) or the others (``false``)."""
         return await profiles.list_profiles(
             self.db,
             owner=ownership.owner_filter(owner),
@@ -5591,6 +5606,7 @@ class Engine:
             include_deleted=include_deleted,
             limit=limit,
             cursor=cursor,
+            preset=preset,
         )
 
     async def update_profile(

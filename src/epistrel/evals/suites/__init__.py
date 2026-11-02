@@ -118,6 +118,10 @@ class Suite:
     modules), named by ``profile_label``; its result reports that configuration's fingerprint.
     ``None``: the seeded profile as it is."""
     profile_label: ClassVar[str | None] = None
+    requires: ClassVar[tuple[str, ...]] = ()
+    """Modules (``schema.MODULES`` names) the suite needs on, beyond the structured pipeline
+    and what its ``guarantees`` rows need (#227): a preset without one reports the suite
+    ``not_applicable`` (``presets.needs``)."""
     model_error_metric: ClassVar[str | None] = None
     """The suite's model-error row (#179; an informational metric of ``metrics``): a case a
     ``ModelError`` ended observes it as bad and nothing else, so an error is never scored as a

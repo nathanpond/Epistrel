@@ -2274,7 +2274,13 @@ async def _check_turn(
             if not sal_beats:
                 continue
             verdict = await salience.detect_salience(
-                sal_beats, scene_context, mode=mode, models=models, budget=budget, routes=routes
+                sal_beats,
+                scene_context,
+                mode=mode,
+                models=models,
+                budget=budget,
+                routes=routes,
+                bias=salience.salience_bias(settings),
             )
             degradation += [(d, "salience") for d in verdict.degradation]
             if SALIENCE_SKIPPED in verdict.degradation:

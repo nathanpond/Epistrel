@@ -36,7 +36,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
@@ -52,7 +52,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -238,6 +238,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
 | 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Current | — |
 | 175 | Compaction is renamed pruning | Current | — |
+| 176 | A story character is erased from the catalog with its story named | Current | — |
 
 ---
 
@@ -1841,6 +1842,18 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 **Context:** FR-STORE-32's operation permanently deletes chosen discarded tails and dormant in-story continuations from a story that opts into it. It was called "compaction", which readers confused with the Lite rolling summary (FR-LITE), which compresses old messages into the generation context and deletes nothing. The FR-FB-2 hook M3 shipped (#112) carried the old name too (`mark_compacted`, `message_feedback.compacted_at`).
 **Decision:** The operation is called **pruning** (the owner's decision, round two, 2026-10-10): "prune" as the verb, "a prune run" for one execution, `pruned` as the error code and feedback marker, "prune marker" and "prune policy", and the test ID S-PRUNE. "Purge" was considered and rejected, because the spec already uses it as an everyday verb (the media sweep purges unused bytes, idempotency results are purged, an unused profile is purged). The rename covers the specification (*01*–*04*), CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109) and the open issues. Rolling-summary wording ("compress") is a different concept and is unchanged.
 **Consequences:** #247 builds the operation under the new name. Earlier ADRs keep the word "compaction": they are history and are not rewritten. `tests/test_terminology.py::test_no_compaction_term` fails the build if the old term returns to the specification, CLAUDE.md, the README or the code (this log, and the erasure matcher's common-words list, where it is an ordinary English word, are exempt). Test: S-PRUNE (M7).
+
+---
+
+### ADR-176 — A story character is erased from the catalog with its story named
+**Status:** Accepted.
+**Context:** A promotion (FR-CAT-8) copies story text into catalog records: the character's free-text definition, and since #498 the seeded memories in its companion scenario draft. When that text names a **story-only** character (one added mid-story or introduced by narration, with no catalog or persona identity), no erasure could remove the mention. A story-scope erasure never reaches the catalog (FR-STORE-14), and a catalog-scope erasure took only `catalog_character` and `persona` subjects; `character` + `catalog` was 422 `invalid_erasure_scope` (docs/02). That left FR-ADMIN-2's "complete, verifiable erasure" short (#504).
+**Decision:** The owner's triage decision (2026-10-30): option 2 of #504, plus option 3's report line.
+- A catalog-scope erasure accepts a story character subject with its story: `{subject: {kind: character, id, story}, scope: {catalog: true}}`. The erasure reads the character's names and aliases from that story's subject index (with the name parts no other subject there uses, ADR-154), then runs the catalog pass with them. It redacts matching text in every catalog record FR-ADMIN-6 indexes: promoted drafts, companion scenario drafts and everything else. It deletes no catalog entry, and touches no story. `dry_run` reports the counts. The residue scan covers the catalog records, so the erasure stays verifiable. The ledger records a catalog-scope entry for the character; a reapply after a restore finds the story from the character row.
+- Without `story`, `character` + `catalog` stays 422 `invalid_erasure_scope`, as does `story` on any other pairing. An unknown story, or a story that does not hold the character, is 422 `unknown_erasure_candidate`.
+- A story-scope erasure stays story-scoped (FR-ADMIN-2 unchanged). Its report lists the catalog drafts promoted from the story's characters (`characters.promoted_to` and their companion scenarios), each with the catalog-scope request that erases the subject from them (`follow_up`).
+**Alternatives considered:** Letting a story-scope erasure also redact the drafts its story's promotions made would cross the FR-STORE-14 boundary in one direction, and would need FR-ADMIN-2 amended. Documenting the boundary alone would leave the mention erasable only by hand. Free-text terms in a catalog erasure were rejected: the names come from the subject index, so the matcher's rules (ADR-154) apply unchanged.
+**Consequences:** The catalog erasure must run **before** the story erasure: the story erasure removes the names the catalog erasure reads, and the ledger keeps only their keyed hashes. A catalog erasure sent after it is 422 `unknown_erasure_candidate`. The story erasure's dry run lists the drafts first, and docs/OPERATIONS.md states the order. docs/03 is unchanged, because FR-ADMIN-2 and FR-ADMIN-6 do not restrict subject kinds; docs/02's erasure paragraph and the route's OpenAPI description carry the new pairing (FR-ADMIN-2, FR-ADMIN-6, NFR-PRIV-2). Test: `tests/erasure/test_story_character_catalog.py`.
 
 ---
 

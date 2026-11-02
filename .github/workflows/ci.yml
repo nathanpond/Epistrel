@@ -244,8 +244,15 @@ jobs:
           retention-days: 1
 
   evals:
+    # #227 (NFR-QUAL-11): once per preset, so each preset has its own stub report; a suite a
+    # preset does not enable is reported not_applicable. A matrix, not a loop: three serial runs
+    # would triple the job's wall time.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [standard, full, max]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -269,14 +276,14 @@ jobs:
       # #179's zero-leak suites (q04, priv_think_leak) need their full sets (NFR-QUAL-8's 300 cases a
       # metric) and run as the `evals-zero-leak` job below.
       - name: evals (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate
+        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate --preset ${{ matrix.preset }}
       - name: upload the stub eval report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-stub-report
+          name: evals-stub-report-${{ matrix.preset }}
           path: |
-            build/evals/stub-report.md
+            build/evals/stub-report-${{ matrix.preset }}.md
             build/evals/*.json
             build/evals/*.jsonl
           if-no-files-found: warn
@@ -330,8 +337,13 @@ jobs:
     # answers every case with its authored clean render, so this proves the plumbing; the
     # local-model run is the exit evidence (docs/evals/README.md).
     # 60 min: #575 tripled think_leak's controls (32 -> 96); the 2026-10-25 run took 35 of 40.
+    # #227: once per preset, as the `evals` job.
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [standard, full, max]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -344,14 +356,14 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - name: evals zero-leak (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --suite q04 --suite priv_think_leak --new-run --seeds 2 --concurrency 4 --fail-on-gate --markdown build/evals/stub-zero-leak.md
+        run: uv run python -m epistrel.evals run --adapter stub --suite q04 --suite priv_think_leak --new-run --seeds 2 --concurrency 4 --fail-on-gate --preset ${{ matrix.preset }} --markdown build/evals/stub-zero-leak-${{ matrix.preset }}.md
       - name: upload the zero-leak stub report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-zero-leak-stub-report
+          name: evals-zero-leak-stub-report-${{ matrix.preset }}
           path: |
-            build/evals/stub-zero-leak.md
+            build/evals/stub-zero-leak-${{ matrix.preset }}.md
             build/evals/*.json
             build/evals/*.jsonl
           if-no-files-found: warn

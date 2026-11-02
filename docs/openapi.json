@@ -6046,6 +6046,16 @@
                     ],
                     "title": "Salience",
                     "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
                   }
                 },
                 "title": "Commitment",
@@ -6623,6 +6633,16 @@
                       "surface"
                     ],
                     "title": "Safe Disposition",
+                    "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
                     "type": "string"
                   }
                 },
@@ -6779,6 +6799,16 @@
                     ],
                     "title": "Salience",
                     "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
                   }
                 },
                 "title": "Commitment",
@@ -7356,6 +7386,16 @@
                       "surface"
                     ],
                     "title": "Safe Disposition",
+                    "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
                     "type": "string"
                   }
                 },
@@ -7760,6 +7800,16 @@
                     ],
                     "title": "Salience",
                     "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
                   }
                 },
                 "title": "Commitment",
@@ -8337,6 +8387,16 @@
                       "surface"
                     ],
                     "title": "Safe Disposition",
+                    "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
                     "type": "string"
                   }
                 },
@@ -8781,6 +8841,14 @@
             ],
             "title": "Operation Id"
           },
+          "promoted_drafts": {
+            "description": "Story scope (#504): the catalog drafts promoted from the story's characters, which the erasure leaves untouched, each with the catalog-scope request that erases the subject from them.",
+            "items": {
+              "$ref": "#/components/schemas/PromotedDraftBody"
+            },
+            "title": "Promoted Drafts",
+            "type": "array"
+          },
           "prose_segments": {
             "description": "Text fields redacted (fields, not spans).",
             "title": "Prose Segments",
@@ -8839,7 +8907,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "`{kind, id}`: the subject erased.",
+            "description": "`{kind, id}`: the subject erased (with `story` for a story character erased from the catalog, #504).",
             "title": "Subject",
             "type": "object"
           },
@@ -13040,6 +13108,23 @@
                                 "type": "null"
                               }
                             ]
+                          },
+                          "salience_bias": {
+                            "anyOf": [
+                              {
+                                "default": "balanced",
+                                "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                                "enum": [
+                                  "balanced",
+                                  "recall"
+                                ],
+                                "title": "Salience Bias",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           }
                         },
                         "title": "Commitment",
@@ -14060,6 +14145,23 @@
                                   "surface"
                                 ],
                                 "title": "Safe Disposition",
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "shape_tightening": {
+                            "anyOf": [
+                              {
+                                "default": "on",
+                                "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                                "enum": [
+                                  "on",
+                                  "off"
+                                ],
+                                "title": "Shape Tightening",
                                 "type": "string"
                               },
                               {
@@ -17031,6 +17133,46 @@
         "title": "ModelParams",
         "type": "object"
       },
+      "ModelTiers": {
+        "additionalProperties": false,
+        "description": "The deployment's model tiers (#227): ``strongest`` is the model id a profile's\n``\"@strongest\"`` route resolves to (``core.profiles.tiers``); ``null`` (the default): each\nsuch purpose uses its own configured model.",
+        "properties": {
+          "strongest": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strongest"
+          }
+        },
+        "title": "ModelTiers",
+        "type": "object"
+      },
+      "ModelTiersPatch": {
+        "additionalProperties": false,
+        "description": "A merge patch of ``model_tiers`` (#227): ``strongest`` a listed model id, or ``null``\n(each ``\"@strongest\"`` purpose back to its own model).",
+        "properties": {
+          "strongest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strongest"
+          }
+        },
+        "title": "ModelTiersPatch",
+        "type": "object"
+      },
       "ModeledAtBody": {
         "description": "A narrative position (#163's ``modeled_at``): the turn and its variant, the inter-turn\nslot (0: the turn itself), the beat and the step. The genesis cast is at 0.",
         "properties": {
@@ -18825,6 +18967,16 @@
                     ],
                     "title": "Salience",
                     "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
                   }
                 },
                 "title": "Commitment",
@@ -19402,6 +19554,16 @@
                       "surface"
                     ],
                     "title": "Safe Disposition",
+                    "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
                     "type": "string"
                   }
                 },
@@ -21619,6 +21781,16 @@
                     ],
                     "title": "Salience",
                     "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
                   }
                 },
                 "title": "Commitment",
@@ -22197,6 +22369,16 @@
                     ],
                     "title": "Safe Disposition",
                     "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
+                    "type": "string"
                   }
                 },
                 "title": "Verification",
@@ -22250,10 +22432,17 @@
         ],
         "properties": {
           "name": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
           },
           "owner": {
             "anyOf": [
@@ -22268,9 +22457,6 @@
             "title": "Owner"
           }
         },
-        "required": [
-          "name"
-        ],
         "title": "ProfileCopy",
         "type": "object"
       },
@@ -22462,6 +22648,16 @@
                     ],
                     "title": "Salience",
                     "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
                   }
                 },
                 "title": "Commitment",
@@ -23039,6 +23235,16 @@
                       "surface"
                     ],
                     "title": "Safe Disposition",
+                    "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
                     "type": "string"
                   }
                 },
@@ -23497,6 +23703,23 @@
                               "rules_and_model"
                             ],
                             "title": "Salience",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "salience_bias": {
+                        "anyOf": [
+                          {
+                            "default": "balanced",
+                            "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                            "enum": [
+                              "balanced",
+                              "recall"
+                            ],
+                            "title": "Salience Bias",
                             "type": "string"
                           },
                           {
@@ -24529,6 +24752,23 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "shape_tightening": {
+                        "anyOf": [
+                          {
+                            "default": "on",
+                            "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                            "enum": [
+                              "on",
+                              "off"
+                            ],
+                            "title": "Shape Tightening",
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "title": "Verification",
@@ -24808,6 +25048,16 @@
                       "rules_and_model"
                     ],
                     "title": "Salience",
+                    "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
                     "type": "string"
                   }
                 },
@@ -25387,6 +25637,16 @@
                     ],
                     "title": "Safe Disposition",
                     "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
+                    "type": "string"
                   }
                 },
                 "title": "Verification",
@@ -25574,6 +25834,16 @@
                           "rules_and_model"
                         ],
                         "title": "Salience",
+                        "type": "string"
+                      },
+                      "salience_bias": {
+                        "default": "balanced",
+                        "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                        "enum": [
+                          "balanced",
+                          "recall"
+                        ],
+                        "title": "Salience Bias",
                         "type": "string"
                       }
                     },
@@ -26153,6 +26423,16 @@
                         ],
                         "title": "Safe Disposition",
                         "type": "string"
+                      },
+                      "shape_tightening": {
+                        "default": "on",
+                        "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                        "enum": [
+                          "on",
+                          "off"
+                        ],
+                        "title": "Shape Tightening",
+                        "type": "string"
                       }
                     },
                     "title": "Verification",
@@ -26425,6 +26705,42 @@
           }
         },
         "title": "PromoteRequest",
+        "type": "object"
+      },
+      "PromotedDraftBody": {
+        "additionalProperties": false,
+        "description": "A catalog character promoted from one of the story's characters, with its companion\nscenarios (#504): catalog records a story-scope erasure never touches. ``follow_up`` is\nthe catalog-scope request that erases the subject from them; send it before the story\nerasure, which removes the names it reads.",
+        "properties": {
+          "catalog_id": {
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "character_id": {
+            "description": "The story character it was promoted from.",
+            "title": "Character Id",
+            "type": "string"
+          },
+          "companion_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Companion Ids",
+            "type": "array"
+          },
+          "follow_up": {
+            "additionalProperties": true,
+            "description": "`{subject: {kind: character, id, story}, scope: {catalog: true}}`.",
+            "title": "Follow Up",
+            "type": "object"
+          }
+        },
+        "required": [
+          "catalog_id",
+          "character_id",
+          "companion_ids",
+          "follow_up"
+        ],
+        "title": "PromotedDraftBody",
         "type": "object"
       },
       "PromotionBody": {
@@ -34500,6 +34816,9 @@
             "title": "Minor Hot Budget Fraction",
             "type": "number"
           },
+          "model_tiers": {
+            "$ref": "#/components/schemas/ModelTiers"
+          },
           "neighborhood_max_facts": {
             "default": 50,
             "maximum": 1000.0,
@@ -34659,6 +34978,16 @@
                       "rules_and_model"
                     ],
                     "title": "Salience",
+                    "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
                     "type": "string"
                   }
                 },
@@ -35238,6 +35567,16 @@
                     ],
                     "title": "Safe Disposition",
                     "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
+                    "type": "string"
                   }
                 },
                 "title": "Verification",
@@ -35464,6 +35803,28 @@
               }
             ],
             "title": "Default Safe Fallback"
+          },
+          "dependency_search_max_depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Search Max Depth"
+          },
+          "dependency_search_max_results": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dependency Search Max Results"
           },
           "embedding_batch_max": {
             "anyOf": [
@@ -35893,6 +36254,16 @@
             ],
             "title": "Minor Hot Budget Fraction"
           },
+          "model_tiers": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelTiersPatch"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "neighborhood_max_facts": {
             "anyOf": [
               {
@@ -36062,6 +36433,16 @@
                           "rules_and_model"
                         ],
                         "title": "Salience",
+                        "type": "string"
+                      },
+                      "salience_bias": {
+                        "default": "balanced",
+                        "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                        "enum": [
+                          "balanced",
+                          "recall"
+                        ],
+                        "title": "Salience Bias",
                         "type": "string"
                       }
                     },
@@ -36640,6 +37021,16 @@
                           "surface"
                         ],
                         "title": "Safe Disposition",
+                        "type": "string"
+                      },
+                      "shape_tightening": {
+                        "default": "on",
+                        "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                        "enum": [
+                          "on",
+                          "off"
+                        ],
+                        "title": "Shape Tightening",
                         "type": "string"
                       }
                     },
@@ -40306,7 +40697,7 @@
       },
       "SubjectRef": {
         "additionalProperties": false,
-        "description": "Who is erased: a story ``character``, a ``catalog_character`` or a ``persona``, by id.",
+        "description": "Who is erased: a story ``character``, a ``catalog_character`` or a ``persona``, by id;\nfor a story ``character`` erased from the catalog (#504, ADR-176), the ``story`` whose\nsubject index gives its names.",
         "properties": {
           "id": {
             "maxLength": 64,
@@ -40316,6 +40707,19 @@
           },
           "kind": {
             "$ref": "#/components/schemas/SubjectKind"
+          },
+          "story": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With `kind: character` and `scope: {catalog: true}` only: the story the character belongs to, whose names for it are redacted from the catalog's records (#504). Anywhere else it is 422 `invalid_erasure_scope`.",
+            "title": "Story"
           }
         },
         "required": [
@@ -42676,6 +43080,8 @@
                           "memory_importance_half_life_turns",
                           "minor_age_threshold",
                           "minor_hot_budget_fraction",
+                          "model_tiers",
+                          "model_tiers.strongest",
                           "neighborhood_max_facts",
                           "offboarding_report_retention_days",
                           "profile_defaults",
@@ -42698,6 +43104,7 @@
                           "profile_defaults.commitment",
                           "profile_defaults.commitment.enabled",
                           "profile_defaults.commitment.salience",
+                          "profile_defaults.commitment.salience_bias",
                           "profile_defaults.memory",
                           "profile_defaults.memory.consolidation",
                           "profile_defaults.memory.consolidation.cadence_turns",
@@ -42759,6 +43166,7 @@
                           "profile_defaults.verification.implication_max_depth",
                           "profile_defaults.verification.level",
                           "profile_defaults.verification.safe_disposition",
+                          "profile_defaults.verification.shape_tightening",
                           "protected_index_max",
                           "provider_allowed_hosts",
                           "public_base_url",
@@ -43685,7 +44093,7 @@
     },
     "/admin/erasure": {
       "post": {
-        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog is 422 `invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). **Mentions** (ADR-154): the subject's names, aliases and name words are erased where they certainly refer to it; a name word that is also a common word (`Will`, `Rose`) only when capitalised, and at the start of a sentence it is a *candidate*: the dry run lists each one (`candidates`, with an id and a snippet returned only, never stored), and an erasure removes it only when `confirm_candidates` names its id (422 `unknown_erasure_candidate` for an id it does not meet). `candidates_remaining` counts those left. The ledger records identifiers, scope, story and counts (with the confirmed candidate ids), never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the erasure ledger's file cannot be written (nothing is erased). The erasure boundary, what erasure does not reach, is `GET /admin/erasure/boundary`.",
+        "description": "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` (`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or `{catalog: true}`; a story `character` scoped to the catalog names its story (`subject.story`, #504, ADR-176; without it 422 `invalid_erasure_scope`, and 422 `unknown_erasure_candidate` when the story does not hold it): its names are then read from that story and redacted from every catalog record, as for a catalog subject, and nothing in any story is touched. **Story scope**: the subject's character rows, snapshots and deferred items are deleted (each leaves an erasure marker in the audit view, `include_audit=1`), every text in the story that names the subject reads `[erased]` where it did (a beat the subject said becomes `[erased]` whole, keeping its place), stored results that name it are purged, the rolling-summary segments that named it are summarised again from the redacted window (or stay redacted without a model), and the projections are rebuilt. It bumps the story's revision, so a turn in flight starts over, and runs on archived and paused stories too. **Catalog scope**: the catalog character (every version, its draft and companion) or the persona is deleted, the scenarios and other catalog records that name it are redacted, media depicting or naming only the subject are purged (or kept retired when another record still references them and `erasure_shared_media` is `retire`), and stories are never touched: `referencing_stories` lists those to erase separately. A story erasure lists the catalog drafts promoted from the story (`promoted_drafts`), which it leaves untouched, with the catalog-scope request (`follow_up`) that erases the subject from them: send that first, since the story erasure removes the names it reads. `dry_run: true` answers the counts and changes nothing (zero counts for an unknown subject). **Mentions** (ADR-154): the subject's names, aliases and name words are erased where they certainly refer to it; a name word that is also a common word (`Will`, `Rose`) only when capitalised, and at the start of a sentence it is a *candidate*: the dry run lists each one (`candidates`, with an id and a snippet returned only, never stored), and an erasure removes it only when `confirm_candidates` names its id (422 `unknown_erasure_candidate` for an id it does not meet). `candidates_remaining` counts those left. The ledger records identifiers, scope, story and counts (with the confirmed candidate ids), never content. 404 for an unknown story, or on a real run an unknown subject; 503 `config_key_missing` without `EPISTREL_CONFIG_KEY`; 503 `ledger_unavailable` when the erasure ledger's file cannot be written (nothing is erased). The erasure boundary, what erasure does not reach, is `GET /admin/erasure/boundary`.",
         "operationId": "erase",
         "parameters": [
           {
@@ -56067,6 +56475,24 @@
             }
           },
           {
+            "description": "Only the presets (`true`: Lite, Standard, Full, Max as shipped, #227) or only the other profiles (`false`).",
+            "in": "query",
+            "name": "preset",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only the presets (`true`: Lite, Standard, Full, Max as shipped, #227) or only the other profiles (`false`).",
+              "title": "Preset"
+            }
+          },
+          {
             "in": "query",
             "name": "limit",
             "required": false,
@@ -65016,6 +65442,7 @@
                           "profile_overrides.commitment",
                           "profile_overrides.commitment.enabled",
                           "profile_overrides.commitment.salience",
+                          "profile_overrides.commitment.salience_bias",
                           "profile_overrides.memory",
                           "profile_overrides.memory.consolidation",
                           "profile_overrides.memory.consolidation.cadence_turns",
@@ -65077,6 +65504,7 @@
                           "profile_overrides.verification.implication_max_depth",
                           "profile_overrides.verification.level",
                           "profile_overrides.verification.safe_disposition",
+                          "profile_overrides.verification.shape_tightening",
                           "reactive_interjections",
                           "regenerate_retry_budget",
                           "required_providers",

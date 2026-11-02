@@ -2561,9 +2561,10 @@ async def story_verifier(
 
     settings = (await effective_configuration(conn, story_id)).settings
     config = VerifyConfig.of(settings, await read_section(conn, VerifySettings))
-    if gate is None and config.escalation_on:
+    if gate is None and config.escalation_on and settings.verification.shape_tightening == "on":
         # #155: the shapes an operator tightened (a promotion, or a ``live`` write), read
         # per verifier: one small read per turn, so a change applies to the next turn.
+        # #227: ``shape_tightening = off`` ignores them (the profile's own gate decides).
         tightened = await yield_queries.live_thresholds(conn)
         gate = Gate(config.entailment_gate, FixedThresholds(tightened)) if tightened else None
     beliefs = (

@@ -878,6 +878,28 @@ class DependencySettings(BaseModel):
     )
 
 
+class ModelTiers(BaseModel):
+    """The deployment's model tiers (#227): ``strongest`` is the model id a profile's
+    ``"@strongest"`` route resolves to (``core.profiles.tiers``); ``null`` (the default): each
+    such purpose uses its own configured model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    strongest: Annotated[str | None, PROSPECTIVE] = Field(
+        default=None, min_length=1, max_length=200
+    )
+    """A model ``/admin/model-config`` lists (422 ``validation_error`` otherwise). Prospective:
+    a story picks a change up at its next turn boundary, and its fingerprint changes."""
+
+
+class ModelTierSettings(BaseModel):
+    """``model_tiers`` (#227), stored under ``deployment_state.settings``."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    model_tiers: ModelTiers = Field(default_factory=ModelTiers)
+
+
 class ErasureSettings(BaseModel):
     """What a catalog-scope erasure does with a media asset that depicts or names only the
     erased subject but that a record the erasure leaves untouched still references (a story's
@@ -1233,6 +1255,7 @@ class DeploymentSettings(
     VerifySettings,
     ProviderSettings,
     DependencySettings,
+    ModelTierSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

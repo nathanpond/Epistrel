@@ -229,10 +229,14 @@ async def structured_call[T: BaseModel](
     budget: TurnBudget,
     variant: str | None = None,
     failures: list[str] | None = None,
+    keep_low_confidence: bool = False,
 ) -> T | Uncertain:
     """See the module docstring. ``variant`` names the purpose's template variant (#150);
     ``failures``, when given, collects each failed attempt's problem (what was wrong, never the
-    answer's text; a ``feedback`` error's content-free form) for the caller's report."""
+    answer's text; a ``feedback`` error's content-free form) for the caller's report.
+    ``keep_low_confidence`` (#227's ``salience_bias = recall``) returns a valid answer whose
+    ``confidence`` is below ``uncertain_below`` instead of ``Uncertain("low_confidence")``: the
+    caller decides what it counts as."""
     if deterministic_first is None and purpose not in DETERMINISTIC_FIRST_EXEMPT:
         raise MissingDeterministicStep(
             f"a structured {purpose!r} call needs its deterministic_first step (FR-MODEL-5)"
@@ -289,7 +293,7 @@ async def structured_call[T: BaseModel](
             if json_mode and not prose:
                 mal.response_format.honoured(key)  # JSON, valid or not: json_schema was obeyed
             if not isinstance(outcome, _Failure):
-                if _low_confidence(outcome, settings.uncertain_below):
+                if not keep_low_confidence and _low_confidence(outcome, settings.uncertain_below):
                     return Uncertain("low_confidence", attempts)
                 return outcome
             if json_mode and prose and mal.response_format.strike(key, revision):

@@ -255,12 +255,15 @@ async def test_c_16__m6(
     assert not set(M6_GUARANTEES) & set(guarantees(v2))
     # The deterministic ones are what a report's gains name (#109).
     assert {"state_effect_validation", "clock_pacing"} <= set(guarantees_gained(v2, v3))
-    lite, seeded = guarantee_tool.SEEDED
-    assert (seeded.name, seeded.version) == (seeds.STRUCTURED_NAME, 3)
+    lite = guarantee_tool.SEEDED[0]
+    (seeded,) = [p for p in guarantee_tool.SEEDED if p.profile_id == structured()]
+    # #227: the row is published as Full, at version 4 (the same modules as version 3).
+    assert (seeded.name, seeded.version) == (seeds.FULL_NAME, seeds.FULL_VERSION)
+    assert set(M6_GUARANTEES) <= set(guarantees(seeded.effective()))
     assert not set(M6_GUARANTEES) & set(guarantees(lite.effective()))
     table = guarantee_tool.render()
     assert table == guarantee_tool.TABLE_PATH.read_text(encoding="utf-8")
-    assert f"Profile `{structured()}`, version 3 as seeded." in table
+    assert f"Profile `{structured()}`, version {seeds.FULL_VERSION} as seeded." in table
     assert "prompt-only forms (FR-LITE-5)" in table.split("### Lite", 1)[1].split("### ", 1)[0]
 
     # The seeded profile's versions.
@@ -280,9 +283,10 @@ async def test_c_16__m6(
         for name, levels in m6.items():
             assert set(route["delivered"][name]) == levels, name
         assert route["tags"]["clock.level"]["tag"] == "data_producing"
-        head = (await client.get(f"{PROFILES}/{structured()}", headers=READ)).json()
-        assert (head["name"], head["version"]) == (seeds.STRUCTURED_NAME, 3)
-        assert head["settings"] == v3_doc
+        third = (
+            await client.get(f"{PROFILES}/{structured()}", params={"version": 3}, headers=READ)
+        ).json()
+        assert third["settings"] == v3_doc
         second = (
             await client.get(f"{PROFILES}/{structured()}", params={"version": 2}, headers=READ)
         ).json()
@@ -321,7 +325,7 @@ async def test_c_16__m6(
         after = (await client.get(f"/stories/{story}/effective-config", headers=READ)).json()
         assert after["profile"] == {
             "id": structured(),
-            "version": 3,
+            "version": seeds.FULL_VERSION,  # the latest: 3 in M6 (#227 adds 4)
             "pinned": False,
             "deleted": False,
         }

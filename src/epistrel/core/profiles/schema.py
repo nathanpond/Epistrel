@@ -362,6 +362,11 @@ class Verification(ProfileModel):
     )
     """How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops
     there and flags the stop in the verdict's evidence."""
+    shape_tightening: Annotated[Literal["on", "off"], BEHAVIORAL, INTERPRETIVE, RELEVANT] = "on"
+    """Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)
+    apply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at
+    1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on
+    either way. Inert without the entailment step."""
 
 
 class Commitment(ProfileModel):
@@ -371,6 +376,13 @@ class Commitment(ProfileModel):
     salience: Annotated[Literal["rules", "rules_and_model"], BEHAVIORAL, PROSPECTIVE, RELEVANT] = (
         "rules"
     )
+    salience_bias: Annotated[Literal["balanced", "recall"], BEHAVIORAL, INTERPRETIVE, RELEVANT] = (
+        "balanced"
+    )
+    """How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an
+    answer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no
+    answer (every beat texture); ``recall`` counts its spans as salient (a texture span with the
+    span's text as its proposition). Inert under ``salience = rules``."""
 
 
 class Clock(ProfileModel):

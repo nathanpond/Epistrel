@@ -181,8 +181,12 @@ class ProfileCopy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"name": "My Lite"}]})
 
-    name: Name
+    name: Name | None = None
+    """The copy's name; ``null`` (or left out, #227): ``"<source name> (copy)"``."""
     owner: Owner | None = None
+
+
+COPY_SUFFIX = " (copy)"
 
 
 class ProfileValidate(BaseModel):
@@ -719,7 +723,7 @@ async def copy_profile(
         source = await _version(conn, profile_id, version or int(head.current_version))
         copied = await _insert_profile(
             conn,
-            name=request.name,
+            name=request.name or f"{head.name}{COPY_SUFFIX}"[:NAME_MAX],
             owner=request.owner or principal,
             settings=source.settings,
             principal=principal,
@@ -924,10 +928,11 @@ async def list_profiles(
     include_deleted: bool = False,
     limit: int = DEFAULT_PAGE,
     cursor: str | None = None,
+    preset: bool | None = None,
 ) -> ProfilePage:
     """A page of profiles at their latest version, newest first, presets included; deleted ones
     only with ``include_deleted``. ``owner`` and ``relations`` narrow the list only when given
-    (FR-AUTH-8)."""
+    (FR-AUTH-8); ``preset`` (#227) to the presets or the others."""
     if not 1 <= limit <= MAX_PAGE:
         raise InvalidRequest(f"limit must be 1 to {MAX_PAGE}", {"field": "query.limit"})
     where = ownership.list_filters(
@@ -939,6 +944,8 @@ async def list_profiles(
     )
     if not include_deleted:
         where.append(engine_profiles.c.deleted_at.is_(None))
+    if preset is not None:
+        where.append(engine_profiles.c.preset.is_(preset))
     if cursor is not None:
         moment, after = _decode_cursor(cursor)
         where.append(

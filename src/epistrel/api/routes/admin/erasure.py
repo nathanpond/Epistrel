@@ -39,6 +39,22 @@ class ReferencingStoryBody(BaseModel):
     character_ids: list[str]
 
 
+class PromotedDraftBody(BaseModel):
+    """A catalog character promoted from one of the story's characters, with its companion
+    scenarios (#504): catalog records a story-scope erasure never touches. ``follow_up`` is
+    the catalog-scope request that erases the subject from them; send it before the story
+    erasure, which removes the names it reads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    catalog_id: str
+    character_id: str = Field(description="The story character it was promoted from.")
+    companion_ids: list[str]
+    follow_up: dict[str, Any] = Field(
+        description="`{subject: {kind: character, id, story}, scope: {catalog: true}}`."
+    )
+
+
 class CandidateBody(BaseModel):
     """A mention the erasure redacts only when confirmed (ADR-154): a common word of the
     subject's name capitalised at the start of a sentence. The snippet is returned by the dry
@@ -70,7 +86,10 @@ class ErasureBody(DeploymentMutationResponse):
     """What the erasure did, or (``dry_run``) would do."""
 
     dry_run: bool
-    subject: dict[str, str] = Field(description="`{kind, id}`: the subject erased.")
+    subject: dict[str, str] = Field(
+        description="`{kind, id}`: the subject erased (with `story` for a story character "
+        "erased from the catalog, #504)."
+    )
     scope: str = Field(description="`story` or `catalog`.")
     story_id: str | None
     records: dict[str, int] = Field(
@@ -117,13 +136,23 @@ class ErasureBody(DeploymentMutationResponse):
         description="Dry run only: every candidate mention, with its id, location and a "
         "snippet. A real run lists none.",
     )
+    promoted_drafts: list[PromotedDraftBody] = Field(
+        default_factory=list,
+        description="Story scope (#504): the catalog drafts promoted from the story's "
+        "characters, which the erasure leaves untouched, each with the catalog-scope request "
+        "that erases the subject from them.",
+    )
 
     @classmethod
     def of(cls, result: ErasureResult) -> ErasureBody:
         entry = result.ledger_entry
         return cls(
             dry_run=result.dry_run,
-            subject={"kind": result.subject_kind, "id": result.subject_id},
+            subject={
+                "kind": result.subject_kind,
+                "id": result.subject_id,
+                **({"story": result.subject_story} if result.subject_story else {}),
+            },
             scope=result.scope,
             story_id=result.story_id,
             records=result.records,
@@ -162,6 +191,22 @@ class ErasureBody(DeploymentMutationResponse):
                 for c in result.candidates
             ],
             config_revision=result.config_revision,
+            promoted_drafts=[
+                PromotedDraftBody(
+                    catalog_id=d.catalog_id,
+                    character_id=d.character_id,
+                    companion_ids=list(d.companion_ids),
+                    follow_up={
+                        "subject": {
+                            "kind": result.subject_kind,
+                            "id": result.subject_id,
+                            "story": result.story_id,
+                        },
+                        "scope": {"catalog": True},
+                    },
+                )
+                for d in result.promoted_drafts
+            ],
         )
 
 
@@ -173,10 +218,13 @@ class ErasureBody(DeploymentMutationResponse):
     description=(
         "Right-to-be-forgotten erasure (FR-ADMIN-2, FR-ADMIN-6). `subject` is `{kind, id}` "
         "(`character`, `catalog_character` or `persona`) and `scope` `{story: <id>}` or "
-        "`{catalog: true}`; a story `character` scoped to the catalog is 422 "
-        "`invalid_erasure_scope`. **Story scope**: the subject's character rows, snapshots and "
-        "deferred items are deleted (each leaves an erasure marker in the audit view, "
-        "`include_audit=1`), every text in the story that names the subject reads `[erased]` "
+        "`{catalog: true}`; a story `character` scoped to the catalog names its story "
+        "(`subject.story`, #504, ADR-176; without it 422 `invalid_erasure_scope`, and 422 "
+        "`unknown_erasure_candidate` when the story does not hold it): its names are then read "
+        "from that story and redacted from every catalog record, as for a catalog subject, and "
+        "nothing in any story is touched. **Story scope**: the subject's character rows, "
+        "snapshots and deferred items are deleted (each leaves an erasure marker in the audit "
+        "view, `include_audit=1`), every text in the story that names the subject reads `[erased]` "
         "where it did (a beat the subject said becomes `[erased]` whole, keeping its place), "
         "stored results that name it are purged, the rolling-summary segments that named it "
         "are summarised again from the redacted window (or stay redacted without a model), "
@@ -186,7 +234,10 @@ class ErasureBody(DeploymentMutationResponse):
         "deleted, the scenarios and other catalog records that name it are redacted, media "
         "depicting or naming only the subject are purged (or kept retired when another "
         "record still references them and `erasure_shared_media` is `retire`), and stories "
-        "are never touched: `referencing_stories` lists those to erase separately. "
+        "are never touched: `referencing_stories` lists those to erase separately. A story "
+        "erasure lists the catalog drafts promoted from the story (`promoted_drafts`), which it "
+        "leaves untouched, with the catalog-scope request (`follow_up`) that erases the subject "
+        "from them: send that first, since the story erasure removes the names it reads. "
         "`dry_run: true` answers the counts and changes nothing (zero counts for an unknown "
         "subject). **Mentions** (ADR-154): the subject's names, aliases and name words are "
         "erased where they certainly refer to it; a name word that is also a common word "

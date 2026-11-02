@@ -8,7 +8,8 @@ Migration ``0025_engine_profiles`` inserts it with the fixed id below, owned by 
 the deployment's ``default_engine_profile_id``. It writes no ``config_changes`` row and leaves
 the ``config_revision`` at its value. A preset is an ordinary profile: an operator may edit it
 (a new version), copy it, or delete it once another profile is the default; ``preset`` only
-records where it came from. The Standard, Full and Max presets arrive with M7. Once a database
+records where it came from. M7 (#227) adds the Standard and Max presets and converts
+``Structured`` in place into Full. Once a database
 is seeded, editing this module changes nothing in it: change seeds through a new migration.
 
 Lite's settings name every setting M3 delivers:
@@ -220,6 +221,152 @@ def structured_settings() -> dict[str, Any]:
     return copied
 
 
+# -- the M7 presets: Standard, Full and Max (#227) ------------------------------------------------
+
+FULL_PRESET_ID = STRUCTURED_M4_PROFILE_ID
+"""The Full preset's id: the seeded ``Structured`` row, converted in place (the owner's decision
+1 on #227), so every M4 to M6 fixture and pin keeps working."""
+FULL_NAME = "Full"
+FULL_VERSION = 4
+"""The version migration ``0110_m7_presets`` adds to the ``Structured`` row on a deployment that
+never edited it (the next after its current one)."""
+STANDARD_PRESET_ID = "00000000000000000000PRF003"
+STANDARD_NAME = "Standard"
+MAX_PRESET_ID = "00000000000000000000PRF004"
+MAX_NAME = "Max"
+
+M7_PROFILE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        "verification": {"shape_tightening": "on"},
+        "commitment": {"salience_bias": "balanced"},
+    }
+)
+"""The two dials #227 adds, at the schema's defaults: migration ``0110_m7_presets`` adds each one
+the deployment's ``profile_defaults`` does not name yet, so the document stays complete."""
+
+FULL_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        **STRUCTURED_SETTINGS,
+        "verification": {
+            **STRUCTURED_SETTINGS["verification"],
+            "shape_tightening": "on",
+        },
+        "commitment": {**STRUCTURED_SETTINGS["commitment"], "salience_bias": "balanced"},
+    }
+)
+"""Full's settings (FR-PROF-3; #227), as stored (JSON): ``Structured``'s version 3, which already
+meets every Full clause (the structured pipeline; every module on: episodic memory with hybrid
+search, consolidation, commitment, the clock with time claims and scheduled stops, States;
+verification at ``entailment`` with extraction ``always`` and gate 1.0; partitions with nested
+beliefs to depth 2; ``full`` perception; per-character renders), with #227's two new dials named
+at their defaults. Budgets stay version 2's (16 calls, 60 s); the rolling summary stays off (the
+memory module is on through episodic memory and consolidation)."""
+
+STANDARD_MODEL_CALLS = 8
+STANDARD_DEADLINE_MS = 45_000
+
+STANDARD_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        "pipeline": "structured",
+        "memory": {
+            "rolling_summary": {"enabled": False},
+            "episodic": {"enabled": True, "k": 40, "hybrid_search": True, "reranking": False},
+            "consolidation": {"enabled": True, "cadence_turns": 20},
+        },
+        "pins": {"enabled": True, "max_pinned": 50},
+        "character_knowledge": {
+            "partitions": True,
+            "nested_beliefs": {"enabled": False},
+            "lazy_resolution": True,
+            "testimony": "defaulted",
+        },
+        "perception": {"level": "co_location"},
+        "verification": {
+            "level": "extraction",
+            "extraction_mode": "gated",
+            "entailment_gate": 1.0,
+            "contradiction_checking": True,
+            "shape_tightening": "on",
+        },
+        "commitment": {"enabled": True, "salience": "rules", "salience_bias": "balanced"},
+        "clock": {"level": "on", "time_claims": False, "scheduled_stops": True},
+        "states": {"level": "off"},
+        "multi_character": {"renders": "per_character"},
+        "repair": {"max_attempts": 1, "polish": {"enabled": False}},
+        "budgets": {"model_calls": STANDARD_MODEL_CALLS, "deadline_ms": STANDARD_DEADLINE_MS},
+        "models": {
+            "generation": {"temperature": 0.8, "top_p": 0.95, "response_length": "medium"},
+        },
+    }
+)
+"""Standard's version 1 settings (FR-PROF-3; #227), as stored (JSON): the structured pipeline,
+per-character partitions (no nested beliefs; lazy resolution; testimony ``defaulted``),
+``co_location`` perception, declared-claim verification with gated extraction and contradiction
+checking, commitment with rules salience, the world clock with scheduled stops (no time-claim
+checks), consolidation over episodic memory, States off, per-character renders, one repair
+attempt, the polish pass off, and moderate budgets (8 calls, 45 s)."""
+
+MAX_MODEL_CALLS = 24
+MAX_DEADLINE_MS = 120_000
+MAX_ENTAILMENT_MIN_CONFIDENCE = 0.7
+"""Max's "stricter checks" (#227's Claude's Discretion): an entailment verdict needs 0.7
+confidence to count, above Full's 0.6."""
+MAX_STRONGEST_PURPOSES: tuple[str, ...] = (
+    "entailment",
+    "extraction_backstop",
+    "belief_adjudication",
+    "salience_detection",
+    "time_estimation",
+)
+"""The verification purposes Max routes to ``"@strongest"`` (``core.profiles.tiers``)."""
+
+MAX_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
+    {
+        **FULL_SETTINGS,
+        "memory": {
+            **STRUCTURED_SETTINGS["memory"],
+            "consolidation": {"enabled": True, "cadence_turns": 10},
+        },
+        "verification": {
+            **FULL_SETTINGS["verification"],
+            "entailment_gate": 1.0,
+            "shape_tightening": "off",
+            "entailment_min_confidence": MAX_ENTAILMENT_MIN_CONFIDENCE,
+        },
+        "commitment": {**FULL_SETTINGS["commitment"], "salience_bias": "recall"},
+        "repair": {**STRUCTURED_SETTINGS["repair"], "max_attempts": 3},
+        "budgets": {"model_calls": MAX_MODEL_CALLS, "deadline_ms": MAX_DEADLINE_MS},
+        "models": {
+            **STRUCTURED_SETTINGS["models"],
+            "purposes": {purpose: {"model": "@strongest"} for purpose in MAX_STRONGEST_PURPOSES},
+        },
+    }
+)
+"""Max's version 1 settings (FR-PROF-3; #227), as stored (JSON): Full's, plus every uncertain
+verdict escalated (gate 1.0 with the per-shape tightening off), recall-biased salience, the
+strongest configured model for each verification purpose (``"@strongest"``), three repair
+attempts, consolidation every 10 turns, a stricter entailment confidence, and generous budgets
+(24 calls, 120 s)."""
+
+
+def full_settings() -> dict[str, Any]:
+    """A fresh, mutable copy of ``FULL_SETTINGS``."""
+    copied: dict[str, Any] = _thaw(FULL_SETTINGS)
+    return copied
+
+
+def standard_settings() -> dict[str, Any]:
+    """A fresh, mutable copy of ``STANDARD_SETTINGS``."""
+    copied: dict[str, Any] = _thaw(STANDARD_SETTINGS)
+    return copied
+
+
+def max_settings() -> dict[str, Any]:
+    """A fresh, mutable copy of ``MAX_SETTINGS``."""
+    copied: dict[str, Any] = _thaw(MAX_SETTINGS)
+    return copied
+
+
 # -- the deployment's profile defaults (#113, #129) -----------------------------------------------
 
 M4_PROFILE_DEFAULTS: MappingProxyType[str, Any] = MappingProxyType(
@@ -358,19 +505,23 @@ def profile_defaults() -> dict[str, Any]:
     """A deployment's seeded ``profile_defaults``: Lite's settings with ``M4_PROFILE_DEFAULTS``,
     ``VERIFY_DEPTH_DEFAULTS``, ``RETRIEVAL_DEFAULTS``, ``ESCALATION_DEFAULTS``,
     ``CONSOLIDATION_DEFAULTS``, ``IMPLICATION_DEFAULTS``, ``HOT_SET_DEFAULTS``,
-    ``RENDER_DEFAULTS``, ``M5_PROFILE_DEFAULTS`` and ``M6_PROFILE_DEFAULTS`` under them (a complete
-    document of every delivered setting)."""
+    ``RENDER_DEFAULTS``, ``M5_PROFILE_DEFAULTS``, ``M6_PROFILE_DEFAULTS`` and
+    ``M7_PROFILE_DEFAULTS`` under them (a complete document of every delivered setting)."""
     base = _merged(_merged(_thaw(M4_PROFILE_DEFAULTS), VERIFY_DEPTH_DEFAULTS), RETRIEVAL_DEFAULTS)
     base = _merged(_merged(base, ESCALATION_DEFAULTS), CONSOLIDATION_DEFAULTS)
     base = _merged(_merged(base, IMPLICATION_DEFAULTS), HOT_SET_DEFAULTS)
     base = _merged(_merged(base, RENDER_DEFAULTS), M5_PROFILE_DEFAULTS)
-    base = _merged(base, M6_PROFILE_DEFAULTS)
+    base = _merged(_merged(base, M6_PROFILE_DEFAULTS), M7_PROFILE_DEFAULTS)
     return _merged(base, LITE_SETTINGS)
 
 
 __all__ = [
     "CONSOLIDATION_DEFAULTS",
     "ESCALATION_DEFAULTS",
+    "FULL_NAME",
+    "FULL_PRESET_ID",
+    "FULL_SETTINGS",
+    "FULL_VERSION",
     "HOT_SET_DEFAULTS",
     "IMPLICATION_DEFAULTS",
     "LITE_NAME",
@@ -379,10 +530,23 @@ __all__ = [
     "M4_PROFILE_DEFAULTS",
     "M5_PROFILE_DEFAULTS",
     "M6_PROFILE_DEFAULTS",
+    "M7_PROFILE_DEFAULTS",
+    "MAX_DEADLINE_MS",
+    "MAX_ENTAILMENT_MIN_CONFIDENCE",
+    "MAX_MODEL_CALLS",
+    "MAX_NAME",
+    "MAX_PRESET_ID",
+    "MAX_SETTINGS",
+    "MAX_STRONGEST_PURPOSES",
     "PREVIOUS_ENTAILMENT_GATE",
     "RENDER_DEFAULTS",
     "RETRIEVAL_DEFAULTS",
     "SEED_PRINCIPAL",
+    "STANDARD_DEADLINE_MS",
+    "STANDARD_MODEL_CALLS",
+    "STANDARD_NAME",
+    "STANDARD_PRESET_ID",
+    "STANDARD_SETTINGS",
     "STRUCTURED_DEADLINE_MS",
     "STRUCTURED_GUARDRAIL_CALLS",
     "STRUCTURED_M4_NAME",
@@ -398,8 +562,11 @@ __all__ = [
     "STRUCTURED_SETTINGS",
     "STRUCTURED_VERSION",
     "VERIFY_DEPTH_DEFAULTS",
+    "full_settings",
     "lite_settings",
+    "max_settings",
     "profile_defaults",
+    "standard_settings",
     "structured_m4_settings",
     "structured_m5_settings",
     "structured_settings",

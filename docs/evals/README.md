@@ -39,11 +39,16 @@ No automated check spends money or calls a real model (the owner's decision, 202
        --hardware "<machine, memory>" --server-version "LM Studio <version>"
    ```
 
+   `--preset lite|standard|full|max` (#227, default `full`) picks the preset every scratch story
+   plays under and the fingerprint names; a suite that needs a module the preset leaves off is
+   reported `not_applicable`, with what it needs, and never runs (NFR-QUAL-11). Run each preset
+   to compare them on quality as well as cost.
    An unreachable endpoint exits 1 before anything is written. `--sample N` runs a seeded
    subset of each set (the same cases on every seed). `--suite <name>` reruns one suite and
    merges it into the same day's run of the same fingerprint, rewriting its report in place.
-4. The run writes `docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md` (a second run that day gets
-   `-2`), regenerates [INDEX.md](INDEX.md), and keeps its JSON and the failed cases' inputs and
+4. The run writes `docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md` (a second run that
+   day gets `-2`; reports written before #227 are named `<fingerprint[:12]>-<YYYY-MM-DD>.md`, and
+   their INDEX row reads preset `structured`), regenerates [INDEX.md](INDEX.md), and keeps its JSON and the failed cases' inputs and
    outputs under `build/evals/` (not committed). It exits 0 whatever the floors say: the
    verdicts are in the report. Commit the report and the index together.
 5. `uv run python -m epistrel.evals --check` (CI's lint job runs it) checks that the suites
@@ -53,7 +58,7 @@ No automated check spends money or calls a real model (the owner's decision, 202
 ## Reading a report
 
 Each report states the model and the version the server reported, the configuration
-fingerprint (FR-PROF-16: the seeded `Structured (M4)` profile with the model as every story
+fingerprint (FR-PROF-16: the run's preset, by default Full, with the model as every story
 purpose's, and a second judge model as `quality_judge`'s when one is set; with
 `--real-purpose`, the stub as every other purpose's, listed as **Routed purposes**), a suite's
 own configuration and fingerprint when its stories run another (#179's M5 modules), the judge,

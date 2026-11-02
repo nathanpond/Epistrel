@@ -704,7 +704,7 @@ def test_c_04__m6() -> None:
         None,
     )
     assert row.delivered
-    lite, structured = guarantee_tool.SEEDED
+    lite, structured = guarantee_tool.SEEDED[0], guarantee_tool.SEEDED[2]  # Lite, Full (#227)
     assert row.provided(structured.effective())
     assert not row.provided(lite.effective())
     assert guarantee_tool.problems() == []

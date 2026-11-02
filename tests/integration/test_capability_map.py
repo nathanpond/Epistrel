@@ -66,11 +66,11 @@ from epistrel.core.profiles.validate import (
     validate_profile,
 )
 from epistrel.core.seeds.profiles import (
+    FULL_NAME,
+    FULL_VERSION,
     LITE_PRESET_ID,
     STRUCTURED_M4_NAME,
     STRUCTURED_M4_VERSION,
-    STRUCTURED_NAME,
-    STRUCTURED_VERSION,
     lite_settings,
     profile_defaults,
     structured_m4_settings,
@@ -416,13 +416,13 @@ async def test_c_16__capabilities(scratch: Space) -> None:
         "CROSS JOIN deployment_state d WHERE p.id = :p",
         p=structured_m4(),
     )
-    # #181 renamed the row in place and added version 2 (#203: version 3); version 1 is M4's,
-    # unchanged.
+    # #181 renamed the row in place and added version 2 (#203: version 3; #227 converted it
+    # into a preset and added version 4); version 1 is M4's, unchanged.
     assert tuple(stored)[:6] == (
-        STRUCTURED_NAME,
+        FULL_NAME,
         "system",
-        False,
-        STRUCTURED_VERSION,
+        True,
+        FULL_VERSION,
         structured_m4_settings(),
         LITE_PRESET_ID,
     )
@@ -518,8 +518,9 @@ def test_c_16__guarantee_table() -> None:
     NFR-QUAL ids (``metric_ids``, which #134's report check reads)."""
     rendered = guarantee_tool.render()
     assert rendered == guarantee_tool.TABLE_PATH.read_text(encoding="utf-8")
-    lite, latest = guarantee_tool.SEEDED
-    assert (lite.profile_id, latest.profile_id) == (LITE_PRESET_ID, structured_m4())
+    lite = guarantee_tool.SEEDED[0]
+    (latest,) = [p for p in guarantee_tool.SEEDED if p.profile_id == structured_m4()]
+    assert lite.profile_id == LITE_PRESET_ID
     # The table publishes the latest version (#181); M4's part reads its version 1.
     structured = guarantee_tool.SeededProfile(
         STRUCTURED_M4_NAME, structured_m4(), structured_m4_settings()

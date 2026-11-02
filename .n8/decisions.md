@@ -10761,3 +10761,36 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Change:** "Compaction" is renamed "pruning" across docs/01–04, CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109, the feedback read's `pruned_at`), the test ID (S-COMPACTION → S-PRUNE), the §13 lexicon's M7 term (`compaction` → `prune`) and the open issues and milestones. Invariant 6 is renamed with it, and #71's wording is kept otherwise: "Only erasure, opt-in pruning, audit-record retention expiry, and whole-story deletion remove events; erasure and pruning leave markers". Its meaning and its honor-system status are unchanged. ADR-175 records it. Earlier ledger entries and ADRs keep the old word as history.
   **Why:** the owner's decision (round two, 2026-10-10), planned as #246. "Compaction" was confused with the Lite rolling summary.
   **Affects:** M7 #247 and #248 (build under the new name, already drafted so). No other plan changes: a rename only, so no replan is needed.
+
+### #227 — the M7 presets, 2026-11-02
+
+- **Decision:** Full's v4 settings are v3's plus the two new dials named at their defaults. Over the seeded defaults, which gain both dials in migration 0110, the v3 → Full delta is empty: no data-producing increase and no behavioral leaf. So the migration takes the no-pin branch, writes one `engine_profile:<id>` 3 → 4 row, and moves `config_revision` once. The pickup half of the delta test is skipped, as the plan provides. The pin branch is still computed at run time.
+  **Issue:** #227
+- **Decision:** the migration writes `config_changes` rows directly, by `system:migration:0110`. It records no `control` operation (no migration does). In the pin branch, which is not taken here, it would write no story `config_changed` event: a migration has no operation to hang one on.
+  **Issue:** #227
+- **Decision:** Max's "stricter checks" is `verification.entailment_min_confidence = 0.7` (Full's is 0.6). `implication_max_depth` keeps Full's 3.
+  **Why:** a higher confidence floor makes more borderline entailments take the safe disposition, which is the stricter reading.
+  **Issue:** #227
+- **Decision:** `salience_bias = recall` needs a confidence in the answer. `SalienceResult` gains an optional `confidence`, and `structured_call(keep_low_confidence=True)` hands a low-confidence answer back instead of `Uncertain`. The answer is promoted (its texture spans become salient, each with its own words as the sketch) only when it states a confidence below `uncertain_below`. An answer without a confidence is read as given.
+  **Issue:** #227
+- **Decision:** `"@strongest"` resolves in `effective_configuration` (and in previews through `StoryProfile.strongest`), using `deployment_state.settings.model_tiers.strongest`. A null value drops the route. The C-04 capability-floor fallback (`model_fallback`) is not built.
+  **Why:** core has no per-purpose capability floor to check against. Write-time validation already requires a listed model.
+  **Issue:** #227
+- **Decision:** the eval CLI has no `--profile-id` option, so its mutual exclusion with `--preset` is moot. A suite's applicability comes from its guarantee rows (`GuaranteeRow.provided`), plus the structured pipeline and the new `Suite.requires`. No suite needed an explicit `requires`, so the per-suite table is derived rather than hand-listed.
+  **Issue:** #227
+- **Decision:** CI runs the stub evals per preset as a job matrix (`preset: [standard, full, max]`), not as one looping step. Each artifact is named `evals-stub-report-<preset>` / `evals-zero-leak-stub-report-<preset>`.
+  **Why:** three serial zero-leak runs (about 35 min each) would exceed the job's 60-minute timeout. A matrix keeps wall time flat. Artifact names must be unique per job.
+  **Issue:** #227
+- **Decision:** `POST /engine-profiles/{id}/copy` takes an optional `name`, defaulting to `"<name> (copy)"`. `GET /engine-profiles` gains a `preset` filter.
+  **Issue:** #227
+- **Decision (Rule 1):** `SettingsPatch` gains `dependency_search_max_results` and `dependency_search_max_depth`. #220 added them to `DeploymentSettings` but not to the REST patch, so U-18's "the patch names exactly the schema's settings" failed, and `test_config_changes` lacked a stored value for that section. `ModelTierSettings` is left out of that test's round trip, because its one setting needs a listed model; `test_presets__strongest` covers it.
+  **Issue:** #220, #227
+
+### #504 — erasure of a story character from the catalog, 2026-11-02
+
+- **Decision:** the subject gains an optional `story` (`{kind: character, id, story}` + `{catalog: true}`). Its terms come from `index.story_subjects` of that story. The catalog pass is reused unchanged: no catalog entry is deleted, and every catalog record is matched. The residue scan covers the catalog, and the ledger row is catalog-scope, character, with no `story_ref`. A reapply finds the story from `characters` (`erase.character_story`), and so does `catalog_reach` for the pending-catalog block.
+  **Issue:** #504
+- **Decision:** ordering. The story erasure deletes the character and redacts its names, and the ledger keeps only hashes, so a later catalog erasure cannot find the names: it is 422 `unknown_erasure_candidate`. The story erasure's (dry-run) report lists `promoted_drafts` with `follow_up`, and docs/OPERATIONS.md and ADR-176 state "catalog first". The alternative, keeping names for a later catalog erasure, would store a name, which the ledger's design forbids.
+  **Issue:** #504
+- **Decision:** the ADR is ADR-176, since #246 took ADR-175.
+  **Issue:** #504

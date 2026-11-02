@@ -922,6 +922,10 @@ class SalienceResult(BaseModel):
     )
     """The figures the render singles out as characters to model (FR-EPI-9's explicit salience;
     #163), each by the words of a beat that name it. Empty (the default) models nobody."""
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    """How sure the model is of this split (optional, #227). Below the deployment's
+    ``uncertain_below`` the answer is uncertain (FR-MODEL-7): no answer under
+    ``commitment.salience_bias = balanced``, every span salient under ``recall``."""
 
 
 EXTRACTION_MAX_BEATS = 50

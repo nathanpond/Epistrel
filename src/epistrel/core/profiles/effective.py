@@ -69,7 +69,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.errors import InvalidProfile, InvalidRequest, ProfileDeleted, StoryNotFound
-from epistrel.core.profiles import guarantees, schema
+from epistrel.core.profiles import guarantees, schema, tiers
 from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp, stamp
 from epistrel.core.profiles.schema import (
     PATCH_SCHEMA,
@@ -412,6 +412,8 @@ class StoryProfile:
     config_revision: int
     """The story's own ``config_revision``."""
     settings: ProfileSettings = field(repr=False)
+    strongest: str | None = None
+    """The deployment's ``model_tiers.strongest`` (#227), what ``"@strongest"`` resolves to."""
 
     def configuration(self) -> Configuration:
         return Configuration(self.profile_id, self.version, self.settings)
@@ -444,7 +446,8 @@ class StoryProfile:
             overrides_revision=self.overrides_revision,
             deployment_revision=self.deployment_revision,
             config_revision=self.config_revision,
-            settings=settings,
+            settings=tiers.resolved(settings, self.strongest),
+            strongest=self.strongest,
         )
 
 
@@ -481,6 +484,7 @@ async def effective_configuration(
                 o.c.settings.label("overrides"),
                 o.c.revision.label("overrides_revision"),
                 d.c.profile_defaults,
+                d.c.settings.label("deployment_settings"),
                 d.c.config_revision.label("deployment_revision"),
             )
             .select_from(
@@ -512,6 +516,8 @@ async def effective_configuration(
     elif settings is None:
         settings = resolve_layers(defaults, document, overrides, purposes=purposes, field=STORED)
         CACHE.put(story_id, key, settings)
+    strongest = tiers.strongest_of(row.deployment_settings)
+    settings = tiers.resolved(settings, strongest)
     return StoryProfile(
         story_id=story_id,
         profile_id=profile_id,
@@ -526,6 +532,7 @@ async def effective_configuration(
         deployment_revision=deployment_revision,
         config_revision=int(row.config_revision),
         settings=settings,
+        strongest=strongest,
     )
 
 
@@ -615,7 +622,10 @@ def resolve(
         if overrides is None
         else patched(current.overrides, overrides, purposes=purposes, field=field)
     )
-    return resolve_layers(current.defaults, document, stacked, purposes=purposes, field=field)
+    return tiers.resolved(
+        resolve_layers(current.defaults, document, stacked, purposes=purposes, field=field),
+        current.strongest,
+    )
 
 
 async def store_overrides(

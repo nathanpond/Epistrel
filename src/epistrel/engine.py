@@ -1602,6 +1602,7 @@ class Engine:
                 block.check_records(await catalog_block.operation_records(conn, operation_id))
         return view
 
+    @refuses_nul()
     async def list_operations(
         self,
         ctx: RequestContext,
@@ -3238,6 +3239,7 @@ class Engine:
             as_of=as_of,
         )
 
+    @refuses_nul()
     async def get_state_definition(
         self,
         ctx: RequestContext,
@@ -3411,6 +3413,7 @@ class Engine:
         story."""
         return await core_outbox.listings(self.db, story_id)
 
+    @refuses_nul()
     async def list_outbox(
         self,
         ctx: RequestContext,

@@ -524,6 +524,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # (as a turn, they wait for or are refused by one in flight), and definition updates.
     "get_states": ("module_off", "viewpoint_unresolved"),
     "get_state": ("module_off", "viewpoint_unresolved"),
+    "get_state_definition": ("module_off", "viewpoint_unresolved"),
     "set_state": (
         "story_archived",
         "story_paused",
@@ -845,6 +846,7 @@ VIEWPOINT_OPERATIONS = frozenset(
         # #682: the State and scheduled-event reads take it too (FR-STATE-9, FR-CLOCK-9).
         "get_states",
         "get_state",
+        "get_state_definition",
         "list_scheduled_events",
     }
 )

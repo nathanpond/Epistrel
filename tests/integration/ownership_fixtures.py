@@ -820,6 +820,7 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"delta": 5, "reason": "found a purse"}, prepare=_state_name
     ),
     ("POST", f"{S}/states"): Call(201, {"definition": GOLD}, prepare=_prompt_only),
+    ("GET", f"{S}/states/{{name}}/definition"): Call(200, prepare=_state_name),  # #680
     ("PATCH", f"{S}/states/{{name}}/definition"): Call(200, {"unit": "coins"}, prepare=_state_name),
     # -- stories: engine-proposed States (#192), on the story running States at prompt_only
     ("POST", f"{S}/state-proposals/analyze"): Call(202, prepare=_prompt_only),

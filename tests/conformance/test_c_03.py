@@ -131,6 +131,7 @@ from epistrel.api.routes.state_proposals import (
 )
 from epistrel.api.routes.states import (
     StateDeclaredBody,
+    StateDefinitionBody,
     StateDefinitionWriteBody,
     StatesBody,
     StateViewBody,
@@ -1640,6 +1641,15 @@ def _steps() -> list[Step]:
             lambda e, ids: _state(e.get_state(CTX, ids["story"], "gold", viewpoint="omniscient")),
         ),
         Step(
+            "get_state_definition",
+            lambda ids: Rest(
+                "GET", f"{s}/states/gold/definition", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _state_definition_read(
+                e.get_state_definition(CTX, ids["story"], "gold", viewpoint="omniscient")
+            ),
+        ),
+        Step(
             "set_state",
             lambda ids: Rest("PUT", f"{s}/states/gold", {"delta": 5, "reason": "a purse"}),
             lambda e, ids: _state_written(
@@ -3100,6 +3110,10 @@ async def _states(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _state(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(StateViewBody.of(await call))
+
+
+async def _state_definition_read(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateDefinitionBody.of(await call))
 
 
 async def _state_written(call: Awaitable[Any]) -> dict[str, Any]:

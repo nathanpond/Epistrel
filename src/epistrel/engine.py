@@ -3208,6 +3208,28 @@ class Engine:
             as_of=as_of,
         )
 
+    async def get_state_definition(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+    ) -> state_api.DefinitionView:
+        """#680: State ``name``'s stored definition for one output viewpoint (as ``get_state``:
+        a hidden State without ``omniscient``, and ``world_clock``, are 404 as an unknown name),
+        with the configuration revision of its last change. 409 ``module_off`` with
+        ``states.level`` off."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await state_api.read_definition(
+            self.db,
+            story_id,
+            name,
+            viewpoint=ctx.viewpoint,
+            actor_character_id=actor_character_id,
+        )
+
     async def set_state(
         self,
         ctx: RequestContext,

@@ -344,7 +344,7 @@ Index(
     memories.c.story_id,
     memories.c.narrative_turn,
     postgresql_where=text(
-        "kind = 'episodic' AND holder_character_id IS NULL AND membership = 'active'"
+        f"kind = 'episodic' AND holder_character_id IS NULL AND {active_only_predicate()}"
     ),
 )
 

@@ -1384,7 +1384,8 @@ CROSSABLE = frozenset({ScheduledStatus.PENDING, ScheduledStatus.POSSIBLY_DUE})
 class StagedSource:
     """A ``ClaimSource`` over canon with the turn's earlier permitted claims laid over it (the
     same-turn overlay, #144's carried note): a claim canon leaves ``novel`` or ``uncertain`` is
-    checked against the staged claims too, and a conclusive verdict there wins."""
+    checked against the staged claims too, and a conclusive verdict there wins; one canon
+    ``supported`` loses to a staged ``contradicted`` (#642: an earlier beat's change)."""
 
     def __init__(self, inner: ClaimSource) -> None:
         self.inner = inner
@@ -1402,9 +1403,11 @@ class StagedSource:
         if found is None or not self.staged:
             return found
         verdict, fetched = found
-        if verdict.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN):
+        if verdict.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN, VerdictKind.SUPPORTED):
             return found
         if claim.predicate_id in CLOCK_CHECKS and await self._runs_clock():
+            if verdict.kind is VerdictKind.SUPPORTED:
+                return found
             # #627: a clock check is the clock's: decided against the anchor as the turn's
             # earlier anchoring statements narrow it, never as a functional fact over them.
             clocked = await self._clock_check(claim, **kwargs)
@@ -1419,6 +1422,12 @@ class StagedSource:
             position=kwargs.get("position"),
             mover=kwargs.get("mover"),  # #518: a fluent change over the overlay too
         )
+        if verdict.kind is VerdictKind.SUPPORTED:
+            # #642: an earlier beat of the turn changed it (an exit, a pass-out): the staged
+            # change is newer than the pre-turn canon that still holds during the turn.
+            if staged.kind is VerdictKind.CONTRADICTED:
+                return staged, [*fetched, *self.staged]
+            return found
         if staged.kind in CONCLUSIVE:
             return staged, [*fetched, *self.staged]
         return found

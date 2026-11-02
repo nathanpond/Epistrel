@@ -60,7 +60,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -194,11 +196,50 @@ def core_registry() -> Registry:
     return Registry(None, 0, dict(CORE_BY_ID))
 
 
+_TURN_CACHE: ContextVar[dict[str, Registry] | None] = ContextVar(
+    "epistrel_registry_turn_cache", default=None
+)
+"""#621: the registries one turn attempt read, by story (``turn_cache``)."""
+
+
+@contextmanager
+def turn_cache() -> Iterator[None]:
+    """#621: within it, ``load`` reads each story's registry once (a turn attempt's snapshot,
+    as its configuration was captured); every registry write clears it (``forget``)."""
+    if _TURN_CACHE.get() is not None:
+        yield  # nested: the outer turn's cache stands
+        return
+    token = _TURN_CACHE.set({})
+    try:
+        yield
+    finally:
+        _TURN_CACHE.reset(token)
+
+
+def forget() -> None:
+    """#621: a registry write: the turn cache (if any) reads every registry again."""
+    cached = _TURN_CACHE.get()
+    if cached is not None:
+        cached.clear()
+
+
 async def load(conn: AsyncConnection | AsyncEngine, story_id: str) -> Registry:
-    """The story's registry (core + story predicates, its rules) in one read."""
+    """The story's registry (core + story predicates, its rules) in one read (#621: once per
+    story within a ``turn_cache``)."""
+    cached = _TURN_CACHE.get()
+    if cached is not None and story_id in cached:
+        return cached[story_id]
+    found = await _read(conn, story_id)
+    if cached is not None:
+        cached[story_id] = found
+    return found
+
+
+async def _read(conn: AsyncConnection | AsyncEngine, story_id: str) -> Registry:
+    """The registry's database read."""
     if isinstance(conn, AsyncEngine):
         async with conn.connect() as c:
-            return await load(c, story_id)
+            return await _read(c, story_id)
     story = (
         await conn.execute(
             select(stories.c.config_revision, stories.c.predicate_rules).where(
@@ -693,6 +734,7 @@ async def sync_core(db: AsyncEngine | AsyncConnection) -> int:
             ).returning(predicates.c.id)
         )
         changed += len(result.all())
+    forget()  # #621
     log.debug("core vocabulary re-synced: %d rows changed", changed)
     return changed
 
@@ -710,6 +752,7 @@ async def _index_predicates(conn: AsyncConnection, rows: Sequence[Mapping[str, A
 
 
 async def _insert_predicates(conn: AsyncConnection, chosen: Sequence[Predicate]) -> None:
+    forget()
     rows = [predicate_row(p) for p in chosen]
     if not rows:
         return
@@ -864,6 +907,7 @@ async def register_author(
                 ]
             )
         )
+        forget()  # #621
     registry = await load(conn, story_id)
     for index, closed in enumerate(rules.closed_sets):
         predicate = registry.get(
@@ -990,6 +1034,7 @@ async def auto_register(
     await conn.execute(
         update(stories).where(stories.c.id == story_id).values(config_revision=revision)
     )
+    forget()  # #621
     await _index_predicates(conn, [row])
     own_predicates.note(predicate.id)
     await record_config_change(
@@ -1421,6 +1466,7 @@ async def approve(
             .where(predicates.c.id == predicate_id)
             .values(**{name: new_row[name] for name in SEMANTIC_COLUMNS})
         )
+        forget()  # #621
         before_row = predicate_row(predicate)
         moved = [name for name in SEMANTIC_COLUMNS if before_row[name] != new_row[name]]
         await record_config_change(
@@ -1574,6 +1620,7 @@ __all__ = [
     "direct_polarity_conflict",
     "file_identity_proposal",
     "file_proposal",
+    "forget",
     "identity_proposals",
     "imply",
     "intersection",
@@ -1593,4 +1640,5 @@ __all__ = [
     "single_valued_observations",
     "strengthened",
     "sync_core",
+    "turn_cache",
 ]

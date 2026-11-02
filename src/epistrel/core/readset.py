@@ -410,7 +410,12 @@ class KeyedLookup:
 
         if registry is not None and registry.story_id == story_id:
             return registry
-        return await load(self.conn, story_id)
+        key = ("registry", story_id)
+        if key not in self.memo:
+            # #621: once per lookup (a ``turn_cache`` also shares it across the turn).
+            self.memo[key] = await load(self.conn, story_id)
+        found: Registry = self.memo[key]
+        return found
 
     async def _viewpoint(self, story_id: str, viewpoint: str) -> None:
         """``canon.check_viewpoint``, once per (story, viewpoint) for this lookup (#520: the

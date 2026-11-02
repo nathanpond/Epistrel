@@ -247,7 +247,9 @@ from epistrel.core.propositions.registry import (
     consider_proposals,
     file_identity_proposal,
 )
+from epistrel.core.propositions.registry import forget as forget_registries
 from epistrel.core.propositions.registry import load as load_registry
+from epistrel.core.propositions.registry import turn_cache as registry_turn_cache
 from epistrel.core.propositions.vocabulary import CLOCK_CHECKS, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import identity as identity_rules
@@ -569,7 +571,36 @@ async def respond(
     lexical: LexicalSearch | None = None,
     providers: InProcessRegistry | None = None,
 ) -> RespondResult:
-    """Play one structured turn; see the module docstring (the prechecks are Lite's)."""
+    """Play one structured turn; see the module docstring (the prechecks are Lite's). #621:
+    the whole turn reads each predicate registry once (``registry.turn_cache``)."""
+    with registry_turn_cache():
+        return await _respond(
+            db,
+            models,
+            ctx,
+            story_id,
+            request,
+            principal=principal,
+            gate=gate,
+            queue_turn=queue_turn,
+            lexical=lexical,
+            providers=providers,
+        )
+
+
+async def _respond(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    ctx: RequestContext,
+    story_id: str,
+    request: RespondRequest,
+    *,
+    principal: str,
+    gate: lite.Gate,
+    queue_turn: lite.QueueTurn,
+    lexical: LexicalSearch | None = None,
+    providers: InProcessRegistry | None = None,
+) -> RespondResult:
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     concurrency = await turn_gate.read_concurrency(db, story_id)
@@ -4798,6 +4829,8 @@ async def play(
     async def begin(conn: AsyncConnection) -> TurnRead:
         nonlocal settings, configuration, cast_
         if op.attempts:
+            forget_registries()  # #621: a restart reads the registry as it now stands
+        if op.attempts:
             # #659 (FR-CONC-16): a rebase re-check failed, so this attempt runs under every
             # interpretive setting as it stands now (prospective ones as captured).
             now = (await effective_configuration(conn, story_id, validate=False)).settings
@@ -7287,7 +7320,8 @@ async def play(
     retiring = () if regenerating is None else await _retiring(db, story_id, regenerating.turn)
     # A regenerate reads the story as it stood before the variant it replaces (#154): that
     # variant's records are left out of every derived read; its own commit retires them.
-    with excluding(retiring), external_values.pinning(pins):
+    # #621: the turn reads each registry once per attempt (``begin`` starts each afresh).
+    with excluding(retiring), external_values.pinning(pins), registry_turn_cache():
         await run_with_revalidation(
             op,
             begin=begin,

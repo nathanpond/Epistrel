@@ -440,6 +440,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "story_paused",
         "story_busy",
         "viewpoint_unresolved",
+        # #608: a multi-primary override (``interaction_mode``, ``sequence_order``,
+        # ``simultaneous_tie_break``) on a ``combined`` or Lite story (``multi.refuse_override``).
+        "module_off",
     ),
     "regenerate": (
         *_GATED,

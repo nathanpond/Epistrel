@@ -10815,3 +10815,12 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #580
 - **Decision:** a docs/04 U-27 **[M7: FR-SCN-7]** part is added, with a §15 row, for the from-prose case the story's test plan names in `tests/test_u_27.py`.
   **Issue:** #580
+
+### #649 — a character may state a fiat-known fact, 2026-11-02
+
+- **Decision:** `PermissionFacts.fiat_known` and `Basis.AUTHOR_FIAT` replace only the `other_character_secret` denial, for character renders and the narrator side of a reactive render. The verifier computes `fiat_known` only after such a denial: `BeliefSource.fiat_known` is true when the could-have-known replay's first path is an `author_fiat` transition. It then decides the permission again with it, and records `fiat_known` in the rebase re-check's call.
+  **Issue:** #649
+- **Decision:** the fiat re-check passes `protected=False`. The protected-content detector matched that very fact, which is hidden from the character in canon but now known to it, so stating it is no leak. The pure matrix still denies protected content with `fiat_known`, and the unit row asserts that. Without this the line was repaired as `protected_content`, which contradicts the story's "not repaired". ADR-177 records it.
+  **Issue:** #649
+- **Decision:** the scenario's "Marcus, who holds no belief" complement is played as the same line in a story without the fiat (the room's cast is Cal, Jenni and Bobby). The locked-canon complement is in the unit row.
+  **Issue:** #649

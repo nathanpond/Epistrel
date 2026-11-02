@@ -117,3 +117,71 @@ def test_hand_over_exception() -> None:
     assert pm.permission(negated, jenni, pm.owner_of(negated, given), given) == Denied(
         Reason.PLAYER_CHARACTER
     )
+
+
+FIAT_ASSERTERS = (
+    Asserter("character", JENNI),
+    Asserter("character", BOBBY),
+    Asserter("reactive", JENNI, reactor=BOBBY),
+    Asserter("director"),
+    Asserter("player", CAL),
+    Asserter("co_author", CAL),
+    Asserter("author"),
+)
+FIAT_CLAIMS = (
+    (BOBBY, "located_at", KITCHEN),
+    (BOBBY, "attended_program", CAMP),
+    (CAL, "located_at", KITCHEN),
+    (CAL, "holds", KEY),
+    (JENNI, "located_at", KITCHEN),
+    (KEY, "located_at", KITCHEN),
+)
+FIAT_FACTS: tuple[dict[str, object], ...] = (
+    {},
+    {"protected": True},
+    {"locked": True},
+    {"state_change": True},
+    {"allow_new_arrivals": False, "placed": False},
+)
+
+
+def test_a_fiat_known_claim_is_permitted_where_only_a_secret_denied_it() -> None:
+    """#649 (FR-RESP-14, ADR-177), the matrix row: over every asserter kind, a spread of claims
+    (another character's placement and backstory, the player character, the speaker itself,
+    world texture) and of facts (protected content, locked canon, a state change, the arrival
+    policy), ``fiat_known`` changes exactly the cells a character's render (direct, or the
+    narrator side of a reactive render, not the reactor's own reaction) is denied
+    ``other_character_secret`` in: they become
+    ``Permitted(author_fiat)``, or the lower ``policy``/``protected_content`` denial when that
+    applies. Every other cell is unchanged."""
+    changed = 0
+    for asserter in FIAT_ASSERTERS:
+        for subject, predicate, obj in FIAT_CLAIMS:
+            for facts in FIAT_FACTS:
+                plain = decide(subject, predicate, obj, asserter, **facts)
+                fiat = decide(subject, predicate, obj, asserter, fiat_known=True, **facts)
+                secret = plain == Denied(Reason.OTHER_CHARACTER_SECRET)
+                # A reactive render's narrator side (a claim not about the reactor) is the
+                # narrator's own render; the reactor's own reaction keeps the reactive rule.
+                rendered = asserter.kind == "character" or (
+                    asserter.kind == "reactive" and subject != asserter.reactor
+                )
+                if secret and rendered:
+                    changed += 1
+                    expected: object = Permitted(Basis.AUTHOR_FIAT)
+                    if facts.get("protected"):
+                        expected = Denied(Reason.PROTECTED_CONTENT)
+                    assert fiat in (expected, Denied(Reason.POLICY)), (asserter, predicate, facts)
+                else:
+                    assert fiat == plain, (asserter, subject, predicate, facts)
+    assert changed > 0
+    jenni = Asserter("character", JENNI)
+    assert decide(BOBBY, "attended_program", CAMP, jenni, fiat_known=True) == Permitted(
+        Basis.AUTHOR_FIAT
+    )
+    assert decide(BOBBY, "attended_program", CAMP, jenni, fiat_known=True, locked=True) == Denied(
+        Reason.LOCKED_CANON
+    )
+    assert decide(CAL, "located_at", KITCHEN, jenni, fiat_known=True) == Denied(
+        Reason.PLAYER_CHARACTER
+    )

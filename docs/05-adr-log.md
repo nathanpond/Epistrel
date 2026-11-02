@@ -16,7 +16,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174 |
+| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
@@ -26,7 +26,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
 | FR-RET | §8 | 129, 167 |
 | FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150, 170 |
@@ -236,9 +236,10 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 171 | A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule | Current | — |
 | 172 | A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it | Current | — |
 | 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
-| 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Current | — |
+| 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Amended | 177 |
 | 175 | Compaction is renamed pruning | Current | — |
 | 176 | A story character is erased from the catalog with its story named | Current | — |
+| 177 | A character may state what an author_fiat acquisition made it know | Current | — |
 
 ---
 
@@ -1820,11 +1821,12 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ### ADR-174 — Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction
 **Status:** Accepted. Amends ADR-032 (2).
+**Amended by:** ADR-177 — a character may state what its `author_fiat` acquisition made it know (the third bullet)
 **Context:** Under `player_authority = co_author` with partitions on, #561's viewpoint check rejected `could_not_know` every narration that creates the fact it states ("Jenni puts the key in the drawer", "Jenni slides the key to Bobby"). The claim is `novel`, so the narrated character never has a prior path to it, and plain actions could not be narrated at all (#565). The owner's direction (2026-10-30): how strictly co-authoring is held to knowledge depends on the story. A quick, ad-hoc role play should not restrict what the co-author states as fact. World building and story writing want knowledge kept pure, but as information the user acts on, not as a rejection.
 **Decision:**
 - A story setting `co_author_knowledge` ∈ {`confirm`, `free`}, default `confirm`, applies under `co_author` with partitions on (FR-RESP-14). It is interpretive (FR-CONC-15), versioned (FR-CONC-14), and may be defaulted by a scenario.
 - The could-have-known check on co-author narration reads only the action's **presuppositions** (what must already hold, and statements about others that the action does not bring about), never the state the action brings about. This was option (c) on #565.
-- Under both values, a presupposition with no path is **accepted**. The character's knowledge is recorded as an `author_fiat` acquisition, so its later renders are verified as knowing it and are not flagged for acting on it.
+- Under both values, a presupposition with no path is **accepted**. The character's knowledge is recorded as an `author_fiat` acquisition, so its later renders are verified as knowing it and are not flagged for acting on it *[revised per ADR-177: and may state it]*.
 - Under `confirm`, the response also carries an `implausible_knowledge` **notice** per such presupposition. It is built only from the player's words and is raised whether or not canon settles the claim, so it is no oracle on canon or on who knows what (NFR-PRIV-4).
 - The turn commits. While it is the latest active turn, a **correct** operation atomically truncates to before it and replays `respond` with new input. The replaced turn is a dormant continuation, so the correction can be undone. A later turn makes it `not_latest_turn`, and only history rewrite reaches it. A corrected turn cannot be corrected again. A confirmed external effect is not undone (FR-EXT-14).
 - Neither value relaxes author-locked canon, State or external ownership, the `think` exclusion, or guardrails.
@@ -1854,6 +1856,15 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - A story-scope erasure stays story-scoped (FR-ADMIN-2 unchanged). Its report lists the catalog drafts promoted from the story's characters (`characters.promoted_to` and their companion scenarios), each with the catalog-scope request that erases the subject from them (`follow_up`).
 **Alternatives considered:** Letting a story-scope erasure also redact the drafts its story's promotions made would cross the FR-STORE-14 boundary in one direction, and would need FR-ADMIN-2 amended. Documenting the boundary alone would leave the mention erasable only by hand. Free-text terms in a catalog erasure were rejected: the names come from the subject index, so the matcher's rules (ADR-154) apply unchanged.
 **Consequences:** The catalog erasure must run **before** the story erasure: the story erasure removes the names the catalog erasure reads, and the ledger keeps only their keyed hashes. A catalog erasure sent after it is 422 `unknown_erasure_candidate`. The story erasure's dry run lists the drafts first, and docs/OPERATIONS.md states the order. docs/03 is unchanged, because FR-ADMIN-2 and FR-ADMIN-6 do not restrict subject kinds; docs/02's erasure paragraph and the route's OpenAPI description carry the new pairing (FR-ADMIN-2, FR-ADMIN-6, NFR-PRIV-2). Test: `tests/erasure/test_story_character_catalog.py`.
+
+---
+
+### ADR-177 — A character may state what an author_fiat acquisition made it know
+**Status:** Accepted. Amends ADR-174 (third bullet).
+**Context:** ADR-174 records a co-author narration's presupposition the narrated character had no path to as an `author_fiat` acquisition, so the character's later renders are verified as knowing it. The permission check (FR-VERIFY-11, #144) still decided from canon alone: with the fact hidden from the character, its own line stating it ("Bobby holds the key.") was `novel` from its viewpoint, denied `other_character_secret` and repaired, though the speech act was licensed by its belief (#649).
+**Decision:** The owner's decision on #649 (2026-11-01). A character's render (and the narrator side of a reactive render) that states a fact the character holds through an active `author_fiat` acquisition at the claim's position is **permitted** with basis `author_fiat`, as knowledge from perception or testimony may be stated. The permission matrix stays pure: the verifier reads the acquisition from the character's beliefs (the could-have-known replay's first path) and passes `fiat_known` in. The rule replaces only the `other_character_secret` denial. External values, locked canon, State changes, the player's character and the arrival policy deny as before, and a fact about a different proposition is still denied. The protected-content match on that very fact is not a leak to this character, which now knows it, so it does not deny; any other protected content still does. Canonization is unchanged: a permitted `say` about another character is not canonized.
+**Alternatives considered:** Making the fiat canon visible to the character was rejected: it would rewrite canon visibility from player input, which ADR-174 refused. Leaving the line repaired contradicted "its later turns are verified as knowing it".
+**Consequences:** docs/03 FR-RESP-14 adds "and may state it" (amended 2026-11-01). S-PLAYER-AUTHORITY gains an M7 part (FR-RESP-14). `tests/test_permission.py` checks the matrix row over every asserter kind (FR-RESP-14, FR-VERIFY-11).
 
 ---
 

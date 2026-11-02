@@ -150,6 +150,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
+from epistrel.core.enums import BeliefTransitionKind
 from epistrel.core.epistemic import perception, resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
@@ -192,6 +193,7 @@ from epistrel.core.verify.permission import (
     Permission,
     PermissionFacts,
     Permitted,
+    Reason,
 )
 from epistrel.core.verify.rules import (
     CANON,
@@ -717,6 +719,7 @@ class ClaimSource(Protocol):
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        fiat_known: bool = False,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -788,6 +791,7 @@ class RecordsSource:
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        fiat_known: bool = False,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -799,6 +803,7 @@ class RecordsSource:
             protected=protected,
             resolves=resolves,
             giver=giver,
+            fiat_known=fiat_known,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -889,6 +894,7 @@ class CanonSource:
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        fiat_known: bool = False,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -902,6 +908,7 @@ class CanonSource:
             remember=self.remember,
             resolves=resolves,
             giver=giver,
+            fiat_known=fiat_known,
         )
 
     async def anchor(
@@ -1294,6 +1301,30 @@ class BeliefSource:
             at,
             mode=found.mode,
             registry=await self.registry(),
+        )
+
+    async def fiat_known(
+        self, claim: Proposition, believer: str, at: NarrativePosition | None
+    ) -> bool:
+        """#649: whether ``believer``'s first path to ``claim`` by ``at`` is an ``author_fiat``
+        acquisition (ADR-174), so the claim it states is knowledge the co-author gave it."""
+        from epistrel.core.epistemic import replay
+
+        if at is None:
+            return False
+        answer = await replay.could_have_known(
+            self.conn,
+            self.story_id,
+            believer,
+            claim,
+            at,
+            settings=self.settings,
+            registry=await self.registry(),
+            read_set=self.read_set,
+        )
+        return (
+            isinstance(answer, replay.Known)
+            and answer.path.transition_kind == BeliefTransitionKind.AUTHOR_FIAT.value
         )
 
     async def licence(
@@ -2138,6 +2169,29 @@ class Verifier:
             resolves=resolves,
             giver=giver,
         )
+        if (
+            isinstance(found, Denied)
+            and found.reason is Reason.OTHER_CHARACTER_SECRET
+            and asserter.kind in ("character", "reactive")
+            and asserter.character_id is not None
+            and self.beliefs is not None
+            and await self.beliefs.fiat_known(
+                claim, asserter.character_id, self.beliefs.position(at.position)
+            )
+        ):
+            # #649 (FR-RESP-14, ADR-177): what the co-author made the character aware of, it may
+            # state; every stronger denial still holds (the permission is decided again). The
+            # protected content this claim's text matched is that very fact, hidden from the
+            # character's viewpoint in canon but known to it now: no leak, so not protected.
+            found = await self.source.permission(
+                claim,
+                asserter,
+                position=at.position,
+                protected=False,
+                resolves=resolves,
+                giver=giver,
+                fiat_known=True,
+            )
         anchor = None
         if isinstance(found, Permitted):
             anchor = await self.source.anchor(claim, viewpoint=at.viewpoint, position=at.position)

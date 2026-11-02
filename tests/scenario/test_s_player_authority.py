@@ -926,3 +926,95 @@ async def test_s_player_authority__knowledge_inert(
             assert await _fiats(engine, story) == [], knowledge
             lite.append((turn["message"]["text"], turn["call_counts"]))
         assert lite[1:] == [lite[0], lite[0]]
+
+
+RING = "Bobby holds the ring."
+
+
+async def _jenni_says(
+    client: Any, engine: AsyncEngine, stub: Any, story: str, ids: dict[str, str], *beats: Any
+) -> dict[str, Any]:
+    """Cal asks; Jenni renders ``beats``. Answers the turn's verify report."""
+    stub.reset()
+    stub.script("generation", [st.render(*beats)])
+    answer = await respond(
+        client,
+        story,
+        body(ids["Cal"], "Where is the key?", render_character_ids=[ids["Jenni"]]),
+    )
+    assert answer.status_code == 200, answer.text
+    report: dict[str, Any] = (await st.turn_report(engine, story))["verify"]
+    return report
+
+
+def _permissions(report: dict[str, Any]) -> list[str]:
+    return [v["permission"] for v in report["verdicts"] if v.get("permission")]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-RESP-14")
+async def test_s_player_authority__m7_fiat_stated(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#649 (FR-RESP-14, ADR-177): a character the co-author made aware of a fact may state it.
+    Canon hidden from Jenni says Bobby holds the key. After Cal's narration "Jenni nods at Bobby,
+    who holds the key." writes her ``author_fiat`` acquisition, her own render saying "Bobby
+    holds the key." is permitted with basis ``author_fiat``, not repaired, and commits as said.
+
+    Complements: before any fiat (another story, the same canon) the same line is denied
+    ``other_character_secret`` and repaired; after the fiat, a line about another object
+    ("Bobby holds the ring.") is still denied, and a line narrating the player character's
+    action is still ``player_character``."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+
+        def says(text: str, obj: str) -> Any:
+            return st.beat(
+                "say", text, intent="sincere", propositions=[st.claim("Bobby", "holds", obj)]
+            )
+
+        # -- no fiat: the line is another character's secret
+        story, ids, _key, _ = await _knowledge_room(client, engine, canon="bobby")
+        before = await _jenni_says(client, engine, stub, story, ids, says(KNOWS, "the key"))
+        assert "denied:other_character_secret" in _permissions(before)
+        assert any(r["beat"] == 2 for r in (await st.turn_report(engine, story)).get("repairs", []))
+
+        # -- the fiat, then her own line
+        story, ids, key, _ = await _knowledge_room(client, engine, canon="bobby")
+        async with engine.begin() as conn:
+            await store.add_entity(conn, story, "item", "the ring")
+        nodded = await _narrate(client, stub, story, ids, NODS)
+        assert nodded.status_code == 200, nodded.text
+        assert await _fiats(engine, story) == [(ids["Jenni"], ids["Bobby"], key, "affirmed")]
+        stated = await _jenni_says(client, engine, stub, story, ids, says(KNOWS, "the key"))
+        # The declared claim and the detectors' reading of the same line, both permitted.
+        assert set(_permissions(stated)) == {"permitted:author_fiat"}
+        report = await st.turn_report(engine, story)
+        assert not [r for r in report.get("repairs", []) if r["beat"] == 2]
+        assert await _rejected(engine, story) == []
+        said = await rows(
+            engine,
+            "SELECT payload->>'text' AS text FROM events WHERE story_id = :s AND character_id = :c "
+            "AND type = 'beat_say' ORDER BY seq DESC LIMIT 1",
+            s=story,
+            c=ids["Jenni"],
+        )
+        assert [r.text for r in said] == [KNOWS]  # committed as said
+
+        # -- still denied: another object, the player character
+        ring = await _jenni_says(client, engine, stub, story, ids, says(RING, "the ring"))
+        assert "denied:other_character_secret" in _permissions(ring)
+        player = await _jenni_says(
+            client,
+            engine,
+            stub,
+            story,
+            ids,
+            st.beat(
+                "say",
+                "Cal has the key.",
+                intent="sincere",
+                propositions=[st.claim("Cal", "holds", "the key")],
+            ),
+        )
+        assert "denied:player_character" in _permissions(player)

@@ -293,16 +293,20 @@ def render_scope(
     beats: Sequence[TurnBeat],
     *,
     steps: Mapping[int, Sequence[int]] | None = None,
+    before: Sequence[TurnBeat] = (),
 ) -> Iterator[None]:
     """Within the block, the turn's positions take the render's provisional step times (its
     declared and narrated advances from the turn's start), so a claim a step makes is checked
     at the step's time: "at 15:10 she starts driving" at 15:05 is 15:10 there, not a
-    contradiction of the present (FR-CLOCK-17). Nothing when the attempt runs no clock."""
+    contradiction of the present (FR-CLOCK-17). #640: ``before``, a sequential turn's earlier
+    renders' staged beats, are timed first, so a later render starts where they ended. Nothing
+    when the attempt runs no clock."""
     found = _ATTEMPT.get()
     if found is None or found[0] != story_id or not beats:
         yield
         return
-    timing = timed_turn(found[1], beats, steps=steps)
+    mine = {b.beat for b in beats}
+    timing = timed_turn(found[1], [*(b for b in before if b.beat not in mine), *beats], steps=steps)
     scope = SimpleNamespace(narrative_turn=turn, turn_variant=0, slot_k=None, turn_times=timing)
     with world_clock.turn_scope(story_id, scope):
         yield

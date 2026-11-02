@@ -1779,12 +1779,19 @@ async def check_turn(
     """``_check_turn`` with the render's beats at their declared steps (#168: ``step_of``) and
     its verified steps staged for the could-have-known replay (``replay.staged_paths``); #174:
     the rendering character's acceptances of earlier staged beats (``staged_beliefs``) staged
-    there too."""
+    there too; #640: ``timed_before``, a sequential turn's earlier renders, timed first."""
     owners = render_steps.beat_steps([b for b in rendered.beats if not b.narrator])
+    before: Checked | None = kwargs.pop("timed_before", None)
     with (
         beat_steps(str(kwargs["operation_id"]), owners),
         replay.staged_paths(),
-        clocking.render_scope(story_id, read.turn, rendered.beats, steps=_render_steps(rendered)),
+        clocking.render_scope(
+            story_id,
+            read.turn,
+            rendered.beats,
+            steps={**_before_steps(before), **_render_steps(rendered)},
+            before=() if before is None else before.beats,
+        ),
     ):
         for accepted in kwargs.get("staged_beliefs", ()):
             replay.stage_path(
@@ -5438,6 +5445,8 @@ async def play(
                     release_extraction=last,
                     settle_salience=last,
                     staged_beliefs=turn_stage.accepted(primary.id),
+                    # #640: a sequential render starts where the earlier ones ended.
+                    timed_before=None if simultaneous else merged,
                 )
                 # #187: the render's effects dry-run, its narrated State changes read.
                 await read_states(checked_k, turn_stage, read_k.turn)
@@ -7347,6 +7356,11 @@ def _degradation(
             steps.append(DegradationStep(step=step, cause=cause))
     # NFR-PERF-7's steps first, in its order; the rest as taken (#156).
     return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
+
+
+def _before_steps(before: Checked | None) -> dict[int, list[int]]:
+    """#640: the earlier renders' declared steps (``_declared_steps``; none: nothing before)."""
+    return {} if before is None else _declared_steps(before)
 
 
 def _render_steps(rendered: Rendered) -> dict[int, list[int]]:

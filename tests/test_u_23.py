@@ -520,3 +520,22 @@ def test_u_23__appointment() -> None:
     assert stops.check_advance(span, set(), "diner", events=[at_scene], stops=True) == stops.Stop(
         at_scene, 55
     )
+
+
+@pytest.mark.part("M6", "FR-CLOCK-17")
+def test_u_23__later_render_time() -> None:
+    """#640: a sequential turn's later render is verified from where the earlier renders
+    ended: with Jenni's render (a declared 30-minute wait) timed before it, Bobby's beat starts
+    at +30 in his render's scope. Complement asserted: timed alone, as before, it would start
+    at the turn's start (0)."""
+    jenni = [do(2, "She waits.", advances=(DeclaredAdvance("waits", minutes=30),))]
+    bobby = [TurnBeat("say", 3, "Done yet?", "bobby")]
+    clocking.attempt("s-640", clock(0))
+    with clocking.render_scope("s-640", 1, bobby, before=jenni):
+        times = world_clock._in_turn("s-640")
+        assert times is not None
+        assert times.offset(3, 0) == 30
+    with clocking.render_scope("s-640", 1, bobby):
+        times = world_clock._in_turn("s-640")
+        assert times is not None
+        assert times.offset(3, 0) == 0

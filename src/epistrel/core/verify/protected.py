@@ -770,11 +770,39 @@ async def load_private_records(
 ) -> tuple[PrivateRecord, ...]:
     """The story's stored private records a turn's scan reads (see the module docstring): every
     character's active ``think`` memories of the last ``THOUGHT_WINDOW`` turns and, with
-    ``names``/``predicates`` given, every character's belief statements."""
-    from epistrel.core.epistemic import partitions
+    ``names``/``predicates`` given, every character's belief statements. #615: once per turn
+    attempt (``core.turn_memo``), the beliefs in one light read for every character."""
+    from epistrel.core import turn_memo
+
+    key = (
+        "private_records",
+        story_id,
+        turn,
+        None if names is None else tuple(sorted(names.items())),
+        None if predicates is None else tuple(sorted(predicates.items())),
+    )
+    found = turn_memo.get(key)
+    if found is turn_memo.MISSING:
+        found = await _private_records(conn, story_id, turn, names=names, predicates=predicates)
+        turn_memo.put(key, found)
+    records: tuple[PrivateRecord, ...] = found
+    return records
+
+
+async def _private_records(
+    conn: AsyncConnection,
+    story_id: str,
+    turn: int,
+    *,
+    names: Mapping[str, str] | None,
+    predicates: Mapping[str, str] | None,
+) -> tuple[PrivateRecord, ...]:
+    from epistrel.core.enums import BeliefKind
     from epistrel.core.membership import active_only
     from epistrel.core.tables import characters
+    from epistrel.core.tables.beliefs import beliefs
     from epistrel.core.tables.memories import memories
+    from epistrel.core.tables.propositions import propositions as props
 
     m = memories.c
     rows = await conn.execute(
@@ -794,26 +822,49 @@ async def load_private_records(
         PrivateRecord.of(str(r.holder_character_id), f"memory:{r.id}", "think", str(r.text))
         for r in rows
     ]
-    if names is not None and predicates is not None:
-        cast = [
-            str(c)
-            for c in await conn.scalars(
-                select(characters.c.id).where(
-                    characters.c.story_id == story_id, characters.c.is_player.is_(False)
-                )
+    room = THOUGHTS_MAX - len(found)
+    if names is not None and predicates is not None and room > 0:
+        # #615: every non-player character's held first-order beliefs (``partition``'s "held
+        # now"), only the columns a statement needs, in one read.
+        b, p, c = beliefs.c, props.c, characters.c
+        held = await conn.execute(
+            select(
+                b.id,
+                b.holder_character_id,
+                p.subject_id,
+                p.predicate_id,
+                p.object_id,
+                p.literal,
             )
-        ]
-        for holder in cast:
-            for belief in await partitions.partition(conn, story_id, holder):
-                p = belief.proposition
-                words = [names.get(p.subject_id, ""), predicates.get(p.predicate_id, "")]
-                if p.object_id is not None:
-                    words.append(names.get(p.object_id, ""))
-                if p.literal is not None:
-                    words.append(str(p.literal.value))
-                text = " ".join(w.replace("_", " ") for w in words if w)
-                if text:
-                    found.append(PrivateRecord.of(holder, f"belief:{belief.id}", "belief", text))
+            .select_from(beliefs.join(props, props.c.id == b.proposition_id))
+            .where(
+                b.story_id == story_id,
+                active_only(beliefs),
+                b.tx_to.is_(None),
+                b.kind == BeliefKind.FIRST_ORDER.value,
+                b.held_to_turn.is_(None),
+                b.holder_character_id.in_(
+                    select(c.id).where(c.story_id == story_id, c.is_player.is_(False))
+                ),
+            )
+            .order_by(b.holder_character_id, b.id)
+        )
+        for row in held:
+            words = [names.get(str(row.subject_id), ""), predicates.get(str(row.predicate_id), "")]
+            if row.object_id is not None:
+                words.append(names.get(str(row.object_id), ""))
+            literal = row.literal
+            if isinstance(literal, dict) and "value" in literal:
+                words.append(str(literal["value"]))
+            text = " ".join(w.replace("_", " ") for w in words if w)
+            if text:
+                found.append(
+                    PrivateRecord.of(
+                        str(row.holder_character_id), f"belief:{row.id}", "belief", text
+                    )
+                )
+                if len(found) >= THOUGHTS_MAX:
+                    break
     return tuple(found[:THOUGHTS_MAX])
 
 

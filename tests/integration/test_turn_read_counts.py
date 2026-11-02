@@ -2,7 +2,9 @@
 ``sequential`` turn in the key room, its reads counted by wrapping the readers' database calls.
 
 - #621: the predicate registry is read from the database at most once per turn attempt
-  (``registry.turn_cache``; ~134 a turn at P-04 scale before)."""
+  (``registry.turn_cache``; ~134 a turn at P-04 scale before);
+- #615: the characters' private records (their belief statements) are read at most once per
+  turn attempt (``core.turn_memo``; ~35 whole-partition reads a turn at P-04 scale before)."""
 
 from __future__ import annotations
 
@@ -15,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.propositions import registry
+from epistrel.core.verify import protected
 from tests import multi_support as ms
 from tests.auth_support import auth_settings
 from tests.fixtures.key_room import KeyRoom, key_room
@@ -68,3 +71,16 @@ async def test_a_turn_reads_the_registry_once(
             await _two_primary_turn(client, epistrel.models.stub, room)
         mine = [r for r in reads if r == (room.story_id,)]
         assert len(mine) <= 1, len(mine)
+
+
+async def test_a_turn_reads_the_private_records_once(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        room = await key_room(client, engine)
+        with counting(monkeypatch, protected, "_private_records") as reads:
+            await _two_primary_turn(client, epistrel.models.stub, room)
+        assert 1 <= len(reads) <= 1, len(reads)

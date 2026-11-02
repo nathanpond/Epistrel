@@ -170,7 +170,7 @@ from typing import Any, cast
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, turn_gate, world_clock
+from epistrel.core import idempotency, pause, turn_gate, turn_memo, world_clock
 from epistrel.core import outbox as core_outbox
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
@@ -573,7 +573,7 @@ async def respond(
 ) -> RespondResult:
     """Play one structured turn; see the module docstring (the prechecks are Lite's). #621:
     the whole turn reads each predicate registry once (``registry.turn_cache``)."""
-    with registry_turn_cache():
+    with registry_turn_cache(), turn_memo.scope():
         return await _respond(
             db,
             models,
@@ -4830,6 +4830,7 @@ async def play(
         nonlocal settings, configuration, cast_
         if op.attempts:
             forget_registries()  # #621: a restart reads the registry as it now stands
+            turn_memo.clear()  # #615: and the story-constant reads
         if op.attempts:
             # #659 (FR-CONC-16): a rebase re-check failed, so this attempt runs under every
             # interpretive setting as it stands now (prospective ones as captured).
@@ -7321,7 +7322,12 @@ async def play(
     # A regenerate reads the story as it stood before the variant it replaces (#154): that
     # variant's records are left out of every derived read; its own commit retires them.
     # #621: the turn reads each registry once per attempt (``begin`` starts each afresh).
-    with excluding(retiring), external_values.pinning(pins), registry_turn_cache():
+    with (
+        excluding(retiring),
+        external_values.pinning(pins),
+        registry_turn_cache(),
+        turn_memo.scope(),
+    ):
         await run_with_revalidation(
             op,
             begin=begin,

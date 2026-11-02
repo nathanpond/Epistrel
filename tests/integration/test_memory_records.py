@@ -141,10 +141,11 @@ async def test_u_11(engine: AsyncEngine) -> None:
         "FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid "
         "WHERE t.typname IN ('memory_kind', 'memory_trust_tier') GROUP BY t.typname",
     )
-    assert {r.typname: list(r.labels) for r in labels} == {
-        "memory_kind": ["episodic", "semantic", "reflection"],
-        "memory_trust_tier": ["author", "external", "engine", "in_world", "backfill"],
-    }
+    enums = {r.typname: list(r.labels) for r in labels}
+    assert enums["memory_kind"] == ["episodic", "semantic", "reflection"]
+    # The first four tiers are M4's; a later milestone appends its own (the enum is the list).
+    assert enums["memory_trust_tier"][:4] == ["author", "external", "engine", "in_world"]
+    assert enums["memory_trust_tier"] == [t.value for t in MemoryTrustTier]
     assert DERIVED_TABLES["memories"].valid_time is None
 
     w = await _structured_world(engine)

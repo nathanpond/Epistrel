@@ -62603,6 +62603,16 @@
               }
             }
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
           "409": {
             "content": {
               "application/json": {
@@ -72670,6 +72680,18 @@
               "title": "Story Id",
               "type": "string"
             }
+          },
+          {
+            "description": "The output viewpoint: `character:<id>` of the cast or `omniscient` (FR-RESP-12).",
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "examples": [
+                "omniscient"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -74372,6 +74394,18 @@
               ],
               "title": "Actor Character Id"
             }
+          },
+          {
+            "description": "The output viewpoint: `character:<id>` of the cast or `omniscient` (FR-RESP-12).",
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "examples": [
+                "omniscient"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -74725,6 +74759,18 @@
                 "14+2"
               ],
               "title": "As Of"
+            }
+          },
+          {
+            "description": "The output viewpoint: `character:<id>` of the cast or `omniscient` (FR-RESP-12).",
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "examples": [
+                "omniscient"
+              ],
+              "type": "string"
             }
           }
         ],

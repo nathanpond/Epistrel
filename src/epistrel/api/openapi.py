@@ -420,6 +420,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         # The scenario's required providers, and the request's provider bindings (#204).
         "provider_unregistered",
         "binding_incomplete",
+        # #682: a provider binding naming an unregistered provider (``ProviderNotFound``).
+        "not_found",
     ),
     # External-data providers (#204).
     "register_external_provider": (*_ADMIN_CONFIG, "invalid_manifest", "provider_exists"),
@@ -830,7 +832,18 @@ QUEUEING_OPERATIONS = frozenset({"respond", "ingest"})
 """Operations a ``queue`` story answers with 202 ``QueuedTurn`` (and ``Prefer: respond-async``)."""
 
 VIEWPOINT_OPERATIONS = frozenset(
-    {"respond", "regenerate", "correct", "history", "get_story", "get_operation"}
+    {
+        "respond",
+        "regenerate",
+        "correct",
+        "history",
+        "get_story",
+        "get_operation",
+        # #682: the State and scheduled-event reads take it too (FR-STATE-9, FR-CLOCK-9).
+        "get_states",
+        "get_state",
+        "list_scheduled_events",
+    }
 )
 """Operations that read the output viewpoint from ``?viewpoint=`` (FR-RESP-12)."""
 

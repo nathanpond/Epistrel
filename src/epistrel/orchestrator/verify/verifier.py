@@ -167,6 +167,7 @@ from epistrel.core.propositions.model import (
 from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
 from epistrel.core.propositions.vocabulary import (
     CLOCK_CHECKS,
+    CORE_BY_NAME,
     SCHEDULED,
     STATE_VALUE,
     TIME_IS,
@@ -259,6 +260,8 @@ repair reads or substitutes the hidden value."""
 NEVER_CANONIZES = frozenset({"think"})
 ANCHORING = frozenset({TIME_IS, TIME_OF_DAY_BAND})
 """#195: the clock checks whose objective statement anchors the clock."""
+LOCATED_AT = CORE_BY_NAME["located_at"].id
+"""#635: the placement fluent narration may change for an unmodeled person."""
 ANCHORS = frozenset({"director", "author"})
 """#195 (#144): the asserters whose statement anchors the clock (objective narration)."""
 ENGINE = Visibility(scope="engine")
@@ -1692,6 +1695,17 @@ class Verifier:
             # #200: narration that someone passes out or wakes changes that subject's
             # ``unconscious`` fluent from the beat (#518's ``fluent_change``).
             mover = claim.subject_id
+        elif (
+            mover is None
+            and change
+            and asserter is not None
+            and asserter.kind in ANCHORS
+            and claim.predicate_id == LOCATED_AT
+            and await self._unmodeled(claim.subject_id)
+        ):
+            # #635 (owner decision): narration may move an unmodeled person ("The stranger
+            # leaves the inn."): a change of their placement, not a contradiction of it.
+            mover = claim.subject_id
         found = await self.source.deterministic(
             claim, holder=holder, viewpoint=viewpoint, position=position, mover=mover
         )
@@ -1751,6 +1765,24 @@ class Verifier:
             result.disposition,
         )
         return result
+
+    async def _unmodeled(self, entity_id: str) -> bool:
+        """#635: whether ``entity_id`` is a person of the story no ``characters`` row models
+        (read through the canon source's connection; ``False`` without one)."""
+        source: Any = self.source
+        conn = getattr(source, "conn", None) or getattr(
+            getattr(source, "inner", None), "conn", None
+        )
+        if conn is None:
+            return False
+        from epistrel.core.tables.propositions import entities
+
+        row = (
+            await conn.execute(
+                select(entities.c.kind, entities.c.character_id).where(entities.c.id == entity_id)
+            )
+        ).one_or_none()
+        return row is not None and row.kind == "person" and row.character_id is None
 
     async def _statement(
         self, claim: Proposition, asserter: Asserter | None, explicit: bool

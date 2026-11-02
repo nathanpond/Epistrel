@@ -185,6 +185,7 @@ from epistrel.orchestrator.jobs.handlers.rebuild import (
 from epistrel.orchestrator.jobs.handlers.rebuild import coalesce_key as rebuild_coalesce_key
 from epistrel.orchestrator.jobs.handlers.reembed import ReembedRetry
 from epistrel.orchestrator.jobs.worker import (
+    DRAIN_S,
     Worker,
     WorkerConfig,
     register_recovery_hook,
@@ -752,7 +753,10 @@ class Engine:
     async def stop_workers(self) -> None:
         """Stop the background work: the worker lets running jobs finish (up to its
         ``DRAIN_S``, within the lease), then the drainer stops; a queued turn stopped mid-run
-        goes back to its queue."""
+        goes back to its queue. #658: first, the background staged-turn resumes this process
+        started finish (up to the worker's ``DRAIN_S``; any left are cancelled at a stage
+        boundary and resumed by the next start's recovery)."""
+        await staged_turns.drain_kicked(DRAIN_S)
         recovery, self._recovery = self._recovery, None
         if recovery is not None and not recovery.done():
             recovery.cancel()

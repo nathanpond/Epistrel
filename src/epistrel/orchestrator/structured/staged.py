@@ -1036,6 +1036,26 @@ async def settle_kicked() -> None:
         await asyncio.gather(*list(_kicked.values()), return_exceptions=True)
 
 
+async def drain_kicked(timeout_s: float) -> int:
+    """#658: shutdown's wait for the background resumes this process started, up to
+    ``timeout_s``; any still running then is cancelled (it is at a stage boundary: the next
+    recovery sweep resumes it). Answers how many were cancelled."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while (pending := [t for t in list(_kicked.values()) if not t.done()]) and (
+        left := deadline - loop.time()
+    ) > 0:
+        # ``asyncio.wait`` (not ``wait_for``): reaching the bound leaves the resumes running.
+        await asyncio.wait(pending, timeout=left)
+    running = [t for t in list(_kicked.values()) if not t.done()]
+    for task in running:
+        task.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+        log.warning("staged turn: %d background resume(s) cut short at shutdown", len(running))
+    return len(running)
+
+
 turn_gate.bind_stalled(kick)
 
 
@@ -1168,6 +1188,7 @@ __all__ = [
     "completed",
     "deterministic_outcome",
     "deterministic_texts",
+    "drain_kicked",
     "is_staged_turn",
     "kick",
     "lines",

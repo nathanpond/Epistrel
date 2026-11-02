@@ -172,6 +172,9 @@ SETTLE = "outcome_settlement"
 """The job kind (one per outcome record; coalesce key ``settle:<outcome id>``)."""
 WAIT = timedelta(seconds=5)
 """How long a waiting settlement (an incomplete staged turn, a paused story) sleeps."""
+WAIT_MAX = timedelta(minutes=10)
+"""#655: the longest a settlement the story's state refuses (paused, archived, erasure-blocked)
+sleeps between tries: its waits double from ``WAIT`` up to this."""
 MOVED_RETRIES = 3
 """How often a settlement whose predicted slot another slot took first is rebuilt."""
 
@@ -258,6 +261,15 @@ class SettlePayload(BaseModel):
 
     outcome_id: str = Field(pattern=ULID_PATTERN)
     explicit: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    waits: int = Field(default=0, ge=0, exclude_if=lambda v: v == 0)
+    """#655: how many times in a row the story's state refused it (its backoff)."""
+
+
+def wait_after(waits: int) -> timedelta:
+    """#655: how long a settlement the story's state refused ``waits`` times before sleeps:
+    ``WAIT`` doubled per earlier refusal, at most ``WAIT_MAX``."""
+    doubled: timedelta = WAIT * (1 << min(waits, 16))
+    return min(doubled, WAIT_MAX)
 
 
 async def enqueue(
@@ -267,16 +279,18 @@ async def enqueue(
     *,
     after: timedelta | None = None,
     explicit: str | None = None,
+    waits: int = 0,
 ) -> str:
     """Enqueue the settlement of ``outcome_id`` in ``conn``'s transaction (once per record;
-    ``explicit``: the principal of the author's settle-now, #218)."""
+    ``explicit``: the principal of the author's settle-now, #218; ``waits``: #655's count of
+    refusals so far)."""
     # Imported here: ``jobs.queue`` imports the handler registry, which imports this module.
     from epistrel.orchestrator.jobs import queue
 
     return await queue.enqueue(
         conn,
         SETTLE,
-        SettlePayload(outcome_id=outcome_id, explicit=explicit),
+        SettlePayload(outcome_id=outcome_id, explicit=explicit, waits=waits),
         story_id=story_id,
         coalesce_key=coalesce_key(outcome_id),
         due_at=None if after is None else clock.now() + after,
@@ -433,6 +447,8 @@ class Settlement:
     valid_time: int | None = None
     settled: list[contingency.Settled] = field(default_factory=list)
     exposures: int = 0
+    blocked: bool = False
+    """#655: a ``WAITING`` the story's state caused (paused, archived, erasure-blocked)."""
 
 
 class _Moved(Withdrawn):
@@ -530,7 +546,7 @@ async def _settle_once(
     except EpistrelError as refused:
         # A paused, archived or erasure-blocked story: settled once it takes work again.
         logger.info("settlement %s waits: %s", outcome_id, refused.code)
-        return Settlement(WAITING)
+        return Settlement(WAITING, blocked=True)
     try:
         await _stage_outcome(
             db, op, record, origin, definitions.get(origin.state or ""), predicted, registry
@@ -1276,6 +1292,9 @@ async def _run(ctx: JobContext) -> JobOutput:
     explicit = None if payload.explicit is None else Explicit(payload.explicit)
     found = await settle(ctx.db, payload.outcome_id, registry=dispatcher.bound(), explicit=explicit)
     if found.result == WAITING:
+        # #655: a story that refuses work backs off (doubling, capped); an incomplete staged
+        # turn's wait ends with the turn, so it is tried again soon.
+        waits = payload.waits + 1 if found.blocked else 0
         async with ctx.db.begin() as conn:
             record = await core_outbox.outcome(conn, payload.outcome_id)
             if record is not None:
@@ -1283,8 +1302,9 @@ async def _run(ctx: JobContext) -> JobOutput:
                     conn,
                     record.story_id,
                     payload.outcome_id,
-                    after=WAIT,
+                    after=wait_after(payload.waits) if found.blocked else WAIT,
                     explicit=payload.explicit,
+                    waits=waits,
                 )
     return JobOutput(result={"outcome": found.result})
 
@@ -1314,6 +1334,7 @@ __all__ = [
     "SETTLE_HANDLER",
     "WAIT",
     "WAITING",
+    "WAIT_MAX",
     "Compensated",
     "Explicit",
     "NoListing",
@@ -1338,4 +1359,5 @@ __all__ = [
     "settle_now",
     "stage_recorded",
     "unfinished_staged",
+    "wait_after",
 ]

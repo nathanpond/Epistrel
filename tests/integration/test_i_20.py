@@ -43,6 +43,7 @@ from tests import scenario_support as scenarios
 from tests.catalog_support import read_companion
 from tests.character_support import complete, named
 from tests.event_support import rows
+from tests.idempotency_support import waits_on_original
 from tests.media_support import media_client, scratch, uploaded, video
 from tests.scenario_support import OPENING
 from tests.story_support import rest
@@ -656,11 +657,14 @@ async def test_i_20__companion(
         )
         key = f"twice-{cid}"
         revision = won.json()["draft_revision"]
-        with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
+        with (
+            pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold,
+            waits_on_original(monkeypatch) as waits,
+        ):
             original = asyncio.ensure_future(_publish_character(client, cid, revision, key=key))
             await hold.arrived(1)
             duplicate = asyncio.ensure_future(_publish_character(client, cid, revision, key=key))
-            await asyncio.sleep(0.2)  # the duplicate waits on the key's original
+            await waits.arrived(key)  # the duplicate waits on the key's original (#609)
             hold.release()
             first_answer, second_answer = await asyncio.gather(original, duplicate)
         assert first_answer.status_code == second_answer.status_code == 201

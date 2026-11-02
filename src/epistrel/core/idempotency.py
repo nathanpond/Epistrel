@@ -356,6 +356,12 @@ def detached() -> Iterator[None]:
         _CURRENT.reset(token)
 
 
+def waiting_on_original(call: IdempotentCall) -> None:
+    """Called each time ``claim`` finds the key's original in flight under its lease and is
+    about to wait for it. A no-op: tests replace it to prove a duplicate really waited (#609),
+    since a duplicate arriving after the original finished replays the same answer."""
+
+
 class IdempotentCall:
     """One mutating request under its key; see the module docstring."""
 
@@ -456,6 +462,7 @@ class IdempotentCall:
                     "the original request under this Idempotency-Key is still running",
                     {"operation_id": row.operation_id or await self._running_operation()},
                 )
+            waiting_on_original(self)
             await asyncio.sleep(delay)
             delay = min(delay * 2, POLL_MAX_S)
 
@@ -918,4 +925,5 @@ __all__ = [
     "staged_open",
     "stored_result",
     "validate_key",
+    "waiting_on_original",
 ]

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx2 as httpx
+import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import idempotency
 from tests.event_support import rows
 from tests.respond_support import respond
 from tests.story_support import count
@@ -67,3 +73,36 @@ __all__ = [
     "operations_of",
     "turn_statuses",
 ]
+
+
+WAIT_TIMEOUT_S = 30.0
+
+
+@dataclass
+class OriginalWaits:
+    """Each key whose duplicate found its original in flight and waited (#609)."""
+
+    keys: list[str] = field(default_factory=list)
+    _seen: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def arrived(self, key: str | None = None) -> None:
+        """Until a duplicate (of ``key``, when given) is waiting on its original."""
+        async with asyncio.timeout(WAIT_TIMEOUT_S):
+            while (key is not None and key not in self.keys) or not self.keys:
+                self._seen.clear()
+                await self._seen.wait()
+
+
+@contextmanager
+def waits_on_original(monkeypatch: pytest.MonkeyPatch) -> Iterator[OriginalWaits]:
+    """Record every duplicate that waits on its key's original (``idempotency``'s hook), so a
+    test proves the waiting path ran instead of guessing with a sleep (#609)."""
+    waits = OriginalWaits()
+
+    def seen(call: idempotency.IdempotentCall) -> None:
+        waits.keys.append(call.key)
+        waits._seen.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(idempotency, "waiting_on_original", seen)
+        yield waits

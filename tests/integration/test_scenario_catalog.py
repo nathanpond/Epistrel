@@ -37,6 +37,7 @@ from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.testing import pauses
 from tests.catalog_support import character
 from tests.event_support import execute_in_tx, rows, scalar, sqlstate
+from tests.idempotency_support import waits_on_original
 from tests.media_support import media_client, scratch, uploaded, video
 from tests.scenario_support import (
     BASE,
@@ -430,10 +431,13 @@ async def test_two_saves_from_one_revision(client: httpx.AsyncClient) -> None:
     )
 
 
-async def test_two_publishes_of_one_draft(client: httpx.AsyncClient, engine: AsyncEngine) -> None:
+async def test_two_publishes_of_one_draft(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two publishes of one draft revision: the second waits on the row lock the first holds,
     then finds the revision moved (one version, one 409). Under one ``Idempotency-Key`` the
-    second gets the first's result."""
+    second waits on the key's original (proven by the claim's hook, #609) and gets the first's
+    result."""
     sid = (await create(client))["id"]
     with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
         first = asyncio.ensure_future(publish(client, sid, 1))
@@ -448,11 +452,14 @@ async def test_two_publishes_of_one_draft(client: httpx.AsyncClient, engine: Asy
 
     sid = (await create(client))["id"]
     key = f"publish-{sid}"
-    with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
+    with (
+        pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold,
+        waits_on_original(monkeypatch) as waits,
+    ):
         first = asyncio.ensure_future(publish(client, sid, 1, key=key))
         await hold.arrived(1)
         second = asyncio.ensure_future(publish(client, sid, 1, key=key))
-        await asyncio.sleep(0.2)  # the duplicate waits on the key's original
+        await waits.arrived(key)  # the duplicate waits on the key's original
         hold.release()
         original, duplicate = await asyncio.gather(first, second)
     assert original.status_code == duplicate.status_code == 201

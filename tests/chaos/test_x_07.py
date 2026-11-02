@@ -86,6 +86,7 @@ from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
 from tests.integration import test_jobs as jt
 from tests.integration.test_media_assets import SWEEPER, put
+from tests.loop_support import LoopLog
 from tests.media_support import blob_path, png, scratch
 from tests.memory_support import use_structured
 from tests.respond_support import until
@@ -223,60 +224,6 @@ async def _wait_for(probe: Any, within: float = 5.0) -> None:
         await asyncio.sleep(0.02)
 
 
-class LoopLog:
-    """What a worker's loop did, in order (#446): ``("poll", claimed)`` after each
-    ``run_one``, ``("wait", seconds)`` for each idle wait it computed, and ``("fire", moment,
-    timer kinds)`` for each timer pass (``moment`` read just before it). "Within one polling
-    interval" is checked against this record rather than the wall clock: the work is taken by
-    the first pass that could see it, after at most one idle wait no longer than the interval,
-    so the check holds however slow the host is."""
-
-    def __init__(self, worker: Worker, patch: pytest.MonkeyPatch) -> None:
-        self.entries: list[tuple[Any, ...]] = []
-        run_one, idle, fire_due = worker.run_one, worker._idle_timeout, timer_api.fire_due
-
-        async def polled(worker_id: str) -> bool:
-            claimed = await run_one(worker_id)
-            self.entries.append(("poll", claimed))
-            return claimed
-
-        async def waited() -> float:
-            seconds = await idle()
-            self.entries.append(("wait", seconds))
-            return seconds
-
-        async def fired(db: AsyncEngine, now: datetime | None = None) -> timer_api.Fired:
-            moment = clock.now()
-            result = await fire_due(db, now)
-            self.entries.append(("fire", moment, tuple(result.timers)))
-            return result
-
-        patch.setattr(worker, "run_one", polled)
-        patch.setattr(worker, "_idle_timeout", waited)
-        patch.setattr(timer_api, "fire_due", fired)
-
-    def waits(self, start: int, end: int) -> list[float]:
-        return [e[1] for e in self.entries[start:end] if e[0] == "wait"]
-
-    def first(self, *entry: Any, after: int = 0) -> int | None:
-        """The index of the first entry from ``after`` on that starts with ``entry``."""
-        for index in range(after, len(self.entries)):
-            if self.entries[index][: len(entry)] == entry:
-                return index
-        return None
-
-    def last(self, kind: str, before: int) -> int:
-        """The index of the last ``kind`` entry before ``before``."""
-        return max(i for i in range(before) if self.entries[i][0] == kind)
-
-    def assert_waits_within_interval(self, start: int, end: int, most: int) -> None:
-        """Between ``start`` and ``end`` the loop waited at most ``most`` times, each wait no
-        longer than the polling interval."""
-        waits = self.waits(start, end)
-        assert len(waits) <= most, self.entries[start : end + 1]
-        assert all(w <= POLL_S for w in waits), waits
-
-
 async def _jobs_of(engine: AsyncEngine, kind: str) -> list[Any]:
     async with engine.connect() as conn:
         return list(
@@ -358,7 +305,7 @@ async def test_x_07__jobs(engine: AsyncEngine, registry: jt.Probe, moved: Movabl
         assert claim is not None
         missed = [e for e in log.entries[mark:claim] if e[0] == "poll"]
         assert len(missed) <= 1, log.entries[mark : claim + 1]
-        log.assert_waits_within_interval(log.last("wait", mark), claim, most=2)
+        log.assert_waits_within_interval(POLL_S, log.last("wait", mark), claim, most=2)
         assert await jt._done(engine, polled)
         worker.stop()
         await running
@@ -455,7 +402,7 @@ async def test_x_07__timers(engine: AsyncEngine, quiet: Probe) -> None:
     earlier = [i for i in passes if i < fired]
     assert earlier, log.entries  # the recovery pass and a loop pass ran before it was scheduled
     assert all(log.entries[i][1] < due for i in earlier), log.entries
-    log.assert_waits_within_interval(earlier[-1], fired, most=1)
+    log.assert_waits_within_interval(POLL_S, earlier[-1], fired, most=1)
     assert quiet.ran.count((TIMER, "polled")) == 1
     assert await _scalar(engine, "SELECT count(*) FROM timers") == 0
 

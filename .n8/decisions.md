@@ -10596,3 +10596,39 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Decision:** #626: no behaviour change. A paused story keeps taking a State definition PATCH and `PATCH /clock`, and `core/pause.py` now lists them among the configuration writes a pause allows. A test pins paused → accepted and archived → 409.
   **Why:** FR-CONC-5 refuses truth-changing calls. These are configuration writes: `config_revision` moves, `timeline_revision` doesn't, and FR-CONC-16 rebases in-flight work. Settings without policies, profile and overrides, and participation already behave this way. Refusing these two alone would be the inconsistency the issue asks about.
   **Issue:** #626
+- **Decision (Rule 3):** S-ANCHOR-MEETING's `advances` read now orders ties by `c.id`. C-08's sharded run surfaced a pacing and a declared-skip row at one `(turn, slot, beat, step)` that Postgres returned in either order.
+  **Why:** it was a test-ordering bug the parallel load exposed, and C-08 (#684) runs that test.
+  **Issue:** #684
+- **Decision:** #627. The same-turn overlay (`StagedSource`) decides a clock check against the clock's anchor with the turn's earlier anchoring statements laid over it (`world_clock.verify.staged_anchor`), never as a functional fact over the staged records. Turn reconciliation leaves `anchors_clock` requests to `commit_anchor`.
+  **Why:** probing showed the old overlay contradicted every second time statement by functional key, even a consistent one ("Friday morning" then "9:15"), and reconciliation then dropped the second anchor. The read set still keys the committed anchor, so rebase is unchanged.
+  **Issue:** #627
+- **Decision:** #631. `world_clock.story_time_at` at a beat of a committed turn (outside its commit's `turn_scope`) reads the time that beat's events were stamped with (`events.valid_time_minutes`, matched on turn, variant, slot, beat and step). It falls back to the fold.
+  **Why:** memories and exposures have no valid-time column, and the fold can't place a simultaneous turn's later renders. The event already carries the exact step start, so no schema change is needed.
+  **Issue:** #631
+- **Decision:** #644. The clock's owned value carries the claim's scheduled events (planned offset, `planned_anchor` frame minute, grace). An exact-offset event's status is decided as a time belief decides one (`time_belief._status`: `due` from the statement tolerance before it until grace or tolerance after). S-DINER's belief-only 16:00 is now `sincere_error`, which is what its docstring always said, where it used to be `sincere` because the claim was undecidable.
+  **Why:** strict `offset >= planned` contradicted "I have to take my sister's call" ten minutes early, which the belief side accepts.
+  **Issue:** #644
+- **Decision:** #643. An unreliable instrument's reading (`time.json`'s `unreliable_instruments`: a modifier such as stopped or broken within two words of watch, clock or phone) is texture: no `time_is` claim.
+  **Why:** the issue allowed texture or a new instrument-reading claim. Texture needs no new predicate.
+  **Issue:** #643
+- **Decision:** #645. A render-created time of day under a range anchor is placed as `POST` places one (`schedule_statements.range_placement`), and `schedules.committed` holds it at its frame minute (`stops.place_event`). Declared claims now carry their `time_text` (`DeclaredClaim`, `DetectedClaim`). `PATCH` with `"HH:MM"` uses `_placed`, and `stops.record` gained `planned_anchor=`.
+  **Why:** without the range fallback the claim was `unresolved_time` and never canonized at all.
+  **Issue:** #645
+- **Decision:** #628. One `rule` row per advance per elapsed State: its delta is the ticks' sum (each tick clamped or held in memory), its `valid_time_minutes` the last tick's, and its reason the tick count. S-STATE-SCHEMA's `__rules` expectations were updated to the compact rows.
+  **Why:** this is the issue's "Done when". The fold is identical by construction.
+  **Issue:** #628
+- **Decision:** #663. A new gate, `world_clock.verify.checks_on` (level `on` only), covers `time_is`'s owner lookup, the clock read, the overlay check, `VerifyConfig.clock` and skip estimation. `clock_on` (on or `prompt_only`) still gates prompt text. Pacing at `prompt_only` is unchanged: the AC names skips, skip authority and anchor checks only.
+  **Why:** the owner's decision ("fully inert ... only the prompt text") as encoded in the AC. Pacing was not named, and #203 shipped it at both levels.
+  **Issue:** #663
+- **Decision:** #641. The speaker of a sincere belief-only plan (a `Report` with no event) gets an `observation` belief citing its `say` event at step + 1, as `speech._observe_own` does. The plan's minted event entity is created (`canonize.introduce`, `skip_existing`) so the belief names a real entity. Hearers already had #162's testimony, as a probe showed.
+  **Why:** a probe found the missing write and the dangling minted object id. Recall then verifies as consistent.
+  **Issue:** #641
+- **Decision:** #639. `ClockRead` carries `dispatch` (provider write-capable) and `provider`. `time_requests` dispatches through the outbox (the minutes as the effect's `delta`) when the provider can write. `outbox_rows` takes the provider from the request when the State isn't in the book.
+  **Why:** the owner's decision (FR-EXT-10).
+  **Issue:** #639
+- **Decision:** #646. `paused_mid_turn` is set by a sequential `time_stops` pause. Later primaries' render constraints then carry `prompts.TIME_STEERING`.
+  **Why:** the owner's decision. Next-turn steering is unchanged.
+  **Issue:** #646
+- **Decision:** #661. Migration 0105 adds `reconciliation_marks.request_id` (outbox_id nullable, a CHECK for exactly one, a partial unique open index). `Listing.request_id` is the consumer key, and a listing's status is the latest answer's kind (`requested` before any). The resolve route is `POST /stories/{id}/reconciliation/{listing}/resolve`, where `{listing}` is the request id: an inter-turn slot operation that writes a `reconciliation_resolved` AUDIT event. The route's row goes in the fixture's `outside` list with FR-EXT-22, beside settle-now and compensate, not under `extras` as the AC says, because its siblings are there. A derived consumer `reservation_expired` listing is closed by writing an already-resolved mark.
+  **Why:** these follow the AC and the #218 actions' existing shapes. Console: the Engine has a new action, so a Console "resolve" button on the reconciliation view is the matching surface (nathanpond/Epistrel-Console; not filed from this run).
+  **Issue:** #661

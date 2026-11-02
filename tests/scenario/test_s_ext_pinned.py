@@ -120,7 +120,10 @@ async def test_s_ext_pinned(
         stub.reset()
         es.narrator(stub, es.render(beat("narration", "Rain taps. Cal has 40 marks left.")))
         ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the edge.")))
-        hidden = await respond(client, story, body(cal, None, do="checks his purse"))
+        # #623: delivered omniscient (to Cal's viewpoint the hidden value would be repaired).
+        hidden = await respond(
+            client, story, body(cal, None, do="checks his purse", output_viewpoint="omniscient")
+        )
         assert hidden.status_code == 200, hidden.text
         (narrator_prompt,) = es.prompts(stub, "NarratorRender")
         assert "marks" not in narrator_prompt

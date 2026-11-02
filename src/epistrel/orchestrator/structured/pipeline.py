@@ -894,8 +894,9 @@ class TurnRead:
     """#199 (FR-CLOCK-8): the ``do`` beats of the working-memory window (the player's inputs'
     included), oldest first: what the scene established as under way."""
     output_viewpoint: str = OMNISCIENT
-    """#623 (owner decision): the viewpoint the turn is delivered to; narration is verified at
-    it, so hidden canon the viewpoint has no path to is repaired, not supported."""
+    """#623 (owner decision): the viewpoint the turn is delivered to; a narrated hidden State's
+    value is verified at it, so one the viewpoint holds no belief about is repaired, not
+    supported (hidden canon a perceived narration states stays #566's reveal)."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:

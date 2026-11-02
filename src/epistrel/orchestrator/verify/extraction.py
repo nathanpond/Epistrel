@@ -91,6 +91,7 @@ from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.propositions.vocabulary import STATE_VALUE
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import (
     SharedContext,
@@ -853,14 +854,18 @@ async def verify_detected(
             )
             continue
         asserter = (asserter_of or (lambda c: asserter_for(c, player_id)))(claim)
-        # Narration is checked against canon as the turn's delivery viewpoint may read it (#623,
-        # the owner's decision: ``narration_viewpoint``; omniscient, the whole of canon); a
-        # character's claim against what that character may read.
-        viewpoint = (
-            narration_viewpoint
-            if claim.speaker == NARRATOR
-            else viewpoint_of(claim.speaker, player_id)
-        )
+        # Narration is checked against the whole of canon (the director knows it); a character's
+        # claim against what that character may read. #623 (the owner's decision): a hidden
+        # State's value narrated in a turn delivered to a character viewpoint is checked as that
+        # viewpoint reads it (``narration_viewpoint``), so a value it holds no belief about is
+        # repaired, never shown. Hidden canon a perceived narration states stays a reveal
+        # (#566's widening: the narration is the viewpoint's path to it).
+        if claim.speaker != NARRATOR:
+            viewpoint = viewpoint_of(claim.speaker, player_id)
+        elif claim.proposition.predicate_id == STATE_VALUE:
+            viewpoint = narration_viewpoint
+        else:
+            viewpoint = OMNISCIENT
         believer = (
             claim.speaker
             if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)

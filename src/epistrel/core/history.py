@@ -824,11 +824,20 @@ def _assemblies(
 async def _state_effects(
     conn: AsyncConnection, story_id: str, rows: Sequence[Any], viewpoint: str
 ) -> dict[str, list[dict[str, Any]]]:
-    """#187: the State changes each structured turn among ``rows`` committed, by operation."""
+    """#187: the State changes each structured turn among ``rows`` committed, by operation;
+    #656: then the changes it requested of a provider or the consumer, with their current
+    status (``core.outbox.request_effects``), as the response lists them."""
+    from epistrel.core.outbox import request_effects
     from epistrel.core.states import turn_effects
 
     ops = sorted({str(r.operation_id) for r in rows if str(r.kind).startswith(STRUCTURED_PREFIX)})
-    return await turn_effects(conn, story_id, ops, omniscient=is_omniscient(viewpoint))
+    omniscient = is_omniscient(viewpoint)
+    found = await turn_effects(conn, story_id, ops, omniscient=omniscient)
+    for operation_id, asked in (
+        await request_effects(conn, story_id, ops, omniscient=omniscient)
+    ).items():
+        found.setdefault(operation_id, []).extend({**r, "beat": -1} for r in asked)
+    return found
 
 
 def _turn_effects(found: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

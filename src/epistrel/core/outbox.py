@@ -138,9 +138,140 @@ Reason = Literal[
 
 # -- intent --------------------------------------------------------------------------------------
 
-INTERNAL_EFFECT_KEYS = frozenset({"authorized"})
+INTERNAL_EFFECT_KEYS = frozenset({"authorized", "pinned"})
 """#214: the effect document's keys kept for the Engine alone (what #188 authorized at intent,
-re-checked at claim), never listed nor sent to a provider."""
+re-checked at claim; #657: ``pinned``, the value the turn read, its response's ``old_value``),
+never listed nor sent to a provider."""
+
+
+REQUEST_PENDING = "pending"
+"""#656: a requested effect no terminal outcome has answered yet."""
+
+
+def request_status(outbox_status: str | None, answered: str | None) -> str:
+    """#656: a requested effect's current status as a response or history lists it: an outbox
+    row's settled status (``confirmed``, ``failed``, ``cancelled``), else a consumer-applied
+    request's terminal outcome (``answered``), else ``pending``."""
+    if outbox_status in (CONFIRMED, FAILED, CANCELLED):
+        return str(outbox_status)
+    if answered in TERMINAL:
+        return str(answered)
+    return REQUEST_PENDING
+
+
+async def request_statuses(
+    conn: AsyncConnection, story_id: str, effect_ids: Sequence[str]
+) -> dict[str, str]:
+    """#656: the current status (``request_status``) of each of ``effect_ids``, an outbox row's
+    id or a consumer-applied request's ``effect_id``."""
+    if not effect_ids:
+        return {}
+    o, x = external_effect_outbox.c, outbox_outcomes.c
+    rows = {
+        str(r.id): str(r.status)
+        for r in await conn.execute(
+            select(o.id, o.status).where(o.story_id == story_id, o.id.in_(list(effect_ids)))
+        )
+    }
+    answers: dict[str, str] = {}
+    for r in await conn.execute(
+        select(x.effect_id, x.kind)
+        .where(
+            x.story_id == story_id,
+            x.effect_id.in_(list(effect_ids)),
+            x.kind.in_(sorted(TERMINAL)),
+        )
+        .order_by(x.received_at, x.id)
+    ):
+        answers.setdefault(str(r.effect_id), str(r.kind))
+    return {e: request_status(rows.get(e), answers.get(e)) for e in effect_ids}
+
+
+async def request_effects(
+    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str], *, omniscient: bool
+) -> dict[str, list[dict[str, Any]]]:
+    """#656: the changes each of ``operation_ids`` requested and Epistrel does not apply, as
+    history lists them beside the committed ones (FR-RESP-7, as the response does): its outbox
+    rows (#210, ``outbox_id``) and its ``requested_effect`` events (#209), each ``owner:
+    external`` with its ``effect_id`` and current status (``request_status``); ``old_value`` the
+    value the turn read when the row kept it (#657), else ``null``. A ``hidden`` State's for
+    ``omniscient`` only."""
+    from epistrel.core.enums import StateVisibility
+    from epistrel.core.tables.events import events
+    from epistrel.core.tables.states import state_definitions
+
+    if not operation_ids:
+        return {}
+    d = state_definitions.c
+    hidden = {
+        str(r.name)
+        for r in await conn.execute(
+            select(d.name).where(
+                d.story_id == story_id, d.visibility != StateVisibility.PLAYER_VISIBLE
+            )
+        )
+    }
+    found: dict[str, list[tuple[tuple[int, int], dict[str, Any]]]] = {}
+
+    def add(operation_id: str, at: tuple[int, int], row: dict[str, Any]) -> None:
+        if omniscient or row["state"] not in hidden:
+            found.setdefault(operation_id, []).append((at, row))
+
+    def entry(effect: Mapping[str, Any], scope_key: Any, effect_id: str) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "state": str(effect.get("state") or ""),
+            "scope_key": None if scope_key is None else str(scope_key),
+            "old_value": effect.get("pinned"),
+            "new_value": None,
+            "reason": str(effect.get("reason") or ""),
+            "source": "turn",
+            "contingency": "unconditional",
+            "status": REQUEST_PENDING,
+            "owner": "external",
+            "effect_id": effect_id,
+        }
+        if effect.get("kind") == "time_advance":
+            row["kind"] = "time_advance"
+            row["minutes"] = effect.get("minutes")
+        elif effect.get("delta") is not None:
+            row["delta"] = effect.get("delta")
+        else:
+            row["value"] = effect.get("value")
+        return row
+
+    o = external_effect_outbox.c
+    for r in await conn.execute(
+        select(o.id, o.operation_id, o.scope_key, o.effect, o.beat, o.step).where(
+            o.story_id == story_id,
+            o.operation_id.in_(list(operation_ids)),
+            o.executable.is_(True),
+        )
+    ):
+        row = entry(dict(r.effect or {}), r.scope_key, str(r.id))
+        row["outbox_id"] = str(r.id)
+        add(str(r.operation_id), (int(r.beat), int(r.step)), row)
+    e = events.c
+    for asked in await conn.execute(
+        select(e.operation_id, e.payload, e.beat, e.step).where(
+            e.story_id == story_id,
+            e.operation_id.in_(list(operation_ids)),
+            e.type == "requested_effect",
+        )
+    ):
+        payload = dict(asked.payload or {})
+        add(
+            str(asked.operation_id),
+            (int(asked.beat or 0), int(asked.step or 0)),
+            entry(payload, payload.get("scope_key"), str(payload.get("effect_id"))),
+        )
+    ids = [row["effect_id"] for rows in found.values() for _, row in rows]
+    statuses = await request_statuses(conn, story_id, ids)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for operation_id, rows in found.items():
+        for _, row in sorted(rows, key=lambda pair: pair[0]):
+            row["status"] = statuses.get(row["effect_id"], REQUEST_PENDING)
+            out.setdefault(operation_id, []).append(row)
+    return out
 
 
 def public_effect(effect: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1223,6 +1354,7 @@ __all__ = [
     "INTERNAL_EFFECT_KEYS",
     "REASONS",
     "REQUESTED",
+    "REQUEST_PENDING",
     "RESOLVED_COMPENSATED",
     "RESOLVED_SETTLE_NOW",
     "TERMINAL",
@@ -1263,6 +1395,9 @@ __all__ = [
     "record_effect_outcome",
     "record_outcome",
     "release",
+    "request_effects",
+    "request_status",
+    "request_statuses",
     "resolve",
     "settled_kind",
     "settled_outcome",

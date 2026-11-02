@@ -1215,6 +1215,10 @@ def outbox_rows(book: Book, requested: Sequence[Requested]) -> list[core_outbox.
             effect["value"] = r.value
         if r.minutes is not None:
             effect["minutes"] = r.minutes
+        if r.current is not None:
+            # #657: the value the turn read (its response's ``old_value``; never sent on), so a
+            # resumed turn's recomposed response restores it.
+            effect["pinned"] = r.current
         if r.authorized is not None:
             # #214: what #188 authorized at intent, re-checked at claim (never sent on).
             effect["authorized"] = {"state": r.authorized[0], "source": r.authorized[1]}
@@ -1961,9 +1965,15 @@ async def committed(
             row["kind"] = e["kind"]
         row.update(notes.get(e["change_id"], {}))
         out.append(row)
-    # #209: the changes requested of the consumer, pending (a hidden State's for omniscient).
-    out += [r.response() for r in requested if omniscient or not r.hidden]
-    return out
+    # #209: the changes requested of the consumer, pending (a hidden State's for omniscient);
+    # #656: each with its current status (a staged turn's outcome step confirmed it, say).
+    listed = [r.response() for r in requested if omniscient or not r.hidden]
+    statuses = await core_outbox.request_statuses(
+        conn, story_id, [str(r["effect_id"]) for r in listed]
+    )
+    for row in listed:
+        row["status"] = statuses.get(str(row["effect_id"]), row["status"])
+    return out + listed
 
 
 TRANSFER_KINDS = frozenset({StateChangeKind.TRANSFER_IN.value, StateChangeKind.TRANSFER_OUT.value})

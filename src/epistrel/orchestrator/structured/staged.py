@@ -677,6 +677,7 @@ async def _requested(db: AsyncEngine, story_id: str, operation_id: str) -> list[
                     delta=(r.effect or {}).get("delta"),
                     value=(r.effect or {}).get("value"),
                     step=int(r.step),
+                    current=(r.effect or {}).get("pinned"),  # #657
                     dispatch=True,
                 ),
                 str(r.provider_name),

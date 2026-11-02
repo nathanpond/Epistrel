@@ -247,7 +247,12 @@ async def sword_of(
 
 
 async def listed(engine: AsyncEngine, story: str) -> set[tuple[str, str]]:
-    return {(e.outbox_id, e.reason) for e in (await core_outbox.listings(engine, story)).listings}
+    """The story's listings as ``(outbox_id or request_id, reason)`` (#661: a consumer-applied
+    effect is listed by its request id)."""
+    return {
+        (str(e.outbox_id or e.request_id), e.reason)
+        for e in (await core_outbox.listings(engine, story)).listings
+    }
 
 
 async def settle_jobs(engine: AsyncEngine, story: str) -> list[Any]:

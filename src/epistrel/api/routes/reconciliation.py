@@ -7,6 +7,8 @@
   moment (#218).
 - ``POST /stories/{id}/reconciliation/{outbox_id}/compensate``: the author issues a
   compensating external effect (a refund) for it through the outbox (#218).
+- ``POST /stories/{id}/reconciliation/{listing}/resolve``: the author resolves a listed
+  consumer-applied effect, which nothing dispatches (#661).
 
 Every handler makes one ``Engine`` call (``orchestrator.jobs.settlement`` holds the rules).
 """
@@ -22,8 +24,8 @@ from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.core.ids import ULID_PATTERN
-from epistrel.core.outbox import CompensateRequest, Reconciliation
-from epistrel.orchestrator.jobs.settlement import Compensated, SettledNow
+from epistrel.core.outbox import CompensateRequest, Reconciliation, ResolveRequest
+from epistrel.orchestrator.jobs.settlement import Compensated, Resolved, SettledNow
 
 router = APIRouter(prefix="/stories", tags=["stories"])
 
@@ -168,6 +170,72 @@ async def compensate(
 ) -> CompensatedBody:
     done = await engine.compensate(ctx, story_id, outbox_id, body)
     return answered(CompensatedBody.of(done), ctx, response, replayed=done.replayed)
+
+
+ListingId = Annotated[
+    str,
+    Path(
+        pattern=ULID_PATTERN,
+        description=(
+            "The listed consumer-applied effect's request id (its `requested_effect`'s "
+            "`effect_id`, the listing's `request_id`; a ULID)."
+        ),
+        examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2F8"],
+    ),
+]
+
+
+class ResolvedBody(MutationResponse):
+    """A resolve: the listed request, how it was resolved, the reasons it was listed under,
+    and the inter-turn slot (`position`, `N⁺k`; `slot` the full position) and operation that
+    recorded it."""
+
+    request_id: str
+    resolution: str
+    reasons: list[str]
+    position: str
+    slot: dict[str, int]
+    operation_id: str
+
+    @classmethod
+    def of(cls, done: Resolved) -> ResolvedBody:
+        return cls(
+            request_id=done.request_id,
+            resolution=done.resolution,
+            reasons=done.reasons,
+            position=done.position,
+            slot=done.slot,
+            operation_id=done.operation_id,
+            timeline_revision=done.timeline_revision,
+        )
+
+
+@router.post(
+    "/{story_id}/reconciliation/{listing}/resolve",
+    response_model=ResolvedBody,
+    operation_id="resolve_listing",
+    summary="Resolve a listed consumer-applied effect",
+    description=(
+        "Resolve a listed consumer-applied effect (FR-EXT-22; #661): one a read-only "
+        "provider's consumer applies, listed by its `request_id`. `resolution` is "
+        "`applied_elsewhere` (the consumer applied it) or `abandoned` (it never will be). "
+        "Nothing is dispatched and no outcome is recorded: the listing is closed and a "
+        "`reconciliation_resolved` audit event is written, at the next inter-turn slot. 404 "
+        "`not_found` (`reason: no_listing`) for anything but a listed consumer-applied effect "
+        "(an outbox row takes settle-now or compensate); 409 `module_off` while the story's "
+        "configuration has States off."
+    ),
+)
+async def resolve_listing(
+    story_id: StoryId,
+    listing: ListingId,
+    body: ResolveRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ResolvedBody:
+    done = await engine.resolve_listing(ctx, story_id, listing, body)
+    return answered(ResolvedBody.of(done), ctx, response, replayed=done.replayed)
 
 
 __all__ = ["router"]

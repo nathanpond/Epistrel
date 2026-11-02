@@ -15183,7 +15183,7 @@
       },
       "Listing": {
         "additionalProperties": false,
-        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)\nis listed as ``{outbox_id, provider, status}`` with its reason and since only. #218: a\n``late_success_after_expiry`` carries its re-verification; a compensated row's status is\n``compensated`` and ``compensated_by`` names the compensating row.",
+        "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)\nis listed as ``{outbox_id, provider, status}`` with its reason and since only. #218: a\n``late_success_after_expiry`` carries its re-verification; a compensated row's status is\n``compensated`` and ``compensated_by`` names the compensating row. #661: a consumer-applied\neffect (no outbox row) is listed by its ``request_id``, its status the latest answer's kind\n(``requested`` before any).",
         "properties": {
           "compensated_by": {
             "anyOf": [
@@ -15209,8 +15209,15 @@
             "title": "Effect"
           },
           "outbox_id": {
-            "title": "Outbox Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outbox Id"
           },
           "outcome": {
             "anyOf": [
@@ -15242,6 +15249,17 @@
             ],
             "title": "Reason",
             "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
           },
           "reverification": {
             "anyOf": [
@@ -15275,7 +15293,6 @@
           }
         },
         "required": [
-          "outbox_id",
           "provider",
           "status",
           "reason",
@@ -29339,6 +29356,91 @@
           "time_reason"
         ],
         "title": "ResolutionBody",
+        "type": "object"
+      },
+      "ResolveRequest": {
+        "additionalProperties": false,
+        "description": "#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed\nconsumer-applied effect is resolved (``applied_elsewhere`` or ``abandoned``).",
+        "examples": [
+          {
+            "resolution": "applied_elsewhere"
+          }
+        ],
+        "properties": {
+          "resolution": {
+            "enum": [
+              "applied_elsewhere",
+              "abandoned"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolution"
+        ],
+        "title": "ResolveRequest",
+        "type": "object"
+      },
+      "ResolvedBody": {
+        "description": "A resolve: the listed request, how it was resolved, the reasons it was listed under,\nand the inter-turn slot (`position`, `N⁺k`; `slot` the full position) and operation that\nrecorded it.",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "resolution": {
+            "title": "Resolution",
+            "type": "string"
+          },
+          "slot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Slot",
+            "type": "object"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "request_id",
+          "resolution",
+          "reasons",
+          "position",
+          "slot",
+          "operation_id"
+        ],
+        "title": "ResolvedBody",
         "type": "object"
       },
       "RespondRequest": {
@@ -70629,6 +70731,215 @@
           }
         ],
         "summary": "Read the story's reconciliation status",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/reconciliation/{listing}/resolve": {
+      "post": {
+        "description": "Resolve a listed consumer-applied effect (FR-EXT-22; #661): one a read-only provider's consumer applies, listed by its `request_id`. `resolution` is `applied_elsewhere` (the consumer applied it) or `abandoned` (it never will be). Nothing is dispatched and no outcome is recorded: the listing is closed and a `reconciliation_resolved` audit event is written, at the next inter-turn slot. 404 `not_found` (`reason: no_listing`) for anything but a listed consumer-applied effect (an outbox row takes settle-now or compensate); 409 `module_off` while the story's configuration has States off.",
+        "operationId": "resolve_listing",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The listed consumer-applied effect's request id (its `requested_effect`'s `effect_id`, the listing's `request_id`; a ULID).",
+            "in": "path",
+            "name": "listing",
+            "required": true,
+            "schema": {
+              "description": "The listed consumer-applied effect's request id (its `requested_effect`'s `effect_id`, the listing's `request_id`; a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2F8"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Listing",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Resolve a listed consumer-applied effect",
         "tags": [
           "stories"
         ]

@@ -570,6 +570,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "provider_read_only",
         "erased_subject_referenced",
     ),
+    # #661: the resolve-only action for a listed consumer-applied effect.
+    "resolve_listing": ("story_archived", "story_paused", "module_off"),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),

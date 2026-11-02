@@ -118,7 +118,7 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
-from epistrel.api.routes.reconciliation import CompensatedBody, SettledNowBody
+from epistrel.api.routes.reconciliation import CompensatedBody, ResolvedBody, SettledNowBody
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
@@ -170,6 +170,7 @@ from epistrel.api.routes.timeline import (
     VariantsBody,
 )
 from epistrel.config import Settings
+from epistrel.core import outbox as core_outbox
 from epistrel.core.catalog.characters import (
     CharacterCreate,
     CharacterPatch,
@@ -200,7 +201,7 @@ from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.mutation import FactRequest, QuarantineRequest, SanitizeRequest, SupersedeRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
-from epistrel.core.outbox import CompensateRequest
+from epistrel.core.outbox import CompensateRequest, ResolveRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.impact import ImpactPreviewRequest
@@ -453,6 +454,36 @@ async def _listed_effects(engine: Engine, ids: Ids) -> None:
     await ss.change(engine.db, story, ss.set_to("sword", 1, scope_key=seller, reason="restock"))
     ids["refunded"] = await ls.discarded(engine.db, engine, story, bank.name, payer, seller)
     ids["listed_story"], ids["payer"] = story, payer
+
+
+async def _consumer_listed(engine: Engine, ids: Ids) -> None:
+    """#661: on the listed side story, a consumer-applied payment (a ``requested_effect`` a turn
+    staged) listed ``settlement_conflict`` (``consumer_request``): no public call lists one."""
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.events.operation import Operation
+    from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
+
+    story, request_id = ids["listed_story"], new_ulid()
+    async with Operation(
+        engine.db, story_id=story, kind=OperationKind.TURN, principal="p-parity"
+    ) as op:
+        op.append("player_input", {"text": "pays"}, provenance=Provenance.PLAYER)
+        op.append(
+            REQUESTED_EFFECT,
+            RequestedEffect(
+                effect_id=request_id,
+                state="gold",
+                scope_key=ids["payer"],
+                delta=-5,
+                reason="parity",
+            ),
+            provenance=Provenance.ENGINE,
+        )
+        op.append("message_rendered", {"text": "paid"})
+        await op.commit()
+    async with engine.db.begin() as conn:
+        await core_outbox.mark(conn, story, None, "settlement_conflict", request_id=request_id)
+    ids["consumer_request"] = request_id
 
 
 def _compensation(ids: Ids) -> dict[str, Any]:
@@ -1664,6 +1695,24 @@ def _steps() -> list[Step]:
                     CompensateRequest.model_validate(_compensation(ids)),
                 )
             ),
+        ),
+        # #661: the resolve-only action on a listed consumer-applied effect.
+        Step(
+            "resolve_listing",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{listed_story}/reconciliation/{consumer_request}/resolve",
+                {"resolution": "applied_elsewhere"},
+            ),
+            lambda e, ids: _resolved(
+                e.resolve_listing(
+                    CTX,
+                    ids["listed_story"],
+                    ids["consumer_request"],
+                    ResolveRequest(resolution="applied_elsewhere"),
+                )
+            ),
+            prepare=_consumer_listed,
         ),
         Step(
             "approve_state_proposal",
@@ -3083,6 +3132,10 @@ async def _settled_now(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _compensated(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CompensatedBody.of(await call))
+
+
+async def _resolved(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ResolvedBody.of(await call))
 
 
 async def _proposal_approved(call: Awaitable[Any]) -> dict[str, Any]:

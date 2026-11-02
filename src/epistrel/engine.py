@@ -326,6 +326,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # #218: the explicit reconciliation actions (settle-now, a compensating effect).
     "settle_now": ResultCodec.of(settlement_job.SettledNow),
     "compensate": ResultCodec.of(settlement_job.Compensated, status=201),
+    "resolve_listing": ResultCodec.of(settlement_job.Resolved),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -3416,6 +3417,41 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "outbox_id": outbox_id, "body": _body(request)},
+        )
+
+    async def resolve_listing(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request_id: str,
+        request: core_outbox.ResolveRequest,
+    ) -> settlement_job.Resolved:
+        """Resolve a listed consumer-applied effect (FR-EXT-22; #661): the resolve-only action
+        for an effect the consumer applied (``applied_elsewhere``) or will never apply
+        (``abandoned``). Nothing is dispatched and no outcome is recorded: the listing's open
+        marks are resolved and a ``reconciliation_resolved`` audit event is written, on a new
+        inter-turn slot operation. 404 ``not_found`` (``reason: no_listing``) for anything but
+        a listed consumer-applied effect (an outbox row takes settle-now or compensate); 409
+        ``module_off``, ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> settlement_job.Resolved:
+            await self.check_expected_revision(ctx, story_id)
+            return await settlement_job.resolve_listing(
+                self.db,
+                story_id,
+                request_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "resolve_listing",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "listing": request_id, "body": _body(request)},
         )
 
     async def approve_state_proposal(

@@ -723,6 +723,22 @@ class OutcomeRecorded(EventPayload):
     received_via: Literal["dispatcher", "ingest"]
 
 
+RECONCILIATION_RESOLVED = "reconciliation_resolved"
+"""The event type of #661's resolve-only reconciliation action."""
+
+
+@register(RECONCILIATION_RESOLVED, category=EventCategory.AUDIT)
+class ReconciliationResolved(EventPayload):
+    """The author resolved a listed consumer-applied effect (#661, FR-EXT-22): the request it
+    names (``request_id``), how it was resolved (``applied_elsewhere``: the consumer applied it
+    outside Epistrel; ``abandoned``: it will not be applied) and the reasons it was listed
+    under. Nothing is dispatched and no outcome is recorded. Identifiers and codes only."""
+
+    request_id: str
+    resolution: Literal["applied_elsewhere", "abandoned"]
+    reasons: list[str]
+
+
 REQUESTED_EFFECT = "requested_effect"
 """The event type of a change a turn asks an external value's owner to apply (#209)."""
 REQUESTED_KINDS: tuple[str, ...] = ("change", "transfer", "time_advance")

@@ -125,8 +125,10 @@ from epistrel.core.events.operation import Operation, Withdrawn
 from epistrel.core.events.types import (
     EXTERNAL_OUTCOME,
     OUTCOME_RECORDED,
+    RECONCILIATION_RESOLVED,
     REQUESTED_EFFECT,
     OutcomeRecorded,
+    ReconciliationResolved,
 )
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.membership import Position, active_only, active_operation
@@ -556,8 +558,8 @@ async def _settle_once(
             logger.info("settlement %s (explicit) refused by re-verification", outcome_id)
             return Settlement(CONFLICTED)
         async with db.begin() as conn:
-            if record.outbox_id is not None and record.kind == CONFIRMED:
-                await core_outbox.mark(conn, story_id, record.outbox_id, CONFLICTED)
+            if record.kind == CONFIRMED:
+                await _mark(conn, record, CONFLICTED)
         logger.info("settlement %s refused by re-verification", outcome_id)
         return Settlement(CONFLICTED)
     finally:
@@ -574,10 +576,27 @@ async def _settle_once(
     return done
 
 
+async def _mark(
+    conn: AsyncConnection,
+    record: core_outbox.OutcomeRecord,
+    reason: str,
+    detail: Any = None,
+) -> None:
+    """List ``record``'s effect with ``reason``: its outbox row, or (#661) the consumer-applied
+    effect's request."""
+    if record.outbox_id is not None:
+        await core_outbox.mark(conn, record.story_id, record.outbox_id, reason, detail=detail)
+    else:
+        await core_outbox.mark(
+            conn, record.story_id, None, reason, detail=detail, request_id=record.effect
+        )
+
+
 async def _expired(conn: AsyncConnection, record: core_outbox.OutcomeRecord) -> bool:
-    """#218 (FR-EXT-22 (c)): a confirmation for an outbox effect whose reservation expired and
-    was released (#216's ``reservation_expiry``) while nothing still waits on it."""
-    if record.kind != CONFIRMED or record.outbox_id is None:
+    """#218 (FR-EXT-22 (c)): a confirmation for an external effect (an outbox row, #661: or a
+    consumer-applied one) whose reservation expired and was released (#216's
+    ``reservation_expiry``) while nothing still waits on it."""
+    if record.kind != CONFIRMED:
         return False
     c = state_changes.c
     waiting = await conn.scalar(
@@ -586,35 +605,28 @@ async def _expired(conn: AsyncConnection, record: core_outbox.OutcomeRecord) -> 
             c.story_id == record.story_id,
             c.status.in_(sorted(contingency.WAITING)),
             active_only(state_changes),
-            c.prerequisite_effect_ids.overlap([record.outbox_id]),
+            c.prerequisite_effect_ids.overlap([record.effect]),
         )
         .limit(1)
     )
     if waiting is not None:
         return False
-    return bool(await core_outbox.expired_holds(conn, record.story_id, [record.outbox_id]))
+    return bool(await core_outbox.expired_holds(conn, record.story_id, [record.effect]))
 
 
 async def _late(conn: AsyncConnection, record: core_outbox.OutcomeRecord) -> None:
     """#218: list a late success with its re-verification against current state; nothing in
     the story changes and the outcome record stays unsettled until the author acts."""
-    assert record.outbox_id is not None  # noqa: S101 - only an outbox effect expires
-    checked = await reverify_in(conn, record.story_id, record.outbox_id)
-    await core_outbox.mark(
-        conn,
-        record.story_id,
-        record.outbox_id,
-        LATE,
-        detail=checked.model_dump(mode="json"),
-    )
+    checked = await reverify_in(conn, record.story_id, record.effect)
+    await _mark(conn, record, LATE, checked.model_dump(mode="json"))
     logger.info("settlement %s: late success after expiry (%s)", record.id, checked.reverification)
 
 
 async def _discarded(conn: AsyncConnection, record: core_outbox.OutcomeRecord) -> None:
-    """FR-EXT-21: a confirmation whose origin was discarded is listed; nothing else changes (a
-    consumer-applied effect has no outbox row to list: it stays recorded, unsettled)."""
-    if record.kind == CONFIRMED and record.outbox_id is not None:
-        await core_outbox.mark(conn, record.story_id, record.outbox_id, DISCARDED)
+    """FR-EXT-21: a confirmation whose origin was discarded is listed; nothing else changes
+    (#661: a consumer-applied effect is listed by its request id)."""
+    if record.kind == CONFIRMED:
+        await _mark(conn, record, DISCARDED)
 
 
 async def _stage_outcome(
@@ -812,6 +824,10 @@ async def _intent_rows(conn: AsyncConnection, story_id: str, outbox_id: str) -> 
     origin = await conn.scalar(
         select(o.operation_id).where(o.id == outbox_id, o.story_id == story_id)
     )
+    if origin is None:
+        # #661: a consumer-applied effect's requesting operation is its request's.
+        found = await requested_event(conn, story_id, outbox_id)
+        origin = None if found is None else found.operation_id
     if origin is None:
         return []
     c = state_changes.c
@@ -1150,6 +1166,106 @@ async def compensate(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Resolved:
+    """#661: an author's resolve of a listed consumer-applied effect: its request id, the
+    resolution, the reasons it was listed under, its slot and operation, and the story's
+    revision."""
+
+    request_id: str
+    resolution: str
+    reasons: list[str]
+    position: str
+    slot: dict[str, int]
+    operation_id: str
+    timeline_revision: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+async def _listed_request(conn: AsyncConnection, story_id: str, request_id: str) -> list[str]:
+    """The reasons consumer-applied effect ``request_id`` is listed under (404 ``no_listing``
+    when it is not listed: an outbox row, an unknown id or a resolved one)."""
+    listed: list[str] = [
+        listing.reason
+        for listing in await core_outbox.consumer_listings(conn, story_id)
+        if listing.request_id == request_id
+    ]
+    if not listed:
+        raise NoListing(
+            f"the story lists no consumer-applied effect {request_id} to resolve",
+            {"story_id": story_id, "listing": request_id, "reason": "no_listing"},
+        )
+    return listed
+
+
+async def resolve_listing(
+    db: AsyncEngine,
+    story_id: str,
+    request_id: str,
+    request: core_outbox.ResolveRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+) -> Resolved:
+    """#661 (FR-EXT-22): the author's resolve-only action for a listed consumer-applied effect:
+    nothing is dispatched (the consumer applied it, or it never will be), so it only closes the
+    listing. An inter-turn slot operation (#193's ``open_inter_turn``, like #218's actions)
+    resolves its open marks with the ``resolution`` (a derived ``reservation_expired`` listing
+    gets a resolved mark) and stages a ``reconciliation_resolved`` audit event; it writes no
+    outcome record and calls no provider."""
+    await require_writable(db, story_id)
+    async with db.connect() as conn:
+        await states.require_module(conn, story_id)
+        reasons = await _listed_request(conn, story_id, request_id)
+    written: list[Position] = []
+
+    async def step(conn: AsyncConnection) -> None:
+        # Still listed under the story lock (a concurrent resolve answers 404).
+        await _listed_request(conn, story_id, request_id)
+        await core_outbox.resolve(conn, story_id, request_id, request.resolution, request=True)
+        if "reservation_expired" in reasons:
+            await core_outbox.mark(
+                conn,
+                story_id,
+                None,
+                "reservation_expired",
+                request_id=request_id,
+                resolved_by=request.resolution,
+            )
+        written.append(slot_position(op))
+
+    op = open_inter_turn(
+        db,
+        story_id,
+        source=Provenance.CONSUMER,
+        principal=principal,
+        idempotency_key=idempotency_key,
+    )
+    async with op:
+        op.append(
+            RECONCILIATION_RESOLVED,
+            ReconciliationResolved(
+                request_id=request_id, resolution=request.resolution, reasons=list(reasons)
+            ),
+            provenance=Provenance.CONSUMER,
+        )
+        op.add_commit_step(step)
+        await op.commit()
+    assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    position = written[0]
+    logger.info("listing %s resolved (%s)", request_id, request.resolution)
+    return Resolved(
+        request_id=request_id,
+        resolution=request.resolution,
+        reasons=list(reasons),
+        position=boundary_label(position.turn, position.slot_k),
+        slot=position.document(),
+        operation_id=op.operation_id,
+        timeline_revision=op.timeline_revision,
+    )
+
+
 # -- the job --------------------------------------------------------------------------------------
 
 
@@ -1202,6 +1318,7 @@ __all__ = [
     "Explicit",
     "NoListing",
     "Origin",
+    "Resolved",
     "SettlePayload",
     "SettledNow",
     "Settlement",
@@ -1214,6 +1331,7 @@ __all__ = [
     "origin_of",
     "record_operation",
     "requested_event",
+    "resolve_listing",
     "reverify",
     "reverify_in",
     "settle",

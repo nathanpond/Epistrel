@@ -237,7 +237,7 @@ from epistrel.core.profiles.effective import (
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
 from epistrel.core.profiles.schema import ON as ON_LEVEL
-from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.profiles.schema import ProfileSettings, merge_interpretive
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition, TemporalKind
 from epistrel.core.propositions.registry import (
@@ -4737,6 +4737,22 @@ async def play(
         log.debug("simultaneous turn: %d conflicts, %d adjudicated", len(conflicts), len(settled))
 
     async def begin(conn: AsyncConnection) -> TurnRead:
+        nonlocal settings, configuration, cast_
+        if op.attempts:
+            # #659 (FR-CONC-16): a rebase re-check failed, so this attempt runs under every
+            # interpretive setting as it stands now (prospective ones as captured).
+            now = (await effective_configuration(conn, story_id, validate=False)).settings
+            settings = merge_interpretive(settings, now)
+            configuration = replace(configuration, settings=settings)
+            mode = authority_rules.captured_mode(op, story.settings)
+            if mode != authority_rules.mode_of(story.settings):
+                # #660: the cast follows a ``player_authority`` changed mid-turn (an
+                # ``own_character`` request now renders the character it addresses).
+                moved = story.settings.model_copy(update={"player_authority": mode})
+                recast = resolve_structured_cast(
+                    replace(story, settings=moved), request, settings, story_id
+                )
+                cast_ = recast if plan is None else _planned_cast(recast, plan)
         clock.reset()
         pins.reset()  # #205: a new attempt reads every external value live again
         reading = time.perf_counter()

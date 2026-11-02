@@ -609,6 +609,30 @@ def setting_tags(model: type[BaseModel] = ProfileSettings) -> dict[str, SettingT
     return found
 
 
+def merge_interpretive(captured: ProfileSettings, current: ProfileSettings) -> ProfileSettings:
+    """#659 (FR-CONC-15,16): ``captured`` with every **interpretive** leaf taken from
+    ``current``: what a rebase-triggered regeneration runs under (prospective settings stay as
+    the operation captured them)."""
+    tags = setting_tags()
+    wanted = captured.model_dump(mode="json")
+    now = current.model_dump(mode="json")
+    for path, tag in tags.items():
+        if tag.change_class is not ConfigClass.interpretive:
+            continue
+        keys = path.split(".")
+        source: Any = now
+        for key in keys:
+            if not isinstance(source, dict) or key not in source:
+                break
+            source = source[key]
+        else:
+            target = wanted
+            for key in keys[:-1]:
+                target = target.setdefault(key, {})
+            target[keys[-1]] = source
+    return ProfileSettings.model_validate(wanted)
+
+
 # -- modules and levels --------------------------------------------------------------------------
 
 
@@ -1251,6 +1275,7 @@ __all__ = [
     "is_delivered",
     "level_of",
     "level_rank",
+    "merge_interpretive",
     "missing_tags",
     "nullable",
     "owner_of",

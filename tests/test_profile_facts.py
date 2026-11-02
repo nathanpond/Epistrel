@@ -468,3 +468,18 @@ def test_the_effective_values_are_the_delivered_ones() -> None:
 
     assert paths(values) == {path for path in schema.LEAF_PATHS if exposed(path)}
     assert values["pipeline"] == "lite"
+
+
+def test_a_regeneration_takes_the_current_interpretive_settings() -> None:
+    """#659: a rebase-triggered regeneration runs under the interpretive settings in force now and
+    the prospective ones the operation captured: an interpretive leaf moves, a prospective one
+    doesn't."""
+    captured = schema.ProfileSettings.model_validate(
+        {"verification": {"level": "off"}, "memory": {"episodic": {"k": 4}}}
+    )
+    current = schema.ProfileSettings.model_validate(
+        {"verification": {"level": "declared"}, "memory": {"episodic": {"k": 9}}}
+    )
+    merged = schema.merge_interpretive(captured, current)
+    assert merged.verification.level == "declared"
+    assert merged.memory.episodic.k == 4

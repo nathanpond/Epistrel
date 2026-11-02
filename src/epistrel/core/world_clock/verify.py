@@ -283,17 +283,21 @@ def check_of(claim: Proposition, anchor: Anchor, payload: dict[str, Any]) -> Che
     return None
 
 
-def _exact_scheduled(check: Scheduled, event: dict[str, Any], offset: int) -> Outcome:
-    """#644: an event planned at an exact offset, at clock offset ``offset``: ``due`` once the
-    clock reached it, ``not_due`` before; ``possibly_due`` never holds of an exact time."""
-    reached = offset >= int(event["planned"])
-    if check.status == "due":
-        return Outcome.SUPPORTED if reached else Outcome.CONTRADICTED
-    if check.status == "not_due":
-        return Outcome.CONTRADICTED if reached else Outcome.SUPPORTED
+def _exact_scheduled(
+    check: Scheduled, event: dict[str, Any], offset: int, tolerance: int
+) -> Outcome:
+    """#644: an event planned at an exact offset, at clock offset ``offset``: its status as a
+    time belief reads one (``time_belief``'s rule: ``due`` from ``tolerance`` minutes before it
+    until its grace or the tolerance has passed, ``past`` after, ``not_due`` before);
+    ``possibly_due`` never holds of an exact time."""
+    left = int(event["planned"]) - offset
+    grace = int(event.get("grace", 0))
+    status = "not_due" if left > tolerance else "past" if left < -max(grace, tolerance) else "due"
     if check.status == "possibly_due":
         return Outcome.CONTRADICTED
-    return Outcome.UNCERTAIN
+    if check.status not in ("due", "not_due", "past"):
+        return Outcome.UNCERTAIN
+    return Outcome.SUPPORTED if check.status == status else Outcome.CONTRADICTED
 
 
 def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
@@ -321,7 +325,7 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
         else None
     )
     if isinstance(check, Scheduled) and event is not None and check.at is None:
-        outcome = _exact_scheduled(check, event, offset)
+        outcome = _exact_scheduled(check, event, offset, tolerance)
     else:
         outcome = anchor.evaluate(widened, offset)
     affirmed = claim.polarity is Polarity.AFFIRMED

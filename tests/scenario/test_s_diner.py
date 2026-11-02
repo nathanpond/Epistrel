@@ -1019,8 +1019,10 @@ async def test_s_diner__belief(
         )
         assert answer.status_code == 200, answer.text
         verdict = await timed_verdict(engine, story)
+        # #644: the claim is now checked against the meeting's plan (17:00): objectively false,
+        # belief-consistent, a sincere error that stands.
         assert (verdict["speech"]["classification"], verdict["speech"]["belief_relation"]) == (
-            "sincere",
+            "sincere_error",
             "consistent",
         )
         assert es.regenerations(stub) == []

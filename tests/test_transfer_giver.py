@@ -137,39 +137,3 @@ def test_a_declared_hand_over_takes_the_detected_giver() -> None:
     (claim,) = [c for c in found.claims if c.layer == "declared"]
     assert claim.merged == ("detector",)
     assert claim.giver == JENNI
-
-
-def test_a_sent_message_changes_no_hands() -> None:
-    """#611: "Bobby sent the text." is a communication, not a hand-over: no ``holds`` claim
-    either way (the declared ``sent`` claim alone is what a learner may repeat). Complement:
-    "Bobby sent the parcel to Cal." is still a transfer (Cal holds it, Bobby doesn't)."""
-    text, parcel = "01JD0000000000000000000C06", "01JD0000000000000000000C07"
-    index = EntityIndex(
-        [
-            *INDEX.entries.values(),
-            EntityEntry(text, "item", "text"),
-            EntityEntry(parcel, "item", "parcel"),
-        ]
-    )
-    context = ResolutionContext(index=index, present=CONTEXT.present, player_id=CAL)
-    env = DetectionEnv(
-        registry=vs.REGISTRY,
-        basis=TimeBasis(),
-        context_for=lambda _speaker: context,
-        scene_entity=PARLOR,
-        placement={CAL: PARLOR, JENNI: PARLOR, BOBBY: PARLOR},
-    )
-    beats = [
-        DetectBeat(1, "do", "Bobby sent the text.", JENNI),
-        DetectBeat(2, "do", "Bobby sent the parcel to Cal.", JENNI),
-    ]
-    found = detect_render(beats, (3, 0), env)
-    holds = {
-        (c.beat, c.proposition.subject_id, c.proposition.object_id, c.proposition.polarity)
-        for c in found.claims
-        if c.proposition is not None and c.proposition.predicate_id == HOLDS
-    }
-    assert holds == {
-        (2, CAL, parcel, Polarity.AFFIRMED),
-        (2, BOBBY, parcel, Polarity.NEGATED),
-    }

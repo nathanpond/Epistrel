@@ -31,8 +31,8 @@ valid antecedent for Bobby's low-confidence inference that they are hiding somet
 through #160), which still licenses nothing about the words: when Bobby then claims the words,
 the claim is caught as a hallucination and repaired (#166). Complement: once Marcus tells Bobby
 the words, the same claim has a path (the exposure, dry-run; then the testimony it resolves
-to), and replaying the blurt it passes whole (#568): its one claim stands once Bobby holds it
-(#611: "sent the text" is a message, so the detector adds no transfer reading beside it).
+to), and replaying the blurt it passes (#568): each of its claims stands once Bobby holds it,
+and the one he has not acquired (the detector's transfer reading) is still repaired.
 
 ``test_s_whisper__output`` also plays the player's own whisper to Marcus (#572): it is routed
 with its ``whisper_to`` before any render, so Bobby's render prompt (its working memory and its
@@ -52,8 +52,8 @@ from epistrel.core.enums import BeliefConfidenceLevel
 from epistrel.core.epistemic import replay, transitions
 from epistrel.core.events.types import BeatSay, RenderRejected
 from epistrel.core.membership import Position
-from epistrel.core.propositions.model import Interval, Proposition
-from epistrel.core.propositions.vocabulary import SPOKE_TO
+from epistrel.core.propositions.model import Interval, Polarity, Proposition
+from epistrel.core.propositions.vocabulary import HOLDS, SPOKE_TO
 from epistrel.core.views import audit_view
 from tests import exposure_support as xs
 from tests import partition_support as parts
@@ -388,9 +388,12 @@ async def test_s_whisper__inference(
         # ... and only from then: at the whisper, still none.
         assert isinstance(await _knows(engine, story, ids["Bobby"], words, now), replay.NoPath)
 
-        # FR-BELIEF-11 (#568): after the genuine acquisition the same claim passes. #611: the
-        # blurt carries the declared ``sent`` alone (the detector reads no transfer into a sent
-        # message), so told it, Bobby's line stands whole, consistent with the belief he holds.
+        # FR-BELIEF-11 (#568): after the genuine acquisition the same claim passes. The blurt
+        # carries two claims, the declared ``sent`` and the detector's transfer reading of
+        # "sent" (Olivia no longer holds the text), and Jenni's whisper gave Marcus both. Told
+        # only the first, Bobby's ``sent`` now stands, consistent with the belief he holds, while
+        # the reading he never acquired is still repaired: replay and the licence agree, claim
+        # by claim.
         (belief,) = [
             b
             for b in ts.first_order(await ts.beliefs_of(engine, story, ids["Bobby"]))
@@ -398,6 +401,24 @@ async def test_s_whisper__inference(
         ]
         assert (belief.cause, belief.confidence_level) == ("testimony", "suspected")
         assert await _speech(client, epistrel, engine, story, ids, blurt) == [
+            ("hallucination_repaired", "unknown"),
+            ("sincere", "consistent"),
+        ]
+        assert {r["tag"] for r in (await turn_report(engine, story))["repairs"]} == {
+            "hallucination"
+        }
+        # Marcus tells him the rest of what he heard: the same blurt passes whole, no repair.
+        handed = Proposition(
+            subject_id=things["Olivia"],
+            predicate_id=HOLDS,
+            object_id=things["the text"],
+            polarity=Polarity.NEGATED,
+            valid_time=Interval.of(None, None),
+        )
+        exposure_id, _ = await xs.expose(engine, story, ids["Bobby"], handed, source=ids["Marcus"])
+        await xs.resolve(engine, story, exposure_id)
+        assert await _speech(client, epistrel, engine, story, ids, blurt) == [
+            ("sincere", "consistent"),
             ("sincere", "consistent"),
         ]
         assert "repairs" not in await turn_report(engine, story)

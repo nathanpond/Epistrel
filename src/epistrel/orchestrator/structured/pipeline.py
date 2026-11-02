@@ -161,7 +161,7 @@ Logs carry ids and counts only (invariant 3).
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from types import SimpleNamespace
@@ -3236,7 +3236,39 @@ async def route_committed(
         "level": level,
         "routed": len(results),
         "qualifiers_repaired": [r.report() for r in repairs],
+        # #607: what each beat's routing decided, as applied now (no beat text).
+        "trace": _perception_trace(results, state.characters),
     }
+
+
+def _perception_trace(
+    results: Sequence[perception.PerceptionResult], present: Iterable[str]
+) -> list[dict[str, Any]]:
+    """#607: each routed beat's perceivers (fidelity, channel, envelope kind) and the scene's
+    other characters (``unperceived``: fidelity ``none``)."""
+    everyone = sorted(set(present))
+    found: list[dict[str, Any]] = []
+    for result in results:
+        perceivers = [
+            {
+                "character_id": p.character_id,
+                "fidelity": p.fidelity,
+                "channel": p.channel,
+                **({} if p.envelope is None else {"envelope": p.envelope.kind}),
+            }
+            for p in result.perceived
+        ]
+        seen = result.perceivers
+        found.append(
+            {
+                "beat": result.beat.beat,
+                "kind": result.beat.kind,
+                "location": result.location,
+                "perceivers": perceivers,
+                "unperceived": [c for c in everyone if c not in seen],
+            }
+        )
+    return found
 
 
 def _hidden_latent(beat: TurnBeat) -> bool:

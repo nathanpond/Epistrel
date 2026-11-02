@@ -187,6 +187,17 @@ class OperationBody(BaseModel):
         exclude_if=lambda s: not s,
         description="A staged turn (#212, FR-EXT-16): `true`; absent for every other operation.",
     )
+    perception: dict[str, Any] | None = Field(
+        default=None,
+        description="#607: a structured turn's perception, for a read naming `omniscient` "
+        "only (null otherwise, and for a turn at perception `none`): its `level`, the beats "
+        "`routed`, the `qualifiers_repaired`, and `trace`, each routed beat as routing "
+        "decided it when the turn ran: `beat`, `kind`, `location`, its `perceivers` "
+        "(`character_id`, `fidelity`: `content` or `envelope`, `channel`: `self`, `room`, "
+        "`eavesdrop`, `remote` or `adjacent`, and an envelope's kind: `whisper`, `aside`, "
+        "`language`, `phone`, `manner` or `sound`) and the scene's other characters "
+        "`unperceived` (fidelity `none`).",
+    )
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -227,6 +238,7 @@ class OperationBody(BaseModel):
             if view.eval_hooks is None
             else EvalHooksBody.model_validate(view.eval_hooks),
             staged=view.staged,
+            perception=view.perception,
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None

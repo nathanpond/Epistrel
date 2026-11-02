@@ -18099,6 +18099,19 @@
             "title": "Origin",
             "type": "string"
           },
+          "perception": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#607: a structured turn's perception, for a read naming `omniscient` only (null otherwise, and for a turn at perception `none`): its `level`, the beats `routed`, the `qualifiers_repaired`, and `trace`, each routed beat as routing decided it when the turn ran: `beat`, `kind`, `location`, its `perceivers` (`character_id`, `fidelity`: `content` or `envelope`, `channel`: `self`, `room`, `eavesdrop`, `remote` or `adjacent`, and an envelope's kind: `whisper`, `aside`, `language`, `phone`, `manner` or `sound`) and the scene's other characters `unperceived` (fidelity `none`).",
+            "title": "Perception"
+          },
           "principal": {
             "title": "Principal",
             "type": "string"

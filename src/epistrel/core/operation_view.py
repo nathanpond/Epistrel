@@ -168,6 +168,10 @@ class OperationView:
     naming the ``omniscient`` viewpoint."""
     staged: bool = False
     """#212: a staged turn (``operations.turn_stage`` set)."""
+    perception: dict[str, Any] | None = None
+    """#607: a structured turn's ``turn_report.perception`` (its level, the beats routed, the
+    qualifiers repaired and each beat's ``trace``), returned only to a read naming the
+    ``omniscient`` viewpoint."""
 
 
 INGESTED = "ingested"
@@ -236,7 +240,16 @@ async def read_operation(
         read_set=_read_set(row.read_set, viewpoint),
         eval_hooks=expanded_eval_hooks(row.turn_report) if _omniscient(viewpoint) else None,
         staged=row.turn_stage is not None,
+        perception=_perception(row.turn_report) if _omniscient(viewpoint) else None,
     )
+
+
+def _perception(report: Any) -> dict[str, Any] | None:
+    """#607: a turn report's ``perception`` section, when it has one."""
+    if not isinstance(report, dict):
+        return None
+    found = report.get("perception")
+    return dict(found) if isinstance(found, dict) else None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,7 +1,7 @@
 {
   "category": "time",
   "language": "en",
-  "description": "Clock-time expressions beside #139's relative-time grammar (core.resolution.time_grammar): named times of day, o'clock, HH:MM and am/pm times, with an optional approximator before them. A clock time no other claim of its clause takes is a claim of its own, time_is(the scene's place, the expression as said).",
+  "description": "Clock-time expressions beside #139's relative-time grammar (core.resolution.time_grammar): named times of day, o'clock, HH:MM and am/pm times, with an optional approximator before them. A clock time no other claim of its clause takes is a claim of its own, time_is(the scene's place, the expression as said). #643: a clock time in a sentence naming an unreliable instrument ('the stopped watch', 'the clock was broken') is a reading, not the time: texture, no time_is claim.",
   "approximators": [
     "nearly",
     "almost",
@@ -71,5 +71,32 @@
     "in the evening",
     "at night",
     "in the afternoon"
-  ]
+  ],
+  "unreliable_instruments": {
+    "instruments": [
+      "watch",
+      "watches",
+      "clock",
+      "clocks",
+      "phone",
+      "timepiece",
+      "dial",
+      "sundial",
+      "wristwatch",
+      "pocket-watch"
+    ],
+    "modifiers": [
+      "stopped",
+      "broken",
+      "dead",
+      "wrong",
+      "fast",
+      "slow",
+      "frozen",
+      "cracked",
+      "busted",
+      "unwound",
+      "stalled"
+    ]
+  }
 }

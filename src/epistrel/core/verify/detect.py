@@ -1115,6 +1115,9 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
         if at is not None and _suppressed(beat.text, beat.tokens, at):
             beat.noise += 1
             continue
+        if at is not None and _unreliable_reading(beat.tokens, at):
+            beat.noise += 1  # #643: what a stopped watch reads, not the time
+            continue
         said = " ".join(match.group().split())
         found.append(
             (
@@ -1129,6 +1132,25 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
             )
         )
     return found
+
+
+def _unreliable_reading(tokens: Sequence[_Token], at: int) -> bool:
+    """#643: the clock time at ``tokens[at]`` sits in a sentence naming an unreliable
+    instrument (``time.json``'s ``unreliable_instruments``: a modifier within two words before
+    the instrument, "the stopped watch", or after it in the sentence, "the clock was
+    broken")."""
+    rule = tables().time.get("unreliable_instruments") or {}
+    instruments = frozenset(rule.get("instruments", ()))
+    modifiers = frozenset(rule.get("modifiers", ()))
+    sentence = tokens[at].sentence
+    words = [t.word for t in tokens if t.sentence == sentence]
+    for i, word in enumerate(words):
+        if word in instruments and (
+            any(w in modifiers for w in words[max(0, i - 2) : i])
+            or any(w in modifiers for w in words[i + 1 : i + 4])
+        ):
+            return True
+    return False
 
 
 _AMOUNT: Final = (

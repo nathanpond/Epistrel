@@ -655,3 +655,35 @@ async def test_u_22__hidden_states(engine: AsyncEngine, states_delivered: None) 
     assert result.denied is not None
     assert result.denied.reason.value == "protected_content"
     assert result.permitted is None  # never a canon request
+
+
+def _times(text: str) -> list[str]:
+    detection = detect_seed(text, _orchard_env())
+    return [
+        str(c.proposition.literal.value)
+        for c in detection.claims
+        if c.proposition is not None
+        and c.proposition.predicate_id == TIME_IS
+        and c.proposition.literal is not None
+    ]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tom Harrow glances at the stopped watch: a quarter past three.",
+        "The broken clock on the wall says 3:15.",
+        "Tom Harrow's watch was slow; it read 3:15.",
+    ],
+)
+async def test_u_22__unreliable_instrument_reading(text: str) -> None:
+    """#643: what a stopped, broken or wrong instrument reads is texture, not the time: no
+    ``time_is`` claim, so it can never contradict the clock."""
+    assert _times(text) == []
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+async def test_u_22__working_instrument_reading() -> None:
+    """The complement of #643: a working watch's reading states the time."""
+    assert _times("Tom Harrow checks his watch: a quarter past three.") != []

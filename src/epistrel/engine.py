@@ -69,6 +69,7 @@ from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import (
+    BeliefKind,
     EntryStatus,
     ExposureState,
     MemoryKind,
@@ -2052,6 +2053,7 @@ class Engine:
         as_of: int | None = None,
         limit: int = partitions.INSPECT_LIMIT_DEFAULT,
         after: str | None = None,
+        kind: BeliefKind = BeliefKind.FIRST_ORDER,
     ) -> partitions.BeliefInspection:
         """``character``'s belief projection (FR-EPI-6, FR-ADMIN-5; docs/02 §9's
         ``inspect/beliefs``; #159, #178), an omniscient read (422 ``viewpoint_unresolved``
@@ -2060,7 +2062,9 @@ class Engine:
         id after ``after`` (only ``proposition_id`` when given), each with its current belief;
         ``as_of`` reads it as the corrected record stood through that turn. 404 for an unknown
         story; 409 ``module_off`` when the story keeps no partitions; 422 for a character
-        outside the cast; the player's character (no partition) answers an empty page."""
+        outside the cast; the player's character (no partition) answers an empty page. #606:
+        ``kind`` (``nested``, ``speech_act``) reads those belief records instead, by belief id,
+        at every level."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         inspection.omniscient_read(ctx.viewpoint)
         return await partitions.inspect(
@@ -2071,6 +2075,7 @@ class Engine:
             limit=limit,
             after=after,
             as_of=as_of,
+            kind=kind,
         )
 
     @refuses_nul()

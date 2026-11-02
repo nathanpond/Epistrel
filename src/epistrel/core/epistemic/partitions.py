@@ -340,21 +340,21 @@ def _id(value: Any) -> str | None:
     return None if value is None else str(value)
 
 
-def _open() -> list[ColumnElement[bool]]:
-    """The active first-order beliefs not closed in transaction-time."""
+def _open(kind: BeliefKind = BeliefKind.FIRST_ORDER) -> list[ColumnElement[bool]]:
+    """The active beliefs of ``kind`` (first-order by default) not closed in transaction-time."""
     b = beliefs.c
-    return [active_only(beliefs), b.tx_to.is_(None), b.kind == BeliefKind.FIRST_ORDER.value]
+    return [active_only(beliefs), b.tx_to.is_(None), b.kind == kind.value]
 
 
-def _held_then() -> list[ColumnElement[bool]]:
-    """The active first-order beliefs a past read may see: open in transaction-time, or closed
+def _held_then(kind: BeliefKind = BeliefKind.FIRST_ORDER) -> list[ColumnElement[bool]]:
+    """The active beliefs of ``kind`` a past read may see: open in transaction-time, or closed
     by a correction (#160: the prior keeps its ``held_from``/``held_to`` span, so the holder can
     be shown to have held it until the correction)."""
     b = beliefs.c
     return [
         active_only(beliefs),
         or_(b.tx_to.is_(None), b.state == BeliefHoldState.CORRECTED.value),
-        b.kind == BeliefKind.FIRST_ORDER.value,
+        b.kind == kind.value,
     ]
 
 
@@ -384,18 +384,20 @@ async def partition(
     levels: Iterable[BeliefConfidenceLevel] | None = None,
     limit: int | None = None,
     order: str = "id",
+    kind: BeliefKind = BeliefKind.FIRST_ORDER,
 ) -> list[Belief]:
     """``holder``'s first-order beliefs current at ``through`` (see the module docstring),
     optionally only those whose proposition's subject is one of ``subjects``, whose subject or
     object is one of ``entities_``, whose object (or a member of its object set) is one of
     ``objects_``, of ``predicate``, among ``proposition_ids``, at one of ``levels``; ordered
-    by id (``order = "confidence"``: strongest first, then the latest)."""
+    by id (``order = "confidence"``: strongest first, then the latest). #606: ``kind`` reads the
+    holder's ``nested`` or ``speech_act`` rows instead."""
     b = beliefs.c
     p = propositions.c
     where: list[ColumnElement[bool]] = [
         b.story_id == story_id,
         b.holder_character_id == holder,
-        *(_open() if through is None else _held_then()),
+        *(_open(kind) if through is None else _held_then(kind)),
         *held_at_clause(through),
     ]
     if through is not None:
@@ -778,6 +780,56 @@ async def _states_as_of(
     return StatePage(items, page[-1] if len(keys) > limit and page else None)
 
 
+async def _kind_page(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    holder: str,
+    kind: BeliefKind,
+    as_of: int | None,
+    proposition_id: str | None,
+    limit: int,
+    after: str | None,
+) -> StatePage:
+    """#606: ``holder``'s ``nested`` or ``speech_act`` beliefs, held now (``as_of``: through that
+    turn), at every level, by belief id (several may share one proposition): each as the
+    projection would carry it (its own level and scalar, since its ``held_from``)."""
+    from epistrel.core.membership import POSITION_MAX
+
+    through = (
+        None if as_of is None else Position(as_of, 0, POSITION_MAX, POSITION_MAX, POSITION_MAX)
+    )
+    held = await partition(
+        conn,
+        story_id,
+        holder,
+        through=through,
+        proposition_ids=None if proposition_id is None else [proposition_id],
+        kind=kind,
+    )
+    if through is None:
+        held = [b for b in held if b.held_to is None]
+    rows = sorted((b for b in held if after is None or b.id > after), key=lambda b: b.id)
+    page = rows[:limit]
+    items = tuple(
+        (
+            BeliefState(
+                story_id=story_id,
+                holder_character_id=holder,
+                proposition_id=b.proposition_id,
+                belief_id=b.id,
+                polarity=b.polarity,
+                current_level=b.confidence_level,
+                current_scalar=b.confidence_scalar,
+                since=b.held_from,
+            ),
+            b,
+        )
+        for b in page
+    )
+    return StatePage(items, page[-1].id if len(rows) > limit and page else None)
+
+
 async def inspect(
     db: AsyncEngine,
     story_id: str,
@@ -787,6 +839,7 @@ async def inspect(
     limit: int = INSPECT_LIMIT_DEFAULT,
     after: str | None = None,
     as_of: int | None = None,
+    kind: BeliefKind = BeliefKind.FIRST_ORDER,
 ) -> BeliefInspection:
     """One holder's belief projection (FR-EPI-6; docs/02 §9's ``inspect/beliefs``) in one
     consistent read: 404 for an unknown story, 409 ``module_off`` when the story keeps no
@@ -803,7 +856,18 @@ async def inspect(
         await check_character(conn, story_id, character, field="query.character")
         if await is_player(conn, story_id, character):
             return BeliefInspection(story_id, character, revision, (), None, ())
-        if as_of is None:
+        if kind is not BeliefKind.FIRST_ORDER:
+            page = await _kind_page(
+                conn,
+                story_id,
+                holder=character,
+                kind=kind,
+                as_of=as_of,
+                proposition_id=proposition_id,
+                limit=limit,
+                after=after,
+            )
+        elif as_of is None:
             page = await belief_states(
                 conn,
                 story_id,

@@ -645,6 +645,30 @@
       "BeliefItemBody": {
         "description": "One belief the character holds now: the ``belief_state`` row (``current_level``,\n``current_scalar``, ``polarity``, ``since``) joined with its belief record (``kind``,\n``confidence_scalar``, ``provenance``: #160's acquisition, ``held_from``/``held_to``,\n``valid_from``/``valid_to`` in story-minutes) and the proposition it holds.\n``provenance_kind`` is that transition's kind (how the character came to hold it; ``null``\nexactly when ``provenance`` is), ``provenance_source_character`` its source character\n(``null`` unless the kind is ``testimony``; #654).",
         "properties": {
+          "attributed_holder_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#606: a `nested` belief's attributed holder (who the character believes holds the proposition).",
+            "title": "Attributed Holder Id"
+          },
+          "attributed_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#606: how sure the character thinks the attributed holder is.",
+            "title": "Attributed Level"
+          },
           "belief_id": {
             "title": "Belief Id",
             "type": "string"
@@ -663,6 +687,18 @@
               }
             ],
             "title": "Current Scalar"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#606: a `nested` or `speech_act` belief's depth (first-order 1, absent).",
+            "title": "Depth"
           },
           "held_from": {
             "$ref": "#/components/schemas/NarrativePositionBody"
@@ -726,6 +762,18 @@
           },
           "since": {
             "$ref": "#/components/schemas/NarrativePositionBody"
+          },
+          "speaker_character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#606: a `speech_act` belief's speaker (the character heard saying it).",
+            "title": "Speaker Character Id"
           },
           "tx_from": {
             "title": "Tx From",
@@ -67210,7 +67258,7 @@
     },
     "/stories/{story_id}/inspect/beliefs": {
       "get": {
-        "description": "What `character` believes now (FR-EPI-6): its `belief_state` rows, each joined with the belief record it rests on and the proposition held, `omniscient` only (403 `omniscient_required`). A page by proposition id (`limit`, at most 500; `after` continues); `proposition_id` keeps one. A belief is its holder's truth, whether or not canon agrees (FR-EPI-3). `identities` lists who the character holds to be one referent (FR-PROP-7): the canon `same_as` facts it may read and its own `same_as` beliefs. `as_of` reads the projection as the corrected record stood through that turn. 422 `viewpoint_unresolved` when no viewpoint is named; 409 `module_off` when the story keeps no character partitions; 422 for a character outside the story's cast; the player's character has no partition (an empty page).",
+        "description": "What `character` believes now (FR-EPI-6): its `belief_state` rows, each joined with the belief record it rests on and the proposition held, `omniscient` only (403 `omniscient_required`). A page by proposition id (`limit`, at most 500; `after` continues); `proposition_id` keeps one. A belief is its holder's truth, whether or not canon agrees (FR-EPI-3). `identities` lists who the character holds to be one referent (FR-PROP-7): the canon `same_as` facts it may read and its own `same_as` beliefs. `as_of` reads the projection as the corrected record stood through that turn. 422 `viewpoint_unresolved` when no viewpoint is named; 409 `module_off` when the story keeps no character partitions; 422 for a character outside the story's cast; the player's character has no partition (an empty page). `kind` (#606): `first_order` (the default, the projection above), or `nested` (what the character believes another believes) or `speech_act` (what it heard someone say): those belief records, at every level, paged by belief id, each with `attributed_holder_id`, `attributed_level`, `depth` or `speaker_character_id`.",
         "operationId": "inspect_beliefs",
         "parameters": [
           {
@@ -67316,6 +67364,21 @@
                 }
               ],
               "title": "After"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "default": "first_order",
+              "enum": [
+                "first_order",
+                "nested",
+                "speech_act"
+              ],
+              "title": "Kind",
+              "type": "string"
             }
           }
         ],

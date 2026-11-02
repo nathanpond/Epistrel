@@ -207,7 +207,7 @@ async def test_a_paused_story_takes_definition_and_clock_writes(
 ) -> None:
     """#626: a State definition PATCH and ``PATCH /clock`` are configuration writes, so a story
     paused for a check takes them like its other configuration writes (``core/pause.py``): the
-    configuration revision moves and the timeline revision does not (FR-CONC-5 refuses only
+    configuration revision moves and the timeline revision does not (a pause refuses only
     truth-changing calls). Complement asserted: an archived story refuses both with 409
     ``story_archived`` and writes nothing."""
     w = await c.world(engine)

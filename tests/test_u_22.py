@@ -679,7 +679,7 @@ def _times(text: str) -> list[str]:
 )
 async def test_u_22__unreliable_instrument_reading(text: str) -> None:
     """#643: what a stopped, broken or wrong instrument reads is texture, not the time: no
-    ``time_is`` claim, so it can never contradict the clock."""
+    ``time_is`` claim, so it can never contradict the story's time."""
     assert _times(text) == []
 
 

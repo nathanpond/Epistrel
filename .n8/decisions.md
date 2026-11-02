@@ -9504,7 +9504,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Not changed:** no closures, no epic AC, no coverage claims or maps (the joined issues add no requirement IDs to M6 or M7).
 - **Outside scope:** M11's audit emphases should name the new catalog-scope erasure subject (#504). That is left for a later `/n8-replan M11`.
 
-## Ad-hoc — 2026-10-30 (M6 test gate)
+## Ad-hoc — 2026-10-30 (M6 test gate) — reconciled by /n8-replan 2026-11-01 (M6 execution method only; no plan change)
 
 - **Change:** For M6's 24 pre-story issues only, `/n8-exec` runs the full suite once per batch instead of after every issue. There are four ordered batches: flakes (#537 #514 #517 #446 #468), then M5 bugs (#567 #566 #568 #516 #563 #483 #521), then decided changes and Console additions (#519 #515 #456 #588 #536 #533 #535 #526 #527 #531 #534), then #522 alone. Each issue still runs its own tests, its area tests and the fast gates. Every M6 feature story (#185 onward) keeps the per-story full-suite gate. The rules and the metrics tables are in `.n8/memory/m6-batched-pre-story-gate.md`.
   **Why:** The owner's decision, 2026-10-30. The pre-story issues are independent, small fixes, the shape where M4's and M5's batched fix passes caught nothing late. Batching saves roughly 5–6 h of full runs at about 19 min per sharded run. The feature stories share the commit path, verification, the profile schema (#203's `DELIVERED` flip) and the outbox and staged-turn harness: M3 group C's shape, where batching was a net loss because of test pollution across areas.
@@ -10521,8 +10521,36 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Decision (gate):** CI on the PR is the full-suite gate, as in passes 1–3. Locally: `test_structured_output.py` 58 passed (mutation: 2 fail with the source stashed), and ruff, format and mypy are clean.
   **Issue:** #685
 
-## Ad-hoc — 2026-11-02
+## Ad-hoc — 2026-11-02 — reconciled by /n8-replan 2026-11-01 (M9)
 
 - **Change:** (1) A structured call's retry after a schema error now runs at the call's own params, not `temperature=0` (#685). (2) #588 (the cydonia three-character latency row) and #685 move from M6 to M9 under #603.
   **Why:** the owner's decision on #685 (iii), then its pre-agreed fallback (ii) after the live rerun still failed.
   **Affects:** M9 (#603 gains #588 and #685: the measurement and the model-compliance residual). Any plan that assumes temperature-0 structured retries (none found).
+
+## /n8-replan M7,M8,M9 — 2026-11-01
+
+- **Cause:** M6 executed (merged `b8fd182`, verify fixes through `3e0f7e5`) after M7's last replan (10-30) and M8's (10-16): States, the world clock, scheduled events, external providers, the outbox and staged turns (migrations 0084–0104, Structured v3; M6 amended docs/02 only, so ADR-175 is next). Also the 2026-11-02 Ad-hoc entry (#588, #685 → M9) and the M6 owner decisions on #649 and #632 ("Affects: M7+").
+- **Method:** three read-only subagents checked M7's 41 and M8's 20 open issues against main at `3e0f7e5`; three more drafted the approved bodies, applied from the main session. M9 was checked directly.
+- **Owner decisions (2026-11-01, "approve all"):**
+  1. Position-less amendments to `state_changes`/`scheduled_events` only for rows carrying `amendment_part_id`; #221's migration relaxes both `positioned` CHECKs for those rows.
+  2. Backfill over a `prompt_only` era keeps the recorded pacing and API State changes and derives nothing more (#228, #232).
+  3. Clock-advance amendments are refused in M7.
+  4. Scheduled-plan amendments are refused (422 `schedule_not_amendable`, pointing to `PATCH …/scheduled-events/{id}`; in #221).
+  5. `imported_unsettled` rows: a resolve-only action that sends nothing, and `compensate` accepts the reason (#251).
+  6. Imported held reservations re-arm their expiry from import time (#251).
+  7. docs/04 I-10's unexported reservations are budget and image reservations; State holds travel with the bundle (#249).
+  8. #613 folded into #481 (closed not planned, pointing at #481's new AC).
+  9. #649 → M7 under #24 (new `[M7: FR-RESP-14]` part).
+  10. #632 and #662 → M7 under #24 (new `[M7: FR-CLOCK-7,8, FR-LITE-5,7]` and `[M7: FR-CONC-4, FR-LITE-5]` parts; ADRs at exec for the FR-RESP-14 and FR-LITE-5/7 amendments).
+  11. #254: the shared `{base_url, model, params}` config body.
+  12. #270/#271: e11 uses M4's `PROVENANCE.md` approval and `--check-sets`; per-case `reviewed` kept; exempt from the stale-set check.
+  13. #262/#269: image reservation and cost rows go in `STORY_ID_EXCEPTIONS` (kept, `story_id` nulled).
+  14. #261: slot uploads only after the last completed turn.
+- **Decision (replan, no owner call needed):** #262's story-deletion line follows the `jobs` rule (`core/stories.py`: 423 `story_busy` while an image job is generating or checking; otherwise the rows go with the story), reconciling it with #256 putting `image_jobs` in `STORY_TABLES`.
+- **Changed:**
+  - M7: 33 bodies edited with comments — #220–#235, #236, #237, #240, #242, #243, #244, #246, #247, #249, #250, #251, #481, #504, #523; #649, #632, #662 rewritten as stories (titles, labels, M7, parent #24). AC changed on #220–#223, #225–#229, #231, #232, #235, #236, #237, #242, #244, #246, #247, #249, #250, #251, #481. Edges: #244←#662, #632←#244. #613 closed. Description: outcomes 11, 13, 14, HOUSEKEEPING rows, phase 1 order, "Replan 2026-11-01".
+  - M8: 16 bodies edited, 17 comments (#254, #256–#266, #268–#272). AC changed on #254, #256, #257, #259, #261, #262, #265, #266, #269, #270, #271. 14 edges onto M7: #256/#268←#222, #258/#270←#233, #264←#221/#228/#238, #266←#504, #271←#235, #272←#247/#249/#250/#251. Description: "Replan 2026-11-01".
+  - M9: edges #603←#588←#685; type/area labels on #530, #602, #474, #502; description note. No body changes (M9 is scoped when M8 closes).
+- **Not changed:** epics #24–#27 and their AC; no coverage-claim changes beyond M7's three HOUSEKEEPING rows.
+- **Open for the owner:** #632's body records two calls the drafter made (Lite due-event stops stay structured-only; a refused Lite skip is not applied, the reply stands and the clock moves by pacing). Decision 1 leaves `scheduled_events.amendment_part_id` with no M7 writer, since decision 4 refuses scheduled-plan amendments.
+- **Outside scope:** ~30 milestone-less needs-triage issues from M6 (#638–#665, #679–#684); several (#650, #659, #660) touch code M7 rewrites. Triage before `/n8-exec M7`.

@@ -831,6 +831,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(200, prepare=_state_proposal),
     # -- stories: the reconciliation status of its external effects (#210)
     ("GET", f"{S}/reconciliation"): Call(200),
+    # #681: the story's operations, listed
+    ("GET", f"{S}/operations"): Call(200),
     # #218: the explicit actions on a listed effect (#203: on a story running States)
     ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(200, prepare=_outbox_effect),
     ("POST", f"{S}/reconciliation/{{outbox_id}}/compensate"): Call(

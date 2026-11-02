@@ -108,7 +108,7 @@ from epistrel.api.routes.media import (
     PartStoredBody,
     UploadOpenedBody,
 )
-from epistrel.api.routes.operations import OperationBody
+from epistrel.api.routes.operations import OperationBody, OperationsBody
 from epistrel.api.routes.ownership import (
     OwnerBody,
     RelationBody,
@@ -1106,6 +1106,11 @@ def _steps() -> list[Step]:
                 "GET", f"{s}/history", params={"viewpoint": "omniscient", "include_audit": "1"}
             ),
             lambda e, ids: _history(e, ids["story"], viewpoint="omniscient", include_audit=True),
+        ),
+        Step(
+            "list_operations",
+            lambda ids: Rest("GET", f"{s}/operations", params={"kind": "turn"}),
+            lambda e, ids: _operations(e, ids),
         ),
         Step(
             "get_operation",
@@ -2786,6 +2791,11 @@ async def _ingest(engine: Engine, story_id: str) -> dict[str, Any]:
 async def _history(engine: Engine, story_id: str, **params: Any) -> dict[str, Any]:
     found = await engine.history(RequestContext(), story_id, **params)
     return dump(HistoryResponse.of(found), exclude_unset=True)
+
+
+async def _operations(engine: Engine, ids: Ids) -> dict[str, Any]:
+    page = await engine.list_operations(CTX, ids["story"], kind="turn")
+    return dump(OperationsBody.of(page))
 
 
 async def _operation(engine: Engine, ids: Ids) -> dict[str, Any]:

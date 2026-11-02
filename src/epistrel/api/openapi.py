@@ -669,6 +669,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # The structured state reads (#137): no viewpoint resolves (#536).
     "scene": ("viewpoint_unresolved",),
     "entity_profile": ("viewpoint_unresolved",),
+    # #681: a story's operations, listed (a read of the story, gated like every other).
+    "list_operations": ("erasure_pending",),
     "get_operation": (
         "idempotency_conflict",
         "viewpoint_unresolved",

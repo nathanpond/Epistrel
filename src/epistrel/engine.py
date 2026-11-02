@@ -1602,6 +1602,36 @@ class Engine:
                 block.check_records(await catalog_block.operation_records(conn, operation_id))
         return view
 
+    async def list_operations(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        label: operation_view.OperationLabel | None = None,
+        kind: str | None = None,
+        status: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = operation_view.LIST_LIMIT_DEFAULT,
+    ) -> operation_view.OperationPage:
+        """#681: a page of ``story_id``'s operations by id, filtered by ``label``, ``kind``,
+        ``status`` and ``started_at`` (``operation_view.list_operations``). 404 for an unknown
+        story; 503 ``erasure_pending`` while an erasure holds the story blocked."""
+        del ctx
+        await self._erasure_gate(story_id)
+        return await operation_view.list_operations(
+            self.db,
+            story_id,
+            label=label,
+            kind=kind,
+            status=status,
+            since=since,
+            until=until,
+            after_id=after_id,
+            limit=limit,
+        )
+
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
 
     @overload

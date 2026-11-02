@@ -18224,6 +18224,22 @@
         "title": "OperationBody",
         "type": "object"
       },
+      "OperationKind": {
+        "description": "The unit of work an operation is (FR-STORE-24). Only ``turn`` allocates a turn index.",
+        "enum": [
+          "turn",
+          "inter_turn",
+          "genesis",
+          "consolidation",
+          "rewrite_session",
+          "backfill",
+          "import",
+          "control",
+          "maintenance"
+        ],
+        "title": "OperationKind",
+        "type": "string"
+      },
       "OperationLabel": {
         "description": "What a long-running operation was for (its ``kind`` alone does not say).",
         "enum": [
@@ -18236,6 +18252,140 @@
         ],
         "title": "OperationLabel",
         "type": "string"
+      },
+      "OperationStatus": {
+        "description": "Where an operation is in its life: inserted ``in_flight`` at begin, finalised once.\n\n``queued``: a turn waiting in its story's ``turn_queue`` (#63); it becomes ``in_flight``\nwhen the queue's drainer starts it.",
+        "enum": [
+          "queued",
+          "in_flight",
+          "committed",
+          "abandoned",
+          "failed"
+        ],
+        "title": "OperationStatus",
+        "type": "string"
+      },
+      "OperationSummaryBody": {
+        "description": "One operation as a list shows it (#681): `OperationBody`'s summary fields.",
+        "properties": {
+          "committed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Committed At"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationLabel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "narrative_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative Turn"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "staged": {
+            "title": "Staged",
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "turn_variant": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn Variant"
+          }
+        },
+        "required": [
+          "operation_id",
+          "kind",
+          "label",
+          "status",
+          "staged",
+          "narrative_turn",
+          "turn_variant",
+          "principal",
+          "started_at",
+          "committed_at"
+        ],
+        "title": "OperationSummaryBody",
+        "type": "object"
+      },
+      "OperationsBody": {
+        "description": "A page of a story's operations by id, and `next_after` (the id to continue after;\n`null` on the last page).",
+        "properties": {
+          "next_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationSummaryBody"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story_id",
+          "operations",
+          "next_after"
+        ],
+        "title": "OperationsBody",
+        "type": "object"
       },
       "Outcome": {
         "description": "What happened to the item an entry names (FR-SCN-5): ``ignored`` (kept only as guidance\nthat yields), ``dropped``, ``kept``, ``deferred`` (kept until the story has the capability it\nneeds, FR-SCN-11), ``inactive`` (a stored setting for a capability the story lacks), or\n``rejected`` (an error: the entry cannot be published or used as it stands).",
@@ -69141,6 +69291,217 @@
           "feedback"
         ],
         "x-epistrel-mutating": false
+      }
+    },
+    "/stories/{story_id}/operations": {
+      "get": {
+        "description": "A page of the story's operations by id (#681; `after_id` continues, `limit` at most 200), each with its kind, `label` (what a long-running operation was for: `staged_turn`, `genesis`, `rating_check`, `reactivation_check`, `offboarding`, `erasure`; null otherwise), status, `staged`, narrative turn and variant, principal and times. Filter by `label`, `kind`, `status`, and `since`/`until` on `started_at`. `GET /operations/{id}` reads one in full (its stages and stored result). 404 for an unknown story.",
+        "operationId": "list_operations",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OperationLabel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Label"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OperationKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/OperationStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperationsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a story's operations",
+        "tags": [
+          "operations"
+        ]
       }
     },
     "/stories/{story_id}/owner": {

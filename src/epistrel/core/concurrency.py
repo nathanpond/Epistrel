@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import own_predicates, summary
+from epistrel.core import own_predicates, summary, turn_memo
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import (
     ErasedSubjectReferenced,
@@ -515,6 +515,8 @@ async def run_with_revalidation(
             try:
                 await op.commit(decide=decide)
             except RevalidationRequired as signal:
+                # #619: the story moved under the turn: its per-turn memo reads it again.
+                turn_memo.clear()
                 outcome, state = signal.outcome, signal.state
                 if isinstance(outcome, Abandon):
                     await op.abandon()

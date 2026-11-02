@@ -72,6 +72,7 @@ from typing import Any, Literal
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import turn_memo
 from epistrel.core.enums import Authority, CharacterWeight, Provenance
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records, reindex_story
@@ -874,6 +875,7 @@ async def maybe_model(
         **position.columns("modeled"),
     }
     await conn.execute(insert(characters).values(row))
+    turn_memo.forget("story_subjects")  # #619: the new name is a subject from now on
     if adopted is not None:
         await conn.execute(
             update(entities).where(entities.c.id == character_id).values(character_id=character_id)

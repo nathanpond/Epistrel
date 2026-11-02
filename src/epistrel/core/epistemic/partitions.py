@@ -1197,12 +1197,20 @@ async def _holder_ok(conn: AsyncConnection, story_id: str, holder: str) -> None:
 
 
 async def is_player(conn: AsyncConnection, story_id: str, character_id: str) -> bool:
-    """Whether ``character_id`` is the story's player character (``characters.is_player``)."""
+    """Whether ``character_id`` is the story's player character (``characters.is_player``);
+    #619: once per character per turn (``core.turn_memo``)."""
+    from epistrel.core import turn_memo
+
+    key = ("is_player", story_id, character_id)
+    memo = turn_memo.get(key)
+    if memo is not turn_memo.MISSING:
+        return bool(memo)
     found = await conn.scalar(
         select(characters.c.is_player).where(
             characters.c.story_id == story_id, characters.c.id == character_id
         )
     )
+    turn_memo.put(key, bool(found))
     return bool(found)
 
 

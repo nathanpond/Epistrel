@@ -142,7 +142,20 @@ class Erased:
 
 
 async def story_erasures(conn: AsyncConnection, story_id: str) -> list[Erased]:
-    """The story's story-scope ledger rows, with the characters each deleted (its markers)."""
+    """The story's story-scope ledger rows, with the characters each deleted (its markers);
+    #619: once per turn (``core.turn_memo``: no erasure runs inside a turn)."""
+    from epistrel.core import turn_memo
+
+    key = ("story_erasures", story_id)
+    found = turn_memo.get(key)
+    if found is turn_memo.MISSING:
+        found = await _story_erasures(conn, story_id)
+        turn_memo.put(key, found)
+    erased: list[Erased] = found
+    return erased
+
+
+async def _story_erasures(conn: AsyncConnection, story_id: str) -> list[Erased]:
     el = erasure_ledger.c
     found = (
         await conn.execute(

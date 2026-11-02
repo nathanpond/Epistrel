@@ -62,6 +62,7 @@ from typing import Any, Literal, cast
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import turn_memo
 from epistrel.core.canon.facts import OBJECTIVE, Fact, FactOperation, Visibility, commit_fact
 from epistrel.core.enums import Authority, CharacterWeight, Provenance, RecordProvenance
 from epistrel.core.epistemic.perception import Qualifiers
@@ -648,6 +649,7 @@ async def write_introductions(
             }
         )
     await conn.execute(insert(characters).values(rows))
+    turn_memo.forget("story_subjects")  # #619: the new names are subjects from now on
     await add_entities(
         conn,
         story_id,

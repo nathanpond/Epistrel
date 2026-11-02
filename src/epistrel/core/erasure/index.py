@@ -85,6 +85,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import turn_memo
 from epistrel.core.erasure.matcher import (
     DASHES,
     MIN_TERM_CHARS,
@@ -463,11 +464,17 @@ class Terms:
 
     async def of(self, story_id: str | None) -> list[Subject]:
         if story_id not in self._read:
-            self._read[story_id] = (
-                await catalog_subjects(self.conn)
-                if story_id is None
-                else await story_subjects(self.conn, story_id)
-            )
+            if story_id is None:
+                self._read[story_id] = await catalog_subjects(self.conn)
+            else:
+                # #619: once per turn (``core.turn_memo``), not per ``index_records`` call; a
+                # turn that adds a character forgets it.
+                key = ("story_subjects", story_id)
+                found = turn_memo.get(key)
+                if found is turn_memo.MISSING:
+                    found = await story_subjects(self.conn, story_id)
+                    turn_memo.put(key, found)
+                self._read[story_id] = found
         return self._read[story_id]
 
 

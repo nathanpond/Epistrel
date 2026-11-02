@@ -108,6 +108,9 @@ TESTIMONY = "testimony"
 """#162: a salient witness's ``belief_adjudication`` call."""
 REPAIR = "repair"
 POLISH = "polish"
+INPUT_ACTS = "input_acts"
+"""#523: the extraction call that reads what the player's ``do`` shows its witnesses (optional,
+after testimony: unfunded, the act is observed with what detection found in it)."""
 OPTIONAL_PRIORITY = (
     SALIENCE,
     DIRECTOR_ORDER,
@@ -116,6 +119,7 @@ OPTIONAL_PRIORITY = (
     ENTAILMENT,
     FOLLOW_UP,
     TESTIMONY,
+    INPUT_ACTS,
     REPAIR,
     POLISH,
 )
@@ -511,6 +515,7 @@ __all__ = [
     "FOLLOW_UP",
     "GUARDRAIL_INPUT",
     "GUARDRAIL_OUTPUT",
+    "INPUT_ACTS",
     "MAX_CALLS_PER_TURN",
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",

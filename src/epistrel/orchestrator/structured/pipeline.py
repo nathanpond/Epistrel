@@ -346,6 +346,7 @@ from epistrel.observability.metrics import (
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
+    INPUT_ACTS,
     NARRATOR_RENDER,
     SALIENCE,
     STOP,
@@ -1582,6 +1583,9 @@ class Checked:
     names (``canon_requests``)."""
     perception_repairs: list[perception.Repair] = field(default_factory=list)
     """The perception qualifiers dropped before staging (#161; FR-TURN-13), in beat order."""
+    input_acts: list[Any] = field(default_factory=list)
+    """#523: what the player's ``do`` shows its witnesses (``observes_input_acts``): propositions
+    about the actor, routed to observation with the input's ``do`` and never canonized."""
     qualifier_rejected: list[tuple[TurnBeat, tuple[perception.Repair, ...]]] = field(
         default_factory=list
     )
@@ -3077,6 +3081,95 @@ def _qualifier_events(checked: Checked) -> list[tuple[str, Any]]:
     ]
 
 
+def observes_input_acts(settings: ProfileSettings) -> bool:
+    """#523: whether a turn reads the player's ``do`` for what it shows its witnesses: under
+    per-character partitions (only partitions observe) with extraction run on every beat
+    (``verification.extraction_mode = always`` at ``extraction`` or above)."""
+    return (
+        settings.pipeline == "structured"
+        and module_on(settings, belief_transitions.PARTITIONS_MODULE)
+        and settings.verification.level in ("extraction", "entailment")
+        and settings.verification.extraction_mode == "always"
+    )
+
+
+async def read_input_acts(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    *,
+    do: str | None,
+    settings: ProfileSettings,
+    budget: TurnBudget,
+) -> list[Any]:
+    """#523: what the player's ``do`` shows its witnesses, read by one extraction call
+    (``observes_input_acts``): the propositions about the actor, routed to observation with the
+    input's ``do``, never verified or canonized (the player's own act, FR-RESP-11). Optional
+    work (``INPUT_ACTS``), after the modeling and testimony; unfunded, nothing is read."""
+    if not do or not observes_input_acts(settings):
+        return []
+    held = budget.held
+    if not budget.try_optional(INPUT_ACTS, 1):
+        return []
+    try:
+        async with db.begin() as conn:
+            config = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+            speaker = PLAYER if read.actor.id == read.player_id else read.actor.id
+            env = await extraction.load_env(
+                conn,
+                story_id,
+                StructuredReadSet(),
+                position=(read.turn, 0),
+                speakers=[speaker],
+                config=config,
+                addressed=read.actor.id,
+            )
+            detector = ClaimDetector(
+                config,
+                env,
+                models=models,
+                budget=budget,
+                routes=routes_of(settings),
+                scene_context=SceneContext(
+                    present_entities=list(read.present)[:100], last_beats=list(read.last_beats)
+                ),
+                conn=conn,
+                story_id=story_id,
+            )
+            acts = await detector.input_acts(
+                DetectBeat(1, DO, do, speaker, input=True), (read.turn, 0)
+            )
+    finally:
+        budget.release_to(held)
+    return [
+        c.proposition
+        for c in acts
+        if c.proposition is not None and c.proposition.subject_id == read.actor.id
+    ]
+
+
+def input_act_claims(checked: Checked, actor: str) -> tuple[Any, ...]:
+    """#523: the propositions the player's ``do`` states about the actor: what detection found
+    on the input's ``do`` and what extraction read there (``Checked.input_acts``)."""
+    detected = [
+        c.claim.proposition
+        for c in checked.checked
+        if c.claim.beat == 1
+        and c.claim.channel == DO
+        and c.claim.proposition is not None
+        and c.claim.proposition.subject_id == actor
+    ]
+    found: list[Any] = []
+    seen: set[tuple[Any, ...]] = set()
+    for proposition in (*detected, *checked.input_acts):
+        key = (*proposition.normalized_key(), proposition.polarity.value)
+        if key not in seen:
+            seen.add(key)
+            found.append(proposition)
+    return tuple(found)
+
+
 def _routed_beats(
     checked: Checked,
     read: TurnRead,
@@ -3104,6 +3197,8 @@ def _routed_beats(
                     kind=cast(perception.RouteKind, kind),
                     beat=1,
                     actor=read.actor.id,
+                    # #523: the player's act, observed by its content perceivers.
+                    claims=input_act_claims(checked, read.actor.id) if kind == DO else (),
                     # #177: the player's whisper qualifies the input's ``say``.
                     qualifiers=input_qualifiers
                     if kind == SAY and input_qualifiers is not None
@@ -5890,6 +5985,11 @@ async def play(
             read_set=read_set,
         )
         checked.degradation += checked.adjudications.degradation
+        # #523: what the player's ``do`` shows its witnesses, read once the turn's other work
+        # is funded.
+        checked.input_acts = await read_input_acts(
+            db, models, story_id, read, do=do, settings=settings, budget=budget
+        )
         found[:] = [checked]
         # #212 (FR-EXT-15,16): an effect on a synchronous provider makes the turn a staged turn,
         # decided here, after every planned render was verified and before the single commit

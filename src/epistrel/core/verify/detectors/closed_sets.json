@@ -1,0 +1,44 @@
+{
+  "category": "closed_sets",
+  "language": "en",
+  "description": "Exclusion phrasings in a character's own background flavor that rule a relation out (#580; FR-SCN-7): each family names the core predicate whose objects the character has none of, as an empty character-layer closed set over the character. A phrase counts only as a statement about the character: not after a determiner or possessive ('her only brother', 'the only child at the party'), and not before a preposition or relative clause that makes it a description of something else.",
+  "exclude_before": ["the", "her", "his", "their", "its", "my", "your", "our", "whose"],
+  "exclude_after": ["at", "in", "of", "among", "on", "who", "that", "to", "from", "for", "with", "there", "here", "left"],
+  "families": [
+    {
+      "predicate": "sibling_of",
+      "phrases": [
+        "only child",
+        "no siblings",
+        "no sibling",
+        "no brothers or sisters",
+        "no brother or sister",
+        "no brothers and no sisters",
+        "never had siblings",
+        "never had a sibling",
+        "never had any siblings",
+        "without siblings",
+        "without any siblings"
+      ]
+    },
+    {
+      "predicate": "married_to",
+      "phrases": [
+        "never married",
+        "never been married",
+        "never wed",
+        "never got married"
+      ]
+    },
+    {
+      "predicate": "parent_of",
+      "phrases": [
+        "no children",
+        "no kids",
+        "childless",
+        "never had children",
+        "never had kids"
+      ]
+    }
+  ]
+}

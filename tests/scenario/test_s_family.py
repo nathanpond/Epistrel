@@ -8,14 +8,15 @@ stranger's). Renders are the stub's; a render's context is the captured ``Charac
 
 Not here: "only child" losing to the role's "has a sister" is S-FAMILY's M7 part (docs/04; moved
 from M5 on the owner's decision of 2026-10-26, #576): it needs the background read as a closed
-set (#580); the merge rule itself is U-27 M4's (``tests/test_u_27.py``). The Brother's revision by
-observation is a direct ``observation`` transition, not a played turn: no turn can make it yet
-(Sam is the player, so a render's claim about him is denied ``player_character``, and the
-player's own ``do`` is routed without claims). The played-turn version is S-FAMILY's M7 part
-(moved on the owner's decision of 2026-10-26, #523 option (c))."""
+set (#580); the merge rule itself is U-27 M4's (``tests/test_u_27.py``). The M5 part checks the
+Brother's revision at the belief-operation level, a direct ``observation`` transition (the owner's
+decision of 2026-10-26, #523 option (c)); ``test_s_family__m7_observed_temper`` (#523, M7) plays
+it: Sam's own ``do``, read by extraction, is observed by the Brother (a render's claim about the
+player is still denied ``player_character``)."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -130,8 +131,8 @@ async def test_s_family(
     - **The persona.** The family's partitions hold Sam's name, exact age and both traits, each
       a belief citing the persona's seed act; the neighbour's holds none and his context sees
       only "Sam (early twenties)". When Sam loses his temper in front of the Brother, the
-      Brother's belief that Sam is conflict-avoidant is revised by observation (written
-      directly; see the module docstring).
+      Brother's belief that Sam is conflict-avoidant is revised by observation (here the
+      belief operation, written directly; the played turn is the M7 part's).
     - **The opening** is turn 1, with exposures for the roles present.
 
     Complements: the Father's and the Brother's contexts never say who has the letters; with
@@ -471,3 +472,173 @@ async def test_s_family__open_question_by_played_character(
         assert all(not r.props for r in asked)
         for item in (deed, letters):
             assert await _about(engine, story, item) == seeded[item]
+
+
+TEMPER_DO = "Sam loses his temper and slams his fist on the table."
+TEMPER_SPAN = "loses his temper"
+
+
+def _temper_answer() -> str:
+    """The extraction model's reading of Sam's act: he is not conflict-avoidant."""
+    return json.dumps(
+        {
+            "claims": [
+                {
+                    "beat": 0,
+                    "span": TEMPER_SPAN,
+                    "subject": "Sam",
+                    "predicate": "trait",
+                    "object": "conflict-avoidant",
+                    "polarity": "negated",
+                    "confidence": 0.9,
+                }
+            ]
+        }
+    )
+
+
+async def _sam_beliefs(engine: AsyncEngine, story: str, holder: str) -> list[Any]:
+    return await sp.rows_of(
+        engine,
+        "SELECT b.polarity, b.held_to_turn, t.kind, e.type AS act, e.character_id AS actor "
+        "FROM beliefs b JOIN propositions p ON p.id = b.proposition_id "
+        "JOIN belief_transitions t ON t.id = b.provenance "
+        "LEFT JOIN events e ON e.id::text = t.antecedent_ref->>'id' "
+        "WHERE b.story_id = :s AND b.holder_character_id = :h "
+        "AND p.literal->>'value' = 'conflict-avoidant' ORDER BY b.held_from_step, b.tx_from",
+        s=story,
+        h=holder,
+    )
+
+
+@pytest.mark.part("M7", "FR-SCN-8")
+async def test_s_family__m7_observed_temper(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#523: in a played turn, Sam (the player) loses his temper in front of the Brother. The
+    Brother's seeded belief that Sam is conflict-avoidant is revised by **observation** of the
+    player's own act: the turn's ``player_input`` event is the transition's antecedent, Sam its
+    actor. The act's reading comes from the extraction model over the player's ``do`` (the
+    profile extracts every beat), and only claims about Sam himself are taken.
+
+    Complements: the Sister, not in the dining room, did not perceive the act and keeps the
+    seeded belief; no canon fact about Sam's trait is written; and a render still cannot assert
+    a fact about the player: the Brother's narration that Sam is not conflict-avoidant is
+    denied ``player_character`` and reaches no one's beliefs."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        profile = await sp.partitioned_profile(client, "Sunday temper")
+        scenario_id, _ = await g.published_scenario(client, sp.family())
+        linda = await sp.cast(client, {"mother": LINDA})
+        made = await g.create_from(client, sp.request(scenario_id, linda, profile))
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        sam, brother, sister = by_role["player"], by_role["brother"], by_role["sister"]
+        assert [(r.polarity, r.kind) for r in await _sam_beliefs(engine, story, brother)] == [
+            ("affirmed", "author")
+        ]
+
+        # -- a render cannot assert a fact about the player (FR-RESP-11)
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "do",
+                        "Tom eyes Sam, who is not one to avoid a fight.",
+                        propositions=[claim("Sam", "trait", "conflict-avoidant", negated=True)],
+                    )
+                )
+            ],
+        )
+        denied = await respond(
+            client, story, body(sam, "Pass the salt.", render_character_ids=[brother])
+        )
+        assert denied.status_code == 200, denied.text
+        report = await turn_report(engine, story)
+        assert any(
+            d.get("reason") == "player_character" for d in report["verify"].get("denied", [])
+        ), report["verify"]
+        assert [(r.polarity, r.kind) for r in await _sam_beliefs(engine, story, brother)] == [
+            ("affirmed", "author")
+        ]
+
+        # -- the player's own act, observed
+        stub.reset()
+        stub.script("generation", [render(beat("do", "Tom sets down his fork."))])
+        stub.when(TEMPER_DO, _temper_answer(), purpose="extraction_backstop")
+        played_ = await respond(
+            client, story, body(sam, None, do=TEMPER_DO, render_character_ids=[brother])
+        )
+        assert played_.status_code == 200, played_.text
+        revised = await _sam_beliefs(engine, story, brother)
+        assert sorted((r.polarity, r.held_to_turn is None, r.kind) for r in revised) == [
+            ("affirmed", False, "author"),
+            ("negated", True, "observation"),
+        ]
+        (observed,) = [r for r in revised if r.kind == "observation"]
+        assert (observed.act, str(observed.actor)) == ("player_input", sam)
+
+        # -- the Sister did not perceive it; nothing about Sam's trait became canon
+        assert [
+            (r.polarity, r.held_to_turn is None, r.kind)
+            for r in await _sam_beliefs(engine, story, sister)
+        ] == [("affirmed", True, "author")]
+        canon = await scalar(
+            engine,
+            "SELECT count(*) FROM facts f JOIN predicates p ON p.id = f.predicate_id "
+            "WHERE f.story_id = :s AND f.subject_id = :c AND p.name = 'trait'",
+            s=story,
+            c=sam,
+        )
+        assert canon == 0
+
+
+TOM_ONLY_CHILD = "Tom grew up an only child on the farm."
+
+
+@pytest.mark.part("M7", "FR-SCN-7")
+async def test_s_family__m7_only_child(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#580: the Brother's role says he is Sam's sibling, and the catalog Tom cast in it says
+    "Tom grew up an only child on the farm." in his background flavor. Structured genesis reads
+    the background as a character-layer closed set (no ``sibling_of``), the role's relationship
+    wins the fact merge, and the creation reports the conflict at the background flavor
+    (``merge_conflict``, rule ``closed_set``); the sibling fact is canon. Complement: Tom cast
+    without the line is reported nothing at his background, and his sibling fact stands too."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        profile = await sp.partitioned_profile(client, "Sunday only child")
+        scenario_id, _ = await g.published_scenario(client, sp.family())
+        cast = await sp.cast(client, {"brother": {"background_flavor": TOM_ONLY_CHILD}})
+        made = await g.create_from(client, sp.request(scenario_id, cast, profile))
+        story = made["story_id"]
+        by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+        materialized = sp.by_field(made["report"])
+        lost = materialized["characters.brother.background_flavor"]
+        assert "merge_conflict" in lost["outcomes"], lost
+        assert lost["rule"] == "closed_set"
+        assert lost["loser"].startswith("brother:background_flavor")
+        sibling = await scalar(
+            engine,
+            "SELECT count(*) FROM facts f JOIN propositions q ON q.id = f.proposition_id "
+            "JOIN predicates p ON p.id = q.predicate_id "
+            "WHERE f.story_id = :s AND p.name = 'sibling_of' AND :b IN (q.subject_id, q.object_id)"
+            " AND :c IN (q.subject_id, q.object_id)",
+            s=story,
+            b=by_role["brother"],
+            c=by_role["player"],
+        )
+        assert sibling >= 1
+
+        plain = await sp.cast(client)
+        again = await g.create_from(client, sp.request(scenario_id, plain, profile))
+        calm = sp.by_field(again["report"])
+        assert "merge_conflict" not in calm.get("characters.brother.background_flavor", {}).get(
+            "outcomes", []
+        )

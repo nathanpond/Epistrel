@@ -10794,3 +10794,24 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #504
 - **Decision:** the ADR is ADR-176, since #246 took ADR-175.
   **Issue:** #504
+
+### #523 — the player's observed act, 2026-11-02
+
+- **Decision:** approach (a). The player's `do` routes its claims to observation (`RouteBeat.claims` on the input's `do`), but only claims about the actor. Those come from what detection found on the input `do`, plus one optional extraction call over the `do` (`read_input_acts`, budget kind `INPUT_ACTS`, after testimony in `OPTIONAL_PRIORITY`). The call runs only under partitions with `verification.extraction_mode = always`, after modeling and adjudication. Its claims are never verified or canonized, which is why C-19 sees "no canon about the player's trait".
+  **Why:** the input's detection is declared-level (no extraction, #156). Reading the act inside detection consumed the turn's budget ahead of modeling (S-PLAYER's `modeling_deferred`), so the call runs as the lowest-priority optional work after it.
+  **Issue:** #523
+- **Decision:** the `trait` literal. Genesis registers the auto `trait` predicate with object type `str` (#173 registered it `any`), and migration 0111 types existing ones where no proposition names an entity object. Normalization of `any` predicates is unchanged, so an unknown name stays `unresolved_entity`.
+  **Issue:** #523
+- **Discovered:** `test_s_clock_belief__no_leak` fails on a shrunk local Hypothesis example at HEAD, unrelated. Filed as #693 (needs-triage).
+  **Issue:** #523
+
+### #580 — background flavor as closed sets, 2026-11-02
+
+- **Decision:** the table is `core/verify/detectors/closed_sets.json`, three families: `sibling_of` ("only child", "no siblings", …), `married_to` ("never married", …) and `parent_of` ("childless", "no children", …).
+  - Each phrase yields an empty character-layer closed set over the holder.
+  - A phrase does not count after a determiner or possessive ("her only brother").
+  - It does not count before a preposition or relative clause ("the only child at the party"), unless "a"/"an" precedes it ("an only child in Dayton").
+  - `SeedReading.closed_sets` carries the sets. `structured._backgrounds` adds them to the merge's character layer, tracked at `characters.<role>.<field>`, so the conflict is reported there.
+  **Issue:** #580
+- **Decision:** a docs/04 U-27 **[M7: FR-SCN-7]** part is added, with a §15 row, for the from-prose case the story's test plan names in `tests/test_u_27.py`.
+  **Issue:** #580

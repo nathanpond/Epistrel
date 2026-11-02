@@ -685,6 +685,18 @@ class ClaimDetector:
             merge(detection, extracted), states, called=True, shadow=sampled, speakers=speakers
         )
 
+    async def input_acts(self, beat: DetectBeat, position: Position) -> list[DetectedClaim]:
+        """#523: the claims an extraction call reads in the player's ``do`` (layer (c) alone,
+        never verified or canonized): what the act shows the characters who see it. Empty when
+        the call fails or the budget cannot afford it (optional work, never reserved)."""
+        inputs, by_index = extraction_inputs([beat], self.env, self.scene_context)
+        answer = await call_extraction(self.models, inputs, budget=self.budget, routes=self.routes)
+        if answer is None:
+            return []
+        return await to_claims(
+            answer, {beat.index: beat}, position, normalize_one=self._normalize, by_index=by_index
+        )
+
     async def render(
         self,
         beats: Sequence[DetectBeat],

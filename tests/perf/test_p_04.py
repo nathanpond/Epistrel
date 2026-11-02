@@ -698,7 +698,8 @@ def test_p_04__multi() -> None:
     info = sidecar["info"]
     assert info["scenario"] == "multi"
     assert info["host_class"] == newest.host_class
-    assert str(info["profile"]).startswith("Full v"), info["profile"]
+    # A committed report names the profile as it ran: "Structured" before #227 renamed it Full.
+    assert str(info["profile"]).startswith(("Full v", "Structured v")), info["profile"]
     assert info["perception"] == "full"
     assert sidecar["passed"] == (newest.verdict == report.PASS)
     names = {c["name"] for c in sidecar["aggregate"]}

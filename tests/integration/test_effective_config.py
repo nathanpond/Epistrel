@@ -66,7 +66,6 @@ from tests.profile_support import (
     POLISH,
     PROFILES,
     REDERIVATION,
-    UNAVAILABLE_WARNINGS,
     configuration_rows,
     merged,
     nest,
@@ -918,9 +917,10 @@ async def _kept_as_it_was(
 ) -> dict[str, Any]:
     """``send`` makes a write that adds the polish pass to ``story``, which has history.
     Without ``ignore_warnings`` it is held, and writes nothing. Confirmed under the same key it
-    is applied: its entry is ``upgrade_unavailable``, its ``result`` is the story's
-    configuration as it was, the revisions it answers are the story's, and nothing is written
-    but the call's own ``Idempotency-Key`` record (#61). Returns the confirmed answer."""
+    starts a backfill instead of applying (#228): 202 ``applied: false`` with the backfill, its
+    entry ``backfill.needed`` (not ``upgrade_unavailable``), and the story's configuration as it
+    was until the backfill completes (``pending_backfill``). Cancelling the backfill leaves the
+    configuration as it was. Returns the confirmed answer."""
     shown = await _effective(client, story)
     start = await _story_row(db, story)
     revisions = (start.config_revision, start.timeline_revision)
@@ -929,23 +929,27 @@ async def _kept_as_it_was(
     key = f"unavailable-{secrets.token_hex(6)}"
     held = await ok(await send(story, key))
     assert (held["applied"], held["result"]) == (False, None)
-    assert held["impact"]["warnings"] == UNAVAILABLE_WARNINGS
+    assert held["impact"]["warnings"] == ["capabilities_gained", "backfill_needed"]
     assert (held["config_revision"], held["timeline_revision"]) == revisions
     assert await _trace(db, story) == before
     assert await scalar(db, KEYS) == keys  # a held call keeps no key
-    confirmed = await ok(await send(story, key, ignore_warnings=True))
-    assert confirmed["applied"] is True
-    assert confirmed["impact"] == held["impact"]
-    (entry,) = confirmed["impact"]["affected_stories"]
-    assert (entry["story_id"], entry["upgrade_unavailable"]) == (story, True)
+    confirmed = await send(story, key, ignore_warnings=True)
+    assert confirmed.status_code == 202, confirmed.text
+    found: dict[str, Any] = confirmed.json()
+    assert (found["applied"], found["result"]) == (False, None)
+    assert found["backfill"]["status"] == "queued"
+    (entry,) = found["impact"]["affected_stories"]
+    assert (entry["story_id"], entry["upgrade_unavailable"]) == (story, False)
     assert (entry["capabilities_gained"], entry[REDERIVATION]["needed"]) == (["polish"], True)
-    assert entry["fingerprint_after"] == entry["fingerprint_before"] == shown["fingerprint"]
-    assert confirmed["result"] == shown
-    assert (confirmed["config_revision"], confirmed["timeline_revision"]) == revisions
-    assert await _trace(db, story) == before
-    assert await scalar(db, KEYS) == keys + 1
+    pending = await _effective(client, story)
+    assert pending.pop("pending_backfill") == {"id": found["backfill"]["id"]}
+    assert pending == shown
+    cancelled = await client.delete(f"/stories/{story}/backfill", headers=headers())
+    assert cancelled.status_code == 200, cancelled.text
     assert await _effective(client, story) == shown
-    return confirmed
+    after = await _story_row(db, story)
+    assert (after.config_revision, after.timeline_revision) == revisions
+    return found
 
 
 async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch: Space) -> None:
@@ -991,14 +995,15 @@ async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch
             assert (start.engine_profile_id, start.engine_profile_version_pin) == (shared, 1)
             pinned = {"id": shared, "version": 1, "pinned": True, "deleted": False}
             for send in (patch, assign):
-                result = (await _kept_as_it_was(client, scratch.db, lived, send))["result"]
+                await _kept_as_it_was(client, scratch.db, lived, send)
+                result = await _effective(client, lived)
                 assert (result["profile"], result["overrides"]) == (
                     pinned,
                     {"settings": {}, "revision": 0},
                 ), send.__name__
                 assert result["effective"]["repair"]["polish"]["enabled"] is False
                 assert "polish" not in result["capabilities"]
-            assert tuple(await _story_row(scratch.db, lived)) == tuple(start)
+            assert tuple(await _story_row(scratch.db, lived)) == tuple(start)  # nothing applied
             shown = await ok(await client.get(f"/stories/{lived}", headers=READ))
             assert shown["engine_profile"] == {"id": shared, "version": 1, "pinned": True}
 

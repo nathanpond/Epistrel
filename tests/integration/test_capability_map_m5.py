@@ -80,6 +80,7 @@ from tests.event_support import rows, scalar
 from tests.profile_support import (
     M5_MODULES,
     PROFILES,
+    REDERIVATION,
     STRUCTURED_DOCUMENT,
     delivered_rules,
     merged,
@@ -540,11 +541,14 @@ async def test_c_16__m5_capabilities(
             json={**move, "ignore_warnings": True},
             headers=WRITE,
         )
-        assert kept.status_code == 200, kept.text
+        # #228: the upgrade re-derives the story's history first; until then it keeps its version.
+        assert kept.status_code == 202, kept.text
         (entry,) = kept.json()["impact"]["affected_stories"]
-        assert entry["upgrade_unavailable"] is True
+        assert (entry["upgrade_unavailable"], entry[REDERIVATION]["needed"]) == (False, True)
         effective = (await client.get(f"/stories/{played}/effective-config", headers=READ)).json()
         assert effective["profile"]["version"] == 1
+        cancelled = await client.delete(f"/stories/{played}/{REDERIVATION}", headers=WRITE)
+        assert cancelled.status_code == 200, cancelled.text
 
 
 async def _story_row(db: AsyncEngine) -> str:

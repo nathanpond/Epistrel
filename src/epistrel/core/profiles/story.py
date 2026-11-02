@@ -235,15 +235,14 @@ async def _report(
         story_id, change, history=story_id in history, transcript=sizes.get(story_id, (0, 0))
     )
     needed = entry.upgrade_unavailable
-    if backfills and needed:
-        entry = entry.model_copy(update={"upgrade_unavailable": False})
     warned = safety_warnings(after.settings, safety)
     report = impact.single_report(entry, change, budget_warnings=warned)
     if backfills and needed:
+        held = entry.model_copy(update={"upgrade_unavailable": False})
         report = report.model_copy(
             update={
-                "warnings": [w for w in report.warnings if w != "upgrade_unavailable"]
-                or ["backfill_needed"]
+                "affected_stories": [held],
+                "warnings": [w for w in report.warnings if w != "upgrade_unavailable"],
             }
         )
     return report, needed, change

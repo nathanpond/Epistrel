@@ -29,19 +29,18 @@
     {
       "code": "model_unavailable",
       "deadline_override_ms": 600000,
-      "measured_at": "2026-10-31",
+      "measured_at": "2026-11-01",
       "model": "cydonia-24b-v4.3",
       "policies": "off",
       "purpose": "generation",
       "reason": "invalid_structure",
-      "sha": "28af800-dirty",
+      "sha": "27884fb",
       "structural_errors": [
-        "the object: Value error, beats.0.step: the render declares no steps",
-        "the object: Value error, beats.0.step: the render declares no steps",
-        "the object: Value error, beats.0.step: the render declares no steps"
+        "the object: Value error, beats.0.step: names no act step (step 1 is an observe step: declare the `act` step this beat carries out and name its index, or leave `step` out)",
+        "the object: Value error, beats.0.step: names no act step (step 1 is an observe step: declare the `act` step this beat carries out and name its index, or leave `step` out)"
       ],
       "tier": "local",
-      "turn": 3,
+      "turn": 4,
       "turn_kind": "three_character_sequential",
       "turn_path": "three-character sequential respond (#174)"
     }

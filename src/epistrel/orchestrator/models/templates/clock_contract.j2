@@ -8,7 +8,7 @@ itself ``flashback``; the engine times and checks all of it and never trusts it.
 ## Time
 Story time passes as the beats are spoken and done. When more time passes than a beat says and does ("twenty minutes later she arrives"), declare it on that beat as an effect `{"kind": "time_advance", "state": "world_clock", "minutes": 20, "reason": "the drive"}`.
 {% if voiced_characters %}
-To place it between what happens, declare `time` steps (numbered with your other steps, citing nothing), name a step in each `say` or `do` (`step`) and in the advance (`step`).
+To place it between what happens, declare `time` steps (numbered with your other steps, citing nothing), name a step in each `say` or `do` (`step`) and in the advance (`step`). Without declared `steps`, leave `step` out.
 {% endif %}
 A beat that recalls an earlier time sets `"flashback": true`: its times are not the present, and it moves no time.
 

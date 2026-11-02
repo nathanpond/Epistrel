@@ -4,17 +4,20 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from epistrel.core.antecedents import RecordAntecedent
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.orchestrator.models.prompts import make_environment
+from epistrel.orchestrator.models.structured import parse
 from epistrel.orchestrator.structured import steps as s
-from epistrel.orchestrator.structured.render import render_schema
+from epistrel.orchestrator.structured.render import StepDecl, render_schema
 
 SKETCH = {"subject": "the bridge", "relation": "condition", "object": "collapsed"}
 
@@ -72,10 +75,65 @@ def test_render_steps__structure() -> None:
         ([{"kind": "think", "text": "Hm.", "step": 3}, DO], GOOD, "step"),
     ]
     for beats, steps, message in bad:
-        with pytest.raises(ValidationError, match=message):
+        with pytest.raises(ValidationError, match=message) as refused:
             _render(beats, steps)
+        # #612: each refusal names its remedy, which the retry's correction carries.
+        (error,) = refused.value.errors()
+        assert error["msg"].endswith(")"), error["msg"]
     with pytest.raises(ValidationError, match="only a character"):
         _render([{"kind": "narration", "text": "Rain."}], [GOOD[2]], actor=None)
+
+
+def test_render_steps__no_steps_correction() -> None:
+    """#612: a render that names a ``step`` but declares no ``steps`` is still refused (the
+    validation is not loosened), and the correction the retry is sent names the remedy, for a
+    beat's ``step`` and for a ``time_advance``'s. The step contract and the time contract tell
+    the model up front that a reply with no ``steps`` leaves ``step`` out. A ``confidence`` on a
+    step other than a ``believe`` is refused the same way, and the schema offers it on a
+    ``believe`` alone (``_per_step_kind``)."""
+    schema = render_schema(
+        actor_id="jenni", player_id="cal", cast_ids=["jenni"], max_beats=6, clock_level="on"
+    )
+    advance = {"kind": "time_advance", "state": "world_clock", "minutes": 5, "reason": "a walk"}
+    remedy = "leave `step` out, or declare the `steps` it names"
+    for beat, where in (
+        ({"kind": "do", "text": "She heads for the ferry.", "step": 1}, "beats.0.step"),
+        (
+            {"kind": "do", "text": "She heads for the ferry.", "effects": [{**advance, "step": 1}]},
+            "beats.0.effects.0.step",
+        ),
+    ):
+        failure = parse(json.dumps({"beats": [beat]}), schema)
+        assert not isinstance(failure, BaseModel)
+        assert failure.reason == "schema_error"
+        assert f"{where}: the render declares no steps ({remedy})" in failure.problem
+    unmarked = {"kind": "do", "text": "She heads for the ferry.", "effects": [advance]}
+    assert isinstance(parse(json.dumps({"beats": [unmarked]}), schema), BaseModel)
+
+    # The live tier's next failure: a `confidence` on an observe step. The schema offers it
+    # only on a believe step, the correction names the remedy and the contract says so.
+    observed = {"index": 1, "kind": "observe", "proposition": SKETCH, "confidence": "known"}
+    failure = parse(json.dumps({"beats": [DO], "steps": [observed, *GOOD[1:]]}), schema)
+    assert not isinstance(failure, BaseModel)
+    assert (
+        "steps.0.confidence: only a believe step declares a confidence"
+        " (leave it out of the observe step)" in failure.problem
+    )
+    variants = StepDecl.model_json_schema()["anyOf"]
+    offered = {v["properties"]["kind"]["enum"][0]: set(v["properties"]) for v in variants}
+    assert {k for k, fields in offered.items() if "confidence" in fields} == {"believe"}
+    assert {k for k, fields in offered.items() if "cites" in fields} == {"believe", "act"}
+    assert offered["time"] == {"index", "kind"}
+    assert all(v["additionalProperties"] is False for v in variants)
+
+    environment = make_environment()
+    contract = environment.get_template("steps_contract.j2").render(belief_steps=True)
+    assert "only a `believe` step has one" in contract
+    assert "when nothing you believe changes, declare no `steps` and leave `step` out" in contract
+    clock = environment.get_template("clock_contract.j2").render(
+        clock_contract=True, voiced_characters=True
+    )
+    assert "Without declared `steps`, leave `step` out." in clock
 
 
 IDS = {name: new_ulid() for name in ("bridge", "condition")}

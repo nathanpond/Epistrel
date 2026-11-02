@@ -656,6 +656,38 @@ StepKind = Literal["observe", "believe", "act", "time"]
 ConfidenceName = Literal["unknown", "suspected", "believed", "known"]
 
 
+_STEP_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "observe": (("index", "kind", "proposition"), ("proposition",)),
+    "believe": (("index", "kind", "cites", "proposition", "confidence"), ("proposition",)),
+    "act": (("index", "kind", "cites", "proposition"), ()),
+    "time": (("index", "kind"), ()),
+}
+"""#612: each step kind's fields and the ones it requires, ``_steps_structure``'s rules: only a
+``believe`` declares a ``confidence``, an ``observe`` and a ``time`` cite nothing, a ``time``
+names no proposition, an ``observe`` and a ``believe`` name one."""
+
+
+def _per_step_kind(schema: dict[str, Any]) -> None:
+    """A step's JSON Schema as one alternative per kind (#612, as ``_per_kind`` does for beats,
+    #480), so constrained decoding cannot write the field a step kind may not declare (the
+    validator still enforces it)."""
+    properties: dict[str, Any] = schema["properties"]
+    schema["anyOf"] = [
+        {
+            "type": "object",
+            "properties": {
+                **{name: properties[name] for name in fields},
+                "kind": {**properties["kind"], "enum": [kind]},
+            },
+            "required": ["index", "kind", *required],
+            "additionalProperties": False,
+        }
+        for kind, (fields, required) in _STEP_FIELDS.items()
+    ]
+    for key in ("properties", "required", "additionalProperties", "type"):
+        schema.pop(key, None)
+
+
 class StepDecl(_Strict):
     """One declared causal step of a character's render (#168, FR-TURN-12): ``observe`` (what
     the character perceives: a ``proposition``), ``believe`` (what it concludes: a
@@ -664,6 +696,8 @@ class StepDecl(_Strict):
     FR-CLOCK-17: a step for timing alone, which cites nothing, writes no belief and owns the
     beats naming it like an ``act``; a time advance attaches to it). ``confidence`` is a
     ``believe``'s (``believed`` when left out)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, json_schema_extra=_per_step_kind)
 
     index: int = Field(ge=1, le=MAX_STEP_INDEX)
     kind: StepKind
@@ -685,6 +719,10 @@ class StepDecl(_Strict):
 _OWNING = frozenset({"act", "time"})
 """The step kinds that own beats (#168's ``act``, #194's ``time``)."""
 
+_NO_STEPS_REMEDY = " (leave `step` out, or declare the `steps` it names)"
+"""#612: every step refusal names its remedy in parentheses, so the correction a retry is sent
+(at ``temperature=0``) can be acted on instead of repeated."""
+
 
 def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:
     """The declared steps' structural rules (#168; see the module docstring): indices ``1..n``
@@ -694,32 +732,49 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
     if not steps:
         for n, beat in enumerate(beats):
             if beat.step is not None:
-                raise ValueError(f"beats.{n}.step: the render declares no steps")
+                raise ValueError(f"beats.{n}.step: the render declares no steps{_NO_STEPS_REMEDY}")
             for m, effect in enumerate(beat.effects):
                 if effect.kind == TIME_ADVANCE and effect.step is not None:
-                    raise ValueError(f"beats.{n}.effects.{m}.step: the render declares no steps")
+                    where = f"beats.{n}.effects.{m}.step"
+                    raise ValueError(f"{where}: the render declares no steps{_NO_STEPS_REMEDY}")
         return
     indices = [s.index for s in steps]
     if indices != list(range(1, len(steps) + 1)):
-        raise ValueError("steps: indices run 1..n in order, each once")
+        raise ValueError(
+            "steps: indices run 1..n in order, each once (number them 1, 2, 3 as listed)"
+        )
     kinds = {s.index: s.kind for s in steps}
     for n, step in enumerate(steps):
         where = f"steps.{n}"
         if step.kind in ("observe", "believe") and step.proposition is None:
-            raise ValueError(f"{where}.proposition: an {step.kind} step names its proposition")
+            raise ValueError(
+                f"{where}.proposition: an {step.kind} step names its proposition"
+                " (add `proposition`)"
+            )
         if step.kind != "believe" and step.confidence is not None:
-            raise ValueError(f"{where}.confidence: only a believe step declares a confidence")
+            raise ValueError(
+                f"{where}.confidence: only a believe step declares a confidence"
+                f" (leave it out of the {step.kind} step)"
+            )
         if step.kind == "observe" and step.cites:
-            raise ValueError(f"{where}.cites: an observe step cites nothing")
+            raise ValueError(f"{where}.cites: an observe step cites nothing (leave `cites` out)")
         if step.kind == "time" and (step.cites or step.proposition is not None):
-            raise ValueError(f"{where}: a time step cites nothing and names no proposition")
+            raise ValueError(
+                f"{where}: a time step cites nothing and names no proposition"
+                " (leave `cites` and `proposition` out)"
+            )
         for cited in step.step_cites():
             if cited == step.index:
-                raise ValueError(f"{where}.cites: a step cannot cite itself")
+                raise ValueError(
+                    f"{where}.cites: a step cannot cite itself (cite only earlier steps)"
+                )
             if cited not in kinds:
-                raise ValueError(f"{where}.cites: no step {cited}")
+                raise ValueError(f"{where}.cites: no step {cited} (cite only declared steps)")
             if step.kind == "believe" and kinds[cited] in _OWNING:
-                raise ValueError(f"{where}.cites: a believe step never cites an act")
+                raise ValueError(
+                    f"{where}.cites: a believe step never cites an act"
+                    " (cite observe or believe steps, or record ids)"
+                )
     graph = {s.index: s.step_cites() for s in steps}
     state: dict[int, int] = {}
 
@@ -727,7 +782,9 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
         state[node] = 1
         for nxt in graph.get(node, []):
             if state.get(nxt) == 1:
-                raise ValueError("steps.cites: the step citations form a cycle")
+                raise ValueError(
+                    "steps.cites: the step citations form a cycle (cite only earlier steps)"
+                )
             if state.get(nxt) is None:
                 visit(nxt)
         state[node] = 2
@@ -737,14 +794,25 @@ def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> No
             visit(node)
     for n, beat in enumerate(beats):
         if beat.step is not None and kinds.get(beat.step) not in _OWNING:
-            raise ValueError(f"beats.{n}.step: names no act step")
+            named = kinds.get(beat.step)
+            found = f"step {beat.step} is an {named} step" if named else f"no step {beat.step}"
+            raise ValueError(
+                f"beats.{n}.step: names no act step ({found}: declare the `act` step this beat"
+                " carries out and name its index, or leave `step` out)"
+            )
         for m, effect in enumerate(beat.effects):
             if effect.kind == TIME_ADVANCE and effect.step is not None and effect.step not in kinds:
-                raise ValueError(f"beats.{n}.effects.{m}.step: no step {effect.step}")
+                raise ValueError(
+                    f"beats.{n}.effects.{m}.step: no step {effect.step}"
+                    " (name a declared step, or leave `step` out)"
+                )
     records = {c for s in steps for c in s.record_cites()}
     for n, beat in enumerate(beats):
         if beat.kind == "think" and beat.cites and not set(beat.cites) <= records:
-            raise ValueError(f"beats.{n}.cites: disagrees with the steps' citations")
+            raise ValueError(
+                f"beats.{n}.cites: disagrees with the steps' citations"
+                " (a think cites only the record ids its steps cite)"
+            )
 
 
 REACTION_TEXT_MAX = 300
@@ -845,7 +913,10 @@ class RenderedBeats(_Strict):
             if beat.cites and beat.kind != "think":
                 raise ValueError(f"{where}.cites: only a think cites a cause")
             if beat.step is not None and beat.kind not in _ACTS:
-                raise ValueError(f"{where}.step: only a say or a do belongs to an act step")
+                raise ValueError(
+                    f"{where}.step: only a say or a do belongs to an act step"
+                    f" (leave `step` out of a {beat.kind})"
+                )
             if beat.visibility is not None:
                 if beat.kind != "latent":
                     raise ValueError(f"{where}.visibility: only a latent declares a scope")

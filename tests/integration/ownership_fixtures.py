@@ -442,6 +442,52 @@ async def _outbox_effect(client: httpx.AsyncClient, kind: Kind, entity: Entity) 
     return {"outbox_id": listed}
 
 
+async def _consumer_listing(
+    client: httpx.AsyncClient, kind: Kind, entity: Entity
+) -> dict[str, Any]:
+    """#661: a listed consumer-applied effect for the resolve action: the story, on
+    ``Structured (M4)`` with States on, with a turn's ``requested_effect`` listed
+    ``settlement_conflict`` (no public call lists one)."""
+    from epistrel.core import outbox as core_outbox
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.events.operation import Operation
+    from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
+    from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+    from tests import state_support as ss
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = 1 "
+                "WHERE id = :s"
+            ),
+            {"s": entity.id, "p": STRUCTURED_M4_PROFILE_ID},
+        )
+    await ss.set_level(db, entity.id, "on")
+    request_id = new_ulid()
+    async with Operation(
+        db, story_id=entity.id, kind=OperationKind.TURN, principal="p-owner"
+    ) as op:
+        op.append("player_input", {"text": "pays"}, provenance=Provenance.PLAYER)
+        op.append(
+            REQUESTED_EFFECT,
+            RequestedEffect(
+                effect_id=request_id,
+                state="gold",
+                scope_key=entity.ids["wren"],
+                delta=-5,
+                reason="a sword",
+            ),
+            provenance=Provenance.ENGINE,
+        )
+        op.append("message_rendered", {"text": "paid"})
+        await op.commit()
+    async with db.begin() as conn:
+        await core_outbox.mark(conn, entity.id, None, "settlement_conflict", request_id=request_id)
+    return {"listing": request_id}
+
+
 def _refund(entity: Entity) -> dict[str, Any]:
     """#218: a refund of the listed purchase's payment, to Wren's external gold."""
     refund = {"state": "gold", "delta": 5, "reason": "refund", "scope_key": entity.ids["wren"]}
@@ -788,6 +834,10 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(200, prepare=_outbox_effect),
     ("POST", f"{S}/reconciliation/{{outbox_id}}/compensate"): Call(
         201, _refund, prepare=_outbox_effect
+    ),
+    # #661: the resolve-only action on a listed consumer-applied effect
+    ("POST", f"{S}/reconciliation/{{listing}}/resolve"): Call(
+        200, {"resolution": "applied_elsewhere"}, prepare=_consumer_listing
     ),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(

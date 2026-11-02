@@ -9,8 +9,11 @@ unarchive, the story's own policies, and another rating change. ``Operation.begi
 every revision-bumping operation of a paused story, and each entry point checks before its
 gate or its operation, right after ``story_archived`` (#44's order). Reads are served, and so
 are ``PATCH /stories/{id}/settings`` without ``policies`` (prospective), the story's engine
-profile and overrides (prospective), owner and relation changes, feedback and deletion (which
-ends the check: its job finds the row gone). Work that started before the pause finishes: a
+profile and overrides (prospective), the story's other configuration writes (a State
+definition's ``PATCH``, ``PATCH /clock`` and a character's participation: they move the
+configuration revision, never the timeline's, and in-flight work rebases on an interpretive one,
+FR-CONC-16; #626), owner and relation changes, feedback and deletion (which ends the check: its
+job finds the row gone). Work that started before the pause finishes: a
 turn in flight commits, and the check waits for it.
 
 A reactivation check (#120: an untruncate, swap or fork of a dormant continuation whose turns

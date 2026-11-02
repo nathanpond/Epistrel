@@ -27,7 +27,8 @@ declaration's shape, typed values, constraints and the fold) are ``core.states.m
   ``prospective``; the State's identity and its fold's base are immutable (422
   ``validation_error``, ``reason: immutable_field``). New constraints the current value (or the
   initial value) already breaks are 422 ``state_constraint_violation``; an archived story is 409
-  ``story_archived``.
+  ``story_archived``. A paused story takes it, as it takes its other configuration writes
+  (``core.pause``; #626).
 - ``apply_change(conn, op, change)`` writes one change in ``op``'s commit transaction, or answers
   the ``Violation`` it is refused with and writes nothing (FR-STATE-6's bounds half; the
   in-character repair is #187's): a turn change asserted by a reactive character

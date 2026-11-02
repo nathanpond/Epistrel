@@ -67,7 +67,12 @@ class StoredResultBody(BaseModel):
     """The stored response of the operation's ``Idempotency-Key``: its status and body."""
 
     status: int
-    body: Any
+    body: Any = Field(
+        description="#614: the stored library result the replay is rebuilt from (for a "
+        "`respond`, its `RespondResult` as dumped: null, false and empty fields kept, "
+        "`replayed` false), not the REST response body: it lacks the REST-only fields "
+        "(`idempotency_key`, `message.narrative`), which the replay adds back."
+    )
 
 
 class StageBody(BaseModel):

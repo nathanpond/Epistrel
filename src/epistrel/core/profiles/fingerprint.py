@@ -100,6 +100,10 @@ class QualityStatus(BaseModel):
     intervention_types_insufficient: tuple[str, ...] | None = Field(
         default=None, exclude_if=_absent
     )
+    invalidated_reason: str | None = Field(default=None, exclude_if=_absent)
+    """``stale`` (#234): why the certification was invalidated (``canary``, ``drift``)."""
+    failed_floors: tuple[str, ...] | None = Field(default=None, exclude_if=_absent)
+    """``stale`` (#234): the floors the canary that invalidated it missed."""
 
 
 UNCERTIFIED = QualityStatus(status=QualityStatusValue.uncertified)
@@ -126,18 +130,25 @@ class RuntimeFacts:
     models: Mapping[str, ModelIdentity]
     templates: Mapping[str, str]
     quality: Mapping[str, QualityStatus] = field(default_factory=dict)
+    versions: Mapping[str, str] = field(default_factory=dict)
+    """#234: each model's latest reported version, by model id."""
 
 
 def routed_models(
-    models: Mapping[str, ModelIdentity], settings: ProfileSettings
+    models: Mapping[str, ModelIdentity],
+    settings: ProfileSettings,
+    versions: Mapping[str, str] | None = None,
 ) -> dict[str, ModelIdentity]:
     """``models`` (the deployment's, as the Orchestrator resolves them) under ``settings``'
-    routes: a purpose whose route names a model uses that model (no reported version yet), the
-    others keep theirs. A route for a purpose ``models`` does not list adds nothing."""
+    routes: a purpose whose route names a model uses that model (with its latest reported
+    version, #234), the others keep theirs. A route for a purpose ``models`` does not list adds
+    nothing."""
     found = dict(models)
     for purpose, route in settings.models.purposes.items():
         if purpose in found and route.model is not None:
-            found[purpose] = ModelIdentity(id=route.model)
+            found[purpose] = ModelIdentity(
+                id=route.model, reported_version=(versions or {}).get(route.model)
+            )
     return found
 
 
@@ -211,7 +222,7 @@ def fingerprint(
     *, profile_id: str, version: int, settings: ProfileSettings, facts: RuntimeFacts
 ) -> str:
     """The configuration's fingerprint (see the module docstring)."""
-    models = routed_models(facts.models, settings)
+    models = routed_models(facts.models, settings, facts.versions)
     document = {
         "profile_version": {"profile_id": profile_id, "version": version},
         "models": {purpose: model.model_dump(mode="json") for purpose, model in models.items()},
@@ -231,7 +242,7 @@ def stamp(
         fingerprint=found,
         capabilities=capabilities(settings),
         quality_status=facts.quality.get(found, UNCERTIFIED),
-        models=routed_models(facts.models, settings),
+        models=routed_models(facts.models, settings, facts.versions),
     )
 
 

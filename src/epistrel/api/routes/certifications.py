@@ -6,6 +6,7 @@
 - ``GET /certification-runs/{id}``: a run's status, estimate and report summary.
 - ``GET /certifications`` and ``GET /certifications/{id}``: the certification records.
 - ``POST /admin/certifications/import``: import a hand run's record (``admin_router``).
+- ``POST /admin/certifications/{id}/invalidate``: declare a certification stale (#234).
 
 Every handler makes one ``Engine`` call (``core.profiles.certification`` holds the rules, and
 ``orchestrator.jobs.handlers.certification_run`` the run).
@@ -27,9 +28,11 @@ from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.profiles.certification import (
     Certification,
     CertificationImported,
+    CertificationInvalidated,
     CertificationPage,
     EvalRun,
     EvalRunPage,
+    InvalidateRequest,
     RunEstimate,
 )
 from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN
@@ -288,6 +291,49 @@ async def import_certification(
 ) -> CertificationImportedBody:
     found = await engine.import_certification(ctx, document)
     return answered(CertificationImportedBody.of(found), ctx, response, replayed=found.replayed)
+
+
+class CertificationInvalidatedBody(DeploymentMutationResponse):
+    """An invalidated certification: its id, its status (``stale``) and why."""
+
+    certification_id: str
+    status: str
+    invalidated_reason: str
+
+    @classmethod
+    def of(cls, found: CertificationInvalidated) -> CertificationInvalidatedBody:
+        return cls(
+            certification_id=found.certification_id,
+            status=found.status,
+            invalidated_reason=found.invalidated_reason,
+            config_revision=found.config_revision,
+        )
+
+
+@admin_router.post(
+    "/{certification_id}/invalidate",
+    response_model=CertificationInvalidatedBody,
+    operation_id="invalidate_certification",
+    summary="Declare a certification stale",
+    description=(
+        "Mark a `valid` certification `stale` (#234; ADR-107): the model changed under an "
+        "unchanged identifier and reported version (`reason: drift`), or the operator withdraws "
+        "it (`manual`). A `note` is required. Stories on its fingerprint report "
+        "`{status: stale, certification_id, invalidated_reason}` from their next turn; the "
+        "record is kept, and a later certification run restores `certified` with a new id. 404 "
+        "`certification_not_found`; 409 `certification_not_valid` for one already stale or "
+        "revoked."
+    ),
+)
+async def invalidate_certification(
+    certification_id: CertificationId,
+    body: InvalidateRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> CertificationInvalidatedBody:
+    found = await engine.invalidate_certification(ctx, certification_id, body)
+    return answered(CertificationInvalidatedBody.of(found), ctx, response, replayed=found.replayed)
 
 
 @evals_router.get(

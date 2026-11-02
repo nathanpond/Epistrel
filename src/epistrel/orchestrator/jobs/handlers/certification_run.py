@@ -50,6 +50,8 @@ from epistrel.orchestrator.jobs.types import JobContext, JobHandler, JobOutput
 log = get_logger(__name__)
 
 CERTIFICATION_RUN = "certification_run"
+CANARY = "canary"
+"""A canary run's ``kind`` (#234): it re-checks a certification's floors and records none."""
 DEFAULT_SEEDS = 3
 SAMPLE_MIN = 10
 ACTIVE = ("queued", "running")
@@ -336,6 +338,8 @@ async def _run(ctx: JobContext) -> JobOutput:
         await _finish(ctx.db, payload.run_id, status="failed", error=type(exc).__name__)
         log.warning("certification run failed", run_id=payload.run_id, error=type(exc).__name__)
         return JobOutput(result={"run_id": payload.run_id, "status": "failed"})
+    if row.kind == CANARY:
+        return await _canary_finish(ctx.db, payload.run_id, row, outcome.summary)
     certification_id: str | None = None
     async with ctx.db.begin() as conn:
         if outcome.record is not None:
@@ -359,6 +363,35 @@ async def _run(ctx: JobContext) -> JobOutput:
     )
 
 
+async def _canary_finish(
+    db: AsyncEngine, run_id: str, row: Any, summary: dict[str, Any]
+) -> JobOutput:
+    """A canary's end (#234): its outcome over the floors the checked certification passed;
+    a measured miss marks it ``stale``. A canary records no certification."""
+    checked = str(row.checks_certification_id)
+    async with db.begin() as conn:
+        found = await certification.get_certification(conn, checked)
+        before = [str(f["metric_id"]) for f in found.floors_passed]
+        result, missed = certification.canary_outcome(before, summary)
+        if result == certification.CANARY_MISSED:
+            await certification.mark_stale(conn, checked, reason="canary", run_id=run_id)
+        await conn.execute(
+            update(certification_runs)
+            .where(certification_runs.c.id == run_id)
+            .values(
+                status="completed",
+                outcome=result,
+                report={**summary, "missed_floors": missed},
+                finished_at=datetime.now(UTC),
+            )
+        )
+    if result == certification.CANARY_MISSED:
+        log.warning(
+            "certification canary missed", run_id=run_id, certification_id=checked, floors=missed
+        )
+    return JobOutput(result={"run_id": run_id, "status": "completed", "outcome": result})
+
+
 CERTIFICATION_RUN_HANDLER = JobHandler(
     kind=CERTIFICATION_RUN,
     payload=RunPayload,
@@ -368,6 +401,7 @@ CERTIFICATION_RUN_HANDLER = JobHandler(
 )
 
 __all__ = [
+    "CANARY",
     "CERTIFICATION_RUN",
     "CERTIFICATION_RUN_HANDLER",
     "CertificationRun",

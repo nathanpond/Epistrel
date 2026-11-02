@@ -28,7 +28,11 @@ from epistrel.core.tables.catalog import (
     scenario_catalog,
     scenario_versions,
 )
-from epistrel.core.tables.certifications import certification_runs, profile_certifications
+from epistrel.core.tables.certifications import (
+    certification_runs,
+    model_reported_versions,
+    profile_certifications,
+)
 from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.commitments import promissory_ledger, thunks
@@ -150,6 +154,7 @@ __all__ = [
     "memories",
     "metadata",
     "model_config",
+    "model_reported_versions",
     "nested_belief_state",
     "offboarding_jobs",
     "operations",

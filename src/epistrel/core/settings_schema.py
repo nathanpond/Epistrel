@@ -710,7 +710,15 @@ class MediaSettings(BaseModel):
 MEDIA_SWEEP_TASK = "media_sweep"
 """The media sweep's recurring task (and job kind; ``orchestrator.jobs.handlers.media_sweep``)."""
 
-RECURRING_INTERVAL_SETTINGS: Mapping[str, str] = {"media_sweep_interval": MEDIA_SWEEP_TASK}
+CERTIFICATION_CANARY_TASK = "certification_canary"
+CERTIFICATION_RECERTIFY_TASK = "certification_recertify"
+"""#234's recurring tasks (``orchestrator.jobs.handlers.certification_canary``)."""
+
+RECURRING_INTERVAL_SETTINGS: Mapping[str, str] = {
+    "media_sweep_interval": MEDIA_SWEEP_TASK,
+    "certification_canary_interval_s": CERTIFICATION_CANARY_TASK,
+    "certification_recertify_interval_s": CERTIFICATION_RECERTIFY_TASK,
+}
 """Deployment settings (seconds) that set a recurring task's interval, by setting: the task's
 name. A settings write moves the task's ``recurring_tasks`` row, and every worker's start-up
 reconcile reads the setting (``orchestrator.jobs.timers.reconcile``)."""
@@ -876,6 +884,40 @@ class DependencySettings(BaseModel):
     dependency_search_max_depth: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_DEPENDENCY_SEARCH_MAX_DEPTH, ge=1, le=10
     )
+
+
+DAY_S = 86_400
+DEFAULT_CANARY_INTERVAL_S = 7 * DAY_S
+
+
+class CertificationCanarySettings(BaseModel):
+    """The certification canary and re-certification (FR-PROF-17; #234), stored under
+    ``deployment_state.settings``: **off by default** (the owner's decision 3: every canary run
+    costs real model calls). With ``certification_canary_enabled``, every
+    ``certification_canary_interval_s`` (1 hour to 90 days) each in-use valid certification is
+    re-checked on ``certification_canary_sample_size`` cases (10-1000) per suite over
+    ``certification_canary_seeds`` seeds (1-5); with ``certification_recertify_interval_s`` (1 to
+    365 days; ``null``: never) each in-use certified configuration is certified again in full.
+    Prospective: a run reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    certification_canary_enabled: Annotated[StrictBool, PROSPECTIVE] = False
+    certification_canary_interval_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CANARY_INTERVAL_S, ge=3_600, le=90 * DAY_S
+    )
+    certification_canary_sample_size: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=50, ge=10, le=1_000
+    )
+    certification_canary_seeds: Annotated[StrictInt, PROSPECTIVE] = Field(default=1, ge=1, le=5)
+    certification_recertify_interval_s: Annotated[StrictInt | None, PROSPECTIVE] = Field(
+        default=None, ge=DAY_S, le=365 * DAY_S
+    )
+
+    @property
+    def recertify_interval_s(self) -> int:
+        """The re-certification task's interval (its row exists even while it is off)."""
+        return self.certification_recertify_interval_s or DEFAULT_CANARY_INTERVAL_S
 
 
 class ModelTiers(BaseModel):
@@ -1256,6 +1298,7 @@ class DeploymentSettings(
     ProviderSettings,
     DependencySettings,
     ModelTierSettings,
+    CertificationCanarySettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

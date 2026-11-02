@@ -23,6 +23,12 @@ no handler is registered for is refused at enqueue and ends ``failed`` if a work
 from __future__ import annotations
 
 from epistrel.orchestrator.jobs.handlers.backfill import BACKFILL_HANDLER
+from epistrel.orchestrator.jobs.handlers.certification_canary import (
+    CERTIFICATION_CANARY_HANDLER,
+    CERTIFICATION_CANARY_TASK_DEFINITION,
+    CERTIFICATION_RECERTIFY_HANDLER,
+    CERTIFICATION_RECERTIFY_TASK_DEFINITION,
+)
 from epistrel.orchestrator.jobs.handlers.certification_run import CERTIFICATION_RUN_HANDLER
 from epistrel.orchestrator.jobs.handlers.consolidation import CONSOLIDATION_HANDLER
 from epistrel.orchestrator.jobs.handlers.erasure_reconcile import (
@@ -112,6 +118,8 @@ for _handler in (
     RESERVATION_EXPIRY_HANDLER,
     SETTLE_HANDLER,
     CERTIFICATION_RUN_HANDLER,
+    CERTIFICATION_CANARY_HANDLER,
+    CERTIFICATION_RECERTIFY_HANDLER,
     BACKFILL_HANDLER,
 ):
     register(_handler)
@@ -125,6 +133,8 @@ for _task in (
     IMPORTANCE_TASK,
     RECONCILE_TASK,
     OUTBOX_RECOVERY_TASK,
+    CERTIFICATION_CANARY_TASK_DEFINITION,
+    CERTIFICATION_RECERTIFY_TASK_DEFINITION,
 ):
     register_recurring(_task)
 

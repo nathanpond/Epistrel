@@ -217,6 +217,7 @@ class OpenAICompatibleAdapter:
             tokens_out=usage.completion_tokens if usage is not None else None,
             cost=reported_cost(usage),
             request_id=completion.id or None,
+            reported_version=getattr(completion, "system_fingerprint", None) or None,
         )
         log.info(
             "model call purpose=%s model=%s latency_ms=%d key=%s",

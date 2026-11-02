@@ -56,6 +56,7 @@ from epistrel.core.errors import NUL
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models import config as model_config
+from epistrel.orchestrator.models import reported_version
 from epistrel.orchestrator.models.adapter import (
     DEFAULT_TIMEOUT_S,
     EVAL_CASE_HEADER,
@@ -418,6 +419,8 @@ class ModelAccessLayer:
                 stage=stage,
             )
         )
+        if result.reported_version:
+            await reported_version.observe(self._db, model or result.model, result.reported_version)
         return result
 
     async def _model_name(self, purpose: str) -> str:

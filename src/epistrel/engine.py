@@ -347,6 +347,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "import_certification": ResultCodec.of(
         certification.CertificationImported, revision_field=_CONFIG
     ),
+    "invalidate_certification": ResultCodec.of(
+        certification.CertificationInvalidated, revision_field=_CONFIG
+    ),
     "approve_state_proposal": ResultCodec.of(state_proposals.ProposalApproved, status=201),
     "dismiss_state_proposal": ResultCodec.of(state_proposals.ProposalDismissed),
     # #218: the explicit reconciliation actions (settle-now, a compensating effect).
@@ -5752,6 +5755,32 @@ class Engine:
 
         return await self._keyed(
             ctx, "import_certification", run, material={"record": dict(document)}
+        )
+
+    async def invalidate_certification(
+        self,
+        ctx: RequestContext,
+        certification_id: str,
+        request: certification.InvalidateRequest,
+    ) -> certification.CertificationInvalidated:
+        """Declare drift (#234): a ``valid`` certification becomes ``stale`` with
+        ``invalidated_reason`` ``drift`` (or ``manual``); its record is kept. 404
+        ``certification_not_found``; 409 ``certification_not_valid``. The note is not logged."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.CertificationInvalidated:
+            async with self.db.begin() as conn:
+                status, reason = await certification.invalidate(conn, certification_id, request)
+                revision = await profiles.config_revision(conn)
+            return certification.CertificationInvalidated(
+                certification_id, status, reason, revision
+            )
+
+        return await self._keyed(
+            ctx,
+            "invalidate_certification",
+            run,
+            material={"certification_id": certification_id, **request.model_dump()},
         )
 
     @refuses_nul()

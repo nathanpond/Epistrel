@@ -42,12 +42,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.errors import (
     CertificationNotFound,
+    CertificationNotValid,
     CertificationRecordConflict,
     CertificationUnavailable,
     InvalidCertificationRecord,
@@ -324,26 +325,168 @@ def _status(row: Any) -> QualityStatus:
     )
 
 
-async def certified(conn: AsyncConnection) -> dict[str, QualityStatus]:
-    """Every certified fingerprint and its status: the newest ``valid`` certification with a
-    floor passed, per fingerprint (one indexed query)."""
-    t = profile_certifications
+async def _stale_failures(conn: AsyncConnection, ids: list[str]) -> dict[str, list[str]]:
+    """The floors the canary that invalidated each certification missed."""
+    from epistrel.core.tables import certification_runs
+
+    if not ids:
+        return {}
+    r = certification_runs.c
     rows = await conn.execute(
-        select(
-            t.c.id,
-            t.c.fingerprint,
-            t.c.floors_passed,
-            t.c.intervention_types_covered,
-            t.c.intervention_types_insufficient,
+        select(r.checks_certification_id, r.report).where(
+            r.checks_certification_id.in_(ids), r.outcome == "missed"
         )
-        .where(t.c.status == VALID)
-        .order_by(t.c.fingerprint, t.c.run_at.desc(), t.c.id.desc())
+    )
+    found: dict[str, list[str]] = {}
+    for row in rows:
+        report = dict(row.report or {})
+        found[str(row.checks_certification_id)] = list(report.get("missed_floors") or [])
+    return found
+
+
+async def certified(conn: AsyncConnection) -> dict[str, QualityStatus]:
+    """Every certified or stale fingerprint and its status (#233, #234): the newest ``valid``
+    certification with a floor passed makes it ``certified``; a fingerprint with none valid but
+    one invalidated since is ``stale`` (#234: a canary miss or declared drift). One indexed
+    query, plus the stale ones' missed floors."""
+    t = profile_certifications
+    rows = list(
+        await conn.execute(
+            select(
+                t.c.id,
+                t.c.fingerprint,
+                t.c.status,
+                t.c.floors_passed,
+                t.c.invalidated_reason,
+                t.c.intervention_types_covered,
+                t.c.intervention_types_insufficient,
+            ).order_by(t.c.fingerprint, t.c.run_at.desc(), t.c.id.desc())
+        )
     )
     found: dict[str, QualityStatus] = {}
+    stale: dict[str, Any] = {}
     for row in rows:
-        if str(row.fingerprint) not in found and row.floors_passed:
-            found[str(row.fingerprint)] = _status(row)
+        key = str(row.fingerprint)
+        if row.status == VALID and row.floors_passed and key not in found:
+            found[key] = _status(row)
+        elif row.status == STALE and key not in stale:
+            stale[key] = row
+    misses = await _stale_failures(conn, [str(r.id) for k, r in stale.items() if k not in found])
+    for key, row in stale.items():
+        if key not in found:
+            found[key] = QualityStatus(
+                status=QualityStatusValue.stale,
+                certification_id=str(row.id),
+                invalidated_reason=row.invalidated_reason,
+                failed_floors=tuple(misses.get(str(row.id), ())),
+            )
     return found
+
+
+async def mark_stale(
+    conn: AsyncConnection,
+    certification_id: str,
+    *,
+    reason: Literal["canary", "drift", "manual"],
+    run_id: str | None = None,
+) -> bool:
+    """Invalidate a valid certification (#234): ``stale``, with when, why and the run that
+    found it; whether it changed (a stale one stays as it was). Its record is never deleted."""
+    t = profile_certifications
+    result = await conn.execute(
+        t.update()
+        .where(t.c.id == certification_id, t.c.status == VALID)
+        .values(
+            status=STALE,
+            invalidated_at=func.transaction_timestamp(),
+            invalidated_reason=reason,
+            invalidated_by_run_id=run_id,
+        )
+    )
+    changed = bool(result.rowcount)
+    if changed:
+        log.info("certification invalidated", certification_id=certification_id, reason=reason)
+    return changed
+
+
+class InvalidateRequest(BaseModel):
+    """``POST /admin/certifications/{id}/invalidate`` (#234): why (``drift``: the model changed
+    under an unchanged identifier and reported version; ``manual``) and a note (required; it is
+    for the operator's audit trail and never logged)."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [{"reason": "drift", "note": "the provider confirmed a silent update"}]
+        },
+    )
+
+    reason: Literal["drift", "manual"]
+    note: StrictStr = Field(min_length=1, max_length=1_000)
+
+
+@dataclass(frozen=True, slots=True)
+class CertificationInvalidated:
+    """An invalidated certification: its id, its status (``stale``), why, and the deployment's
+    ``config_revision`` (unchanged)."""
+
+    certification_id: str
+    status: str
+    invalidated_reason: str
+    config_revision: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+async def invalidate(
+    conn: AsyncConnection, certification_id: str, request: InvalidateRequest
+) -> tuple[str, str]:
+    """Declare a ``valid`` certification stale (#234); its status and reason after. 404
+    ``certification_not_found``; 409 ``certification_not_valid`` for one already stale or
+    revoked."""
+    found = await get_certification(conn, certification_id)
+    if found.status != VALID or not await mark_stale(conn, certification_id, reason=request.reason):
+        raise CertificationNotValid(
+            "only a valid certification can be invalidated",
+            {"certification_id": certification_id, "status": found.status},
+        )
+    return STALE, request.reason
+
+
+CANARY_HELD = "held"
+CANARY_MISSED = "missed"
+CANARY_INCONCLUSIVE = "inconclusive"
+
+
+def canary_verdicts(summary: Mapping[str, Any]) -> dict[str, str]:
+    """Each floor a run measured and its verdict for a canary (#234): ``pass``; ``fail`` only
+    for a measured miss; ``inconclusive`` for insufficient evidence, and for a zero-tolerance
+    floor that failed on too few cases with no violation (only a measured miss invalidates)."""
+    floors = dict(summary.get("floors") or {})
+    found: dict[str, str] = {}
+    for item in floors.get("insufficient") or ():
+        found[str(item["metric_id"])] = CANARY_INCONCLUSIVE
+    for item in floors.get("passed") or ():
+        found.setdefault(str(item["metric_id"]), "pass")
+    for item in floors.get("failed") or ():
+        clean = item.get("rule") == "zero" and not item.get("mean")
+        found[str(item["metric_id"])] = CANARY_INCONCLUSIVE if clean else "fail"
+    return found
+
+
+def canary_outcome(
+    passed_before: Sequence[str], summary: Mapping[str, Any]
+) -> tuple[str, list[str]]:
+    """A canary's outcome over the floors the certification passed (#234): ``missed`` (with the
+    floors that missed) when any measured below its floor; else ``inconclusive`` when any lacks
+    evidence (or was not measured); else ``held``. Floors it never passed are not re-checked."""
+    verdicts = canary_verdicts(summary)
+    missed = [m for m in passed_before if verdicts.get(m) == "fail"]
+    if missed:
+        return CANARY_MISSED, missed
+    if any(verdicts.get(m) != "pass" for m in passed_before):
+        return CANARY_INCONCLUSIVE, []
+    return CANARY_HELD, []
 
 
 async def quality_status(conn: AsyncConnection, fingerprint_value: str) -> QualityStatus:
@@ -640,6 +783,11 @@ class Harness(Protocol):
         """The committed reports' embedded summaries (#532)."""
         ...
 
+    def suites_of(self, metric_ids: Sequence[str]) -> list[str]:
+        """The suites that measure ``metric_ids`` (a canary re-runs those behind a
+        certification's floors, #234)."""
+        ...
+
 
 _HARNESS: list[Harness] = []
 
@@ -661,12 +809,21 @@ def harness() -> Harness:
     return _HARNESS[0]
 
 
+def harness_or_none() -> Harness | None:
+    """The installed harness, if any (a recurring re-check without one does nothing)."""
+    return _HARNESS[0] if _HARNESS else None
+
+
 __all__ = [
+    "CANARY_HELD",
+    "CANARY_INCONCLUSIVE",
+    "CANARY_MISSED",
     "QUALITY_14",
     "SCHEMA_VERSION",
     "SEEDS_DIR",
     "Certification",
     "CertificationImported",
+    "CertificationInvalidated",
     "CertificationPage",
     "CertificationRecord",
     "EvalMetric",
@@ -677,7 +834,10 @@ __all__ = [
     "Harness",
     "HarnessOutcome",
     "HarnessRequest",
+    "InvalidateRequest",
     "RunEstimate",
+    "canary_outcome",
+    "canary_verdicts",
     "certified",
     "check_report",
     "committed_records",
@@ -687,10 +847,13 @@ __all__ = [
     "get_certification",
     "get_eval_run",
     "harness",
+    "harness_or_none",
     "import_record",
     "install_harness",
+    "invalidate",
     "list_certifications",
     "load_committed",
+    "mark_stale",
     "page_eval_runs",
     "parse_record",
     "quality_status",

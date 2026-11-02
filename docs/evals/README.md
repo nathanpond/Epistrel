@@ -259,6 +259,35 @@ reports how the output reads as signals, never as a floor or a gate. The only pr
 E-12's NFR-QUAL-14, an aggregate, relative target for the engine's own interventions: individual
 messages may still read worse than their drafts.
 
+## Canaries (opt-in, #234)
+
+A hosted model can change behind an unchanged name. A deployment may re-check its certifications
+in use, but **canaries are off by default** (the owner's decision 3): every canary run costs real
+model calls, and the repository's CI never turns them on.
+
+- `certification_canary_enabled` (default `false`), `certification_canary_interval_s` (default 7
+  days; 1 hour to 90 days), `certification_canary_sample_size` (cases per suite, default 50;
+  10-1000) and `certification_canary_seeds` (default 1; 1-5), through `PUT /admin/settings`.
+- Each due time queues one `certification_run` of `kind: canary` per `valid` certification in use
+  (a live story's current fingerprint, or a reference certification), on the suites behind its
+  passed floors. Its cost is #233's estimate: cases (capped by the sample size) × seeds × the
+  suite's calls per case, at about 2,000 tokens a call.
+- Only a measured miss invalidates: a floor the certification passed that now fails marks it
+  `stale` (`invalidated_reason: canary`, the floors in `failed_floors`). Insufficient evidence
+  is `inconclusive` and changes nothing. NFR-QUAL-8 needs two seeds for a standard deviation,
+  so a one-seed canary is always `inconclusive`; set `certification_canary_seeds` to 2 or more
+  for a canary that can invalidate. A zero-tolerance floor needs 300 cases a seed: a smaller
+  sample can only find violations, never confirm a clean rate.
+- Sample size is the operator's trade-off: a 50-case canary catches a large regression, not a
+  small one.
+- `certification_recertify_interval_s` (default `null`: off; 1-365 days) queues a full
+  certification run (the capability's suites, 3 seeds) per in-use certified fingerprint.
+- `POST /admin/certifications/{id}/invalidate` (`reason: drift|manual`, a `note`) declares drift
+  by hand. A later certification run restores `certified` with a new id; the stale record is
+  kept.
+- A model's reported version (the response's `system_fingerprint`) is part of the fingerprint:
+  a version change is a new, `uncertified` configuration, never `stale`.
+
 ## Labeled sets
 
 The sets under `evals/sets/` are authored by the builder and approved by the owner (#157).

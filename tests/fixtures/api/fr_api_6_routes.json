@@ -946,6 +946,11 @@
       "why": "#233: import a hand run's certification record (#235)"
     },
     {
+      "method": "POST",
+      "path": "/admin/certifications/{certification_id}/invalidate",
+      "why": "#234: declare a certification stale (drift)"
+    },
+    {
       "method": "GET",
       "path": "/admin/evals/runs",
       "why": "#532: the eval runs (committed reports and certification runs)"

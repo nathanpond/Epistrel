@@ -87,6 +87,7 @@ from epistrel.api.routes.catalog_scenarios import (
 )
 from epistrel.api.routes.certifications import (
     CertificationImportedBody,
+    CertificationInvalidatedBody,
     CertificationRunBody,
     StoryCertificationRunBody,
 )
@@ -217,6 +218,7 @@ from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.outbox import CompensateRequest, ResolveRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
+from epistrel.core.profiles.certification import InvalidateRequest
 from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
@@ -833,6 +835,7 @@ CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
 """A certification run's estimate request (#233): no ``confirm``, so nothing is written."""
 _REPORT = "# Parity certification\n\nOne floor passed.\n"
 CERTIFIED = "01JC0000000000000000000C01"
+DRIFT = {"reason": "drift", "note": "the provider confirmed a silent update"}
 CERTIFICATION_RECORD: dict[str, Any] = {
     "schema_version": 1,
     "certification_id": CERTIFIED,
@@ -2629,6 +2632,14 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/certifications"),
             lambda e, ids: _dumped(e.list_certifications(CTX)),
         ),
+        # #234: declared drift marks the imported certification stale.
+        Step(
+            "invalidate_certification",
+            lambda ids: Rest("POST", f"/admin/certifications/{CERTIFIED}/invalidate", DRIFT),
+            lambda e, ids: _certification_invalidated(
+                e.invalidate_certification(CTX, CERTIFIED, InvalidateRequest(**DRIFT))
+            ),
+        ),
         # #532: the eval runs (the committed reports; the harness is installed above).
         Step(
             "list_eval_runs",
@@ -3488,6 +3499,10 @@ async def _certification_run(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _certification_imported(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CertificationImportedBody.of(await call))
+
+
+async def _certification_invalidated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CertificationInvalidatedBody.of(await call))
 
 
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:

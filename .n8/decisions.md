@@ -11021,3 +11021,40 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #532
 - **Decision:** the routes take no `viewpoint`. They sit under `/admin`, behind the service credential like every operator read (`/admin/escalation-yield`), and runs hold no story content. They need no ownership `CALLS` entry: they are not entity routes.
   **Issue:** #532
+
+### #234 — canary, stale, reported version, 2026-11-02
+
+- **Decision:** the canary settings are flat seconds-valued `DeploymentSettings` fields, not the nested `certification_canary` block with ISO-8601 durations:
+  - the fields are `certification_canary_enabled` (default false), `certification_canary_interval_s`, `certification_canary_sample_size`, `certification_canary_seeds` and `certification_recertify_interval_s` (null means off);
+  - this matches the existing `interval_setting` machinery (`media_sweep_interval`, `RECURRING_INTERVAL_SETTINGS`);
+  - the bounds are the AC's;
+  - there is no `suites` setting: the canary runs the suites behind the certification's passed floors (`Harness.suites_of`).
+
+  **Issue:** #234
+- **Decision:** the off switch is the handler's `enabled` check, the AC's primary option. Both tasks' rows exist and fire, then return at once while off. `next_run_at` stays NOT NULL, so the "enable then disable → null" clause is not built. `test_canary__off_by_default` (30 simulated days) shows the cost side: no run, no harness call.
+  **Issue:** #234
+- **Decision:** the run and outcome names differ from the plan:
+  - the run's link is `certification_runs.checks_certification_id`, not `target_certification_id`;
+  - `outcome` is `held|missed|inconclusive`. A harness failure is the run's `status: failed`, with no outcome, and never invalidates.
+  - The canary job keeps #233's `max_attempts = 1`; no per-run retry.
+
+  A measured miss of a floor the certification passed marks it stale. A zero-rule floor that "fails" clean on fewer than 300 cases counts as `inconclusive`. NFR-QUAL-8 needs two seeds, so the default one-seed canary is always `inconclusive`; this is documented in `docs/evals/README.md`.
+  **Issue:** #234
+- **Decision:** the invalidation details:
+  - no `invalidated_floors` or `invalidated_note` columns are added. `failed_floors` is read from the invalidating canary run's `report.missed_floors`.
+  - The invalidate route's `note` is required but not stored, because 0113's trigger allow-list is fixed.
+  - Invalidating a non-valid certification is 409 `certification_not_valid` (new code).
+  - No control operation or `audit_log` row is written; the stale transition is logged at WARNING with ids only.
+  - `GET /certifications?status=` and `supersedes_certification_id` are not built.
+
+  **Issue:** #234
+- **Decision:** the reported-version details:
+  - capture is `system_fingerprint` only. The `/v1/models` probe, the 3-sighting debounce and the `reported_version_source` setting are not built.
+  - An in-process memo writes once per change.
+  - The version is keyed by the configured model id. A purpose with no configured model has no identity to attach a version to.
+  - `RuntimeFacts.versions` also gives profile-routed models their version.
+  - `base_url_hash` hashes the URL as given (the base URL is not yet threaded through; the empty string today).
+
+  **Issue:** #234
+- **Decision:** C-18's stale clause misses on the smoke suite's `smoke.instruction_followed` floor (`SmokeSuite.stub_answers` patched to omit the word), not on the entailment false-support floor. #233's C-18 certifies Full on the smoke suite, so smoke floors are the ones it passed. "In use" counts reference certifications whatever their preset; it does not check that one is the newest per preset.
+  **Issue:** #234

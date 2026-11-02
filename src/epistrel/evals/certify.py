@@ -229,6 +229,16 @@ class EvalHarness:
         """The reports committed under ``docs/evals`` (#532), each its embedded summary."""
         return _committed()
 
+    def suites_of(self, metric_ids: Sequence[str]) -> list[str]:
+        """The suites whose floored metrics include one of ``metric_ids`` (NFR-QUAL-14: E-12)."""
+        wanted = set(metric_ids)
+        return sorted(
+            name
+            for name, suite in SUITES.items()
+            if (name == E12 and QUALITY_14 in wanted)
+            or any(requirement_id(m.id) in wanted for m in suite.metrics)
+        )
+
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
         profile = Preset(
             name="certification",

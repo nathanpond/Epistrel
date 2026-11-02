@@ -850,6 +850,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "backfill_conflicts": "a contradiction's subject, positions and event ids (#228)",
     "profile_certifications": "deployment records (#233): fingerprints, metric ids, counts, "
     "bounds and a report hash, no story content",
+    "model_reported_versions": "the version each model reported (#234): an endpoint hash, a "
+    "model id and a version string, no story content",
     "certification_runs": "deployment records (#233): what a certification run plays, its "
     "estimate and report summary (counts and verdicts), no story content",
     "story_provider_bindings": "a story's ids at its providers (#204): opaque game identifiers "

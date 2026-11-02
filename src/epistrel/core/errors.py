@@ -1451,6 +1451,13 @@ class CertificationNotFound(EpistrelError):
     http_status = 404
 
 
+class CertificationNotValid(EpistrelError):
+    """Only a ``valid`` certification can be invalidated (#234)."""
+
+    code = "certification_not_valid"
+    http_status = 409
+
+
 class CertificationRunNotFound(EpistrelError):
     """No certification run has this id (#233)."""
 

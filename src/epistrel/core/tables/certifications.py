@@ -97,6 +97,8 @@ certification_runs = Table(
     Column("suites", ARRAY(Text), nullable=False),
     Column("seeds", Integer, nullable=False),
     Column("sample", Integer, nullable=True),
+    Column("checks_certification_id", ulid_type(), nullable=True),
+    Column("outcome", Text, nullable=True),
     Column("reference", Boolean, nullable=False, server_default=text("false")),
     Column("estimate", JSONB, nullable=False, server_default=text("'{}'")),
     Column("status", Text, nullable=False, server_default=text("'queued'")),
@@ -108,10 +110,25 @@ certification_runs = Table(
     Column("started_at", TIMESTAMP(timezone=True), nullable=True),
     Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
     Column("error", Text, nullable=True),
-    CheckConstraint("kind IN ('certification')", name="kind"),
+    CheckConstraint("kind IN ('certification', 'canary')", name="kind"),
+    CheckConstraint(
+        "outcome IS NULL OR outcome IN ('held', 'missed', 'inconclusive')", name="outcome"
+    ),
     CheckConstraint("status IN ('queued', 'running', 'completed', 'failed')", name="status"),
     CheckConstraint("seeds BETWEEN 1 AND 5", name="seeds"),
     Index("ix_certification_runs_fingerprint", "fingerprint", "status"),
 )
 
-__all__ = ["certification_runs", "profile_certifications"]
+model_reported_versions = Table(
+    "model_reported_versions",
+    metadata,
+    Column("base_url_hash", Text, primary_key=True),
+    Column("model_id", Text, primary_key=True),
+    Column("reported_version", Text, primary_key=True),
+    Column("first_seen_at", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
+    Column("last_seen_at", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
+    Index("ix_model_reported_versions_model", "model_id", "last_seen_at"),
+)
+"""#234: each version a model reported (``orchestrator.models.reported_version``)."""
+
+__all__ = ["certification_runs", "model_reported_versions", "profile_certifications"]

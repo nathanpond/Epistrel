@@ -89,6 +89,7 @@ from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsDoc
 from epistrel.core.profiles.tiers import STRONGEST_SETTING
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
+    DEFAULT_CANARY_INTERVAL_S,
     DEPLOYMENT_COLUMNS,
     MINOR_AGE_THRESHOLD_MAX,
     MINOR_AGE_THRESHOLD_MIN,
@@ -130,6 +131,7 @@ NULLABLE = frozenset(
         "media_moderation_webhook_url",
         "public_base_url",
         "max_characters_at_start_ceiling",
+        "certification_recertify_interval_s",
     }
 )
 """Top-level settings whose ``null`` resets them to their default instead of being refused: no
@@ -173,6 +175,12 @@ class SettingsPatch(BaseModel):
     minor_age_threshold: StrictInt | None = None
     max_characters_at_start_default: StrictInt | None = None
     max_characters_at_start_ceiling: StrictInt | None = None
+    # #234: the certification canary (off by default) and re-certification.
+    certification_canary_enabled: StrictBool | None = None
+    certification_canary_interval_s: StrictInt | None = None
+    certification_canary_sample_size: StrictInt | None = None
+    certification_canary_seeds: StrictInt | None = None
+    certification_recertify_interval_s: StrictInt | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None
@@ -437,7 +445,10 @@ async def _move_recurring_intervals(
     for setting, task in RECURRING_INTERVAL_SETTINGS.items():
         if setting not in changed:
             continue
-        interval = timedelta(seconds=int(getattr(wanted, setting)))
+        seconds = getattr(wanted, setting)
+        if seconds is None:  # #234: an off re-certification keeps its row at the default
+            seconds = DEFAULT_CANARY_INTERVAL_S
+        interval = timedelta(seconds=int(seconds))
         await conn.execute(
             update(recurring_tasks)
             .where(recurring_tasks.c.name == task)

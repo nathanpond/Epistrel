@@ -2075,6 +2075,46 @@
         "title": "CertificationImportedBody",
         "type": "object"
       },
+      "CertificationInvalidatedBody": {
+        "description": "An invalidated certification: its id, its status (``stale``) and why.",
+        "properties": {
+          "certification_id": {
+            "title": "Certification Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "invalidated_reason": {
+            "title": "Invalidated Reason",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "certification_id",
+          "status",
+          "invalidated_reason"
+        ],
+        "title": "CertificationInvalidatedBody",
+        "type": "object"
+      },
       "CertificationLost": {
         "description": "A certified configuration the change would leave (FR-PROF-17, #233): the story (``null``\nfor a profile's own configuration when no story follows it), the status before\n(``certified``) and after, and the certification that no longer applies.",
         "properties": {
@@ -16329,6 +16369,38 @@
         "title": "Interval",
         "type": "object"
       },
+      "InvalidateRequest": {
+        "additionalProperties": false,
+        "description": "``POST /admin/certifications/{id}/invalidate`` (#234): why (``drift``: the model changed\nunder an unchanged identifier and reported version; ``manual``) and a note (required; it is\nfor the operator's audit trail and never logged).",
+        "examples": [
+          {
+            "note": "the provider confirmed a silent update",
+            "reason": "drift"
+          }
+        ],
+        "properties": {
+          "note": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "drift",
+              "manual"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "note"
+        ],
+        "title": "InvalidateRequest",
+        "type": "object"
+      },
       "InventoryBody": {
         "description": "An item the entity holds and, for ``omniscient``, the canon fact behind it.",
         "properties": {
@@ -29254,6 +29326,20 @@
             ],
             "title": "Certification Id"
           },
+          "failed_floors": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed Floors"
+          },
           "floors_passed": {
             "anyOf": [
               {
@@ -29295,6 +29381,17 @@
               }
             ],
             "title": "Intervention Types Insufficient"
+          },
+          "invalidated_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated Reason"
           },
           "status": {
             "$ref": "#/components/schemas/QualityStatusValue"
@@ -36116,6 +36213,45 @@
             "title": "Cascade Threshold",
             "type": "integer"
           },
+          "certification_canary_enabled": {
+            "default": false,
+            "title": "Certification Canary Enabled",
+            "type": "boolean"
+          },
+          "certification_canary_interval_s": {
+            "default": 604800,
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Certification Canary Interval S",
+            "type": "integer"
+          },
+          "certification_canary_sample_size": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 10.0,
+            "title": "Certification Canary Sample Size",
+            "type": "integer"
+          },
+          "certification_canary_seeds": {
+            "default": 1,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Certification Canary Seeds",
+            "type": "integer"
+          },
+          "certification_recertify_interval_s": {
+            "anyOf": [
+              {
+                "maximum": 31536000.0,
+                "minimum": 86400.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Recertify Interval S"
+          },
           "config_revision": {
             "title": "Config Revision",
             "type": "integer"
@@ -37407,6 +37543,61 @@
               }
             ],
             "title": "Cascade Threshold"
+          },
+          "certification_canary_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Canary Enabled"
+          },
+          "certification_canary_interval_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Canary Interval S"
+          },
+          "certification_canary_sample_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Canary Sample Size"
+          },
+          "certification_canary_seeds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Canary Seeds"
+          },
+          "certification_recertify_interval_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Recertify Interval S"
           },
           "default_content_rating_id": {
             "anyOf": [
@@ -45012,6 +45203,172 @@
         ]
       }
     },
+    "/admin/certifications/{certification_id}/invalidate": {
+      "post": {
+        "description": "Mark a `valid` certification `stale` (#234; ADR-107): the model changed under an unchanged identifier and reported version (`reason: drift`), or the operator withdraws it (`manual`). A `note` is required. Stories on its fingerprint report `{status: stale, certification_id, invalidated_reason}` from their next turn; the record is kept, and a later certification run restores `certified` with a new id. 404 `certification_not_found`; 409 `certification_not_valid` for one already stale or revoked.",
+        "operationId": "invalidate_certification",
+        "parameters": [
+          {
+            "description": "The certification's id.",
+            "in": "path",
+            "name": "certification_id",
+            "required": true,
+            "schema": {
+              "description": "The certification's id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Certification Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvalidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationInvalidatedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `certification_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `certification_not_valid`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Declare a certification stale",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/config-changes": {
       "get": {
         "description": "The deployment's configuration changes, newest first; ``next`` pages on (``after``).",
@@ -45030,6 +45387,11 @@
                         "enum": [
                           "audit_retention_days",
                           "cascade_threshold",
+                          "certification_canary_enabled",
+                          "certification_canary_interval_s",
+                          "certification_canary_sample_size",
+                          "certification_canary_seeds",
+                          "certification_recertify_interval_s",
                           "default_content_rating_id",
                           "default_engine_profile_id",
                           "default_safe_fallback",

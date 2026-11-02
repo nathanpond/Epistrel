@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,8 @@ from epistrel.api.routes.health import check
 from epistrel.config import Settings
 from epistrel.core import clock, states
 from epistrel.core import outbox as core_outbox
+from epistrel.core.db import make_engine
+from epistrel.core.deployment import apply_settings
 from epistrel.core.enums import (
     OperationKind,
     Provenance,
@@ -54,6 +57,16 @@ from epistrel.core.enums import (
 from epistrel.core.events.operation import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import sweep as media_sweep
+from epistrel.core.profiles import certification
+from epistrel.core.profiles.certification import (
+    CertificationRecord,
+    FloorResult,
+    HarnessOutcome,
+    HarnessRequest,
+    RunEstimate,
+)
+from epistrel.core.seeds.profiles import FULL_PRESET_ID
+from epistrel.core.settings_schema import CERTIFICATION_CANARY_TASK, DEFAULT_CANARY_INTERVAL_S
 from epistrel.core.tables import audit_log, idempotency_keys, jobs, recurring_tasks, timers
 from epistrel.core.tables import worker_heartbeats as heartbeats
 from epistrel.engine import TURN_QUEUE_HOOK, Engine
@@ -82,6 +95,7 @@ from tests import canon_support as c
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import CREDENTIAL_A, ERASURE_LEDGER_DIR, MEDIA_ROOT, auth_settings
+from tests.conformance.conftest import migrated_database
 from tests.conftest import REPO_ROOT
 from tests.event_support import new_story, play_turn
 from tests.integration import test_jobs as jt
@@ -1480,3 +1494,105 @@ async def test_x_07__m6_reservation(
     assert len(await _jobs_of(engine, reservations.RESERVATION_EXPIRY)) == 2
     async with engine.begin() as conn:
         await conn.execute(delete(jobs).where(jobs.c.story_id == story))
+
+
+# -- X-07 M7: the certification canary (#234) ---------------------------------------------------
+
+CANARY_FLOOR = "smoke.turn_completed"
+
+
+class _HoldingHarness:
+    """A harness on which every canary holds its floor (no model is called)."""
+
+    def __init__(self) -> None:
+        self.runs: list[str] = []
+
+    def suites(self) -> list[str]:
+        return ["smoke"]
+
+    def applicable(self, settings: Any) -> list[str]:
+        return ["smoke"]
+
+    def estimate(self, suites: Any, seeds: int, sample: int | None) -> RunEstimate:
+        return RunEstimate(model_calls=0, tokens=0, duration_s=0)
+
+    def committed_runs(self) -> list[dict[str, Any]]:
+        return []
+
+    def suites_of(self, metric_ids: Any) -> list[str]:
+        return ["smoke"]
+
+    async def run(self, request: HarnessRequest) -> HarnessOutcome:
+        self.runs.append(request.run_id)
+        floor = {"metric_id": CANARY_FLOOR, "rule": "rate", "n": 10, "seeds": 2, "verdict": "pass"}
+        return HarnessOutcome(summary={"floors": {"passed": [floor]}}, report_md="")
+
+
+def _reference_record() -> CertificationRecord:
+    report = "# reference\n"
+    return CertificationRecord(
+        schema_version=1,
+        certification_id=new_ulid(),
+        fingerprint="sha256:" + "c" * 64,
+        profile_id=FULL_PRESET_ID,
+        profile_version=1,
+        floors_passed=[
+            FloorResult(metric_id=CANARY_FLOOR, rule="rate", n=10, seeds=2, verdict="pass")
+        ],
+        seed_count=2,
+        model_tier="reference",
+        report_sha256=hashlib.sha256(report.encode()).hexdigest(),
+        run_at=datetime.now(UTC),
+    )
+
+
+@pytest.mark.chaos
+@pytest.mark.part("M7", "NFR-REL-5")
+async def test_x_07__m7_canary(pg_url: str, moved: MovableClock) -> None:
+    """With the canary on and a reference certification in use, no worker runs past three of
+    its due times: ``/health`` is ``degraded`` for the overdue task. Workers return and race
+    for the due row: the canary fans out once (one canary run for the certification, not
+    three), late and never skipped, and the run holds. Complement: the next due time is one
+    interval after it ran, so firing again at once queues nothing."""
+    with migrated_database(pg_url, "epistrel_x07_canary") as url:
+        settings = auth_settings(url)
+        db = make_engine(settings)
+        harness = _HoldingHarness()
+        certification.install_harness(harness)
+        try:
+            async with db.begin() as conn:
+                await certification.store_record(conn, _reference_record(), via="import")
+            await apply_settings(db, {"certification_canary_enabled": True}, principal="p-op")
+            await timer_api.reconcile(db)
+            await _execute(db, "UPDATE recurring_tasks SET next_run_at = now() + interval '1 day'")
+            interval = timedelta(seconds=DEFAULT_CANARY_INTERVAL_S)
+            await _execute(
+                db,
+                "UPDATE recurring_tasks SET next_run_at = now() - :late WHERE name = :name",
+                late=3 * interval + timedelta(seconds=5),
+                name=CERTIFICATION_CANARY_TASK,
+            )
+            status, body = await _health(settings, db)
+            assert (status, body["status"]) == (200, "degraded")
+            assert body["checks"]["oldest_overdue_timer_s"] >= 3 * interval.total_seconds()
+
+            results = await asyncio.gather(*(timer_api.fire_due(db) for _ in range(3)))
+            fired = [name for r in results for name in r.recurring]
+            assert fired == [CERTIFICATION_CANARY_TASK]
+            worker = Worker(db, _config(timers=False))
+            assert await _drain(db, worker) == 2  # the fan-out, then its one canary run
+            async with db.connect() as conn:
+                runs = (
+                    await conn.execute(
+                        text("SELECT kind, outcome, requested_by FROM certification_runs")
+                    )
+                ).all()
+            assert [tuple(r) for r in runs] == [("canary", "held", "system:canary")]
+            assert len(harness.runs) == 1
+            task = await _task(db, CERTIFICATION_CANARY_TASK)
+            assert task.last_status == "ok"
+            assert task.next_run_at - task.last_run_at == interval
+            assert (await timer_api.fire_due(db)).recurring == []
+        finally:
+            certification.install_harness(None)
+            await db.dispose()

@@ -10572,3 +10572,7 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   9. Order: all 58 run before M7's feature stories.
 - **Decision (encoding):** five batches, each with an anchor blocked by its other members, and M7's nine root stories (#220, #227, #246, #306, #504, #523, #580, #649, #662) blocked by the five anchors (98 edges). Per-root fan-in from 58 issues would exceed GitHub's per-issue dependency cap. Batches: A tests/CI (anchor #609), B clock/States (#626), C turn pipeline/verification/detection (#636), D staged turns/outbox/history/API (#608, the OpenAPI pass last), E performance (#619). The order between batches is a recommendation in the M7 description, A first.
 - **Decision (test gate):** as M6's pre-story group, the full suite runs once per batch, not per issue; each issue runs its own tests, its area's tests and the fast gates; M7 feature stories keep the per-story full-suite gate.
+- **Follow-up (owner: "fix all", 2026-11-01):**
+  - #661 now builds the resolve-only action (`POST /stories/{id}/reconciliation/{listing}/resolve`), since it runs in batch B before #251; #251 only widens it to `imported_unsettled`. Edge #251 ← #661. AC changed on both.
+  - The owner's decisions on #663, #646, #641, #639, #635 and #623 are folded into their bodies (`## Decided` plus derived AC).
+  - #615–#622 and #628 gain a `## Done when` with measurable targets (read/statement counts, per-call ms at P-04 scale, NFR-PERF-1/3) and a guard test; #619, batch E's anchor, closes the batch with a `weekly-p04` multi dispatch.

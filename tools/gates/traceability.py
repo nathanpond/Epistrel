@@ -20,7 +20,8 @@ SECTION_RE = re.compile(r"^## 15\. ")
 HEADER = "| Requirement | Priority | Milestone | Tests |"
 EMPTY_CELL = "—"
 ENTRY_RE = re.compile(
-    rf"^(?P<id>{TEST_ID_PATTERN})\s*\((?P<ms>M\d+)(?:,\s*interim until (?P<until>M\d+))?\)$"
+    rf"^(?P<id>{TEST_ID_PATTERN})\s*\((?P<ms>M\d+)"
+    r"(?:,\s*interim until (?P<until>M\d+)|,\s*retired at (?P<retired>M\d+))?\)$"
 )
 # Splits a Tests cell between entries: only on a comma outside parentheses, so the comma in
 # `C-16 (M4, interim until M7)` stays inside its entry (#93).
@@ -39,11 +40,15 @@ class Entry:
     test_id: str
     milestone: int
     interim_until: int | None = None
+    retired_at: int | None = None
+    """#306: an interim entry whose part has retired (``retired at Mn``): kept as history."""
 
     def render(self) -> str:
         inner = milestone_label(self.milestone)
         if self.interim_until is not None:
             inner += f", interim until {milestone_label(self.interim_until)}"
+        if self.retired_at is not None:
+            inner += f", retired at {milestone_label(self.retired_at)}"
         return f"{self.test_id} ({inner})"
 
     @property
@@ -87,11 +92,12 @@ def _parse_entry(text: str, where: str) -> Entry:
     match = ENTRY_RE.match(text.strip())
     if match is None:
         raise PlanError(f"{where}: malformed Tests entry {text.strip()!r}")
-    until = match.group("until")
+    until, retired = match.group("until"), match.group("retired")
     return Entry(
         match.group("id"),
         milestone_number(match.group("ms")),
         None if until is None else milestone_number(until),
+        None if retired is None else milestone_number(retired),
     )
 
 
@@ -235,6 +241,12 @@ def reconcile(plan: Plan, spec: Spec, parts: list[CodePart], current: int) -> li
                 fn = part.node_id.rsplit("::", 1)[-1]
                 findings.append(f"missing from §15: {req} ← {fn} ({label})")
                 continue
+            if match.retired_at is not None:
+                findings.append(
+                    f"retired part still present: {req} {part.test_id} ({label}, retired at "
+                    f"{milestone_label(match.retired_at)})"
+                )
+                continue
             if match.interim_until != part.interim_until:
                 findings.append(
                     f"interim mismatch {req} {part.test_id} ({label}): §15 says "
@@ -251,7 +263,7 @@ def reconcile(plan: Plan, spec: Spec, parts: list[CodePart], current: int) -> li
     for req in sorted(plan.rows, key=id_key):
         row = plan.rows[req]
         for entry in row.entries:
-            if entry.milestone > current:
+            if entry.milestone > current or entry.retired_at is not None:
                 continue
             present = any(
                 p.test_id == entry.test_id
@@ -281,9 +293,13 @@ def write_plan(plan: Plan, parts: list[CodePart], current: int) -> list[str]:
         code = {(p.test_id, p.milestone): p for p in by_req.get(req, [])}
         for entry in row.entries:
             found = code.get(entry.key)
-            merged.append(
-                Entry(entry.test_id, entry.milestone, found.interim_until) if found else entry
-            )
+            if found is not None:
+                merged.append(Entry(entry.test_id, entry.milestone, found.interim_until))
+            elif entry.interim_until is not None:
+                # #306: the interim part is gone: the entry is history, ``retired at`` its end.
+                merged.append(Entry(entry.test_id, entry.milestone, None, entry.interim_until))
+            else:
+                merged.append(entry)
         existing = {e.key for e in merged}
         additions = sorted(
             (

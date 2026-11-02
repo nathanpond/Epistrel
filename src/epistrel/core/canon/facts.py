@@ -73,6 +73,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    text,
     tuple_,
     update,
 )
@@ -1277,12 +1278,24 @@ async def canon_refs(
             p.c.qualifiers,
         )
         .select_from(f.join(p, p.c.id == f.c.proposition_id))
-        .where(f.c.story_id == story_id, *_open(f, None, through_position))
+        # #616: the story's propositions only (``ix_propositions_story_subject_predicate``),
+        # never every story's scanned into the join.
+        .where(
+            f.c.story_id == story_id, p.c.story_id == story_id, *_open(f, None, through_position)
+        )
         .order_by(f.c.valid_from.nulls_first(), f.c.id)
     )
     parsed: dict[Any, Visibility] = {}
     found: list[FactRef] = []
-    for row in await conn.execute(query):
+    # #616: the plan's cost sits just above ``jit_above_cost``, and compiling it was most of the
+    # read; JIT is off for this statement alone (transaction-local, the prior value restored).
+    prior = await conn.scalar(text("SELECT current_setting('jit')"))
+    await conn.execute(text("SELECT set_config('jit', 'off', true)"))
+    try:
+        rows = list(await conn.execute(query))
+    finally:
+        await conn.execute(text("SELECT set_config('jit', :v, true)"), {"v": str(prior)})
+    for row in rows:
         raw = row.visibility
         key = _visibility_key(raw)
         visibility = parsed.get(key)

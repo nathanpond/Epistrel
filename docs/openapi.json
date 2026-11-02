@@ -40437,7 +40437,7 @@
             "title": "Slot"
           },
           "to_turn": {
-            "description": "The last turn to keep (0 to the head - 1).",
+            "description": "The last turn to keep (0 to the head - 1; the head itself discards only its inter-turn slots, #625).",
             "title": "To Turn",
             "type": "integer"
           }

@@ -11,8 +11,9 @@ docs/02 §4.6; #65, #66).
   state and stamp. ``stories.next_turn_index`` becomes N + 1 and the revision moves (FR-CONC-1).
   The truncation is a control action: a turn generating meanwhile abandons with 409
   ``timeline_changed`` (#47), and turns waiting in the story's queue fail with the same error in
-  the truncation's transaction. ``to_turn`` must be from 0 to the head - 1 (422 otherwise). The
-  event records ``{to_turn, prior_head, operation_ids}``.
+  the truncation's transaction. ``to_turn`` must be from 0 to the head - 1, or the head itself
+  when its own inter-turn slots hold active operations (#625: they are discarded and the head
+  turn kept); 422 otherwise. The event records ``{to_turn, prior_head, operation_ids}``.
 - **Untruncate** reverts the most recent truncation (LIFO): the newest ``truncate`` none of
   whose operations is active again (they are ``discarded``, or ``dormant`` once a turn was
   written over them, #66). When nothing is active after its ``to_turn`` and its tail continues
@@ -172,7 +173,10 @@ class TruncateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"to_turn": 2}]})
 
-    to_turn: StrictInt = Field(description="The last turn to keep (0 to the head - 1).")
+    to_turn: StrictInt = Field(
+        description="The last turn to keep (0 to the head - 1; the head itself discards only "
+        "its inter-turn slots, #625)."
+    )
     slot: StrictInt | None = Field(
         default=None,
         ge=0,
@@ -513,22 +517,30 @@ async def _plan_truncate(
     conn: AsyncConnection, story_id: str, to_turn: int, slot: int | None = None
 ) -> _TruncatePlan:
     head = await _next_turn_index(conn, story_id) - 1
-    if to_turn < 0 or to_turn >= head:
+    if to_turn < 0 or to_turn > head:
         raise InvalidRequest(
             "to_turn must be a turn before the story's head (0 keeps only the story's setup)",
             {"field": "body.to_turn", "head": head},
         )
-    found = await conn.scalars(
-        select(operations.c.operation_id)
-        .where(
-            _committed(story_id),
-            operations.c.membership == Membership.ACTIVE.value,
-            _after(to_turn, slot),
+    found = list(
+        await conn.scalars(
+            select(operations.c.operation_id)
+            .where(
+                _committed(story_id),
+                operations.c.membership == Membership.ACTIVE.value,
+                _after(to_turn, slot),
+            )
+            .order_by(operations.c.narrative_turn, operations.c.operation_id)
         )
-        .order_by(operations.c.narrative_turn, operations.c.operation_id)
     )
+    if to_turn == head and not found:
+        # #625: truncating to the head discards only its inter-turn slots; with none, nothing.
+        raise InvalidRequest(
+            "to_turn is the story's head and nothing after it is active to discard",
+            {"field": "body.to_turn", "head": head},
+        )
     return _TruncatePlan(
-        Truncate(to_turn=to_turn, prior_head=await _head(conn, story_id), operation_ids=list(found))
+        Truncate(to_turn=to_turn, prior_head=await _head(conn, story_id), operation_ids=found)
     )
 
 

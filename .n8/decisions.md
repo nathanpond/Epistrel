@@ -10555,6 +10555,28 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Open for the owner:** #632's body records two calls the drafter made (Lite due-event stops stay structured-only; a refused Lite skip is not applied, the reply stands and the clock moves by pacing). Decision 1 leaves `scheduled_events.amendment_part_id` with no M7 writer, since decision 4 refuses scheduled-plan amendments.
 - **Outside scope:** ~30 milestone-less needs-triage issues from M6 (#638–#665, #679–#684); several (#650, #659, #660) touch code M7 rewrites. Triage before `/n8-exec M7`.
 
+## Ad-hoc — 2026-11-01 (owner triage into M7) — reconciled by /n8-replan 2026-11-01 (M7)
+
+- **Change:** The owner triaged every milestone-less open issue (54) plus the sev:low bugs carried in closed milestones (#512, #585, #592, #593, #688), and asked that anything that can go into M7 go there. 58 issues moved to M7 with type/area labels and `needs-triage` removed; #650 closed as completed (fixed by #214's `recheck_mode`, `orchestrator/structured/player_authority.py:818`, S-CONFIG-RACE (c)). #153 and epic #17 stay in closed M4 (#153 waits on #490, M10).
+  **Why:** The owner's decision, 2026-11-01 ("approve all" on the triage proposal).
+  **Affects:** M7 only (execution order and size). No requirement ID added; no epic AC changed.
+- **Owner decisions (one per issue, recorded as an issue comment):**
+  1. #663: at `prompt_only` the clock is fully inert in a structured story (no skip estimation/authority, no #195 anchor checks).
+  2. #661: consumer-applied external effects are listed for reconciliation; `outbox_id` nullable plus a request id; resolve-only action (#251's), nothing dispatched.
+  3. #646: a mid-turn refinement pause steers later renders of the same sequential turn.
+  4. #641: a belief-only schedule stated in speech records the speaker's belief and hearers' testimony; never canon, never stops the clock.
+  5. #639: a write-capable clock provider's advances go through the outbox (FR-EXT-10).
+  6. #635: a narrator or director may narrate an unmodeled person's departure as a change.
+  7. #623: narration delivered to a character viewpoint is bounded by what it could perceive; hidden State values and hidden canon are repaired.
+  8. The nine #522-spike performance issues (#615–#622, #628) go to M7, not M10.
+  9. Order: all 58 run before M7's feature stories.
+- **Decision (encoding):** five batches, each with an anchor blocked by its other members, and M7's nine root stories (#220, #227, #246, #306, #504, #523, #580, #649, #662) blocked by the five anchors (98 edges). Per-root fan-in from 58 issues would exceed GitHub's per-issue dependency cap. Batches: A tests/CI (anchor #609), B clock/States (#626), C turn pipeline/verification/detection (#636), D staged turns/outbox/history/API (#608, the OpenAPI pass last), E performance (#619). The order between batches is a recommendation in the M7 description, A first.
+- **Decision (test gate):** as M6's pre-story group, the full suite runs once per batch, not per issue; each issue runs its own tests, its area's tests and the fast gates; M7 feature stories keep the per-story full-suite gate.
+- **Follow-up (owner: "fix all", 2026-11-01):**
+  - #661 now builds the resolve-only action (`POST /stories/{id}/reconciliation/{listing}/resolve`), since it runs in batch B before #251; #251 only widens it to `imported_unsettled`. Edge #251 ← #661. AC changed on both.
+  - The owner's decisions on #663, #646, #641, #639, #635 and #623 are folded into their bodies (`## Decided` plus derived AC).
+  - #615–#622 and #628 gain a `## Done when` with measurable targets (read/statement counts, per-call ms at P-04 scale, NFR-PERF-1/3) and a guard test; #619, batch E's anchor, closes the batch with a `weekly-p04` multi dispatch.
+
 ## /n8-exec M7 — 2026-11-01
 
 Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run first, in batches A–E (the M7 description's order), with one full-suite run per batch. As in M6, CI on the milestone PR is that full run (a local full run takes about 2h18m). Feature stories keep the per-story full-suite gate.

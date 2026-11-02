@@ -1402,3 +1402,43 @@ class ProviderReadOnly(EpistrelError):
 
     code = "provider_read_only"
     http_status = 422
+
+
+# -- amendments (#221) ---------------------------------------------------------------------------
+
+
+class AmendmentInvalidPart(EpistrelError):
+    """An amendment part cannot apply (FR-REWRITE-12; #221): ``details`` name its ``ordinal``
+    and ``reason`` (``record_not_found``, ``wrong_story``, ``table_not_correctable``,
+    ``column_not_allowed``, ``action_not_allowed``, ``unresolved_time``, ``state_constraint``,
+    ``contingent_change``, ``external_effect``, ``derived_state``, ``clock_advance``). Nothing is
+    written."""
+
+    code = "invalid_amendment_part"
+    http_status = 422
+
+
+class AmendmentTargetInactive(EpistrelError):
+    """A record part names a record outside the active timeline (discarded or dormant; #221):
+    ``details``: ``record_table``, ``record_id``, ``membership``. Nothing is written."""
+
+    code = "record_inactive"
+    http_status = 409
+
+
+class ScheduleNotAmendable(EpistrelError):
+    """A proposition part on ``scheduled`` (an event's planned time, place or participants;
+    #221, the owner's decision 4): a superseded ``scheduled`` fact does not move its event, so
+    the event is moved with ``PATCH /stories/{id}/scheduled-events/{event_id}`` (``details``:
+    ``event_id``, ``route``). Nothing is written."""
+
+    code = "schedule_not_amendable"
+    http_status = 422
+
+
+class AmendmentAlreadyReverted(EpistrelError):
+    """The amendment was reverted already (#221, #238): ``details``: ``amendment_id``,
+    ``reverted_by``."""
+
+    code = "amendment_already_reverted"
+    http_status = 409

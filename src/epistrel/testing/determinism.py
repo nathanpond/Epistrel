@@ -286,6 +286,13 @@ ORDER: dict[str, str] = {
         "t.position_beat NULLS FIRST, t.position_step NULLS FIRST, t.edge_type, "
         "t.dependent_table, t.target_kind, t.acquisition_kind NULLS FIRST, t.created_at"
     ),
+    # Amendments (#221): by when they were recorded, then kind; parts by their amendment's
+    # time and their ordinal.
+    "amendments": f"{_STORY_RANK}, t.tx_time, t.kind, t.status",
+    "amendment_parts": (
+        f"{_STORY_RANK}, (SELECT a.tx_time FROM amendments a WHERE a.id = t.amendment_id), "  # noqa: S608
+        "t.ordinal, t.status"
+    ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

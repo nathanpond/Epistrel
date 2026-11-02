@@ -29,6 +29,7 @@ from epistrel.orchestrator.models.access import ModelAccessLayer
 from tests import consolidation_support as cs
 from tests import effect_support as es
 from tests import multi_support as ms
+from tests import projection_support
 from tests import provider_support as ps
 from tests import state_support as ss
 from tests.auth_support import auth_settings
@@ -868,3 +869,42 @@ async def test_i_04__m6(
         assert await recorded_value() == {(gold.id, cal): (300, read.id)}
         assert len(fake.reads) == 1
         await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M7", "FR-STORE-21")
+async def test_i_04__m7_survive(engine: AsyncEngine) -> None:
+    """#221: a truncation never removes an amendment. A fact correction and a record part on a
+    discarded turn's reply: after truncating past that turn the amendment's rows are unchanged,
+    the fact correction is in force, and the record part is out of every corrected view with
+    its reply; untruncating brings both back."""
+    from epistrel.core.amendments.store import PropositionPartDraft, RecordPartDraft
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.views import corrected_history
+    from tests import amendment_support as am
+    from tests import canon_support as c
+
+    w = await c.world(engine)
+    bobby = w.people["Bobby"]
+    await c.commit(engine, w.story_id, c.at(bobby, w.places["school"], None, None))
+    replies = await am.play(engine, w.story_id, 6, start=2)
+    line = replies[6]
+    await am.amend(
+        engine,
+        w.story_id,
+        [
+            PropositionPartDraft(c.at(bobby, w.places["garden"], None, None)),
+            RecordPartDraft("events", line, "replace", {"text": "corrected"}),
+        ],
+    )
+    before = {
+        t: await am.table_rows(engine, t, w.story_id) for t in ("amendments", "amendment_parts")
+    }
+    assert await projection_support.truncate(engine, w.story_id, 4) is not None
+    assert {t: await am.table_rows(engine, t, w.story_id) for t in before} == before
+    async with engine.connect() as conn:
+        found = await canon.canon(conn, w.story_id, subject=bobby, predicate=c.LOCATED_AT)
+    assert [f.proposition.object_id for f in found] == [w.places["garden"]]
+    assert line not in {e.id for e in await corrected_history(engine, w.story_id)}
+    assert await projection_support.untruncate(engine, w.story_id) is not None
+    (event,) = [e for e in await corrected_history(engine, w.story_id) if e.id == line]
+    assert event.payload.model_dump()["text"] == "corrected"

@@ -79,3 +79,49 @@ async def test_i_03(engine: AsyncEngine) -> None:
     assert [e.id for e in await corrected_history(engine, story, CHECKPOINT)] == [
         e.id for e in as_of
     ]
+
+
+async def _at(engine: AsyncEngine, story: str, who: str, through: tuple[int, int]) -> list[str]:
+    from epistrel.core.canon import facts as canon
+    from tests.canon_support import LOCATED_AT
+
+    async with engine.connect() as conn:
+        found = await canon.canon(
+            conn, story, subject=who, predicate=LOCATED_AT, through_position=through
+        )
+    return [str(f.proposition.object_id) for f in found]
+
+
+@pytest.mark.part("M7", "FR-STORE-6,20")
+async def test_i_03__m7(engine: AsyncEngine) -> None:
+    """#221: an amendment recorded after turn 1,000, positioned nowhere, that corrects pre-800
+    history (Bobby was at the garden from the start) is in the state as of 800; in the same
+    amendment, a part whose valid-time begins after 800's story-time (Ann in the garden from
+    turn 900's story-minute) is not, and the version it superseded is read there instead, while
+    at 1,000 it is in. Eligibility is per part, never per amendment."""
+    from epistrel.core import world_clock
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from tests import amendment_support as am
+    from tests import canon_support as c
+
+    w = await c.world(engine)
+    bobby, ann = w.people["Bobby"], w.people["Ann"]
+    school, garden = w.places["school"], w.places["garden"]
+    await c.commit(engine, w.story_id, c.at(bobby, school, None, None))
+    await c.commit(engine, w.story_id, c.at(ann, school, None, None))
+    await am.play(engine, w.story_id, 998, start=3)
+    async with engine.connect() as conn:
+        later = await world_clock.story_time_at(conn, w.story_id, (900, 0))
+        checkpoint = await world_clock.story_time_at(conn, w.story_id, (800, 0))
+    assert later > checkpoint
+    await am.amend(
+        engine,
+        w.story_id,
+        [
+            PropositionPartDraft(c.at(bobby, garden, None, None)),
+            PropositionPartDraft(c.at(ann, garden, later, None), valid_from_minutes=later),
+        ],
+    )
+    assert await _at(engine, w.story_id, bobby, (800, 0)) == [garden]
+    assert await _at(engine, w.story_id, ann, (800, 0)) == [school]
+    assert garden in await _at(engine, w.story_id, ann, (1000, 0))

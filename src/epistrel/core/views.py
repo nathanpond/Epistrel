@@ -6,7 +6,8 @@ The category filter is the only thing that keeps audit records out of story view
   ``narrative_state``, ``input``, ``derived`` and ``amendment``. The genesis operation's events
   (``story_created``, ``character_defined``: ``control``) are always included. Through turn N
   it keeps positions ≤ N, excluding N's inter-turn slots, plus position-less records
-  (FR-STORE-26 admits derived records by provenance; #72 refines the rule).
+  (FR-STORE-26 admits derived records by provenance; #72 refines the rule). An event #221's
+  active overlay parts correct reads corrected (``replace``) or not at all (``drop``).
 - ``audit_view`` reads every category of every operation, discarded ones included.
 
 Both return typed ``Event``s ordered by ``(narrative_turn, turn_variant, seq)``, with
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -91,7 +92,54 @@ async def corrected_history(
                 and_(events.c.narrative_turn == through_turn, events.c.slot_k.is_(None)),
             )
         )
-    return await _fetch(db, query)
+    found = await _fetch(db, query)
+    return await _overlaid(db, story_id, found)
+
+
+async def _overlaid(
+    db: AsyncEngine | AsyncConnection, story_id: str, found: list[Event]
+) -> list[Event]:
+    """``found`` with #221's active event overlays applied, in record order: a ``replace``
+    merges its patch into the payload (``null`` deletes a key), a ``drop`` hides the event. A
+    part follows its event's membership (the event is read only while active)."""
+    from epistrel.core.amendments.store import merged_payload
+    from epistrel.core.tables import amendment_parts
+
+    p = amendment_parts.c
+    query = (
+        select(p.record_id, p.action, p.patch_after)
+        .where(
+            p.story_id == story_id,
+            p.kind == "record",
+            p.record_table == "events",
+            p.status == "active",
+        )
+        .order_by(p.tx_from, p.amendment_id, p.ordinal)
+    )
+    async with _connection(db) as conn:
+        parts = (await conn.execute(query)).all()
+    if not parts:
+        return found
+    by_event: dict[str, list[Any]] = {}
+    for part in parts:
+        by_event.setdefault(str(part.record_id), []).append(part)
+    out: list[Event] = []
+    for event in found:
+        applied = by_event.get(event.id)
+        if not applied:
+            out.append(event)
+            continue
+        payload: dict[str, Any] | None = event.payload.model_dump(mode="json")
+        for part in applied:
+            if part.action == "drop":
+                payload = None
+            elif payload is not None:
+                payload = merged_payload(payload, part.patch_after)
+            else:
+                payload = merged_payload(event.payload.model_dump(mode="json"), part.patch_after)
+        if payload is not None:
+            out.append(replace(event, payload=validate(event.type, payload)))
+    return out
 
 
 async def audit_view(

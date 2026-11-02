@@ -839,6 +839,10 @@ ROW_FILTERS: dict[str, str] = {
         f"AND t.target_id::text IN (SELECT old_id FROM {_MAP})"
     ),
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
+    # Amendments (#221): an amendment follows its operation (the default); its parts follow it.
+    "amendment_parts": (
+        f"t.amendment_id::text IN (SELECT old_id FROM {_MAP} WHERE kind = 'amendments')"  # noqa: S608
+    ),
     # The outbox's outcome records (#210) follow the outbox rows the fork copies, and (#217) a
     # consumer-applied effect's follow its copied ``requested_effect`` (whose effect id a fork
     # keeps: a payload id is mapped only when the fork copies a row with that id).

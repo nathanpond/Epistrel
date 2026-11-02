@@ -455,6 +455,40 @@ def outbox_record(row: Any) -> Record:
     )
 
 
+def amendment_record(row: Any) -> Record:
+    """An amendment (#221): every text of its ``payload``, indexed positionally (ADR-154)."""
+    return Record(
+        "amendments", str(row.id), _str(row.story_id), text_fields(row.payload, "payload")
+    )
+
+
+def amendment_part_record(row: Any) -> Record:
+    """An amendment part (#221): every text of its patches and its time expression, indexed
+    positionally; a character it names as a key's subject is declared."""
+    fields: dict[str, str | None] = {}
+    for name in ("patch_before", "patch_after", "valid_spec"):
+        fields.update(text_fields(getattr(row, name, None), name))
+    subject = _str(getattr(row, "subject_id", None))
+    declared: tuple[Declared, ...] = (
+        ((SubjectKind.CHARACTER, subject, "subject_id"),) if subject else ()
+    )
+    return Record("amendment_parts", str(row.id), _str(row.story_id), fields, declared)
+
+
+async def read_amendments(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's amendments (#221), as ``amendment_record`` indexes them."""
+    from epistrel.core.tables import amendments
+
+    return await _story_rows(conn, amendments, story_id, amendment_record)
+
+
+async def read_amendment_parts(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's amendment parts (#221), as ``amendment_part_record`` indexes them."""
+    from epistrel.core.tables import amendment_parts
+
+    return await _story_rows(conn, amendment_parts, story_id, amendment_part_record)
+
+
 def exposure_record(row: Any) -> Record:
     """An exposure (#164): no text of its own (its proposition is indexed); its witness, its
     source and the characters its proposition's subject and object are

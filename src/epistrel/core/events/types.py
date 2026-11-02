@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from epistrel.core.enums import EventCategory
 from epistrel.core.events.registry import EventPayload, register
@@ -1060,3 +1060,38 @@ BEAT_TYPES: dict[str, type[StructuredBeat]] = {
 """Each structured beat kind's event model (its event type is ``beat_<kind>``)."""
 
 BEAT_EVENT_PREFIX = "beat_"
+
+
+# -- amendments (#221) ----------------------------------------------------------------------------
+
+
+class TranscriptPatch(BaseModel):
+    """One transcript row an amendment changes (#221): ``text`` the corrected text (``""`` for a
+    dropped beat: no placeholder, the row stays empty), or ``row`` a whole row to put back (a
+    revert of a drop)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    message_id: str
+    text: str | None = None
+    row: dict[str, Any] | None = None
+
+
+@register("amendment_recorded", category=EventCategory.AMENDMENT)
+class AmendmentRecorded(EventPayload):
+    """An amendment was recorded (FR-REWRITE-9; #221): its id and parts (``amendment_parts``),
+    and the transcript rows its overlays correct, which the transcript projection applies."""
+
+    amendment_id: str
+    part_ids: tuple[str, ...] = ()
+    transcript: tuple[TranscriptPatch, ...] = ()
+
+
+@register("amendment_reverted", category=EventCategory.AMENDMENT)
+class AmendmentReverted(EventPayload):
+    """An amendment was reverted by amendment ``by`` (#221's revert primitive), and the
+    transcript rows that revert restores."""
+
+    amendment_id: str
+    by: str
+    transcript: tuple[TranscriptPatch, ...] = ()

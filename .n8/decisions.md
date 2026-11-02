@@ -10835,3 +10835,26 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #662
 - **Decision:** M2's member pins narrow to the M2/M3 prefix (`test_read_set_members_are_fixed`, and `test_revisions`' read-set keys). `test_i_18__m7_members` holds the full pin.
   **Issue:** #662
+
+### #221 — amendments and their parts, 2026-11-02
+
+- **Decision:** record parts on `beliefs` are refused (`action_not_allowed`) until #236. Beliefs are corrected through their frames, and #160's `transition()` of kind `author` belongs with that story. `CORRECTABLE_TABLES` still registers `beliefs` with its `version` strategy, as the plan's registry test asks.
+  **Issue:** #221
+- **Decision:** a `version` part on `facts` takes `replace` only. A `drop` of a fact has no successor version to write, so the planner's `drop` for `facts` is deferred with `retract: true` (below).
+  **Issue:** #221
+- **Decision:** `retract: true` on a proposition part (planner discretion: "X was never true") is not built here. Closing a lineage's `valid_to` with no successor needs a canon primitive #133 does not have. Filed as #694, a follow-up for #223/#224, which produce such parts.
+  **Issue:** #221
+- **Decision:** an overlay `drop` empties the beat's `transcript_messages` row (no placeholder; the owner's round-two decision). A `replace` writes the corrected text there. Both happen in the amendment's transaction (`_apply_transcript`), because the event is inserted outside `Operation`'s projection path. The `AmendmentRecorded`/`AmendmentReverted` events carry the patches, so a projection rebuild replays them.
+  **Issue:** #221
+- **Decision:** the amendment's events use provenance `consumer` (the author is a consumer principal); `author` is not a provenance value.
+  **Issue:** #221
+- **Decision:** a rule's own `state_changes` row (an elapsed tick, #192) is refused as `derived_state`, like a derived State's. Derived States are computed and write no rows, so the plan's "derived State's row" exists only as an elapsed tick. Both are computed rather than narrated.
+  **Issue:** #221
+- **Decision:** the resurrection guard runs on the parts as a `DIRECT` write path (`guard.CONTENT_WRITE_PATHS`) with consumer provenance. Per #127's owner decision, an author typing an erased name after the erasure is accepted; a reference prepared before it, or by id, is refused. The story pass redacts `amendments.payload` and `amendment_parts.patch_before|patch_after|valid_spec` in place.
+  **Issue:** #221
+- **Decision:** both tables join `STORY_TABLES` just before `operations`, with parts before amendments. Fork copies the amendments of its copied operations (the default `operation_id` filter), and the parts of the amendments it copies. `determinism.ORDER` orders amendments by `tx_time` and kind, and parts by their amendment's `tx_time` and ordinal. `test_story_isolation_schema` allows the two new foreign keys (`amendment_id`, and the deferred `amendment_part_id`).
+  **Issue:** #221
+- **Decision:** the 1,000-turn S-AMEND-SURVIVES story is seeded by direct commits in `tests/amendment_support.play` (input and reply per turn), not in `tests/fixtures/long_story.py`. The planner named that path; the helper module sits beside the other `*_support` modules.
+  **Issue:** #221
+- **Decision (Rule 1):** `test_erasure_refusals` still expected `body.scope` for a story character erased at catalog scope. #504 (2fc543d) moved that refusal to `body.subject.story`, so the test now asserts the new field.
+  **Issue:** #504

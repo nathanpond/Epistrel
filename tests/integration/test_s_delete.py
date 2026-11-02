@@ -12,6 +12,7 @@ from epistrel import Engine, ProfileOverridesPatch, RelationRequest
 from epistrel.config import Settings
 from epistrel.core import clock, turn_gate
 from epistrel.core import outbox as core_outbox
+from epistrel.core.amendments.store import RecordPartDraft
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.sketch import ThunkSketch
 from epistrel.core.context import RequestContext
@@ -40,6 +41,7 @@ from epistrel.orchestrator.policies.input_gate import EntryPoint, GateText
 from epistrel.orchestrator.policies.schemas import StoryPolicyItem
 from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from tests import (
+    amendment_support,
     canon_support,
     escalation_support,
     exposure_support,
@@ -51,12 +53,24 @@ from tests import (
 )
 from tests import erasure_support as erasure
 from tests import genesis_support as g
-from tests.event_support import interleave, play_turn, rows
+from tests.event_support import interleave, play_turn, rows, scalar
 from tests.policy_support import unique, words
 from tests.respond_support import respond_client
 from tests.story_support import WRITE, create, dump, public_tables, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
+
+
+async def _amend(engine: AsyncEngine, story_id: str) -> None:
+    """An amendment of the story's (#221) correcting a reply: its row and its part."""
+    reply = await scalar(
+        engine,
+        "SELECT id FROM events WHERE story_id = :s AND type = 'message_rendered' LIMIT 1",
+        s=story_id,
+    )
+    await amendment_support.amend(
+        engine, story_id, [RecordPartDraft("events", str(reply), "replace", {"text": "x"})]
+    )
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
@@ -577,6 +591,7 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
             await job_queue.enqueue(conn, REBUILD_KIND, {"story_id": victim}, story_id=victim)
             # A one-shot timer of the victim's (#71): the deletion takes it too.
             await timers.schedule(conn, "test_timer", victim, _due(), story_id=victim)
+        await _amend(engine, victim)
 
         owned = await _rows_of(engine, victim)
         assert all(owned.values()), {t: len(r) for t, r in owned.items() if not r}
@@ -706,6 +721,10 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
             # #167: a nested belief names its inner belief (a deferred key); both are the
             # holder's, in one story.
             ("inner_belief_id", "beliefs", "id"),
+            # #221: a part names its amendment, and a corrected fact, State change or scheduled
+            # event the part that wrote it (a deferred key); all of one story.
+            ("amendment_id", "amendments", "id"),
+            ("amendment_part_id", "amendment_parts", "id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

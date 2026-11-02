@@ -175,6 +175,8 @@ from epistrel.core.memory import retirement
 from epistrel.core.ports import SummaryCompressor
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, ErasureSettings
 from epistrel.core.tables import (
+    amendment_parts,
+    amendments,
     character_catalog,
     character_snapshots,
     character_versions,
@@ -946,6 +948,28 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
         config_changes.c.change_id,
         refs.get(config_changes.name, ()),
         ("old", "new"),
+        redactor,
+        tally,
+        write=write,
+    )
+    # #221: an amendment's payload and its parts' patches and time expressions, in place
+    # (#222's as-recorded view reverses a redacted patch).
+    await _redact_json_rows(
+        conn,
+        amendments,
+        amendments.c.id,
+        refs.get(amendments.name, ()),
+        ("payload",),
+        redactor,
+        tally,
+        write=write,
+    )
+    await _redact_json_rows(
+        conn,
+        amendment_parts,
+        amendment_parts.c.id,
+        refs.get(amendment_parts.name, ()),
+        ("patch_before", "patch_after", "valid_spec"),
         redactor,
         tally,
         write=write,

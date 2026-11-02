@@ -310,7 +310,8 @@ async def test_erasure_from_a_blank_story_named_after_the_subject(
 async def test_erasure_refusals(
     erasure_settings: Settings, pg_url: str, engine: AsyncEngine
 ) -> None:
-    """A story character scoped to the catalog is 422 ``invalid_erasure_scope``; an unknown
+    """A story character scoped to the catalog without its story (``subject.story``, #504) is
+    422 ``invalid_erasure_scope``; an unknown
     story is 404; a malformed scope is 422 ``validation_error``; without
     ``EPISTREL_CONFIG_KEY`` it is 503 ``config_key_missing``. None writes anything."""
     async with respond_client(erasure_settings, engine) as (client, _):
@@ -319,7 +320,8 @@ async def test_erasure_refusals(
         character = next(iter(ids.values()))
         scoped = await e.erase(client, "character", character, status=422)
         assert scoped["error"]["code"] == "invalid_erasure_scope"
-        assert scoped["error"]["details"]["field"] == "body.scope"
+        # #504: a catalog-scope erasure of a story character needs its story named.
+        assert scoped["error"]["details"]["field"] == "body.subject.story"
         gone = await e.erase(client, "character", character, new_ulid(), status=404)
         assert gone["error"]["code"] == "not_found"
         malformed = await client.post(

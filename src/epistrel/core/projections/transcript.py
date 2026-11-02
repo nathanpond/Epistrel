@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from epistrel.core.enums import Membership, OperationKind, Provenance
 from epistrel.core.events.types import (
     BEAT_EVENT_PREFIX,
+    AmendmentRecorded,
+    AmendmentReverted,
     Latent,
     MessageRendered,
     PlayerInput,
@@ -134,6 +136,17 @@ class TranscriptProjection(Projection):
         ):
             rows.put(message_row(event, event.payload))
             return
+        if isinstance(event.payload, AmendmentRecorded | AmendmentReverted):
+            # #221: an overlay corrects a beat's text where it is (a dropped beat's row is
+            # emptied); a revert puts the text back.
+            for patch in event.payload.transcript:
+                if patch.row is not None:
+                    rows.put(patch.row)
+                    continue
+                current = rows.get((patch.message_id,))
+                if current is not None and patch.text is not None:
+                    rows.put({**current, "text": patch.text})
+            return
         for operation_ids, membership in membership_changes(event):
             _flip(rows, operation_ids, membership)
 
@@ -141,12 +154,19 @@ class TranscriptProjection(Projection):
         named = {op for e in events for ids, _ in membership_changes(e) for op in ids}
         turns = {turn for e in events if (turn := regenerated_turn(e)) is not None}
         shelved = [turn for e in events if (turn := shelved_from(e)) is not None]
-        if not named and not turns and not shelved:
+        corrected = {
+            patch.message_id
+            for e in events
+            if isinstance(e.payload, AmendmentRecorded | AmendmentReverted)
+            for patch in e.payload.transcript
+        }
+        if not named and not turns and not shelved and not corrected:
             return Rows(self.table)
         t = transcript_messages
         wanted: list[Any] = [
             t.c.operation_id.in_(sorted(named)),
             t.c.narrative_turn.in_(sorted(turns)),
+            t.c.message_id.in_(sorted(corrected)),
         ]
         if shelved:
             wanted.append(

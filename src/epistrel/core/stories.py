@@ -122,6 +122,8 @@ from epistrel.core.settings_schema import (
 from epistrel.core.states import define_state, validate_state_tie_break
 from epistrel.core.states.model import world_clock_definition
 from epistrel.core.tables import (
+    amendment_parts,
+    amendments,
     audit_log,
     character_snapshots,
     characters,
@@ -292,6 +294,10 @@ STORY_TABLES: tuple[Table, ...] = (
     predicates,
     entity_aliases,
     entities,
+    # Amendments (#221): the parts before the amendments they belong to; neither is derived
+    # (FR-STORE-21), and a fork copies the amendments of its copied operations.
+    amendment_parts,
+    amendments,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the

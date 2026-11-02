@@ -45,6 +45,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    ForeignKey,
     Index,
     SmallInteger,
     Table,
@@ -118,6 +119,17 @@ facts = Table(
     Column("committed_at_position", JSONB(none_as_null=True), nullable=True),
     Column("thunk_id", ulid_type(), nullable=True),
     Column("resolution_level", Text, nullable=True),
+    Column(
+        "amendment_part_id",
+        ulid_type(),
+        ForeignKey(
+            "amendment_parts.id",
+            name="fk_facts_amendment_part",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        nullable=True,
+    ),
     CheckConstraint("num_nonnulls(proposition_id, closed_set_id) = 1", name="one_wrapped"),
     CheckConstraint(
         "valid_from IS NULL OR valid_to IS NULL OR valid_from < valid_to", name="valid_order"

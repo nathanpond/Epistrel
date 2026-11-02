@@ -819,6 +819,11 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # value declares its character. Its writer is the outbox module (intent, dispatcher and
     # intake writes alike).
     SubjectWriter("external_effect_outbox", ("epistrel.core.outbox",), f"{_RECORDS}:read_outbox"),
+    # #221: an amendment's payload and its parts' patches and time expressions.
+    SubjectWriter("amendments", ("epistrel.core.amendments.store",), f"{_RECORDS}:read_amendments"),
+    SubjectWriter(
+        "amendment_parts", ("epistrel.core.amendments.store",), f"{_RECORDS}:read_amendment_parts"
+    ),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

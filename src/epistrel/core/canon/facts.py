@@ -581,6 +581,8 @@ class _Write:
     replaces: Fact | None = None
     thunk_id: str | None = None
     resolution_level: str | None = None
+    amendment_part_id: str | None = None
+    """#221: the amendment part this write applies (every row it writes carries it)."""
 
 
 def _event_provenance(operation: FactOperation) -> Provenance:
@@ -815,6 +817,9 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
         # A position-less or event-less write's source is its own derived event.
         for row in rows:
             row["source_event_ids"] = [event_id]
+    if w.amendment_part_id is not None:
+        for row in rows:
+            row["amendment_part_id"] = w.amendment_part_id
 
     for current in closing:
         await conn.execute(
@@ -953,6 +958,7 @@ async def commit_fact(
     thunk_id: str | None = None,
     resolution_level: str | None = None,
     holder: str = HolderKind.CANON.value,
+    amendment_part_id: str | None = None,
 ) -> Fact:
     """Write ``proposition`` as a new fact version in ``operation``'s commit transaction (see
     the module docstring); answers the version, with the versions it closed in
@@ -994,6 +1000,7 @@ async def commit_fact(
             commit_state=commit_state,
             thunk_id=thunk_id,
             resolution_level=resolution_level,
+            amendment_part_id=amendment_part_id,
         ),
         registry,
     )
@@ -1053,6 +1060,7 @@ async def supersede(
     registry: Registry | None = None,
     author_locked: bool | None = None,
     holder: str = HolderKind.CANON.value,
+    amendment_part_id: str | None = None,
 ) -> Fact:
     """Close version ``fact_id`` in transaction-time and write ``new_proposition`` as its
     successor in the same lineage (never a delete, FR-BITEMP-2). Provenance, visibility,
@@ -1098,6 +1106,7 @@ async def supersede(
             author_locked=old.author_locked if author_locked is None else author_locked,
             commit_state=old.commit_state,
             replaces=old,
+            amendment_part_id=amendment_part_id,
         ),
         registry,
     )
@@ -1124,12 +1133,15 @@ def _canon_where(
     written_in: tuple[int, int] | None = None,
     member: str | None = None,
     overlapping: tuple[int | None, int | None] | None = None,
+    include_closed: bool = False,
 ) -> list[ColumnElement[bool]]:
     """``canon``'s selection on ``f`` (a ``facts`` alias joined to ``propositions``), shared by
-    every read that must select exactly what ``canon`` does (``canon_links``, #470)."""
+    every read that must select exactly what ``canon`` does (``canon_links``, #470).
+    ``include_closed``: active versions whatever closes them (#221's excluded parts read the
+    versions they superseded)."""
     where: list[ColumnElement[bool]] = [
         f.c.story_id == story_id,
-        *_open(f, record_time, through_position),
+        *([active_only(f)] if include_closed else _open(f, record_time, through_position)),
     ]
     if story_time is not None:
         t = literal(story_time, BigInteger)
@@ -1229,7 +1241,104 @@ async def canon(
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:
         query = query.limit(limit)
-    return [_fact_of(r) for r in await conn.execute(query)]
+    rows = list(await conn.execute(query))
+    if through_position is not None and any(r.amendment_part_id is not None for r in rows):
+        # #221 (FR-STORE-20): an amendment part not eligible at the checkpoint reads the
+        # versions it superseded instead (per part, never per amendment).
+        excluded, restore = await _ineligible(conn, story_id, rows, through_position)
+        if excluded:
+            rows = [r for r in rows if str(r.id) not in excluded]
+            if restore:
+                again = _canon_where(
+                    f,
+                    story_id,
+                    story_time=story_time,
+                    viewpoint=viewpoint,
+                    subject=subject,
+                    predicate=predicate,
+                    object=object,
+                    reading=reading,
+                    ids=sorted(restore),
+                    member=member,
+                    overlapping=overlapping,
+                    include_closed=True,
+                )
+                rows += list(await conn.execute(_select(f).where(*again)))
+                rows.sort(key=lambda r: (r.valid_from is not None, r.valid_from or 0, r.id))
+    return [_fact_of(r) for r in rows]
+
+
+async def _ineligible(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], through: Position
+) -> tuple[set[str], set[str]]:
+    """The amendment-written versions among ``rows`` whose part is excluded at ``through``,
+    and the versions to read in their place (walking ``superseded_fact_ids`` down to a version
+    that is included or not amendment-written)."""
+    from epistrel.core import world_clock
+    from epistrel.core.amendments.eligibility import PartTiming, checkpoint_period, eligible
+    from epistrel.core.tables import amendment_parts
+
+    story_time = await world_clock.story_time_at(conn, story_id, through)
+    absolute = checkpoint_period(
+        (await world_clock.anchor_at(conn, story_id, through)).absolute_at(story_time)
+    )
+    p = amendment_parts.c
+
+    async def parts_of(ids: Iterable[str]) -> dict[str, Any]:
+        wanted = sorted(set(ids))
+        if not wanted:
+            return {}
+        found = await conn.execute(
+            select(p.id, p.valid_from_minutes, p.valid_spec, p.superseded_fact_ids).where(
+                p.id.in_(wanted), p.status == "active"
+            )
+        )
+        return {str(r.id): r for r in found}
+
+    def excluded_part(part: Any) -> bool:
+        timing = PartTiming.of(part.valid_from_minutes, part.valid_spec)
+        return not eligible(timing, story_time=story_time, absolute=absolute).folds
+
+    parts = await parts_of(str(r.amendment_part_id) for r in rows if r.amendment_part_id)
+    excluded = {
+        str(r.id)
+        for r in rows
+        if r.amendment_part_id is not None
+        and (part := parts.get(str(r.amendment_part_id))) is not None
+        and excluded_part(part)
+    }
+    restore: set[str] = set()
+    pending = [
+        list(parts[str(r.amendment_part_id)].superseded_fact_ids or [])
+        for r in rows
+        if str(r.id) in excluded
+    ]
+    frontier = [fid for group in pending for fid in group]
+    seen: set[str] = set()
+    while frontier:
+        found = await conn.execute(
+            select(facts.c.id, facts.c.amendment_part_id).where(facts.c.id.in_(frontier))
+        )
+        frontier = []
+        versions = list(found)
+        nested = await parts_of(
+            str(v.amendment_part_id) for v in versions if v.amendment_part_id is not None
+        )
+        for version in versions:
+            fid = str(version.id)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            part = (
+                nested.get(str(version.amendment_part_id))
+                if version.amendment_part_id is not None
+                else None
+            )
+            if part is not None and excluded_part(part):
+                frontier += list(part.superseded_fact_ids or [])
+            else:
+                restore.add(fid)
+    return excluded, restore
 
 
 @dataclass(frozen=True, slots=True)

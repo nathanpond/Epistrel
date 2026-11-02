@@ -58,9 +58,13 @@ SCHEMA = {
 }
 
 
-KEPT_ON_DOWNGRADE = {("public.operation_status", "queued")}
+KEPT_ON_DOWNGRADE = {
+    ("public.operation_status", "queued"),
+    ("public.memory_trust_tier", "backfill"),
+}
 """Enum labels a downgrade cannot remove (PostgreSQL has no ``DROP VALUE``): 0015 adds
-``queued`` and documents that its downgrade leaves it, after failing any queued operation."""
+``queued`` and documents that its downgrade leaves it, after failing any queued operation;
+0114 adds ``backfill`` (#228) and leaves it the same way."""
 
 
 def _same(up: dict[str, list[tuple[Any, ...]]], down: dict[str, list[tuple[Any, ...]]]) -> None:

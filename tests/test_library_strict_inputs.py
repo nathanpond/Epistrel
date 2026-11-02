@@ -199,6 +199,9 @@ MISTYPED: dict[str, tuple[Any, ...]] = {
     "bool": (1, "true"),
 }
 VALID: dict[str, Any] = {"int": 1, "float": 0.5, "bool": True}
+TEXT_ALSO: frozenset[tuple[str, str]] = frozenset({("history", "as_of")})
+"""Parameters annotated ``int | str``: a string is one of their types (#222: ``as_of`` takes a
+turn or a checkpoint), so ``"7"`` is no mistyped value for them."""
 
 
 def _scalar_cases() -> list[tuple[str, str, str]]:
@@ -278,6 +281,8 @@ async def test_a_mistyped_scalar_is_refused_at_its_parameter(
     kind = inspect.signature(getattr(Engine, name)).parameters[parameter].kind
     where = "query" if kind is inspect.Parameter.KEYWORD_ONLY else "path"
     for value in MISTYPED[scalar]:
+        if isinstance(value, str) and (name, parameter) in TEXT_ALSO:
+            continue
         refused = await _call(name, parameter, value)
         assert isinstance(refused, InvalidRequest), (name, parameter, value, refused)
         assert refused.details["field"] == f"{where}.{parameter}", (value, refused.details)

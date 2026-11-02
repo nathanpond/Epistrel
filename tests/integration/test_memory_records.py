@@ -143,7 +143,7 @@ async def test_u_11(engine: AsyncEngine) -> None:
     )
     assert {r.typname: list(r.labels) for r in labels} == {
         "memory_kind": ["episodic", "semantic", "reflection"],
-        "memory_trust_tier": ["author", "external", "engine", "in_world"],
+        "memory_trust_tier": ["author", "external", "engine", "in_world", "backfill"],
     }
     assert DERIVED_TABLES["memories"].valid_time is None
 
@@ -653,7 +653,7 @@ async def test_the_trust_tier_is_derived_from_the_provenance() -> None:
         "player": "in_world",
         "external": "external",
         "resolution": "engine",
-        "backfill": "engine",
+        "backfill": "backfill",
     }
 
 

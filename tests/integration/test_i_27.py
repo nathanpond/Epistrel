@@ -225,6 +225,8 @@ async def test_i_27__lite(stub_settings: Settings, engine: AsyncEngine) -> None:
             # with its name as an alias; the role overrides add "Mum" and "Tommy".
             "entities": 4,
             "entity_aliases": 6,
+            # #228: the data-producing capability Lite has on, live from turn 1.
+            "capability_coverage": 1,
             **lg.BUILT_IN_ROWS,
         }
         async with engine.connect() as conn:

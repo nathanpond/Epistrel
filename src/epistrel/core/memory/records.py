@@ -218,8 +218,9 @@ _TRUST: Mapping[RecordProvenance, MemoryTrustTier] = {
 
 def trust_tier_of(provenance: RecordProvenance | str) -> MemoryTrustTier:
     """A memory's trust tier, derived mechanically from its provenance (FR-MEM-4): the author
-    and a seed are ``author``; an external authority ``external``; consolidation, a resolution
-    and a backfill ``engine``; anything said or done in the story ``in_world``."""
+    and a seed are ``author``; an external authority ``external``; consolidation and a
+    resolution ``engine``; a backfill ``backfill`` (#228: the lowest tier); anything said or done
+    in the story ``in_world``."""
     return _TRUST[RecordProvenance(provenance)]
 
 

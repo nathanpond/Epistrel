@@ -103,14 +103,16 @@ from __future__ import annotations
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Text, and_, cast, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import TSQUERY
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, embeddings
 from epistrel.core.config_changes import section
@@ -862,6 +864,50 @@ async def _speaker(index: EntityIndex, actor: str | None) -> str:
     )
 
 
+_DEFERRED: ContextVar[dict[str, set[str]] | None] = ContextVar(
+    "epistrel_deferred_touches", default=None
+)
+"""#618: the memories each story's retrievals returned within ``deferring_touches``."""
+
+
+@contextmanager
+def deferring_touches() -> Iterator[None]:
+    """#618: within it a retrieval records the memories it returned instead of touching them
+    (``last_accessed_at``); ``flush_touches`` writes them in one statement per story."""
+    if _DEFERRED.get() is not None:
+        yield
+        return
+    token = _DEFERRED.set({})
+    try:
+        yield
+    finally:
+        _DEFERRED.reset(token)
+
+
+async def flush_touches(db: AsyncEngine) -> int:
+    """#618: touch every memory the scope's retrievals returned (one ``UPDATE`` per story);
+    answers how many. Outside a scope, nothing."""
+    deferred = _DEFERRED.get()
+    if not deferred:
+        return 0
+    touched = 0
+    for story_id, ids in list(deferred.items()):
+        if ids:
+            async with db.begin() as conn:
+                await _touch(conn, story_id, sorted(ids))
+            touched += len(ids)
+    deferred.clear()
+    return touched
+
+
+async def _touch(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> None:
+    await conn.execute(
+        update(memories)
+        .where(memories.c.story_id == story_id, memories.c.id.in_(list(ids)))
+        .values(last_accessed_at=clock.now())
+    )
+
+
 async def retrieve(
     conn: AsyncConnection,
     story_id: str,
@@ -1286,14 +1332,12 @@ async def retrieve(
     for memory in returned:
         read_set.record_retrieved(memories.name, memory.id, memory.membership_tx)
     if touch and returned:
-        await conn.execute(
-            update(memories)
-            .where(
-                memories.c.story_id == story_id,
-                memories.c.id.in_([m.id for m in returned]),
-            )
-            .values(last_accessed_at=clock.now())
-        )
+        deferred = _DEFERRED.get()
+        if deferred is not None:
+            # #618: off the retrieval's hot path: the turn writes them once, after it answers.
+            deferred.setdefault(story_id, set()).update(m.id for m in returned)
+        else:
+            await _touch(conn, story_id, [m.id for m in returned])
     clk.lap("assemble")
     log.debug(
         "retrieved story=%s episodes=%d assessments=%d memories=%d profiles=%d canon=%d",
@@ -1425,6 +1469,8 @@ __all__ = [
     "SourceRequest",
     "beat_occasion",
     "canon_text",
+    "deferring_touches",
+    "flush_touches",
     "profile_text",
     "read_retrieve",
     "register_context_source",

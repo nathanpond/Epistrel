@@ -1142,3 +1142,39 @@ async def test_profiles_cost_does_not_grow_with_the_subjects(engine: AsyncEngine
     ]
     assert len(loads) == 1
     assert len(await one_each(five)) >= 4 * len(await one_each(one))
+
+
+async def test_the_vector_arm_runs_on_its_index(
+    scratch: Scratch, long_story: r.Story, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#618: the vector statement runs with sorts priced out for itself alone, so the
+    planner's choice under that setting (and no other) reads ``ix_memories_embedding_hnsw``
+    in distance order on the 5,000-turn fixture; the setting is restored for the rest of the
+    retrieval's transaction."""
+    import importlib
+
+    search = importlib.import_module("epistrel.core.retrieval.search")
+    db = scratch.db
+    seen: dict[str, str] = {}
+    original = search._nearest
+
+    async def nearest(conn: Any, *args: Any, **kwargs: Any) -> Any:
+        seen["during"] = str(await conn.scalar(text("SELECT current_setting('enable_sort')")))
+        return await original(conn, *args, **kwargs)
+
+    monkeypatch.setattr(search, "_nearest", nearest)
+    with r.statements(db) as statements:
+        await _retrieve(db, long_story.story_id, QUERY, embed=_vector(), touch=False)
+    assert seen["during"] == "off"
+    (vector_sql, params) = next(
+        (sql, p) for sql, p in statements.reading("memories") if "<=>" in sql
+    )
+    async with db.connect() as conn:
+        await conn.execute(text("SET enable_sort = off"))
+        await conn.execute(text("SET hnsw.iterative_scan = relaxed_order"))
+        raw = await conn.get_raw_connection()
+        cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+        await cursor.execute("EXPLAIN " + vector_sql, params)
+        plan = "\n".join(str(row[0]) for row in await cursor.fetchall())
+        await conn.rollback()
+    assert "ix_memories_embedding_hnsw" in plan, plan

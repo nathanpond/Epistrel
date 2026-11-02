@@ -261,6 +261,8 @@ from epistrel.core.retrieval.pipeline import (
     RetrievalQuery,
     RetrievalResult,
     beat_occasion,
+    deferring_touches,
+    flush_touches,
     retrieve,
 )
 from epistrel.core.settings_schema import (
@@ -573,19 +575,23 @@ async def respond(
 ) -> RespondResult:
     """Play one structured turn; see the module docstring (the prechecks are Lite's). #621:
     the whole turn reads each predicate registry once (``registry.turn_cache``)."""
-    with registry_turn_cache(), turn_memo.scope():
-        return await _respond(
-            db,
-            models,
-            ctx,
-            story_id,
-            request,
-            principal=principal,
-            gate=gate,
-            queue_turn=queue_turn,
-            lexical=lexical,
-            providers=providers,
-        )
+    with registry_turn_cache(), turn_memo.scope(), deferring_touches():
+        try:
+            return await _respond(
+                db,
+                models,
+                ctx,
+                story_id,
+                request,
+                principal=principal,
+                gate=gate,
+                queue_turn=queue_turn,
+                lexical=lexical,
+                providers=providers,
+            )
+        finally:
+            # #618: the retrieved memories' ``last_accessed_at``, once, off the hot path.
+            await flush_touches(db)
 
 
 async def _respond(

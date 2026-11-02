@@ -95,6 +95,36 @@ async def vector_search(
     answer slightly out of order."""
     if k < 1:
         return []
+    # #618: served by ``ix_memories_embedding_hnsw`` (the ordered ``LIMIT k`` step), never a scan
+    # of the story's memories with a top-N sort: sorts are off for this statement alone.
+    prior = await conn.scalar(text("SELECT current_setting('enable_sort')"))
+    await conn.execute(text("SELECT set_config('enable_sort', 'off', true)"))
+    try:
+        return await _nearest(
+            conn,
+            story_id,
+            vector,
+            version=version,
+            k=k,
+            through=through,
+            include_quarantined=include_quarantined,
+            scope=scope,
+        )
+    finally:
+        await conn.execute(text("SELECT set_config('enable_sort', :v, true)"), {"v": str(prior)})
+
+
+async def _nearest(
+    conn: AsyncConnection,
+    story_id: str,
+    vector: Sequence[float],
+    *,
+    version: str,
+    k: int,
+    through: tuple[int, int] | None,
+    include_quarantined: bool,
+    scope: str | None,
+) -> list[Hit]:
     found = await conn.execute(
         text(
             "WITH nearest AS MATERIALIZED ("  # noqa: S608 - fixed fragments only

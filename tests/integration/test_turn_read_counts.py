@@ -127,3 +127,31 @@ async def test_a_turn_reads_story_constants_once(
         players = [s for s in statements if s.startswith("SELECT characters.is_player")]
         assert len(players) <= 3, len(players)  # Cal, Bobby, Jenni: once each
         assert len(statements) <= TURN_STATEMENTS_MAX, len(statements)
+
+
+async def test_retrieved_memories_are_touched_after_the_turn(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#618: a structured turn's retrievals touch their memories' ``last_accessed_at`` in one
+    statement after the turn has committed, not inside the retrieve stage."""
+    from sqlalchemy import event
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        room = await key_room(client, engine)
+        await _two_primary_turn(client, epistrel.models.stub, room)
+        statements: list[str] = []
+
+        def record(*args: Any) -> None:
+            statements.append(str(args[2]))
+
+        sync = engine.sync_engine
+        event.listen(sync, "before_cursor_execute", record)
+        try:
+            await _two_primary_turn(client, epistrel.models.stub, room)
+        finally:
+            event.remove(sync, "before_cursor_execute", record)
+    touches = [i for i, s in enumerate(statements) if "SET last_accessed_at" in s]
+    assert len(touches) <= 1, len(touches)
+    if touches:
+        committed = max(i for i, s in enumerate(statements) if s.startswith("INSERT INTO events"))
+        assert touches[0] > committed

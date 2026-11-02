@@ -131,6 +131,15 @@ operations = Table(
         name="turn_has_position",
     ),
     Index("ix_operations_story_position", "story_id", "narrative_turn", "turn_variant"),
+    # #622 (migration 0106): the newest consolidation's turn, a backward index scan.
+    Index(
+        "ix_operations_consolidation_turn",
+        "story_id",
+        "narrative_turn",
+        postgresql_where=text(
+            "kind = 'consolidation' AND status = 'committed' AND membership = 'active'"
+        ),
+    ),
     # TIME (f) / FR-STORE-28: exactly one active committed variant per turn index (#47).
     Index(
         "uq_operations_active_turn",

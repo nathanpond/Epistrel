@@ -10632,3 +10632,57 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Decision:** #661. Migration 0105 adds `reconciliation_marks.request_id` (outbox_id nullable, a CHECK for exactly one, a partial unique open index). `Listing.request_id` is the consumer key, and a listing's status is the latest answer's kind (`requested` before any). The resolve route is `POST /stories/{id}/reconciliation/{listing}/resolve`, where `{listing}` is the request id: an inter-turn slot operation that writes a `reconciliation_resolved` AUDIT event. The route's row goes in the fixture's `outside` list with FR-EXT-22, beside settle-now and compensate, not under `extras` as the AC says, because its siblings are there. A derived consumer `reservation_expired` listing is closed by writing an already-resolved mark.
   **Why:** these follow the AC and the #218 actions' existing shapes. Console: the Engine has a new action, so a Console "resolve" button on the reconciliation view is the matching surface (nathanpond/Epistrel-Console; not filed from this run).
   **Issue:** #661
+
+### Batch C — 2026-11-02
+
+- **Decision:** #688 is docstring-only. `_NO_STEPS_REMEDY`'s comment names the schema_error retry's own parameters.
+  **Why:** the issue is the misleading comment. The behaviour is correct.
+  **Issue:** #688
+- **Decision:** #585. `interaction.json` gains `time_words`. A passer-by's `_followed_by` skips an `or` in a time phrase, so "a little later" and "an hour or so later" are no new person.
+  **Why:** this is the narrowest lexicon change that clears both reported phrases.
+  **Issue:** #585
+- **Decision:** #630. A render's `consideration` that names no story entity is a structural retry (`render_schema` items, `effect_errors`). The book's entity index is loaded at attempt start.
+  **Why:** the issue's expected behaviour. A retry costs one render, and a dropped consideration costs a silent wrong effect.
+  **Issue:** #630
+- **Decision:** #629. The scene context's last beats (`_scene_last_beats`) carry no earlier `think` or `latent` beat.
+  **Why:** private beats never reach another render's context (FR-RESP-13's rule).
+  **Issue:** #629
+- **Decision:** #652. A narrator beat's safe fallback is the narrator's line (`NARRATOR_FALLBACK = "A moment passes."`), not a character's.
+  **Why:** a character line under the narrator misattributes speech.
+  **Issue:** #652
+- **Decision:** #636. The turn budget gains a named `STOP` slot. It is reserved after the schedule read when stops are on and an event is pending or possibly due, released after the renders, and drawn by the ladder's `time_stop` rung.
+  **Why:** a due-event stop is planned work, so it must fit under the default budget rather than compete with optional calls.
+  **Issue:** #636
+- **Decision:** #624. A vocative form of address ("…, friend.") from `interaction.json`'s `address_terms` models nobody new.
+  **Why:** the issue's reproduction. The list is closed and short.
+  **Issue:** #624
+- **Decision:** #635 follows the owner's decision. The verifier's `_unmodeled` lets narration that moves an unmodeled person ("The stranger leaves the inn.") be a change of placement. A modeled character's contradicted placement with no change cue is still repaired.
+  **Why:** the owner's decision on the issue.
+  **Issue:** #635
+- **Decision:** #640. A later sequential render is verified from the time the earlier renders ended. `render_scope(before=)` and `check_turn`'s `timed_before` carry this; a simultaneous turn passes none.
+  **Why:** otherwise a later render's time claims are judged at the turn's start.
+  **Issue:** #640
+- **Decision (Rule 1):** `test_correct`'s crashed child is started with `mode="api"`, so it runs no job worker. That is CI-only (it does not reproduce locally); the guess is that a story-less job the crashed child held blocked the orphan sweep.
+  **Why:** the test covers a correction's crash, not the job worker. The pass on CI confirms or refutes the guess.
+  **Issue:** #609 (batch A's gate)
+- **Decision:** #651. Player authority's `_PLACING` and `_extracted_result` treat an extraction claim of a narrated action's own result ("I pick up the key" → holds) as no presupposition.
+  **Why:** the result of the narrated act is what the player asserted, not something the player presupposed.
+  **Issue:** #651
+- **Decision:** #642. In `StagedSource`, a staged CONTRADICTED from an earlier beat of the turn outranks a canon SUPPORTED. Clock checks are excepted and stay the anchor overlay's (#627).
+  **Why:** an earlier beat's change (an exit, a pass-out) is newer than the pre-turn canon.
+  **Issue:** #642
+- **Decision:** #659 and #660 share one commit. `merge_interpretive(captured, current)` takes each interpretive leaf from the current settings. The hook sits in the structured turn's `begin` on a restart, not in `generate` as planned: `op.restart` re-runs `begin`, which builds the read the renders use. When `player_authority` moved, the cast is re-resolved there too.
+  **Why:** in `generate` the cast was recast after the read was built, so it never rendered. `verification.level` turned out to be read fresh already. The #659 scenario test therefore drives `states.level`, which is read from the captured settings.
+  **Issue:** #659, #660
+- **Decision (Rule 1):** batch B's CI failures were fixed. The ownership matrix covers #661's new resolve route (`_consumer_listing` prepare). `test_place_time`'s partial-anchor complement now expects #645's range placement (05:00 + the time of day), not `None`.
+  **Why:** both are tests that #661 and #645 should have updated.
+  **Issue:** #661, #645
+- **Decision:** #638. `time_skips` re-scans a beat whose text changed since its skips were decided, and runs again after each `repair_turn`, before `settle_skips`. Only skips not decided before are classified (`_skip_key`). A refused new skip is settled by the deterministic rung, since no repair round is left. An undeclared one is estimated only while the optional budget allows; otherwise it is removed as unestimated. A newly accepted skip is not checked against due events again (`time_stops` ran before the repair).
+  **Why:** the issue asks for "classified and bounded like an original one". A second repair round would be unbounded. The due-event gap is noted rather than closed because an accepted repair-introduced skip is rare and still capped.
+  **Issue:** #638
+- **Decision:** #611. The owner did not answer the triage question, so the narrower option was taken. The `send` lemma lists message head nouns (text, message, email, e-mail, sms, reply, word, signal, wire), and `detect._transfer` reads no `holds` for such an item. A parcel or a letter is still a transfer. S-WHISPER's inference flow now expects the blurt to pass whole once Bobby is told `sent`. Not chosen: suppressing detector readings under a same-span declared claim, a broader change to the merge rule all categories share, left to the owner.
+  **Why:** a low-cost ambiguity. It is reversible in a data file, and it fixes the reported false repair.
+  **Issue:** #611
+- **Decision:** #623 follows the owner's decision. `TurnRead.output_viewpoint` carries the respond's resolved viewpoint, and narrator claims are verified at it (`verify_detected(narration_viewpoint=)`). Public canon verifies as before, while hidden canon and hidden State values the viewpoint has no belief about are repaired. An omniscient response is unchanged.
+  **Why:** the owner's decision (a privacy fix). It is narrow because most canon is public, so only hidden-scope content moves.
+  **Issue:** #623

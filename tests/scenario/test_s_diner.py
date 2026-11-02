@@ -1030,3 +1030,52 @@ async def test_s_diner__belief(
         sense = prompt.split("## Your sense of time", 1)[1].split("\n## ", 1)[0]
         assert "Jenni's meeting: 16:00" in sense  # as he believes it
         assert await ck.statuses(engine, story, meeting) == ["pending"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-19,10")
+async def test_s_diner__belief_only_report(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#641: Jenni says her sister Ruth's flight lands at nine: a plan that is neither canon nor
+    hers (a report of no event). Jenni holds it as her own belief and Marcus, who heard it, by
+    testimony; it is never canon and no scheduled event exists, so no clock stops for it; when
+    Jenni says it again, her claim is consistent with what she holds. Complement asserted: the
+    canon meeting is the story's only scheduled event."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await diner(client, engine, partitions=True, others=("Marcus",))
+        async with engine.begin() as conn:
+            await store.add_entity(conn, story, "person", "Ruth")
+        said = beat(
+            "say",
+            "My sister Ruth lands at nine.",
+            propositions=[claim("Ruth", "scheduled", "the flight", time="9 pm")],
+        )
+        await turn(client, stub, story, ids, said)
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"] == {"kind": "report", "event_id": None, "refused_change": False}
+        held = await rows(
+            engine,
+            "SELECT b.holder_character_id AS holder FROM beliefs b JOIN propositions p "
+            "ON p.id = b.proposition_id WHERE b.story_id = :s AND b.kind = 'first_order' "
+            "AND p.predicate_id = :p",
+            s=story,
+            p=SCHEDULED,
+        )
+        assert {r.holder for r in held} == {ids["Jenni"], ids["Marcus"]}
+        assert [e.event_id for e in await ck.events(engine, story)] == [meeting]
+        canon = await rows(
+            engine,
+            "SELECT count(*) AS n FROM facts WHERE story_id = :s AND predicate_id = :p",
+            s=story,
+            p=SCHEDULED,
+        )
+        assert canon[0].n == 1  # the meeting's own
+
+        await turn(client, stub, story, ids, said)
+        verdict = await statement_of(engine, story)
+        assert verdict["speech"]["belief_relation"] == "consistent"

@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import world_clock
+from epistrel.core.canon import canonize
 from epistrel.core.canon.facts import Fact
 from epistrel.core.enums import BeliefConfidenceLevel, ScheduledStatus
 from epistrel.core.epistemic import transitions
@@ -46,6 +47,7 @@ from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.propositions.vocabulary import SCHEDULED
+from epistrel.core.verify import speech_acts
 from epistrel.core.world_clock import schedule_statements as schedules
 from epistrel.core.world_clock import stops
 from epistrel.orchestrator.verify.extraction import CheckedClaim
@@ -95,8 +97,10 @@ async def committed(
     *,
     settings: Any,
     registry: Registry,
+    introductions: Any = None,
 ) -> Written:
-    """Write what the turn's schedule statements call for (see the module docstring)."""
+    """Write what the turn's schedule statements call for (see the module docstring);
+    ``introductions``: the turn's minted entities (#641: a belief-only plan creates its own)."""
     found = Written()
     story_id = str(op.story_id)
     turn, variant = int(op.narrative_turn or 0), int(op.turn_variant or 0)
@@ -131,6 +135,44 @@ async def committed(
                     settings=settings,
                     registry=registry,
                 )
+        elif isinstance(statement, schedules.Report) and statement.event is None:
+            # #641: a belief-only plan said sincerely: the speaker holds it (never canon, never
+            # an event, so it stops no clock); its hearers hold it through #162's testimony.
+            speech = result.speech
+            if (
+                not partitioned
+                or speaker is None
+                or speech is None
+                or speech.classification != speech_acts.SINCERE
+            ):
+                continue
+            said = await _say_event(conn, op, beat)
+            if said is None:
+                continue
+            if introductions is not None:
+                # The plan's minted event (never canonized) exists, so a later mention of it
+                # resolves to it and the belief names a real entity.
+                await canonize.introduce(
+                    conn,
+                    story_id,
+                    claim,
+                    introductions.introduces(claim),
+                    operation=op,
+                    registry=registry,
+                    skip_existing=True,
+                )
+            await _believe(
+                conn,
+                op,
+                found,
+                holder=speaker,
+                kind=transitions.Kind.OBSERVATION,
+                proposition=claim,
+                antecedent=transitions.Antecedent.record("events", said),
+                position=after,
+                settings=settings,
+                registry=registry,
+            )
         elif isinstance(statement, schedules.Change):
             event = await stops.event_at(conn, story_id, statement.event.event_id)
             if event is None or event.status is ScheduledStatus.CANCELLED:
@@ -168,6 +210,22 @@ async def committed(
         found.refused,
     )
     return found
+
+
+async def _say_event(conn: AsyncConnection, op: Any, beat: int) -> str | None:
+    """The ``say`` beat's event the turn wrote at ``beat`` (#641's belief cites it)."""
+    from sqlalchemy import select
+
+    from epistrel.core.tables.events import events
+
+    found = await conn.scalar(
+        select(events.c.id).where(
+            events.c.operation_id == str(op.operation_id),
+            events.c.beat == beat,
+            events.c.type == "beat_say",
+        )
+    )
+    return None if found is None else str(found)
 
 
 async def _hold_time_of_day(

@@ -6124,7 +6124,13 @@ async def play(
         # #198 (FR-CLOCK-19, FR-EPI-14): a new plan's belief citing its canon fact; a change's
         # reschedule and the speaker's new time.
         await schedule_commit.committed(
-            conn, op, checked.checked, canonized, settings=settings, registry=registry
+            conn,
+            op,
+            checked.checked,
+            canonized,
+            settings=settings,
+            registry=registry,
+            introductions=checked.introductions,
         )
         utterance_rows = []
         # #166: each say's stored proposition per claim id (a lie's divergence names it).

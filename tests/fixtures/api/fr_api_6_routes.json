@@ -797,6 +797,11 @@
   "extras": [
     {
       "method": "GET",
+      "path": "/stories/{story_id}/outbox",
+      "why": "#679: every outbox row of the story, any status (the reconciliation read lists only the unconfirmed)"
+    },
+    {
+      "method": "GET",
       "path": "/stories/{story_id}/operations",
       "why": "#681: the operations read's list, filterable by label (staged_turn, genesis, \u2026)"
     },

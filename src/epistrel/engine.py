@@ -3411,6 +3411,27 @@ class Engine:
         story."""
         return await core_outbox.listings(self.db, story_id)
 
+    async def list_outbox(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        status: str | None = None,
+        provider: str | None = None,
+        after_id: str | None = None,
+        limit: int = core_outbox.OUTBOX_LIMIT_DEFAULT,
+    ) -> core_outbox.OutboxPage:
+        """#679: the story's outbox rows, every status, a page by id (``core.outbox.outbox_page``),
+        an omniscient read (422 ``viewpoint_unresolved`` when none is named, 403
+        ``omniscient_required`` for a character). 404 for an unknown story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        await self._erasure_gate(story_id)
+        return await core_outbox.outbox_page(
+            self.db, story_id, status=status, provider=provider, after_id=after_id, limit=limit
+        )
+
     async def settle_now(
         self, ctx: RequestContext, story_id: str, outbox_id: str
     ) -> settlement_job.SettledNow:

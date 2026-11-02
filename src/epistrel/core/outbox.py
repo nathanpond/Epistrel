@@ -1169,6 +1169,167 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
     return Reconciliation(listings=listed)
 
 
+class OutboxPosition(BaseModel):
+    """#679: where an outbox row's effect was declared."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn: int | None
+    variant: int | None
+    slot_k: int
+    beat: int
+    step: int
+
+
+class OutboxRow(BaseModel):
+    """#679: one outbox row as the story's outbox list shows it (any status): its id (the
+    provider idempotency key), provider and value, status (``compensated`` once a compensating
+    row answers it), the effect, where it was declared and on which timeline membership,
+    whether a story-owned change waits on it (``contingent``), the row it compensates, the
+    send attempts and times, and the latest recorded outcome. A row an erasure redacted
+    carries its ids, provider, status and position only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outbox_id: str
+    provider: str
+    value: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    status: str
+    effect: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
+    position: OutboxPosition
+    membership: str
+    contingent: bool = False
+    compensates: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    compensated_by: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    attempts: int = 0
+    created_at: datetime
+    claimed_at: datetime | None = None
+    sent_at: datetime | None = None
+    outcome: OutcomeView | None = Field(default=None, exclude_if=lambda v: v is None)
+    redacted: bool = False
+
+
+class OutboxPage(BaseModel):
+    """#679: a page of a story's outbox rows by id, and ``next_after`` (``None``: the last)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[OutboxRow]
+    next_after: str | None
+
+
+OUTBOX_LIMIT_MAX = 200
+OUTBOX_LIMIT_DEFAULT = 50
+
+
+async def outbox_page(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    status: str | None = None,
+    provider: str | None = None,
+    after_id: str | None = None,
+    limit: int = OUTBOX_LIMIT_DEFAULT,
+) -> OutboxPage:
+    """#679: ``story_id``'s outbox rows by id after ``after_id`` (every status; ``status`` and
+    ``provider`` filter them; a ``compensated`` filter matches rows a compensation answers),
+    ``limit`` at most ``OUTBOX_LIMIT_MAX``. 404 for an unknown story."""
+    from epistrel.core.tables.states import state_changes as changes
+
+    limit = max(1, min(OUTBOX_LIMIT_MAX, limit))
+    o = external_effect_outbox.c
+    async with db.connect() as conn:
+        await _require_story(conn, story_id)
+        where: list[Any] = [o.story_id == story_id]
+        if provider is not None:
+            where.append(o.provider_name == provider)
+        if after_id is not None:
+            where.append(o.id > after_id)
+        if status is not None and status != COMPENSATED:
+            where.append(o.status == status)
+        query = select(external_effect_outbox).where(*where).order_by(o.id)
+        rows = list(await conn.execute(query))
+        ids = [str(r.id) for r in rows]
+        compensations = await compensations_of(conn, story_id, ids)
+        if status == COMPENSATED:
+            rows = [r for r in rows if str(r.id) in compensations]
+        elif status is not None:
+            rows = [r for r in rows if str(r.id) not in compensations]
+        more = len(rows) > limit
+        rows = rows[:limit]
+        ids = [str(r.id) for r in rows]
+        latest: dict[str, Any] = {}
+        if ids:
+            x = outbox_outcomes.c
+            for answer in await conn.execute(
+                select(x.outbox_id, x.kind, x.received_via, x.received_at)
+                .where(x.story_id == story_id, x.outbox_id.in_(ids))
+                .order_by(x.received_at, x.id)
+            ):
+                latest[str(answer.outbox_id)] = answer
+        contingent: set[str] = set()
+        if ids:
+            c = changes.c
+            for (waiting,) in await conn.execute(
+                select(func.unnest(c.prerequisite_effect_ids)).where(
+                    c.story_id == story_id, c.prerequisite_effect_ids.overlap(ids)
+                )
+            ):
+                contingent.add(str(waiting))
+    found: list[OutboxRow] = []
+    for row in rows:
+        key = str(row.id)
+        position = OutboxPosition(
+            turn=row.narrative_turn,
+            variant=row.turn_variant,
+            slot_k=int(row.slot_k),
+            beat=int(row.beat),
+            step=int(row.step),
+        )
+        compensated_by = compensations.get(key)
+        row_status = COMPENSATED if compensated_by is not None else str(row.status)
+        if row.erased_at is not None:
+            found.append(
+                OutboxRow(
+                    outbox_id=key,
+                    provider=str(row.provider_name),
+                    status=row_status,
+                    position=position,
+                    membership=str(getattr(row.membership, "value", row.membership)),
+                    created_at=row.created_at,
+                    redacted=True,
+                )
+            )
+            continue
+        heard = latest.get(key)
+        found.append(
+            OutboxRow(
+                outbox_id=key,
+                provider=str(row.provider_name),
+                value=str(row.value_name),
+                status=row_status,
+                effect=public_effect(row.effect),
+                position=position,
+                membership=str(getattr(row.membership, "value", row.membership)),
+                contingent=key in contingent,
+                compensates=None if row.compensates is None else str(row.compensates),
+                compensated_by=compensated_by,
+                attempts=int(row.attempts),
+                created_at=row.created_at,
+                claimed_at=row.claimed_at,
+                sent_at=row.sent_at,
+                outcome=None
+                if heard is None
+                else OutcomeView(
+                    kind=str(heard.kind),
+                    received_via=str(heard.received_via),
+                    received_at=heard.received_at,
+                ),
+            )
+        )
+    return OutboxPage(rows=found, next_after=found[-1].outbox_id if more and found else None)
+
+
 REQUESTED = "requested"
 """#661: a consumer-applied effect's listed status before any answer was recorded."""
 
@@ -1352,6 +1513,8 @@ async def summary(db: AsyncEngine | AsyncConnection, story_id: str) -> dict[str,
 __all__ = [
     "COMPENSATED",
     "INTERNAL_EFFECT_KEYS",
+    "OUTBOX_LIMIT_DEFAULT",
+    "OUTBOX_LIMIT_MAX",
     "REASONS",
     "REQUESTED",
     "REQUEST_PENDING",
@@ -1362,6 +1525,9 @@ __all__ = [
     "CompensatingEffect",
     "Intended",
     "Listing",
+    "OutboxPage",
+    "OutboxPosition",
+    "OutboxRow",
     "OutcomeRecord",
     "OutcomeView",
     "Reason",
@@ -1390,6 +1556,7 @@ __all__ = [
     "mark_unknown",
     "open_marks",
     "origin_active",
+    "outbox_page",
     "outcome",
     "public_effect",
     "record_effect_outcome",

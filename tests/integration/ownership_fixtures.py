@@ -831,6 +831,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(200, prepare=_state_proposal),
     # -- stories: the reconciliation status of its external effects (#210)
     ("GET", f"{S}/reconciliation"): Call(200),
+    # #679: the story's outbox rows (an omniscient read)
+    ("GET", f"{S}/outbox"): Call(200, queries=({"viewpoint": "omniscient"},)),
     # #681: the story's operations, listed
     ("GET", f"{S}/operations"): Call(200),
     # #218: the explicit actions on a listed effect (#203: on a story running States)

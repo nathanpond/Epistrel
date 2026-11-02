@@ -18387,6 +18387,224 @@
         "title": "OperationsBody",
         "type": "object"
       },
+      "OutboxBody": {
+        "description": "#679: a page of the story's outbox rows (any status) by id, `next_after` (the id to\ncontinue after; `null` on the last page), read for `omniscient`.",
+        "properties": {
+          "next_after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next After"
+          },
+          "output_viewpoint": {
+            "const": "omniscient",
+            "default": "omniscient",
+            "title": "Output Viewpoint",
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/OutboxRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rows",
+          "next_after"
+        ],
+        "title": "OutboxBody",
+        "type": "object"
+      },
+      "OutboxPosition": {
+        "additionalProperties": false,
+        "description": "#679: where an outbox row's effect was declared.",
+        "properties": {
+          "beat": {
+            "title": "Beat",
+            "type": "integer"
+          },
+          "slot_k": {
+            "title": "Slot K",
+            "type": "integer"
+          },
+          "step": {
+            "title": "Step",
+            "type": "integer"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn"
+          },
+          "variant": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variant"
+          }
+        },
+        "required": [
+          "turn",
+          "variant",
+          "slot_k",
+          "beat",
+          "step"
+        ],
+        "title": "OutboxPosition",
+        "type": "object"
+      },
+      "OutboxRow": {
+        "additionalProperties": false,
+        "description": "#679: one outbox row as the story's outbox list shows it (any status): its id (the\nprovider idempotency key), provider and value, status (``compensated`` once a compensating\nrow answers it), the effect, where it was declared and on which timeline membership,\nwhether a story-owned change waits on it (``contingent``), the row it compensates, the\nsend attempts and times, and the latest recorded outcome. A row an erasure redacted\ncarries its ids, provider, status and position only.",
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "claimed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claimed At"
+          },
+          "compensated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compensated By"
+          },
+          "compensates": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compensates"
+          },
+          "contingent": {
+            "default": false,
+            "title": "Contingent",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "effect": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effect"
+          },
+          "membership": {
+            "title": "Membership",
+            "type": "string"
+          },
+          "outbox_id": {
+            "title": "Outbox Id",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutcomeView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "$ref": "#/components/schemas/OutboxPosition"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "redacted": {
+            "default": false,
+            "title": "Redacted",
+            "type": "boolean"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "outbox_id",
+          "provider",
+          "status",
+          "position",
+          "membership",
+          "created_at"
+        ],
+        "title": "OutboxRow",
+        "type": "object"
+      },
       "Outcome": {
         "description": "What happened to the item an entry names (FR-SCN-5): ``ignored`` (kept only as guidance\nthat yields), ``dropped``, ``kept``, ``deferred`` (kept until the story has the capability it\nneeds, FR-SCN-11), ``inactive`` (a stored setting for a capability the story lacks), or\n``rejected`` (an error: the entry cannot be published or used as it stands).",
         "enum": [
@@ -69501,6 +69719,193 @@
         "summary": "List a story's operations",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/stories/{story_id}/outbox": {
+      "get": {
+        "description": "Every write-capable external effect the story committed, whatever its status (#679): `intended`, `claimed`, `confirmed`, `failed`, `unknown`, `cancelled`, or `compensated` once a compensating effect answers it (`compensated_by`). Each row has its outbox id (the provider idempotency key), provider and value, the effect, where it was declared (`position`) and its timeline `membership`, whether a story-owned change waits on it (`contingent`), the row it `compensates`, its send `attempts` and times, and the latest recorded `outcome`. A row an erasure redacted carries ids, provider, status and position only (`redacted`). A page by id (`after_id`; `limit` at most 200), filtered by `status` and `provider`. An omniscient read: 422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character. 404 for an unknown story.",
+        "operationId": "list_outbox",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "provider",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboxBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the story's outbox rows",
+        "tags": [
+          "stories"
         ]
       }
     },

@@ -118,7 +118,12 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
-from epistrel.api.routes.reconciliation import CompensatedBody, ResolvedBody, SettledNowBody
+from epistrel.api.routes.reconciliation import (
+    CompensatedBody,
+    OutboxBody,
+    ResolvedBody,
+    SettledNowBody,
+)
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
@@ -1106,6 +1111,11 @@ def _steps() -> list[Step]:
                 "GET", f"{s}/history", params={"viewpoint": "omniscient", "include_audit": "1"}
             ),
             lambda e, ids: _history(e, ids["story"], viewpoint="omniscient", include_audit=True),
+        ),
+        Step(
+            "list_outbox",
+            lambda ids: Rest("GET", f"{s}/outbox", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _outbox(e, ids),
         ),
         Step(
             "list_operations",
@@ -2791,6 +2801,11 @@ async def _ingest(engine: Engine, story_id: str) -> dict[str, Any]:
 async def _history(engine: Engine, story_id: str, **params: Any) -> dict[str, Any]:
     found = await engine.history(RequestContext(), story_id, **params)
     return dump(HistoryResponse.of(found), exclude_unset=True)
+
+
+async def _outbox(engine: Engine, ids: Ids) -> dict[str, Any]:
+    page = await engine.list_outbox(CTX, ids["story"], viewpoint="omniscient")
+    return dump(OutboxBody(rows=page.rows, next_after=page.next_after))
 
 
 async def _operations(engine: Engine, ids: Ids) -> dict[str, Any]:

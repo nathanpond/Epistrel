@@ -15,16 +15,24 @@ Every handler makes one ``Engine`` call (``orchestrator.jobs.settlement`` holds 
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Path, Response
+from fastapi import APIRouter, Path, Query, Response
 from fastapi import status as http_status
+from pydantic import BaseModel
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.core.ids import ULID_PATTERN
-from epistrel.core.outbox import CompensateRequest, Reconciliation, ResolveRequest
+from epistrel.core.outbox import (
+    OUTBOX_LIMIT_DEFAULT,
+    OUTBOX_LIMIT_MAX,
+    CompensateRequest,
+    OutboxRow,
+    Reconciliation,
+    ResolveRequest,
+)
 from epistrel.orchestrator.jobs.settlement import Compensated, Resolved, SettledNow
 
 router = APIRouter(prefix="/stories", tags=["stories"])
@@ -63,6 +71,56 @@ async def reconciliation(story_id: StoryId, ctx: ContextDep, engine: EngineDep) 
     `compensated_by`, the compensating effect, until that one is confirmed. A confirmed or
     cancelled effect is not listed. 404 for an unknown story."""
     return await engine.reconciliation(ctx, story_id)
+
+
+class OutboxBody(BaseModel):
+    """#679: a page of the story's outbox rows (any status) by id, `next_after` (the id to
+    continue after; `null` on the last page), read for `omniscient`."""
+
+    rows: list[OutboxRow]
+    next_after: str | None
+    output_viewpoint: Literal["omniscient"] = "omniscient"
+
+
+@router.get(
+    "/{story_id}/outbox",
+    response_model=OutboxBody,
+    operation_id="list_outbox",
+    summary="List the story's outbox rows",
+    description=(
+        "Every write-capable external effect the story committed, whatever its status "
+        "(#679): `intended`, `claimed`, `confirmed`, `failed`, `unknown`, `cancelled`, or "
+        "`compensated` once a compensating effect answers it (`compensated_by`). Each row has "
+        "its outbox id (the provider idempotency key), provider and value, the effect, where it "
+        "was declared (`position`) and its timeline `membership`, whether a story-owned change "
+        "waits on it (`contingent`), the row it `compensates`, its send `attempts` and times, "
+        "and the latest recorded `outcome`. A row an erasure redacted carries ids, provider, "
+        "status and position only (`redacted`). A page by id (`after_id`; `limit` at most "
+        "200), filtered by `status` and `provider`. An omniscient read: 422 "
+        "`viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a "
+        "character. 404 for an unknown story."
+    ),
+)
+async def list_outbox(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    viewpoint: str | None = None,
+    status: str | None = None,
+    provider: str | None = None,
+    after_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    limit: Annotated[int, Query(ge=1, le=OUTBOX_LIMIT_MAX)] = OUTBOX_LIMIT_DEFAULT,
+) -> OutboxBody:
+    page = await engine.list_outbox(
+        ctx,
+        story_id,
+        viewpoint=viewpoint,
+        status=status,
+        provider=provider,
+        after_id=after_id,
+        limit=limit,
+    )
+    return OutboxBody(rows=page.rows, next_after=page.next_after)
 
 
 class SettledNowBody(MutationResponse):

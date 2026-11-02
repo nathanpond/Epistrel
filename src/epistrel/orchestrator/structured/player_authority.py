@@ -173,6 +173,18 @@ TRANSFER = "transfer"
 ACQUIRING: frozenset[str] = frozenset({"possession", TRANSFER})
 """#598: the categories whose affirmed ``holds`` of the character is an acquisition, whose source
 (``from`` a place or a person) it presupposes."""
+_PLACING = re.compile(
+    r"\b(?:puts?|putting|places?|placed|placing|sets?|setting|lays?|laid|laying|drops?|dropped|"
+    r"dropping|hides?|hid|hidden|hiding|stash(?:es|ed|ing)?|tucks?|tucked|tucking|slips?|"
+    r"slipped|slipping|slides?|slid|sliding|tosse?s?|tossed|tossing|throws?|threw|thrown|"
+    r"throwing|hangs?|hung|hanging|shoves?|shoved|shoving|stows?|stowed|stowing|returns?|"
+    r"returned|returning|pockets?|pocketed|pocketing|takes?|took|taken|taking|grabs?|grabbed|"
+    r"grabbing|picks? up|picked up|gives?|gave|given|giving|hands?|handed|handing|leaves?|left|"
+    r"leaving|moves?|moved|moving)\b",
+    re.I,
+)
+"""#651: the verbs that make an extraction claim the narrated action's own result (a placement
+or an acquisition, the detectors' possession and transfer senses included)."""
 _SOURCE = re.compile(r"\b(?:from|out of|off of|off)\s+(?:(?:the|a|an|his|her|their)\s+)?", re.I)
 """A source marker and its determiner, before the mention of where an item is taken from."""
 
@@ -580,6 +592,8 @@ def presuppositions(
         proposition = claim.proposition
         if proposition is None or claim.protected:
             continue  # a hidden record the words match: canon's, never the player's claim
+        if _extracted_result(claim, proposition, beat.text, cid, set(names or {})):
+            continue  # #651: an extraction claim of the action's own result
         if claim.category in RESULT_CATEGORIES or (claim.category == TRANSFER and takes_part):
             if (
                 claim.category == TRANSFER
@@ -614,6 +628,25 @@ def presuppositions(
                 )
             add(_before(held))
     return found
+
+
+def _extracted_result(
+    claim: Any, proposition: Proposition, text: str, cid: str, characters: Collection[str]
+) -> bool:
+    """#651: whether an extraction-layer ``claim`` is what the narrated action brings about: it
+    places an item (``located_at`` of a non-character) or gives it to the narrated character
+    (``holds`` by ``cid``), and its span carries a placement or acquisition verb
+    (``_PLACING``). Another character's possession or anything else stays presupposed."""
+    if claim.layer != "extraction" or proposition.polarity is not Polarity.AFFIRMED:
+        return False
+    if proposition.predicate_id == HOLDS:
+        if proposition.subject_id != cid:
+            return False
+    elif proposition.predicate_id != LOCATED_AT or proposition.subject_id in (cid, *characters):
+        return False
+    _, start, end = claim.span
+    said = text[start:end] if 0 <= start < end <= len(text) else ""
+    return bool(_PLACING.search(said))
 
 
 def _hidden_only(c: Any) -> bool:

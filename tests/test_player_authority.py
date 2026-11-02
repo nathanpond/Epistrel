@@ -385,3 +385,28 @@ async def _beliefs(engine: AsyncEngine, story: str, holder: str) -> list[Any]:
 @pytest.fixture
 def stub_settings(pg_url: str) -> Settings:
     return auth_settings(pg_url, model_adapter="stub")
+
+
+def _extracted(proposition: Proposition, span: tuple[int, int]) -> SimpleNamespace:
+    """An extraction-layer claim of beat 2 (#651)."""
+    detected = DetectedClaim(
+        span=(2, *span),
+        layer="extraction",
+        category="extraction",  # type: ignore[arg-type]
+        channel="do",
+        speaker=JEN,
+        proposition=proposition,
+    )
+    return SimpleNamespace(claim=detected, result=None)
+
+
+def test_presuppositions__extraction_results() -> None:
+    """#651: an extraction claim that is the action's own result is exempt like a detector's
+    ("puts the key in the drawer" → the key in the drawer). Complement asserted: an extracted
+    statement about another character's possession is still presupposed."""
+    puts = "Jenni puts the key in the drawer."
+    assert _presupposed(puts, _extracted(_prop(KEY, LOCATED_AT, DRAWER), (6, 32))) == []
+    nods = "Jenni nods at Bobby, who holds the key."
+    assert _presupposed(nods, _extracted(_prop(BOB, HOLDS, KEY), (14, 38))) == [
+        (BOB, HOLDS, KEY, "affirmed", (T, None))
+    ]

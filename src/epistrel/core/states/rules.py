@@ -53,7 +53,6 @@ from epistrel.core.states.model import (
     StateChange,
     StateDefinition,
     UndefinedType,
-    Violation,
     derived_rule,
     elapsed_rule,
     violation,
@@ -193,25 +192,25 @@ async def apply_elapsed(
         found = await states.value_of(conn, story_id, state.name, through=advance.position)
         if isinstance(found, UndefinedType) or not isinstance(found.value, Decimal):
             continue
-        current = found.value
-        for tick in range(1, ticks + 1):
-            delta = _bounded(state, current, rule.delta, rule.bounds_clamp)
-            written = await states.apply_change(
-                conn,
-                op,
-                StateChange(
-                    state=state.name,
-                    reason=ELAPSED_REASON,
-                    source=StateChangeSource.RULE,
-                    kind=StateChangeKind.DELTA,
-                    delta=delta,
-                    position=advance.position,
-                    valid_time_minutes=zero + last + tick * rule.per_minutes,
-                ),
-            )
-            if isinstance(written, Violation):  # pragma: no cover - _bounded keeps it in bounds
-                break
-            current = current + delta
+        current = start = found.value
+        for _ in range(ticks):
+            current += _bounded(state, current, rule.delta, rule.bounds_clamp)
+        # #628: the advance's ticks as one change (their sum, at the last tick's minute), so a
+        # long advance writes one row per rule, not one per tick; the fold is the same.
+        unit = "tick" if ticks == 1 else "ticks"
+        await states.apply_change(
+            conn,
+            op,
+            StateChange(
+                state=state.name,
+                reason=f"{ELAPSED_REASON}: {ticks} {unit} of {rule.per_minutes} min",
+                source=StateChangeSource.RULE,
+                kind=StateChangeKind.DELTA,
+                delta=current - start,
+                position=advance.position,
+                valid_time_minutes=zero + last + ticks * rule.per_minutes,
+            ),
+        )
 
 
 hooks.register_post_advance(apply_elapsed)

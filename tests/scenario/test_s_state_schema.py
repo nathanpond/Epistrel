@@ -812,10 +812,11 @@ async def test_s_state_schema__rules(
     clock_delivered: None,
 ) -> None:
     """A story-time rule updates its State deterministically: hunger (``elapsed``, -3 per 60
-    minutes, clamped at its bounds) writes one ``rule`` change per whole hour the clock passes,
-    in the advance's operation; ``net_worth`` (``derived``: ``gold + silver * 2``, written with
-    the multiplication sign) and ``standing`` (derived from it) are recomputed in topological
-    order in the transaction of any input's change.
+    minutes, clamped at its bounds) writes one ``rule`` change per advance for the whole hours
+    the clock passed (#628: their sum, at the last one's minute), in the advance's operation;
+    ``net_worth`` (``derived``: ``gold + silver * 2``, written with the multiplication sign)
+    and ``standing`` (derived from it) are recomputed in topological order in the transaction
+    of any input's change.
 
     Complements: a derived State rejects a direct set (422 ``state_derived``, #186's guard); a
     cycle is rejected at declaration and on a definition update; a definition with rules whose
@@ -831,31 +832,28 @@ async def test_s_state_schema__rules(
         assert await _value(client, story, "standing") == 5
         turn = (await played(client, story, body(ids[PLAYER], "Hello.")))["turn"]
 
-        # Elapsed: 150 minutes is two whole hours (two ticks), 60 more one tick, 120 more two
-        # ticks, the second clamped at the minimum and the third holding there.
+        # Elapsed: 150 minutes is two whole hours (two ticks, one row: #628), 60 more one
+        # tick, 120 more two ticks, the first clamped at the minimum and the second holding.
         await _advance(client, story, 150)
         assert await _value(client, story, "hunger") == 4
         ticks = await _rule_changes(engine, story, "hunger")
-        assert [int(t.delta) for t in ticks] == [-3, -3]
-        assert len({t.operation_id for t in ticks}) == 1
+        assert [int(t.delta) for t in ticks] == [-6]
         (row,) = await rows(
             engine, "SELECT story_minute_zero AS z FROM stories WHERE id = :s", s=story
         )
         zero = int(row.z)
-        assert [t.valid_time_minutes - zero for t in ticks] == [60, 120]
+        assert [t.valid_time_minutes - zero for t in ticks] == [120]  # the last tick's minute
         await _advance(client, story, 60)
         assert await _value(client, story, "hunger") == 1
         await _advance(client, story, 120)
         assert await _value(client, story, "hunger") == 0
         assert [int(t.delta) for t in await _rule_changes(engine, story, "hunger")] == [
-            -3,
-            -3,
+            -6,
             -3,
             -1,
-            0,
         ]
         await _advance(client, story, 29)  # 359 minutes: the sixth hour is not yet whole
-        assert len(await _rule_changes(engine, story, "hunger")) == 5
+        assert len(await _rule_changes(engine, story, "hunger")) == 3
 
         # Derived: folded from the inputs on every read, at every position; nothing stored.
         written = (await _put(client, story, "gold", {"delta": 5})).json()
@@ -1103,6 +1101,48 @@ PUBLISH_CASES: list[tuple[dict[str, Any], list[tuple[str, str | None, str | None
     ),
 ]
 """One broken declaration per check, and what its publish reports."""
+
+
+@pytest.mark.part("M6", "FR-STATE-7")
+async def test_s_state_schema__long_advance(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    clock_delivered: None,
+) -> None:
+    """#628: a 1440-minute advance under ``per_minutes: 1`` writes one ``rule`` change per
+    State, folding to what 1440 ticks would: an unbounded counter gains 1440, one clamped at
+    100 stops there, one held (no ``bounds_clamp``) stops at its last whole tick before the
+    bound. Complement asserted: the next advance counts on from the last tick's minute."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, ids = await _story(client, engine)
+        await ck.set_level(engine, story, "prompt_only")
+        tick = {"kind": "elapsed", "per_minutes": 1, "delta": 1}
+        for name, constraints, clamp in (
+            ("counter", {}, True),
+            ("clamped", {"max": 100}, True),
+            ("held", {"max": 100}, False),
+        ):
+            await _defined(
+                client,
+                story,
+                {
+                    "name": name,
+                    "type": "number",
+                    "initial_value": 0,
+                    "constraints": constraints,
+                    "rules": {**tick, "bounds_clamp": clamp},
+                },
+            )
+        await played(client, story, body(ids[PLAYER], "Hello."))
+        await _advance(client, story, 1440)
+        for name, value in (("counter", 1440), ("clamped", 100), ("held", 100)):
+            assert await _value(client, story, name) == value, name
+            (change,) = await _rule_changes(engine, story, name)
+            assert int(change.delta) == value
+        await _advance(client, story, 30)
+        assert await _value(client, story, "counter") == 1470
+        assert [int(c.delta) for c in await _rule_changes(engine, story, "counter")] == [1440, 30]
 
 
 @pytest.mark.part("M6", "FR-STATE-3")

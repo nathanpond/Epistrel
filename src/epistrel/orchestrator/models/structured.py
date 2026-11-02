@@ -24,8 +24,10 @@ never the model's raw text.
    validate strictly against the schema, which forbids extra keys (else ``schema_error``). A
    failed attempt is retried up to ``structured_retry_budget`` times (deployment setting,
    default 2): the invalid answer goes back as an ``assistant`` turn followed by a ``user``
-   correction naming what was wrong, at ``temperature=0``. Schema-invalid JSON in
-   ``json_schema`` mode is retried the same way.
+   correction naming what was wrong. A ``parse_error`` retry runs at ``temperature=0``; a
+   ``schema_error`` retry (JSON that fails validation) runs at the call's own params (#685:
+   at ``temperature=0`` a model given a correction that names the fix repeated its answer on
+   every attempt). Schema-invalid JSON in ``json_schema`` mode is retried the same way.
 4. **Uncertain** results: retries spent → the last failure's reason; a ``refusal`` or a
    ``length`` finish → ``parse_error`` at once; a schema with a ``confidence`` field below
    ``uncertain_below`` (deployment setting, default 0.5) → ``low_confidence`` at once; a call
@@ -303,7 +305,11 @@ async def structured_call[T: BaseModel](
                 Message(role="assistant", content=result.text),
                 Message(role="user", content=CORRECTION.format(problem=outcome.problem)),
             ]
-            call_params = (params or ModelParams()).merged(ModelParams(temperature=0.0))
+            call_params = (
+                params  # #685: the call's own temperature, so the retry is not a near-copy
+                if outcome.reason == "schema_error"
+                else (params or ModelParams()).merged(ModelParams(temperature=0.0))
+            )
     finally:
         REQUEST_FIELDS.reset(token)
 

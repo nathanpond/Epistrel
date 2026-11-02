@@ -114,8 +114,32 @@ async def test_schema_invalid_json_in_json_schema_mode_is_retried_in_that_mode()
     assert [m.role for m in second.messages] == ["system", "user", "assistant", "user"]
     assert second.messages[2].content == '{"violation": "yes", "confidence": 1}'
     assert "violation" in second.messages[3].content  # the validation error is fed back
-    assert second.params.temperature == 0.0
+    # #685: a schema-error retry keeps the call's own temperature (here the route's: unset).
+    assert second.params.temperature is None
     assert first.params.temperature is None
+
+
+async def test_a_schema_error_retry_keeps_the_calls_temperature_a_prose_one_does_not() -> None:
+    """#685: a retry after JSON that fails validation runs at the call's own params, so it is
+    not a temperature-0 near-copy of the refused answer; a retry after an answer that is not
+    JSON at all still runs at ``temperature=0``. The other params are the call's either way."""
+    own = ModelParams(temperature=0.7, max_tokens=64)
+    for answer, expected in (('{"violation": "yes", "confidence": 1}', 0.7), (PROSE, 0.0)):
+        mal = models()
+        mal.stub.script("guardrail_check", [answer])
+        result = await mal.structured_call(
+            "guardrail_check",
+            GuardrailVerdict,
+            CHECK,
+            params=own,
+            deterministic_first=nothing_conclusive,
+            budget=TurnBudget(),
+        )
+        assert result == GuardrailVerdict(violation=False, confidence=1.0)
+        first, second = mal.stub.calls
+        assert first.params.temperature == 0.7
+        assert second.params.temperature == expected
+        assert second.params.max_tokens == 64
 
 
 # -- the fallback: 400 or prose ---------------------------------------------------------------

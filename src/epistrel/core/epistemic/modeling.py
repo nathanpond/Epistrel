@@ -165,6 +165,9 @@ class Lexicon:
     """Head nouns that make the phrase after a direct object a time or frequency phrase (#573)."""
     time_adverbs: frozenset[str] = frozenset()
     """Adverbs that end that phrase's noun ("an hour later", "a note again"; #583)."""
+    address_terms: frozenset[str] = frozenset()
+    """#624: forms of address that name nobody in particular ("friend", "mate", "sir"): a
+    vocative of one addresses whoever is spoken to, so it models nobody."""
 
 
 @cache
@@ -194,6 +197,7 @@ def lexicon() -> Lexicon:
         persons=frozenset(str(p).casefold() for p in table.get("person_nouns", ())),
         times=frozenset(str(t).casefold() for t in table.get("time_words", ())),
         time_adverbs=frozenset(str(t).casefold() for t in table.get("time_adverbs", ())),
+        address_terms=frozenset(str(t).casefold() for t in table.get("address_terms", ())),
     )
 
 
@@ -478,10 +482,20 @@ def _vocatives(
             continue
         if party.entity_id is not None and party.entity_id == speaker:
             continue
+        if party.entity_id is None and _address_term(party.phrase, lex):
+            continue  # #624: "…, friend." addresses the one spoken to, not a new person
         seen.add(party.span)
         speaker_party = Party(speaker, "") if speaker is not None else None
         found.append(Interaction("vocative", speaker_party, party))
     return found
+
+
+def _address_term(phrase: str, lex: Lexicon) -> bool:
+    """Whether ``phrase`` (a vocative's words, an article allowed) is a form of address."""
+    words = [w.casefold() for w in _WORD.findall(phrase)]
+    if words and words[0] in lex.articles:
+        words = words[1:]
+    return len(words) == 1 and words[0] in lex.address_terms
 
 
 def interactions(

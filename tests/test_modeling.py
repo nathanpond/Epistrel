@@ -134,6 +134,9 @@ def test_a_say_interacts_by_vocative_only() -> None:
     assert _objects("say", "I will wave to the neighbor later.") == []
     assert modeling.is_interaction("say", "Thanks, driver.")
     assert not modeling.is_interaction("say", "The driver was late.")
+    # #624: a form of address names nobody new: it addresses the one spoken to.
+    for line in ("You have 500 gold, friend.", "Cheers, mate!", "Yes, sir.", "Sit down, dear."):
+        assert _objects("say", line) == [], line
     assert modeling.is_interaction("do", "She hands him the parcel.")
 
 

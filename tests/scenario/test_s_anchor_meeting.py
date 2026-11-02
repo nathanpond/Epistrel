@@ -453,3 +453,63 @@ async def test_s_anchor_meeting__patched_and_rendered(
             ]
             assert made.owner == ids["Jenni"]
             assert made.status.value == (status or "possibly_due")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-18")
+async def test_s_anchor_meeting__mid_turn_pause(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#646 (owner decision): in a sequential turn, Jenni's render wanders for two hours and
+    pauses for her ``possibly_due`` meeting at +61; Mira, rendering after her in the same turn,
+    is steered to establish the current time (``TIME_STEERING``), and the next turn's narrator
+    still is. Complement asserted: the same two renders with no pause give Mira no steer."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for paused in (True, False):
+            story, ids = await structured_story(client, "Cal", "Jenni", "Mira")
+            place = await ps.place_entity(engine, story, "the market")
+            for who in ids.values():
+                await ps.put(engine, story, who, place)
+            await ck.set_clock(engine, story, "on")
+            await ck.anchor_range(engine, story, ONE, THREE)
+            await ms.per_character(engine, story)
+            created = await client.post(
+                f"/stories/{story}/scheduled-events",
+                json={
+                    "proposition": "Jenni's meeting",
+                    "planned": "16:00",
+                    "participants": [ids["Jenni"]],
+                    "owner": "world",
+                },
+                headers=WRITE,
+            )
+            assert created.status_code == 201, created.text
+            stub.reset()
+            effects = [skip(120)] if paused else []
+            ms.renders_for(
+                stub,
+                "Jenni",
+                ms.render(beat("do", "They set off between the stalls.", effects=effects)),
+            )
+            ms.renders_for(stub, "Mira", ms.render(beat("say", "Wait for me.")))
+            stub.script("regeneration", [json.dumps({"text": DRIFT})])
+            answer = await respond(
+                client,
+                story,
+                body(
+                    ids["Cal"],
+                    WANDER,
+                    render_character_ids=[ids["Jenni"], ids["Mira"]],
+                    interaction_mode="sequential",
+                ),
+            )
+            assert answer.status_code == 200, answer.text
+            (mira,) = ms.render_prompts(stub, "Mira")
+            assert (prompts.TIME_STEERING in mira) is paused
+            if paused:
+                report = await turn_report(engine, story)
+                assert report["clock"]["stops"]["establish_time"] is True

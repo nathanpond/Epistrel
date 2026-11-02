@@ -4191,6 +4191,9 @@ async def play(
     """#196: the beats regenerated under a due event's cutoff (FR-CLOCK-16), by beat."""
     surfacing: list[Any] = []
     """#196: the events a pacing clamp surfaced to the turn's later renders (sequential)."""
+    paused_mid_turn: list[bool] = [False]
+    """#646: a sequential render paused for a ``possibly_due`` event: the turn's later renders
+    are steered to establish the time (``prompts.TIME_STEERING``)."""
     cuts: list[Any] = [None]
     """#196: the turn's final cut (``stops.Cut``) and its renders, once timed."""
     lifecycle_plan: list[stopping.Planned] = []
@@ -4328,6 +4331,8 @@ async def play(
         for stopped in found.stops:
             # #197: a possibly_due pause surfaces nothing (no line calls the event due).
             if stopped.pause:
+                if mode == SEQUENTIAL_MODE:
+                    paused_mid_turn[0] = True  # #646: the later renders are steered
                 continue
             if not stopped.skip and all(e.event_id != stopped.event.event_id for e in surfacing):
                 surfacing.append(stopped.event)
@@ -4926,6 +4931,7 @@ async def play(
             )
         stop_marks.clear()
         surfacing.clear()
+        paused_mid_turn[0] = False
         skip_seen.clear()
         skip_decisions.clear()
         refused_skips.clear()
@@ -5166,7 +5172,10 @@ async def play(
                 )
                 if knowing.retrieval is not None:
                     retrievals.append(knowing.retrieval)
-                sections = replace(base, constraints=(*constraints, *due_for(read_k.character.id)))
+                steer = (prompts.TIME_STEERING,) if paused_mid_turn[0] and not first else ()
+                sections = replace(
+                    base, constraints=(*constraints, *due_for(read_k.character.id), *steer)
+                )
                 timing.assemble_s += time.perf_counter() - assembling
                 inputs: GenerationInputs = prompts.character_inputs(
                     knowing,

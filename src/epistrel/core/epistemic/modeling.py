@@ -371,7 +371,8 @@ def _followed_by(text: str, target: Party, verb: Verb, lex: Lexicon) -> bool:
     a second time" / "an hour later" / "the next morning" is motion past. The phrase's head noun
     decides (#583): the last of the words after the determiner before a time adverb, a ``then``
     word or article, punctuation, or the third word. "a note again", "the morning paper" and "a
-    note that morning" hand something over; a head in ``times`` is a time phrase."""
+    note that morning" hand something over; a head in ``times`` is a time phrase, and ``or`` and
+    the word after it never become the head ("an hour or so later", #585)."""
     word = _WORD.match(text, _skip_space(text, target.span[1]))
     if word is None or word.group().casefold() not in verb.then:
         return False
@@ -379,15 +380,22 @@ def _followed_by(text: str, target: Party, verb: Verb, lex: Lexicon) -> bool:
         return True  # "calls the waiter over": a particle, not a determiner
     pos = word.end()
     head: str | None = None
-    for _ in range(3):
+    skip = 0
+    for _ in range(4):
         nxt = _WORD.match(text, _skip_space(text, pos))
         if nxt is None or text[pos : nxt.start()].strip():
             break  # the end, or punctuation between the words
         folded = nxt.group().casefold()
         if folded in lex.time_adverbs or folded in verb.then or folded in lex.articles:
             break
-        head = folded
         pos = nxt.end()
+        if skip:
+            skip -= 1
+            continue
+        if folded == "or" and head is not None:
+            skip = 1  # #585: "an hour or so later": the head is the word before "or"
+            continue
+        head = folded
     return head not in lex.times
 
 

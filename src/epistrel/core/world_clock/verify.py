@@ -128,8 +128,50 @@ async def read(
             tolerance=found.time_statement_tolerance_minutes,
             factor=float(found.elapsed_tolerance_factor),
             at_claim=basis.in_turn is not None,
+            events=await _events(conn, story_id, subjects, through),
         )
     ]
+
+
+async def _events(
+    conn: AsyncConnection, story_id: str, subjects: Sequence[str] | None, through: Any
+) -> dict[str, dict[str, Any]]:
+    """#644: the story's scheduled events among ``subjects`` as of ``through``, keyed by event
+    id and by the event's entity (its ``scheduled`` proposition's object, what a
+    ``scheduled_status`` claim names): planned offset, frame minute (``planned_anchor``'s
+    ``at``; ``None``: an exact offset) and grace."""
+    if not subjects:
+        return {}
+    from sqlalchemy import select
+
+    from epistrel.core.tables.propositions import propositions
+    from epistrel.core.world_clock import stops
+
+    wanted = set(subjects)
+    found = await stops.events_at(conn, story_id, through)
+    if not found:
+        return {}
+    objects = dict(
+        (
+            await conn.execute(
+                select(propositions.c.id, propositions.c.object_id).where(
+                    propositions.c.id.in_([e.event_id for e in found])
+                )
+            )
+        ).all()
+    )
+    events: dict[str, dict[str, Any]] = {}
+    for event in found:
+        planned_at = (event.planned_anchor or {}).get("at")
+        entry = {
+            "planned": event.planned,
+            "at": None if planned_at is None else int(planned_at),
+            "grace": event.grace,
+        }
+        for key in (event.event_id, objects.get(event.event_id)):
+            if key is not None and key in wanted:
+                events[str(key)] = entry
+    return events
 
 
 def owned_value(
@@ -141,6 +183,7 @@ def owned_value(
     tolerance: int = 15,
     factor: float = 2.0,
     at_claim: bool = False,
+    events: dict[str, dict[str, Any]] | None = None,
 ) -> OwnedValue:
     """The clock as the lookup hands it to ``verdict``: ``anchor`` at clock offset ``offset``
     with the tolerances (see the module docstring); ``at_claim`` (#194): checked at the claim's
@@ -157,6 +200,8 @@ def owned_value(
     }
     if at_claim:
         payload["at_claim"] = True
+    if events:
+        payload["events"] = events
     return OwnedValue(
         proposition=Proposition(
             subject_id=clock_id,
@@ -232,8 +277,23 @@ def check_of(claim: Proposition, anchor: Anchor, payload: dict[str, Any]) -> Che
         )
     if claim.predicate_id == SCHEDULED_STATUS:
         status = literal.value if literal is not None else ""
-        return Scheduled(claim.subject_id, str(status))
+        event = (payload.get("events") or {}).get(claim.subject_id) or {}
+        at = event.get("at")
+        return Scheduled(claim.subject_id, str(status), None if at is None else int(at))
     return None
+
+
+def _exact_scheduled(check: Scheduled, event: dict[str, Any], offset: int) -> Outcome:
+    """#644: an event planned at an exact offset, at clock offset ``offset``: ``due`` once the
+    clock reached it, ``not_due`` before; ``possibly_due`` never holds of an exact time."""
+    reached = offset >= int(event["planned"])
+    if check.status == "due":
+        return Outcome.SUPPORTED if reached else Outcome.CONTRADICTED
+    if check.status == "not_due":
+        return Outcome.CONTRADICTED if reached else Outcome.SUPPORTED
+    if check.status == "possibly_due":
+        return Outcome.CONTRADICTED
+    return Outcome.UNCERTAIN
 
 
 def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
@@ -255,7 +315,15 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     widened = check
     if isinstance(check, Statement) and claim.predicate_id == TIME_IS:
         widened = check.widened(tolerance, anchor.clockwork.day_minutes)
-    outcome = anchor.evaluate(widened, offset)
+    event = (
+        (payload.get("events") or {}).get(claim.subject_id)
+        if isinstance(check, Scheduled)
+        else None
+    )
+    if isinstance(check, Scheduled) and event is not None and check.at is None:
+        outcome = _exact_scheduled(check, event, offset)
+    else:
+        outcome = anchor.evaluate(widened, offset)
     affirmed = claim.polarity is Polarity.AFFIRMED
     if outcome is Outcome.SUPPORTED:
         if affirmed:
@@ -315,6 +383,7 @@ def staged_anchor(owned: OwnedValue, staged: Sequence[Proposition]) -> OwnedValu
         tolerance=tolerance,
         factor=float(payload.get("factor", 2.0)),
         at_claim=bool(payload.get("at_claim")),
+        events=payload.get("events"),
     )
 
 

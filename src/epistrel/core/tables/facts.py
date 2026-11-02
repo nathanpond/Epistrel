@@ -151,6 +151,7 @@ Index("ix_facts_valid_span", facts.c.valid_span, postgresql_using="gist")
 Index("ix_facts_story_lineage", facts.c.story_id, facts.c.lineage_id)
 Index("ix_facts_story_open", facts.c.story_id, postgresql_where=text("tx_to IS NULL"))
 Index("ix_facts_supersedes", facts.c.supersedes, postgresql_using="gin")
+Index("ix_facts_proposition", facts.c.proposition_id)  # #617 (migration 0107)
 
 FACTS = register_derived(
     DerivedTable(facts, valid_time=("valid_from", "valid_to"), tx_time=("tx_from", "tx_to"))

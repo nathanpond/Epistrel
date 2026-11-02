@@ -1150,6 +1150,10 @@ def _canon_where(
         where.append(f.c.subject_id == subject)
     if predicate is not None:
         where.append(f.c.predicate_id == predicate)
+    if object is not None or member is not None:
+        # #617: the story's propositions naming it (``ix_propositions_story_object``, and the
+        # ``object_set`` GIN index), joined to their facts by ``ix_facts_proposition``.
+        where.append(propositions.c.story_id == story_id)
     if object is not None:
         where.append(propositions.c.object_id == object)
     if member is not None:

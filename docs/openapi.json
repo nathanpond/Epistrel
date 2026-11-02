@@ -1758,6 +1758,837 @@
         "title": "CautionDispositionPatch",
         "type": "object"
       },
+      "Certification": {
+        "description": "A stored certification: its record's fields (``report_md`` aside), how and when it was\nrecorded, and its status (``valid``; ``stale`` and why, #234).",
+        "properties": {
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "floors_failed": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Floors Failed",
+            "type": "array"
+          },
+          "floors_insufficient": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Floors Insufficient",
+            "type": "array"
+          },
+          "floors_passed": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Floors Passed",
+            "type": "array"
+          },
+          "host": {
+            "additionalProperties": true,
+            "title": "Host",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "intervention_types_covered": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Intervention Types Covered",
+            "type": "array"
+          },
+          "intervention_types_insufficient": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Intervention Types Insufficient",
+            "type": "array"
+          },
+          "invalidated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated At"
+          },
+          "invalidated_by_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated By Run Id"
+          },
+          "invalidated_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated Reason"
+          },
+          "judge_calibrated": {
+            "title": "Judge Calibrated",
+            "type": "boolean"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "models": {
+            "additionalProperties": true,
+            "title": "Models",
+            "type": "object"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Version"
+          },
+          "quality_settings_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Settings Hash"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "recorded_via": {
+            "title": "Recorded Via",
+            "type": "string"
+          },
+          "report_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Path"
+          },
+          "report_sha256": {
+            "title": "Report Sha256",
+            "type": "string"
+          },
+          "run_at": {
+            "format": "date-time",
+            "title": "Run At",
+            "type": "string"
+          },
+          "sample_sizes": {
+            "additionalProperties": true,
+            "title": "Sample Sizes",
+            "type": "object"
+          },
+          "seed_count": {
+            "title": "Seed Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "fingerprint",
+          "profile_id",
+          "profile_version",
+          "preset",
+          "models",
+          "quality_settings_hash",
+          "floors_passed",
+          "floors_failed",
+          "floors_insufficient",
+          "intervention_types_covered",
+          "intervention_types_insufficient",
+          "judge_calibrated",
+          "sample_sizes",
+          "seed_count",
+          "model_tier",
+          "host",
+          "report_path",
+          "report_sha256",
+          "run_at",
+          "recorded_at",
+          "recorded_via",
+          "status",
+          "invalidated_at",
+          "invalidated_reason",
+          "invalidated_by_run_id"
+        ],
+        "title": "Certification",
+        "type": "object"
+      },
+      "CertificationImportedBody": {
+        "description": "An imported record: its id, and whether a row was written (``false``: stored already).",
+        "properties": {
+          "certification_id": {
+            "title": "Certification Id",
+            "type": "string"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "stored": {
+            "title": "Stored",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "config_revision",
+          "certification_id",
+          "stored"
+        ],
+        "title": "CertificationImportedBody",
+        "type": "object"
+      },
+      "CertificationLost": {
+        "description": "A certified configuration the change would leave (FR-PROF-17, #233): the story (``null``\nfor a profile's own configuration when no story follows it), the status before\n(``certified``) and after, and the certification that no longer applies.",
+        "properties": {
+          "certification_id": {
+            "title": "Certification Id",
+            "type": "string"
+          },
+          "from": {
+            "$ref": "#/components/schemas/QualityStatusValue"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "to": {
+            "$ref": "#/components/schemas/QualityStatusValue"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "certification_id"
+        ],
+        "title": "CertificationLost",
+        "type": "object"
+      },
+      "CertificationPage": {
+        "description": "A page of certifications, newest first; ``next_cursor`` continues it.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Certification"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CertificationPage",
+        "type": "object"
+      },
+      "CertificationRecord": {
+        "additionalProperties": false,
+        "description": "A certification record as ``epistrel.evals`` writes it (see the module docstring).",
+        "examples": [
+          {
+            "certification_id": "01JC0000000000000000000C01",
+            "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "floors_passed": [
+              {
+                "floor": 0.0,
+                "metric_id": "NFR-QUAL-1.false_support",
+                "n": 300,
+                "rule": "zero",
+                "seeds": 2,
+                "upper_bound_95": 0.01,
+                "verdict": "pass"
+              }
+            ],
+            "model_tier": "reference",
+            "report_md": "# The run's report\n",
+            "report_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "run_at": "2026-11-01T12:00:00Z",
+            "schema_version": 1,
+            "seed_count": 2
+          }
+        ],
+        "properties": {
+          "certification_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Certification Id",
+            "type": "string"
+          },
+          "fingerprint": {
+            "pattern": "^sha256:[0-9a-f]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "floors_failed": {
+            "items": {
+              "$ref": "#/components/schemas/FloorResult"
+            },
+            "title": "Floors Failed",
+            "type": "array"
+          },
+          "floors_insufficient": {
+            "items": {
+              "$ref": "#/components/schemas/FloorResult"
+            },
+            "title": "Floors Insufficient",
+            "type": "array"
+          },
+          "floors_passed": {
+            "items": {
+              "$ref": "#/components/schemas/FloorResult"
+            },
+            "title": "Floors Passed",
+            "type": "array"
+          },
+          "host": {
+            "additionalProperties": true,
+            "title": "Host",
+            "type": "object"
+          },
+          "intervention_types_covered": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Intervention Types Covered",
+            "type": "array"
+          },
+          "intervention_types_insufficient": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Intervention Types Insufficient",
+            "type": "array"
+          },
+          "judge_calibrated": {
+            "default": false,
+            "title": "Judge Calibrated",
+            "type": "boolean"
+          },
+          "model_tier": {
+            "default": "other",
+            "enum": [
+              "reference",
+              "other"
+            ],
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "models": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Models",
+            "type": "object"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Preset"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Id"
+          },
+          "profile_version": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile Version"
+          },
+          "quality_settings_hash": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quality Settings Hash"
+          },
+          "report_md": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report Md"
+          },
+          "report_path": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report Path"
+          },
+          "report_sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Report Sha256",
+            "type": "string"
+          },
+          "run_at": {
+            "format": "date-time",
+            "title": "Run At",
+            "type": "string"
+          },
+          "sample_sizes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Sample Sizes",
+            "type": "object"
+          },
+          "schema_version": {
+            "const": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "seed_count": {
+            "minimum": 1,
+            "title": "Seed Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "certification_id",
+          "fingerprint",
+          "seed_count",
+          "report_sha256",
+          "run_at"
+        ],
+        "title": "CertificationRecord",
+        "type": "object"
+      },
+      "CertificationRun": {
+        "description": "A certification run: what it certifies and runs, its status and estimate, its report\nsummary (per suite and floor) and the certification it recorded (``null`` when no floor\npassed, or the run failed).",
+        "properties": {
+          "certification_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "estimate": {
+            "additionalProperties": true,
+            "title": "Estimate",
+            "type": "object"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "profile_version": {
+            "title": "Profile Version",
+            "type": "integer"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample"
+          },
+          "seeds": {
+            "title": "Seeds",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          },
+          "suites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suites",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "fingerprint",
+          "profile_id",
+          "profile_version",
+          "story_id",
+          "suites",
+          "seeds",
+          "sample",
+          "estimate",
+          "status",
+          "job_id",
+          "certification_id",
+          "report",
+          "requested_by",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "error"
+        ],
+        "title": "CertificationRun",
+        "type": "object"
+      },
+      "CertificationRunBody": {
+        "description": "A run request's answer: the estimate, fingerprint and suites, and with ``confirm`` the\nrun and its job.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/RunEstimate"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "suites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suites",
+            "type": "array"
+          }
+        },
+        "required": [
+          "config_revision",
+          "estimate",
+          "fingerprint",
+          "suites"
+        ],
+        "title": "CertificationRunBody",
+        "type": "object"
+      },
+      "CertificationRunRequest": {
+        "additionalProperties": false,
+        "description": "A certification run's request (FR-PROF-17): the profile version (latest by default; a\nstory's run uses the story's), the suites (default: every one the configuration enables),\nthe seed count, a per-suite case cap, and ``confirm`` (without it: the estimate only).",
+        "examples": [
+          {
+            "confirm": true,
+            "seeds": 2,
+            "suites": [
+              "smoke"
+            ]
+          }
+        ],
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          },
+          "sample": {
+            "anyOf": [
+              {
+                "minimum": 10.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample"
+          },
+          "seeds": {
+            "default": 3,
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Seeds",
+            "type": "integer"
+          },
+          "suites": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suites"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "title": "CertificationRunRequest",
+        "type": "object"
+      },
       "ChainRef": {
         "additionalProperties": false,
         "description": "A chain selector: the ``{turn, variant}`` of the chain's first (diverging) turn.",
@@ -7654,6 +8485,17 @@
             "title": "Preset",
             "type": "boolean"
           },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FloorsMet"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The version's quality under the deployment's models and no story overrides (FR-PROF-16, #233): its `fingerprint`, its `status` and the floors its newest valid certification passed (`floors_met`, empty without one: a floor is never labelled met without a matching certification)."
+          },
           "settings": {
             "additionalProperties": false,
             "description": "An engine profile's settings, by capability module (FR-PROF-2).",
@@ -11280,6 +12122,135 @@
         "title": "FieldClass",
         "type": "string"
       },
+      "FloorResult": {
+        "additionalProperties": false,
+        "description": "One floor's verdict on the run: the metric (``NFR-QUAL-<n>.<sub-metric>``), its floor\nand rule, the mean and standard deviation across seeds, the completed cases (``n``), the\nseeds, the upper bound of its 95 % interval when the rule has one, the verdict, and for\nNFR-QUAL-14's per-type rows the intervention type.",
+        "properties": {
+          "floor": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Floor"
+          },
+          "intervention_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Intervention Type"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Mean"
+          },
+          "metric_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "n": {
+            "minimum": 0,
+            "title": "N",
+            "type": "integer"
+          },
+          "rule": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Rule",
+            "type": "string"
+          },
+          "sd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sd"
+          },
+          "seeds": {
+            "minimum": 0,
+            "title": "Seeds",
+            "type": "integer"
+          },
+          "upper_bound_95": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Upper Bound 95"
+          },
+          "verdict": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric_id",
+          "rule",
+          "n",
+          "seeds",
+          "verdict"
+        ],
+        "title": "FloorResult",
+        "type": "object"
+      },
+      "FloorsMet": {
+        "description": "A profile's quality under the deployment's models and no overrides (FR-PROF-16): its\nfingerprint, status and the floors its newest valid certification passed (empty when none\nmatches: a floor is never labelled met without a certification).",
+        "properties": {
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "floors_met": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Floors Met",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/QualityStatusValue"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "status",
+          "floors_met"
+        ],
+        "title": "FloorsMet",
+        "type": "object"
+      },
       "ForkCharacterBody": {
         "description": "A character of the fork and the source character it copies.",
         "properties": {
@@ -14239,6 +15210,14 @@
               }
             ],
             "title": "Capabilities After"
+          },
+          "certifications_lost": {
+            "description": "Each certified configuration the change would leave (FR-PROF-17, #233): the story (null for a profile no story follows), `from` `certified`, `to` the status after, and the certification that no longer applies. Each makes the report warn `certification_lost`; `ignore_warnings` applies the change all the same.",
+            "items": {
+              "$ref": "#/components/schemas/CertificationLost"
+            },
+            "title": "Certifications Lost",
+            "type": "array"
           },
           "fingerprint_after": {
             "anyOf": [
@@ -21635,6 +22614,17 @@
             "title": "Preset",
             "type": "boolean"
           },
+          "quality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FloorsMet"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The version's quality under the deployment's models and no story overrides (FR-PROF-16, #233): its `fingerprint`, its `status` and the floors its newest valid certification passed (`floors_met`, empty without one: a floor is never labelled met without a matching certification)."
+          },
           "settings": {
             "additionalProperties": false,
             "description": "An engine profile's settings, by capability module (FR-PROF-2).",
@@ -27692,8 +28682,61 @@
         "type": "string"
       },
       "QualityStatus": {
-        "description": "A configuration's quality status (FR-PROF-16). M3 has no certification records, so it is\nalways ``uncertified``; M7 adds the certification's id and floors to ``certified``.",
+        "description": "A configuration's quality status (FR-PROF-16): `certified` with the certification's id, the floors it passed and the intervention types NFR-QUAL-14's floor covers and lacks evidence for; `uncertified` or `stale` alone otherwise.",
         "properties": {
+          "certification_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Id"
+          },
+          "floors_passed": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Floors Passed"
+          },
+          "intervention_types_covered": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intervention Types Covered"
+          },
+          "intervention_types_insufficient": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intervention Types Insufficient"
+          },
           "status": {
             "$ref": "#/components/schemas/QualityStatusValue"
           }
@@ -31298,6 +32341,41 @@
           "name"
         ],
         "title": "RoleRelationship",
+        "type": "object"
+      },
+      "RunEstimate": {
+        "description": "What a certification run would take (FR-PROF-17): model calls (cases times seeds times each\nsuite's calls per case), tokens, duration with the calls one after another, and its cost in\nUSD only when the model matrix prices tokens.",
+        "properties": {
+          "cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost"
+          },
+          "duration_s": {
+            "title": "Duration S",
+            "type": "number"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model_calls",
+          "tokens",
+          "duration_s"
+        ],
+        "title": "RunEstimate",
         "type": "object"
       },
       "SanitizeRequest": {
@@ -43013,6 +44091,147 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/certifications/import": {
+      "post": {
+        "description": "Store a certification record as `epistrel evals` writes it (a hand run's, #235): `schema_version` 1, the record's fields and its Markdown report in `report_md`. The record is validated (extra fields refused) and the report's SHA-256 (LF line ends, one trailing newline) must equal its `report_sha256`, else 422 `invalid_certification_record` and nothing is stored. It is stored by its `certification_id`: the same record again stores nothing (`stored: false`), and other content under that id is 409 `certification_record_conflict`. A record whose fingerprint matches no profile version is stored all the same.",
+        "operationId": "import_certification",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificationRecord"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationImportedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `certification_record_conflict`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_certification_record`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Import a certification record",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/config-changes": {
       "get": {
         "description": "The deployment's configuration changes, newest first; ``next`` pages on (``after``).",
@@ -56432,6 +57651,352 @@
         ]
       }
     },
+    "/certification-runs/{run_id}": {
+      "get": {
+        "description": "A certification run: what it certifies (fingerprint, profile version, story) and runs, its `status` (`queued`, `running`, `completed`, `failed`), its estimate, its `report` summary (per suite and per floor: passed, failed, insufficient) once it ran, and the `certification_id` it recorded (null when no floor passed or the run failed). 404 `certification_run_not_found`.",
+        "operationId": "get_certification_run",
+        "parameters": [
+          {
+            "description": "The certification run's id.",
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "description": "The certification run's id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRun"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `certification_run_not_found`, `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a certification run",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/certifications": {
+      "get": {
+        "description": "Certification records (FR-PROF-15), newest first, stale ones included, narrowed by `fingerprint` and `profile_id` when given (both: ANDed). `cursor` continues a page from its `next_cursor`.",
+        "operationId": "list_certifications",
+        "parameters": [
+          {
+            "description": "A configuration fingerprint.",
+            "in": "query",
+            "name": "fingerprint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A configuration fingerprint.",
+              "title": "Fingerprint"
+            }
+          },
+          {
+            "description": "A profile's id.",
+            "in": "query",
+            "name": "profile_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A profile's id.",
+              "title": "Profile Id"
+            }
+          },
+          {
+            "description": "At most this many.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "At most this many.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List certifications",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/certifications/{certification_id}": {
+      "get": {
+        "description": "One certification record (FR-PROF-15): the fingerprint and models it certifies, the floors it passed, failed and could not decide (each with its rule, mean, standard deviation, sample size, seeds and bound), the intervention types NFR-QUAL-14's floor covers and lacks evidence for, whether its judge was calibrated, its model tier, host and report hash, how it was recorded and its status. 404 `certification_not_found`.",
+        "operationId": "get_certification",
+        "parameters": [
+          {
+            "description": "The certification's id.",
+            "in": "path",
+            "name": "certification_id",
+            "required": true,
+            "schema": {
+              "description": "The certification's id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Certification Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Certification"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `certification_not_found`, `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a certification",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
     "/engine-profiles": {
       "get": {
         "description": "Profiles at their latest version, newest first, presets included, `limit` at a time; `cursor` (a page's `next_cursor`) continues. Deleted profiles are listed only with `include_deleted=true`. `owner` and `relation` (`name:principal`, or `name:` for any principal; repeatable, all must hold) narrow the list only when a request asks: they gate nothing (FR-AUTH-8).",
@@ -57238,6 +58803,198 @@
           }
         ],
         "summary": "Edit an engine profile (a new version)",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/certification-runs": {
+      "post": {
+        "description": "A certification run of the profile at its latest version (`version`: that one) under the deployment's models and no story overrides (FR-PROF-17). Without `confirm`, the answer is the estimate (`model_calls`, `tokens`, `duration_s`; `cost` only when the model matrix prices tokens), the configuration's `fingerprint` and the `suites` the run would play, and nothing is written. With `confirm: true` a `certification_run` job is queued: 202 `{run_id, job_id}` with the estimate repeated (409 `certification_run_in_progress` while a run for the same fingerprint is queued or running). `suites` defaults to every suite the configuration enables; naming one it does not enable, or an unknown one, is 422 `validation_error`. `seeds` is 1-5 (default 3) and `sample` a per-suite case cap of at least 10 (under 300 cases a zero-tolerance floor is `insufficient_evidence`, NFR-QUAL-8). The run plays the suites on scratch stories with the deployment's models and records a certification when a floor passes; it never changes the configuration. The fingerprint is captured now: a later change does not affect the run. 503 `certification_unavailable` when the process has no eval harness.",
+        "operationId": "request_certification_run_profile",
+        "parameters": [
+          {
+            "description": "The profile's id.",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The profile's id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificationRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRunBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRunBody"
+                }
+              }
+            },
+            "description": "The run is queued.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `certification_run_in_progress`, `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `profile_deleted`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `certification_unavailable`, `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Certify an engine profile version",
         "tags": [
           "profiles"
         ]
@@ -64049,6 +65806,226 @@
         "summary": "Archive a story",
         "tags": [
           "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/certification-runs": {
+      "post": {
+        "description": "A certification run of the story's effective configuration: its profile version with its overrides, under the deployment's models (FR-PROF-17; `version` is ignored). Without `confirm`, the answer is the estimate (`model_calls`, `tokens`, `duration_s`; `cost` only when the model matrix prices tokens), the configuration's `fingerprint` and the `suites` the run would play, and nothing is written. With `confirm: true` a `certification_run` job is queued: 202 `{run_id, job_id}` with the estimate repeated (409 `certification_run_in_progress` while a run for the same fingerprint is queued or running). `suites` defaults to every suite the configuration enables; naming one it does not enable, or an unknown one, is 422 `validation_error`. `seeds` is 1-5 (default 3) and `sample` a per-suite case cap of at least 10 (under 300 cases a zero-tolerance floor is `insufficient_evidence`, NFR-QUAL-8). The run plays the suites on scratch stories with the deployment's models and records a certification when a floor passes; it never changes the configuration. The fingerprint is captured now: a later change does not affect the run. 503 `certification_unavailable` when the process has no eval harness.",
+        "operationId": "request_certification_run_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertificationRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRunBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRunBody"
+                }
+              }
+            },
+            "description": "The run is queued.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `certification_run_in_progress`, `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `certification_unavailable`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Certify a story's effective configuration",
+        "tags": [
+          "profiles"
         ]
       }
     },

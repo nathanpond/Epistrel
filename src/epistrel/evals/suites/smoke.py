@@ -112,6 +112,7 @@ class SmokeSuite(Suite):
         'a compound ("candlestick"), another word, or no use of the word fails (#437).',
     )
     ci_gate = True
+    structured = False
     case_model = SmokeCase
 
     async def evaluate(self, ctx: CaseContext, case: CaseModel) -> Outcome:

@@ -445,6 +445,8 @@ async def test_c_16__crud(scratch: Space) -> None:
         assert (created["settings"], created["config_revision"]) == (SETTINGS, revision)
         assert created["warnings"] == []  # #456: the validator's, on the write's answer only
         read = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        # #233: a read carries the version's quality; a write does not.
+        assert read.pop("quality")["status"] == UNCERTIFIED["status"]
         assert read == {
             k: v
             for k, v in created.items()
@@ -1870,6 +1872,8 @@ async def test_library_matches_rest(stub_settings: Settings, engine: AsyncEngine
         created = await lib.create_profile(ctx, _library_body(profile_body()))
         profile = created.profile.id
         rest = await ok(await client.get(f"{PROFILES}/{profile}", headers=READ))
+        assert rest == (await lib.get_profile(ctx, profile)).model_dump(mode="json")
+        rest.pop("quality")  # #233: a read's, never a write's
         assert rest == created.profile.model_dump(mode="json")
         edited = await lib.update_profile(
             ctx, profile, ProfileUpdate.model_validate({"name": "Brisk Lite", "settings": EDITED})

@@ -14,8 +14,11 @@ and after its prechecks:
 3. Otherwise ``apply_fn(report)`` runs and the result carries both, ``applied: true``.
 
 A report warns when an affected story gains or loses a capability, needs a backfill or cannot
-be upgraded, or when a scenario recommendation is unmet or a guarantee is lost
-(``WARNING_KINDS``); a change of fingerprint or quality status alone applies at once. An invalid
+be upgraded, or when a scenario recommendation is unmet, a guarantee is lost, or a certified
+configuration would no longer be (``certification_lost``, #233, FR-PROF-17: ``certified`` →
+``uncertified`` or ``stale``; ``WARNING_KINDS``). A warning never blocks: ``ignore_warnings``
+applies the change. Any other change of fingerprint or quality status (``uncertified`` →
+``uncertified`` included) applies at once. An invalid
 configuration is refused before any report (422 ``invalid_profile``, FR-PROF-4), and a call
 without the service credential never gets this far (#44): ``ignore_warnings`` overrides
 neither. Each report is logged at INFO with counts and warning codes only.
@@ -77,7 +80,12 @@ from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, estimates, schema
 from epistrel.core.profiles.capabilities import module_names
 from epistrel.core.profiles.effective import Configuration
-from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp
+from epistrel.core.profiles.fingerprint import (
+    QualityStatus,
+    QualityStatusValue,
+    RuntimeFacts,
+    Stamp,
+)
 from epistrel.core.profiles.guarantees import guarantees_gained, guarantees_lost, ordered
 from epistrel.core.profiles.reservation import SafetyFacts
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsPatch
@@ -98,6 +106,7 @@ WARNING_KINDS = (
     "upgrade_unavailable",
     "recommendations_unmet",
     "guarantees_lost",
+    "certification_lost",
 )
 """Why a report holds its change for confirmation, in the order ``warnings`` lists them."""
 
@@ -156,6 +165,34 @@ class UnmetRecommendation(BaseModel):
     recommended_by: str
 
 
+class CertificationLost(BaseModel):
+    """A certified configuration the change would leave (FR-PROF-17, #233): the story (``null``
+    for a profile's own configuration when no story follows it), the status before
+    (``certified``) and after, and the certification that no longer applies."""
+
+    model_config = ConfigDict(frozen=True, populate_by_name=True, serialize_by_alias=True)
+
+    story_id: str | None = None
+    from_status: QualityStatusValue = Field(alias="from")
+    to: QualityStatusValue
+    certification_id: str
+
+
+def certification_lost(change: Delta, story_id: str | None = None) -> CertificationLost | None:
+    """What ``change`` does to a certified configuration: ``None`` unless it was certified
+    before and is not after."""
+    before, after = change.before.quality_status, change.after.quality_status
+    certified = QualityStatusValue.certified
+    if before.status is not certified or after.status is certified:
+        return None
+    return CertificationLost(
+        story_id=story_id,
+        from_status=before.status,
+        to=after.status,
+        certification_id=before.certification_id or "",
+    )
+
+
 class ImpactReport(BaseModel):
     """What a change would do before it is applied (FR-PROF-7): the affected stories (ordered by
     story id, at most 1,000; ``affected_count`` counts them all), the scenario recommendations
@@ -183,6 +220,13 @@ class ImpactReport(BaseModel):
     capabilities_after: list[str] | None = None
     quality_status_after: QualityStatus | None = None
     warnings: list[str]
+    certifications_lost: list[CertificationLost] = Field(
+        default_factory=list,
+        description="Each certified configuration the change would leave (FR-PROF-17, #233): "
+        "the story (null for a profile no story follows), `from` `certified`, `to` the status "
+        "after, and the certification that no longer applies. Each makes the report warn "
+        "`certification_lost`; `ignore_warnings` applies the change all the same.",
+    )
     budget_warnings: list[ProfileValidationWarning] = Field(
         default_factory=list,
         description="The profile validator's warnings for the configuration after the change "
@@ -289,6 +333,7 @@ def _warnings(
     affects: bool,
     unavailable: bool,
     recommendations: Sequence[UnmetRecommendation],
+    lost: bool = False,
 ) -> list[str]:
     found = {
         "capabilities_gained": affects and change is not None and bool(change.gained),
@@ -297,6 +342,7 @@ def _warnings(
         "upgrade_unavailable": unavailable,
         "recommendations_unmet": bool(recommendations),
         "guarantees_lost": affects and change is not None and bool(change.guarantees_lost),
+        "certification_lost": lost,
     }
     return [kind for kind in WARNING_KINDS if found[kind]]
 
@@ -310,6 +356,7 @@ def single_report(
 ) -> ImpactReport:
     """The report of a change to one story (a preview, an assignment, overrides);
     ``budget_warnings`` are the validator's for its configuration after (#456)."""
+    lost = None if entry.upgrade_unavailable else certification_lost(change, entry.story_id)
     return ImpactReport(
         affected_stories=[entry],
         affected_count=1,
@@ -325,7 +372,9 @@ def single_report(
             affects=True,
             unavailable=entry.upgrade_unavailable,
             recommendations=recommendations,
+            lost=lost is not None,
         ),
+        certifications_lost=[lost] if lost is not None else [],
         budget_warnings=list(budget_warnings),
     )
 
@@ -449,6 +498,14 @@ async def following_report(
     unlisted = not entries  # no entry states a stamp, so the top states the profile's own
     seen = [change] if count > len(overridden) else []
     seen += [overridden[story] for story in sorted(overridden)]
+    lost = [
+        found
+        for story in listed
+        if story not in keep
+        and (found := certification_lost(overridden.get(story, change), story)) is not None
+    ]
+    if unlisted and (own := certification_lost(change)) is not None:
+        lost.append(own)
     report = ImpactReport(
         affected_stories=entries,
         affected_count=count,
@@ -459,7 +516,8 @@ async def following_report(
         fingerprint_after=change.after.fingerprint if unlisted else None,
         capabilities_after=list(change.after.capabilities) if unlisted else None,
         quality_status_after=change.after.quality_status if unlisted else None,
-        warnings=_following_warnings(seen, unavailable=bool(keep)),
+        warnings=_following_warnings(seen, unavailable=bool(keep), lost=bool(lost)),
+        certifications_lost=lost,
         budget_warnings=list(budget_warnings),
     )
     return Following(report, frozenset(keep))
@@ -475,9 +533,13 @@ def _gained(changes: Sequence[Delta]) -> list[str]:
     return ordered({name for found in changes for name in found.guarantees_gained})
 
 
-def _following_warnings(changes: Sequence[Delta], *, unavailable: bool) -> list[str]:
+def _following_warnings(
+    changes: Sequence[Delta], *, unavailable: bool, lost: bool = False
+) -> list[str]:
     """The warning kinds of a report over stories that see ``changes``."""
     found: set[str] = {"backfill_needed", "upgrade_unavailable"} if unavailable else set()
+    if lost:
+        found.add("certification_lost")
     for one in changes:
         found.update(_warnings(one, affects=True, unavailable=False, recommendations=()))
     return [kind for kind in WARNING_KINDS if kind in found]
@@ -647,6 +709,7 @@ __all__ = [
     "AffectedStory",
     "Backfill",
     "BackfillEstimate",
+    "CertificationLost",
     "Delta",
     "Following",
     "ImpactPreviewRequest",
@@ -656,6 +719,7 @@ __all__ = [
     "TwoStageResult",
     "UnmetRecommendation",
     "affected",
+    "certification_lost",
     "creation_report",
     "delta",
     "following_report",

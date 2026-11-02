@@ -25,6 +25,7 @@ from importlib import resources
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.profiles import certification
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts
 from epistrel.orchestrator.models.config import ConfigRow, parent_of, read_rows
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, STORY_PURPOSES
@@ -69,9 +70,13 @@ def identities(rows: Mapping[str, ConfigRow]) -> dict[str, ModelIdentity]:
 
 
 async def runtime_facts(conn: AsyncConnection) -> RuntimeFacts:
-    """The model each delivered purpose resolves to, read in ``conn``'s transaction, and the
-    template hashes."""
-    return RuntimeFacts(models=identities(await read_rows(conn)), templates=TEMPLATE_HASHES)
+    """The model each delivered purpose resolves to, read in ``conn``'s transaction, the
+    template hashes, and the certified fingerprints (#233: one indexed query)."""
+    return RuntimeFacts(
+        models=identities(await read_rows(conn)),
+        templates=TEMPLATE_HASHES,
+        quality=await certification.certified(conn),
+    )
 
 
 __all__ = ["TEMPLATE_HASHES", "identities", "runtime_facts"]

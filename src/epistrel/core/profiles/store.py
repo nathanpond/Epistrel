@@ -85,7 +85,8 @@ from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import ConfigConflict, InvalidRequest, ProfileDeleted, ProfileNotFound
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
-from epistrel.core.profiles import effective, guarantees, impact, schema
+from epistrel.core.profiles import certification, effective, guarantees, impact, schema, tiers
+from epistrel.core.profiles.certification import FloorsMet
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import Delta, ImpactReport, TwoStageRequest, TwoStageResult
@@ -220,6 +221,14 @@ class EngineProfile(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
+    quality: FloorsMet | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The version's quality under the deployment's models and no story "
+        "overrides (FR-PROF-16, #233): its `fingerprint`, its `status` and the floors its "
+        "newest valid certification passed (`floors_met`, empty without one: a floor is never "
+        "labelled met without a matching certification).",
+    )
 
 
 class ProfileVersion(BaseModel):
@@ -860,13 +869,38 @@ async def purge_deleted(db: AsyncEngine) -> int:
 # -- reads ----------------------------------------------------------------------------------------
 
 
+async def read_profile(
+    conn: AsyncConnection, profile_id: str, version: int | None = None
+) -> EngineProfile:
+    """The profile at ``version`` (the latest by default) in ``conn``'s transaction; 404 for an
+    unknown profile or version."""
+    return await _read(conn, profile_id, version)
+
+
 async def get_profile(
-    db: AsyncEngine, profile_id: str, *, version: int | None = None
+    db: AsyncEngine,
+    profile_id: str,
+    *,
+    version: int | None = None,
+    facts: RuntimeFacts | None = None,
 ) -> EngineProfile:
     """The profile at its latest version (or ``version``), deleted or not; 404 for an unknown
-    profile or version."""
+    profile or version. With ``facts`` (the deployment's models and certified fingerprints) it
+    carries its ``quality`` (#233)."""
     async with db.connect() as conn:
-        return await _read(conn, profile_id, version)
+        found = await _read(conn, profile_id, version)
+        if facts is None:
+            return found
+        defaults = await effective.profile_defaults(conn)
+        deployment = await conn.scalar(
+            select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+        )
+    settings = tiers.resolved(
+        effective.merged_settings(defaults, found.settings), tiers.strongest_of(deployment)
+    )
+    stamped = Configuration(found.id, found.version, settings).stamp(facts)
+    quality = certification.floors_met(stamped.fingerprint, stamped.quality_status)
+    return found.model_copy(update={"quality": quality})
 
 
 async def profile_guarantees(

@@ -252,6 +252,13 @@ def _profile(profile: SeededProfile) -> list[str]:
     return lines
 
 
+QUALITY_BOUNDARY_START = "<!-- boundary -->"
+QUALITY_BOUNDARY_END = "<!-- /boundary -->"
+"""The prose between these markers says what certification means (#233); outside it the
+document never says a floor is met or a configuration certified
+(``tests/integration/test_c_18_m7.py``)."""
+
+
 def render(spec_path: Path = SPEC_PATH) -> str:
     """The guarantee table document; ``GuaranteeError`` when the table does not hold together."""
     found = problems(spec_path=spec_path)
@@ -280,6 +287,13 @@ def render(spec_path: Path = SPEC_PATH) -> str:
         "The same table is served per profile by `GET /engine-profiles/{id}/guarantees` and,",
         "for a story's effective configuration, by `GET /stories/{id}/guarantees`. The impact",
         "report's `guarantees_lost` names the deterministic rows a change would lose, by id.",
+        "",
+        QUALITY_BOUNDARY_START,
+        "A metric named here is what measures a step, not a claim that its floor is met.",
+        "A configuration is certified only by an eval run against its exact fingerprint",
+        "(FR-PROF-15,16): `GET /certifications` lists the records, every respond response",
+        "states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's runs.",
+        QUALITY_BOUNDARY_END,
         "",
         "## Steps",
         "",

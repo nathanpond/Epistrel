@@ -10867,3 +10867,45 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #227
 - **Decision (Rule 1):** ADR-174's third Decision bullet loses its inline *[revised per ADR-177]* marker. The log's rules put that marker on Consequences lines only (`test_revised_per_marks_only_consequences_lines`). The bullet is not wrong, only extended, and its **Amended by** line names ADR-177.
   **Issue:** #649
+
+### #233 — certifications and quality status, 2026-11-02
+
+- **Decision (architecture, logged):** the `certification_run` job reaches the eval harness through a port, `core.profiles.certification.Harness`, and never imports it. The process's composition root installs the harness:
+  - `epistrel.cli.app_factory` calls `epistrel.evals.certify.install(app.state.epistrel)`;
+  - the tests install it over their Engine.
+
+  **Affects:** #234's canary runs and #235's hand runs reach the harness through this port.
+  **Why:** the planned handler in `orchestrator/jobs/handlers` importing `epistrel.evals` breaks the `nothing-in-the-engine-imports-the-eval-harness` contract (NFR-QUAL-8). A process without the harness answers 503 `certification_unavailable` (a new code beside the planner's four). The harness still runs outside any turn.
+  **Issue:** #233
+- **Decision:** quality status is read with the model configuration. `runtime_facts` loads every valid certified fingerprint in one indexed query (`RuntimeFacts.quality`), and `stamp()` looks the fingerprint up there.
+
+  **Why:** every surface already shares one read per turn, preview or read, so no stamp computes its status separately. The planner's process LRU with NOTIFY invalidation is not built; that one query serves its purpose at hobby scale. #234 can add the cache if `stale` needs it.
+  **Issue:** #233
+- **Decision:** the planner's "a profile edit of only `pins.max_pinned` leaves the fingerprint unchanged" cannot hold. A new profile version is a new fingerprint whatever it changes, because #109's fingerprint takes the version as an input (`core.profiles.fingerprint`), so such an edit truly loses the certification and warns `certification_lost`. C-18 M7 instead checks the quality-irrelevant setting through a story override of `pins.max_pinned`. That override keeps the fingerprint, as #109's docstring states. `turn_concurrency` is checked as planned.
+  **Issue:** #233
+- **Decision:** `certification_lost` is a new `WARNING_KINDS` entry, and the report carries `certifications_lost: [{story_id, from, to, certification_id}]`, with one entry per affected story.
+  - A profile no story follows gets one entry with `story_id: null`.
+  - A story kept on its version (upgrade unavailable) loses nothing.
+  - `uncertified → uncertified` still applies at once (#109's docstring is amended).
+  - The admin model-config route's `certifications_lost` counts are not built. A model swap through `/admin/model-config` is an operator change, not two-stage, and the next read shows the new status.
+  **Issue:** #233
+- **Decision:** certification runs:
+  - **Records:** they record `model_tier: other`. `reference: true` on the run request is not offered, since the service has no separate admin credential. Imports carry the tier their record names.
+  - **Seeds:** `seeds` is a count over the harness's `DEFAULT_SEED_BASE`, not 0..n-1, so a run's seeds match CI's eval runs.
+  - **Suite selection:** it uses `presets.needs_of` over the configuration's resolved settings.
+  - **Profile assignment:** scratch stories are assigned the profile id, so its latest version. A run of an older version plays the latest, which is a gap in the stub plumbing, recorded here.
+  **Issue:** #233
+- **Decision:** E-12 in a certification:
+  - **Source rows:** the record reads E-12's `structured` rows, the run's own configuration. `gated` is a variant with its own fingerprint.
+  - **Coverage:** a type is covered when its row passes under a calibrated judge.
+  - **NFR-QUAL-14:** it is a floor passed (`n` 0, the rule `relative`) when any type is covered. A failing type is `floors_failed` `{metric_id: NFR-QUAL-14, intervention_type}`.
+  - **The M7 test:** `test_e_12__m7` builds the run's report from `gate.judge` over seeded tallies (300 and 120 pairs a seed) rather than a 300-pair stub run, so the mapping is tested at the sizes the rule needs.
+  **Issue:** #233
+- **Decision:** the start-up loader is a worker recovery hook (`certifications`). It skips a malformed or hash-mismatched committed record and logs an error. The `/health` `certifications: degraded` component is not built. `src/epistrel/core/seeds/certifications/` is created by #235's first committed record; until then the loader finds none.
+  **Issue:** #233
+- **Decision:** the record JSON's fields are the table's columns minus `recorded_*`, `status` and `invalidated_*`: an import is always `valid`. The API import embeds `report_md`; the start-up loader reads `report_md` or `report_path`, relative to the seeds directory.
+  **Issue:** #233
+- **Decision:** `docs/guarantees.md` gains a `<!-- boundary -->` paragraph saying what certification means. `test_c_18__m7_no_floor_label` greps the rest of the document for `certified`/`meets`.
+  **Issue:** #233
+- **Decision:** the smoke suite (`Suite.structured = False`) applies under any configuration, Lite included. It plays Lite stories of its own, and certifying the Lite preset needs a suite that applies to it. `presets.needs` took every suite as structured; the Lite preset's eval run now plays smoke instead of reporting it `not_applicable`.
+  **Issue:** #233

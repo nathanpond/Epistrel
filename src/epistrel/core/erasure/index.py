@@ -841,6 +841,10 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "client_events": "ingest de-duplication: client ids and the ids of the events written",
     "audit_log": "deployment audit records: identifiers and outcomes (docs/04's M4 clause)",
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
+    "profile_certifications": "deployment records (#233): fingerprints, metric ids, counts, "
+    "bounds and a report hash, no story content",
+    "certification_runs": "deployment records (#233): what a certification run plays, its "
+    "estimate and report summary (counts and verdicts), no story content",
     "story_provider_bindings": "a story's ids at its providers (#204): opaque game identifiers "
     "(an account or player id), never prose",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",

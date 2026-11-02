@@ -62,6 +62,7 @@ from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
 from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
+from epistrel.core.profiles.certification import CertificationRecord
 from epistrel.core.stories import StorySpec
 
 SCHEMA_VERSION = "m6"
@@ -215,12 +216,16 @@ ERROR_STATUS: dict[str, int] = {
     "feedback_export_disabled": 403,
     "not_found": 404,
     "fact_not_found": 404,
+    "certification_not_found": 404,
+    "certification_run_not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
     "not_latest_turn": 409,
     "record_inactive": 409,
     "amendment_already_reverted": 409,
+    "certification_record_conflict": 409,
+    "certification_run_in_progress": 409,
     "already_corrected": 409,
     "revision_conflict": 409,
     "story_archived": 409,
@@ -273,6 +278,7 @@ ERROR_STATUS: dict[str, int] = {
     "inheritance_cycle": 422,
     "invalid_erasure_scope": 422,
     "invalid_amendment_part": 422,
+    "invalid_certification_record": 422,
     "schedule_not_amendable": 422,
     "unknown_erasure_candidate": 422,
     "invalid_listing_status": 422,
@@ -324,6 +330,7 @@ ERROR_STATUS: dict[str, int] = {
     "provider_unregistered": 422,
     "story_busy": 423,
     "budget_exhausted": 503,
+    "certification_unavailable": 503,
     "config_key_missing": 503,
     "config_missing": 503,
     "database_unavailable": 503,
@@ -558,6 +565,19 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Engine-proposed States (#192): an analysis request, the list, and the review (an approval
     # declares the State at an inter-turn slot, as define_state does).
     "analyze_state_proposals": ("story_archived", "story_paused", "module_off"),
+    # Certifications (#233): runs need the eval harness; one run per fingerprint at a time.
+    "request_certification_run_profile": (
+        "certification_run_in_progress",
+        "certification_unavailable",
+        "profile_deleted",
+    ),
+    "request_certification_run_story": (
+        "certification_run_in_progress",
+        "certification_unavailable",
+    ),
+    "get_certification_run": ("certification_run_not_found",),
+    "get_certification": ("certification_not_found",),
+    "import_certification": ("invalid_certification_record", "certification_record_conflict"),
     "list_state_proposals": ("module_off",),
     "approve_state_proposal": (
         "story_archived",
@@ -879,6 +899,8 @@ OFFBOARDING_OPERATIONS = frozenset({"offboard_principal"})
 DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
     "update_story_settings": "StorySettingsPatch",
     "create_story": ("StorySpec", "StoryFromScenario"),
+    # #233: the Engine validates a record itself (422 invalid_certification_record).
+    "import_certification": "CertificationRecord",
 }
 """Operations whose handler takes a raw JSON object (validated by the Engine or the handler) and
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
@@ -1109,6 +1131,7 @@ def _extra_components() -> dict[str, Any]:
             (StorySpec, "validation"),
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
+            (CertificationRecord, "validation"),
         ],
         ref_template=REF,
     )

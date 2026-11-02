@@ -116,7 +116,14 @@ from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
-from epistrel.evals.presets import DEFAULT_PRESET, PRESETS, RUN_PRESET, PresetName, needs
+from epistrel.evals.presets import (
+    DEFAULT_PRESET,
+    PRESETS,
+    RUN_PRESET,
+    Preset,
+    PresetName,
+    needs,
+)
 from epistrel.evals.report import (
     Host,
     JudgeCalibrationRef,
@@ -922,14 +929,18 @@ def suite_fingerprint(suite: Suite, config: AdapterConfig) -> str | None:
     )
 
 
-def not_applicable(suite: Suite, config: AdapterConfig, seeds: Sequence[int]) -> SuiteResult | None:
-    """``suite``'s ``not_applicable`` result when the run's preset lacks what it needs
-    (``presets.needs``; #227), else ``None`` (it runs)."""
+def not_applicable(
+    suite: Suite, config: AdapterConfig, seeds: Sequence[int], preset: Preset | None = None
+) -> SuiteResult | None:
+    """``suite``'s ``not_applicable`` result when the run's preset (``preset``, else the
+    config's) lacks what it needs (``presets.needs``; #227), else ``None`` (it runs)."""
+    chosen = preset or PRESETS[config.preset]
     missing = needs(
-        PRESETS[config.preset],
+        chosen,
         requires=suite.requires,
         guarantees=suite.guarantees,
         dials=suite.dials,
+        structured=suite.structured,
     )
     if not missing:
         return None
@@ -941,7 +952,7 @@ def not_applicable(suite: Suite, config: AdapterConfig, seeds: Sequence[int]) ->
         cases=0,
         seeds=list(seeds),
         verdict=Verdict.not_applicable,
-        notes=[f"Not applicable under {PRESETS[config.preset].label}: needs {', '.join(missing)}."],
+        notes=[f"Not applicable under {chosen.label}: needs {', '.join(missing)}."],
         needs=missing,
     )
 
@@ -1003,6 +1014,8 @@ async def run_suites(
     calibrate: bool = False,
     calibration_file: Path | None = None,
     calibration_flip: Collection[str] = (),
+    profile: Preset | None = None,
+    fingerprint_value: str | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -1011,7 +1024,12 @@ async def run_suites(
     same engine, and stored in ``calibration_file`` (default ``calibration_path``); otherwise a
     suite with pairwise judge rows reads the stored calibration of the run's judge model, and
     ``CalibrationMissing`` is raised before any case when there is none. ``calibration_flip``
-    (tests) names calibration pairs the stub answers wrongly."""
+    (tests) names calibration pairs the stub answers wrongly.
+
+    **A certification run** (#233) passes ``profile``: the scratch stories play that profile
+    version (``Preset``, a deployment's profile in place of a seeded preset), and the report
+    names ``fingerprint_value``, the configuration's fingerprint as the deployment computed it
+    when the run was requested."""
     started = now or datetime.now(UTC)
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
@@ -1022,7 +1040,8 @@ async def run_suites(
                 f"no judge calibration for {config.judge_name!r} in {store}: run "
                 "`calibrate-judge` (or `run --all`) first"
             )
-    fingerprint_value = run_fingerprint(
+    chosen = profile or PRESETS[config.preset]
+    fingerprint_value = fingerprint_value or run_fingerprint(
         config.model_name,
         judge=config.judge_model,
         real_purposes=routed_purposes(config),
@@ -1033,7 +1052,7 @@ async def run_suites(
         started_at=started.isoformat(timespec="seconds"),
         model=config.model_name,
         fingerprint=fingerprint_value,
-        fingerprint_profile=PRESETS[config.preset].described,
+        fingerprint_profile=chosen.described,
         preset=config.preset,
         adapter=config.adapter,
         engine_sha=model_matrix.engine_sha(),
@@ -1087,10 +1106,10 @@ async def run_suites(
                 judge_layer=None if config.self_judged else judging,
                 judge_version=judge_version,
             )
-            preset_token = RUN_PRESET.set(PRESETS[config.preset])
+            preset_token = RUN_PRESET.set(chosen)
             try:
                 for suite in suites:
-                    skipped = not_applicable(suite, config, seeds)
+                    skipped = not_applicable(suite, config, seeds, chosen)
                     report.merge(skipped if skipped is not None else await run_suite(suite, job))
                     if on_suite is not None:
                         pending = on_suite(report)

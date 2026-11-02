@@ -29,9 +29,11 @@ the Engine passes them in as ``RuntimeFacts``.
 **Capabilities** are the modules a configuration turns on, sorted, each by its name or, at a
 level that is not simply on, as ``<module>:<level>`` (``verification:entailment``); the pipeline
 is named by its level (``lite``, ``structured``; ``capabilities.capability_names``, #129).
-**Quality status** is ``{status}``: ``certified``, ``uncertified`` or ``stale``. M3 has no
-certification records, so every configuration is ``uncertified``; M7's certification produces
-the other two.
+**Quality status** is ``{status}``: ``certified``, ``uncertified`` or ``stale``. A fingerprint
+is ``certified`` when a valid certification record matches it (#233,
+``core.profiles.certification``; the Orchestrator reads them into ``RuntimeFacts.quality``),
+with the certification's id and floors; #234 produces ``stale``. Any other fingerprint is
+``uncertified``, never ``stale``.
 
 The guarantees a configuration provides are the guarantee table's (``guarantees.GUARANTEES``,
 FR-VERIFY-15; #132), which replaced #109's four guarantee strings here: they are its rows'
@@ -43,12 +45,12 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.capabilities import capability_names
@@ -71,13 +73,33 @@ class QualityStatusValue(StrEnum):
     stale = "stale"
 
 
-class QualityStatus(BaseModel):
-    """A configuration's quality status (FR-PROF-16). M3 has no certification records, so it is
-    always ``uncertified``; M7 adds the certification's id and floors to ``certified``."""
+def _absent(value: Any) -> bool:
+    return value is None
 
-    model_config = ConfigDict(frozen=True)
+
+class QualityStatus(BaseModel):
+    """A configuration's quality status (FR-PROF-16). ``certified`` (#233) also names the
+    certification (``certification_id``), the floors it passed (``floors_passed``: metric ids)
+    and the intervention types NFR-QUAL-14's floor covers and lacks evidence for (E-12); those
+    fields are present only when ``certified``, so ``uncertified`` reads ``{status}`` alone."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        title="QualityStatus",
+        json_schema_extra={
+            "description": "A configuration's quality status (FR-PROF-16): `certified` with the "
+            "certification's id, the floors it passed and the intervention types NFR-QUAL-14's "
+            "floor covers and lacks evidence for; `uncertified` or `stale` alone otherwise."
+        },
+    )
 
     status: QualityStatusValue
+    certification_id: str | None = Field(default=None, exclude_if=_absent)
+    floors_passed: tuple[str, ...] | None = Field(default=None, exclude_if=_absent)
+    intervention_types_covered: tuple[str, ...] | None = Field(default=None, exclude_if=_absent)
+    intervention_types_insufficient: tuple[str, ...] | None = Field(
+        default=None, exclude_if=_absent
+    )
 
 
 UNCERTIFIED = QualityStatus(status=QualityStatusValue.uncertified)
@@ -96,10 +118,14 @@ class ModelIdentity(BaseModel):
 @dataclass(frozen=True, slots=True)
 class RuntimeFacts:
     """What a fingerprint needs besides the settings, resolved by the Orchestrator: each
-    delivered model purpose's model, and each prompt template's SHA-256 by name."""
+    delivered model purpose's model, and each prompt template's SHA-256 by name. ``quality``
+    (#233) is the deployment's certified fingerprints, each with its status
+    (``core.profiles.certification.certified``, read once with the rest): a fingerprint it does
+    not name is ``uncertified``."""
 
     models: Mapping[str, ModelIdentity]
     templates: Mapping[str, str]
+    quality: Mapping[str, QualityStatus] = field(default_factory=dict)
 
 
 def routed_models(
@@ -198,13 +224,13 @@ def fingerprint(
 def stamp(
     *, profile_id: str, version: int, settings: ProfileSettings, facts: RuntimeFacts
 ) -> Stamp:
-    """The configuration's fingerprint, capabilities and quality status."""
+    """The configuration's fingerprint, capabilities and quality status (``facts.quality``'s
+    for the fingerprint, else ``uncertified``)."""
+    found = fingerprint(profile_id=profile_id, version=version, settings=settings, facts=facts)
     return Stamp(
-        fingerprint=fingerprint(
-            profile_id=profile_id, version=version, settings=settings, facts=facts
-        ),
+        fingerprint=found,
         capabilities=capabilities(settings),
-        quality_status=UNCERTIFIED,
+        quality_status=facts.quality.get(found, UNCERTIFIED),
         models=routed_models(facts.models, settings),
     )
 

@@ -31,6 +31,7 @@ from epistrel.core.events import Operation
 from epistrel.core.memory import records
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import store
+from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import CreatedStory
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
@@ -53,11 +54,14 @@ async def structured(
 ) -> None:
     """Run ``story_id`` on the run's preset (``presets.RUN_PRESET``, #227: Full unless the run
     names another) at its latest version, with ``dials`` (a settings merge patch)."""
+    preset = RUN_PRESET.get()
     await engine.assign_engine_profile(
         ctx,
         story_id,
-        ProfileAssignment(profile_id=RUN_PRESET.get().profile_id, ignore_warnings=True),
+        ProfileAssignment(profile_id=preset.profile_id, ignore_warnings=True),
     )
+    if preset.overrides:
+        dials = merge_patch(dict(preset.overrides), dict(dials or {}))
     if dials:
         await engine.set_profile_overrides(
             ctx,

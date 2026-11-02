@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from epistrel.core.profiles import schema, tiers
@@ -32,13 +32,16 @@ STRUCTURED = "structured"
 class Preset:
     """One preset as the eval harness reads it: its CLI name, display name, profile id, the
     version a fresh deployment holds and that version's settings (the seed constants, never a
-    live row)."""
+    live row). A certification run (#233) builds one for a deployment's profile version."""
 
-    name: PresetName
+    name: str
     label: str
     profile_id: str
     settings: Mapping[str, Any]
     version: int = 1
+    overrides: Mapping[str, Any] = field(default_factory=dict)
+    """Story overrides every scratch story takes (#233: a story's certification run plays the
+    story's own overrides); none for a preset."""
 
     def effective(self, dials: Mapping[str, Any] | None = None) -> ProfileSettings:
         """Its settings over the seeded defaults, ``dials`` (a merge patch) on top, with
@@ -74,12 +77,26 @@ def needs(
     requires: Collection[str] = (),
     guarantees: Collection[str] = (),
     dials: Mapping[str, Any] | None = None,
+    structured: bool = True,
 ) -> list[str]:
     """What ``preset`` lacks for a suite with ``requires`` (module names) and ``guarantees``
-    (guarantee-table row ids), in order and without repeats; empty when the suite applies."""
-    effective = preset.effective(dials)
+    (guarantee-table row ids), in order and without repeats; empty when the suite applies.
+    ``structured`` false: the suite plays Lite turns of its own (``Suite.structured``)."""
+    return needs_of(
+        preset.effective(dials), requires=requires, guarantees=guarantees, structured=structured
+    )
+
+
+def needs_of(
+    effective: ProfileSettings,
+    *,
+    requires: Collection[str] = (),
+    guarantees: Collection[str] = (),
+    structured: bool = True,
+) -> list[str]:
+    """``needs`` over resolved settings (#233: a certification run's configuration)."""
     missing: list[str] = []
-    if schema.level_of(effective, "pipeline") != STRUCTURED:
+    if structured and schema.level_of(effective, "pipeline") != STRUCTURED:
         missing.append(STRUCTURED)
     missing += [m for m in requires if schema.level_of(effective, m) is None]
     for row_id in guarantees:
@@ -101,4 +118,5 @@ __all__ = [
     "Preset",
     "PresetName",
     "needs",
+    "needs_of",
 ]

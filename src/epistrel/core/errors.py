@@ -1442,3 +1442,49 @@ class AmendmentAlreadyReverted(EpistrelError):
 
     code = "amendment_already_reverted"
     http_status = 409
+
+
+class CertificationNotFound(EpistrelError):
+    """No certification record has this id (#233)."""
+
+    code = "certification_not_found"
+    http_status = 404
+
+
+class CertificationRunNotFound(EpistrelError):
+    """No certification run has this id (#233)."""
+
+    code = "certification_run_not_found"
+    http_status = 404
+
+
+class InvalidCertificationRecord(EpistrelError):
+    """A certification record does not validate (#233): ``details``: ``reason``
+    (``schema``, ``report_hash``, ``report_missing``) and, for ``schema``, the ``errors``."""
+
+    code = "invalid_certification_record"
+    http_status = 422
+
+
+class CertificationRecordConflict(EpistrelError):
+    """A certification record with this id is stored with different content (#233):
+    ``details``: ``certification_id``."""
+
+    code = "certification_record_conflict"
+    http_status = 409
+
+
+class CertificationRunInProgress(EpistrelError):
+    """A certification run for this fingerprint is queued or running (#233): ``details``:
+    ``run_id``, ``fingerprint``."""
+
+    code = "certification_run_in_progress"
+    http_status = 409
+
+
+class CertificationUnavailable(EpistrelError):
+    """This process has no eval harness installed, so it cannot estimate or run a
+    certification (#233)."""
+
+    code = "certification_unavailable"
+    http_status = 503

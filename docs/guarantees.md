@@ -21,6 +21,13 @@ The same table is served per profile by `GET /engine-profiles/{id}/guarantees` a
 for a story's effective configuration, by `GET /stories/{id}/guarantees`. The impact
 report's `guarantees_lost` names the deterministic rows a change would lose, by id.
 
+<!-- boundary -->
+A metric named here is what measures a step, not a claim that its floor is met.
+A configuration is certified only by an eval run against its exact fingerprint
+(FR-PROF-15,16): `GET /certifications` lists the records, every respond response
+states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's runs.
+<!-- /boundary -->
+
 ## Steps
 
 | Step | Id | Kind | Metric | Needs | Model purposes |

@@ -121,7 +121,7 @@ from epistrel.core.memory import pins as memory_pins
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.policies.model import Policy, Scope, WithheldPolicy
 from epistrel.core.ports import Ports
-from epistrel.core.profiles import effective, guarantees, impact
+from epistrel.core.profiles import certification, effective, guarantees, impact
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
@@ -168,6 +168,7 @@ from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
+from epistrel.orchestrator.jobs.handlers import certification_run
 from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
@@ -323,6 +324,20 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     # #192: an analysis requested, and a proposal approved or dismissed.
     "analyze_state_proposals": ResultCodec.of(state_proposals.AnalysisQueued, status=202),
+    # Certification runs and imported records (#233): deployment-scoped.
+    "request_certification_run_profile": ResultCodec.of(
+        certification_run.CertificationRunAnswer,
+        status=lambda found: 202 if found.run_id is not None else 200,
+        revision_field=_CONFIG,
+    ),
+    "request_certification_run_story": ResultCodec.of(
+        certification_run.CertificationRunAnswer,
+        status=lambda found: 202 if found.run_id is not None else 200,
+        revision_field=_CONFIG,
+    ),
+    "import_certification": ResultCodec.of(
+        certification.CertificationImported, revision_field=_CONFIG
+    ),
     "approve_state_proposal": ResultCodec.of(state_proposals.ProposalApproved, status=201),
     "dismiss_state_proposal": ResultCodec.of(state_proposals.ProposalDismissed),
     # #218: the explicit reconciliation actions (settle-now, a compensating effect).
@@ -629,6 +644,17 @@ async def _end_rating_checks(conn: AsyncConnection) -> None:
     await rating_change.reconcile(conn, true())
 
 
+CERTIFICATIONS_HOOK = "certifications"
+"""The worker recovery hook that imports the committed certification records
+(``core.profiles.certification.SEEDS_DIR``, #233): idempotent, so a deployment on the reference
+model reports ``certified`` for the shipped presets. A malformed record is skipped and logged;
+it never stops the start."""
+
+
+async def _load_certifications(conn: AsyncConnection) -> None:
+    await certification.load_committed(conn)
+
+
 class Engine:
     """The async entry point to Epistrel.
 
@@ -738,6 +764,7 @@ class Engine:
             return
         register_recovery_hook(TURN_QUEUE_HOOK, self._recovery_hook)
         register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
+        register_recovery_hook(CERTIFICATIONS_HOOK, _load_certifications)
         self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
         self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
 
@@ -771,6 +798,7 @@ class Engine:
                 await task
             unregister_recovery_hook(TURN_QUEUE_HOOK)
             unregister_recovery_hook(RATING_CHECK_HOOK)
+            unregister_recovery_hook(CERTIFICATIONS_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
@@ -5569,9 +5597,110 @@ class Engine:
     async def get_profile(
         self, ctx: RequestContext, profile_id: str, *, version: int | None = None
     ) -> profiles.EngineProfile:
-        """The profile at its latest version (``version``: that one), deleted or not; 404 for an
-        unknown profile or version."""
-        return await profiles.get_profile(self.db, profile_id, version=version)
+        """The profile at its latest version (``version``: that one), deleted or not, with its
+        quality under the deployment's models (#233); 404 for an unknown profile or version."""
+        return await profiles.get_profile(
+            self.db, profile_id, version=version, facts=await self._runtime_facts()
+        )
+
+    async def request_certification_run(
+        self,
+        ctx: RequestContext,
+        request: certification_run.CertificationRunRequest,
+        *,
+        profile_id: str | None = None,
+        story_id: str | None = None,
+    ) -> certification_run.CertificationRunAnswer:
+        """Estimate, or with ``confirm`` queue, a certification run (FR-PROF-17, #233) of the
+        profile ``profile_id`` (its latest version, or ``request.version``) or of the story
+        ``story_id``'s effective configuration: the estimate, fingerprint and suites, and with
+        ``confirm`` the run and its job (REST 202). The run records results and changes no
+        configuration. 404 for an unknown profile, version or story; 422 ``validation_error``
+        for a suite the configuration does not enable; 409 ``certification_run_in_progress``;
+        503 ``certification_unavailable`` without an installed eval harness."""
+        principal = self.require_principal(ctx)
+        operation = (
+            "request_certification_run_story"
+            if story_id is not None
+            else "request_certification_run_profile"
+        )
+
+        async def run(_: RequestContext) -> certification_run.CertificationRunAnswer:
+            return await certification_run.request_run(
+                self.db,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                profile_id=profile_id,
+                story_id=story_id,
+            )
+
+        return await self._keyed(
+            ctx,
+            operation,
+            run,
+            material={
+                "profile_id": profile_id,
+                "story_id": story_id,
+                "request": request.model_dump(mode="json"),
+            },
+        )
+
+    @refuses_nul()
+    async def get_certification_run(
+        self, ctx: RequestContext, run_id: str
+    ) -> certification_run.CertificationRun:
+        """A certification run: its status, estimate and report summary, and the certification
+        it recorded; 404 ``certification_run_not_found``."""
+        return await certification_run.get_run(self.db, run_id)
+
+    @refuses_nul()
+    async def list_certifications(
+        self,
+        ctx: RequestContext,
+        *,
+        fingerprint: str | None = None,
+        profile_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> certification.CertificationPage:
+        """Certifications, newest first (stale ones included), narrowed by ``fingerprint`` and
+        ``profile_id`` when given (#233)."""
+        async with self.db.connect() as conn:
+            return await certification.list_certifications(
+                conn,
+                fingerprint_value=fingerprint,
+                profile_id=profile_id,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    @refuses_nul()
+    async def get_certification(
+        self, ctx: RequestContext, certification_id: str
+    ) -> certification.Certification:
+        """One certification; 404 ``certification_not_found``."""
+        async with self.db.connect() as conn:
+            return await certification.get_certification(conn, certification_id)
+
+    async def import_certification(
+        self, ctx: RequestContext, document: Mapping[str, Any]
+    ) -> certification.CertificationImported:
+        """Import a hand run's certification record (#233, #235): validated against the schema
+        and its embedded report's hash, and stored by its id (the same record again stores
+        nothing). 422 ``invalid_certification_record``; 409 ``certification_record_conflict``
+        for other content under a stored id."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.CertificationImported:
+            async with self.db.begin() as conn:
+                found, stored = await certification.import_record(conn, document)
+                revision = await profiles.config_revision(conn)
+            return certification.CertificationImported(found, stored, revision)
+
+        return await self._keyed(
+            ctx, "import_certification", run, material={"record": dict(document)}
+        )
 
     @refuses_nul()
     async def get_profile_guarantees(

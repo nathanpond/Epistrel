@@ -914,6 +914,36 @@
       "method": "DELETE",
       "path": "/admin/verify/gate/{shape}",
       "why": "FR-OBS-4: remove a gate tightening, the undo of its write (#155)"
+    },
+    {
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/certification-runs",
+      "why": "#233: estimate or queue a certification run of a profile version (FR-PROF-17)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/certification-runs",
+      "why": "#233: estimate or queue a certification run of a story's effective configuration (FR-PROF-17)"
+    },
+    {
+      "method": "GET",
+      "path": "/certification-runs/{run_id}",
+      "why": "#233: a certification run's status and report summary"
+    },
+    {
+      "method": "GET",
+      "path": "/certifications",
+      "why": "#233: the certification records (FR-PROF-15)"
+    },
+    {
+      "method": "GET",
+      "path": "/certifications/{certification_id}",
+      "why": "#233: one certification record"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/certifications/import",
+      "why": "#233: import a hand run's certification record (#235)"
     }
   ],
   "outside": [

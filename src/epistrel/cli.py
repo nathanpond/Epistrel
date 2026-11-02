@@ -80,13 +80,19 @@ def _load() -> Settings | None:
 
 def app_factory() -> FastAPI:
     """uvicorn's factory: this process's logging and tracing (JSON logs through the content
-    filter, OTLP when configured; #74), then the app. A ``--reload`` child runs it too. Logging
-    is configured here, after the pre-flight checks, so a refused start changes nothing."""
+    filter, OTLP when configured; #74), then the app, with the eval harness installed for
+    certification runs (#233). A ``--reload`` child runs it too. Logging is configured here,
+    after the pre-flight checks, so a refused start changes nothing."""
     from epistrel.api.app import create_app
+    from epistrel.evals.certify import install
 
     settings = load_settings()
     configure_process(settings)
-    return create_app(settings)
+    app = create_app(settings)
+    # #233: the certification runs' eval harness, installed here (the composition root): no
+    # module of the engine imports the harness.
+    install(app.state.epistrel)
+    return app
 
 
 async def _preflight(settings: Settings) -> str | None:

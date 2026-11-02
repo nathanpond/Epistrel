@@ -84,6 +84,7 @@ from epistrel.api.routes.catalog_scenarios import (
     ScenarioStatusBody,
     ScenarioVersionsBody,
 )
+from epistrel.api.routes.certifications import CertificationImportedBody, CertificationRunBody
 from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
@@ -240,6 +241,8 @@ from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledEventReschedule
 from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
+from epistrel.evals.certify import install
+from epistrel.orchestrator.jobs.handlers.certification_run import CertificationRunRequest
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
 from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RespondRequest
 from epistrel.orchestrator.models.config import ConfigReplacement
@@ -820,6 +823,33 @@ PROFILE = {
 }
 PROFILE_EDIT = {"name": "Parity profile", "settings": {"pins": {"max_pinned": 10}}}
 PROFILE_COPY = {"name": "Parity copy"}
+CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
+"""A certification run's estimate request (#233): no ``confirm``, so nothing is written."""
+_REPORT = "# Parity certification\n\nOne floor passed.\n"
+CERTIFIED = "01JC0000000000000000000C01"
+CERTIFICATION_RECORD: dict[str, Any] = {
+    "schema_version": 1,
+    "certification_id": CERTIFIED,
+    "fingerprint": "sha256:" + "a" * 64,
+    "floors_passed": [
+        {
+            "metric_id": "smoke.turn_completed",
+            "rule": "rate",
+            "floor": 0.95,
+            "n": 10,
+            "seeds": 2,
+            "verdict": "pass",
+            "mean": 1.0,
+            "sd": 0.0,
+        }
+    ],
+    "seed_count": 2,
+    "report_sha256": hashlib.sha256(_REPORT.encode()).hexdigest(),
+    "run_at": "2026-11-01T12:00:00+00:00",
+    "report_md": _REPORT,
+}
+"""A hand run's certification record (#233), imported on both surfaces."""
+MISSING_RUN = "01JC0000000000000000000R99"
 PROFILE_DRY_RUN = {"settings": undelivered()}
 PROFILE_ANSWERS = [
     ("create_profile", 201),
@@ -2524,6 +2554,52 @@ def _steps() -> list[Step]:
             ),
             group=PROFILE_GROUP,
         ),
+        # -- certifications (#233): a run's estimate (nothing written), a hand run's record
+        # imported and read back, the list, and an unknown run (404 on both)
+        Step(
+            "request_certification_run",
+            lambda ids: Rest(
+                "POST", "/engine-profiles/{profile}/certification-runs", CERTIFICATION_RUN
+            ),
+            lambda e, ids: _certification_run(
+                e.request_certification_run(
+                    CTX, CertificationRunRequest(**CERTIFICATION_RUN), profile_id=ids["profile"]
+                )
+            ),
+            prepare=_harness,
+        ),
+        Step(
+            "request_certification_run",
+            lambda ids: Rest("POST", f"{s}/certification-runs", CERTIFICATION_RUN),
+            lambda e, ids: _certification_run(
+                e.request_certification_run(
+                    CTX, CertificationRunRequest(**CERTIFICATION_RUN), story_id=ids["story"]
+                )
+            ),
+            prepare=_harness,
+        ),
+        Step(
+            "import_certification",
+            lambda ids: Rest("POST", "/admin/certifications/import", CERTIFICATION_RECORD),
+            lambda e, ids: _certification_imported(
+                e.import_certification(CTX, CERTIFICATION_RECORD)
+            ),
+        ),
+        Step(
+            "get_certification",
+            lambda ids: Rest("GET", f"/certifications/{CERTIFIED}"),
+            lambda e, ids: _dumped(e.get_certification(CTX, CERTIFIED)),
+        ),
+        Step(
+            "list_certifications",
+            lambda ids: Rest("GET", "/certifications"),
+            lambda e, ids: _dumped(e.list_certifications(CTX)),
+        ),
+        Step(
+            "get_certification_run",
+            lambda ids: Rest("GET", f"/certification-runs/{MISSING_RUN}"),
+            lambda e, ids: _dumped(e.get_certification_run(CTX, MISSING_RUN)),
+        ),
         # -- a story's configuration (#109): a preview that writes nothing, and the read
         Step(
             "impact_preview",
@@ -3333,6 +3409,22 @@ async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[s
 
 async def _dumped(call: Awaitable[BaseModel]) -> dict[str, Any]:
     return dump(await call)
+
+
+async def _harness(engine: Engine, ids: Ids) -> None:
+    """The eval harness the certification-run estimate needs (#233), over this surface's
+    engine (the estimate plays nothing)."""
+    install(engine)
+
+
+async def _certification_run(call: Awaitable[Any]) -> dict[str, Any]:
+    found = await call
+    body = CertificationRunBody.of(found)
+    return dump(body)
+
+
+async def _certification_imported(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CertificationImportedBody.of(await call))
 
 
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:

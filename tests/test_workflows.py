@@ -687,3 +687,21 @@ def test_ci_installs_ffmpeg_from_a_pinned_image_not_apt() -> None:
     ]
     assert "apt-get" not in str(step["run"]), step
     assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", step["env"]["FFMPEG_IMAGE"]), step
+
+
+def test_module_combinations_job_runs_c17_on_the_stub() -> None:
+    """#243: CI's `module-combinations` job runs C-17's covering-array runner and the generator's
+    tests on the stub adapter (no real model), uploads `build/c17/` as `c17-report`, fits its
+    15-minute budget, and the gate requires it."""
+    ci = _workflow("ci.yml")
+    job = ci["jobs"]["module-combinations"]
+    assert job["timeout-minutes"] == 15
+    (run,) = [s for s in _steps(ci, "module-combinations") if "pytest" in s.get("run", "")]
+    assert run["env"]["EPISTREL_MODEL_ADAPTER"] == "stub"
+    assert "test_c_17__profiles" in run["run"]
+    assert "tests/test_covering.py" in run["run"]
+    (upload,) = [
+        s for s in _steps(ci, "module-combinations") if "upload-artifact" in s.get("uses", "")
+    ]
+    assert (upload["with"]["name"], upload["with"]["path"]) == ("c17-report", "build/c17/")
+    assert "module-combinations" in ci["jobs"]["gate"]["needs"]

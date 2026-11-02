@@ -40,10 +40,12 @@ scratch database of their own. Module and level names come from the schema's reg
 from __future__ import annotations
 
 import asyncio
+import json
 import secrets
 from collections.abc import AsyncIterator
 from contextvars import Context
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx2 as httpx
@@ -124,8 +126,12 @@ from epistrel.orchestrator.models.registry import (
     TIME_ESTIMATION,
 )
 from epistrel.orchestrator.models.registry import RESERVED as RESERVED_PURPOSES
-from epistrel.testing import pauses
+from epistrel.testing import covering, pauses
 from epistrel.testing.profiles import TEST_CLAUSE, extra_rule
+from epistrel.testing.smoke import run_scenario_smoke
+from tests import genesis_support as genesis
+from tests import lite_genesis_support as lite_genesis
+from tests import scenario_support
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
@@ -141,8 +147,6 @@ from tests.profile_support import (
     SETTINGS,
     UNCERTIFIED,
     configuration_rows,
-    covered_pairs,
-    covering_array,
     documented_rules,
     merged,
     naming,
@@ -831,14 +835,21 @@ async def test_c_16__two_stage(scratch: Space) -> None:
 
 # -- C-17 --------------------------------------------------------------------------------------
 
-FACTORS: dict[str, list[Any]] = {
-    "memory.rolling_summary.enabled": [True, False],
-    "pins.enabled": [True, False],
-    "repair.polish.enabled": [True, False],
-    "budgets.model_calls": [None, 12],
-    "models.generation.response_length": ["short", 600],
-}
-"""The delivered modules' settings C-17 combines, each with two levels."""
+
+def c17_scenario(locked: str, default: str) -> dict[str, Any]:
+    """The Sunday Dinner body without the roles' free-text seeds (#243): they normalize to no
+    proposition, which a structured story with partitions refuses at creation (FR-PROP-12,
+    ``seed_unnormalizable``), a creation refusal and not a combination's runtime failure."""
+    body = lite_genesis.sunday_dinner(locked, default)
+    for role in body["cast"]["roles"]:
+        role["seeded_memories"] = []
+    return body
+
+
+C17_SEED = 243
+"""The covering array's seed (#243): the same array on every run."""
+C17_DIR = Path(__file__).resolve().parents[2] / "build" / "c17"
+"""Where C-17 writes its run summary and failures (CI's ``c17-report`` artifact)."""
 
 
 # -- #113: the effective configuration and following the latest version ------------------------
@@ -1167,60 +1178,52 @@ async def test_c_16__follow_latest(scratch: Space) -> None:
 
 @pytest.mark.part("M3", "FR-PROF-2,4")
 async def test_c_17__profiles(scratch: Space) -> None:
-    """A pairwise covering array over the delivered modules' settings (the rolling summary,
-    pinned memories and the polish pass on or off, a call budget or the formula, a named length
-    or a token cap): every pair of levels appears in at least one configuration. Each
-    configuration is validated, then created; it becomes the default, a story is created under
-    it and plays a turn, which succeeds. A configuration that picks an undelivered level is
-    refused by validation and never runs: no valid configuration fails at run time, and every
-    configuration either runs cleanly or was refused."""
-    rows_ = covering_array(FACTORS)
-    every_pair = {
-        (a, va, b, vb)
-        for a in FACTORS
-        for b in FACTORS
-        if a < b
-        for va in FACTORS[a]
-        for vb in FACTORS[b]
-    }
-    seen = {(a, va, b, vb) if a < b else (b, vb, a, va) for a, va, b, vb in covered_pairs(rows_)}
-    assert seen >= every_pair
-    assert len(rows_) < 2 ** len(FACTORS)
-    configurations = [merged(*(nest(path, value) for path, value in row.items())) for row in rows_]
-    rejected = merged(configurations[0], undelivered())
-
-    async with respond_client(scratch.settings, scratch.db) as (client, _):
-        ran = 0
-        for settings in [*configurations, rejected]:
-            checked = await client.post(
-                f"{PROFILES}/{LITE_PRESET_ID}/validate",
-                json={"settings": settings},
-                headers=headers(A),
-            )
-            if checked.status_code == 422:
-                assert checked.json()["error"]["code"] == "invalid_profile"
-                refusal = await client.post(
-                    PROFILES, json=profile_body(settings=settings), headers=headers(A)
-                )
-                refused(refusal, 422, "invalid_profile")
-                continue
-            assert checked.json()["valid"] is True
+    """C-17 over the delivered schema (#243): a seeded pairwise covering array of every
+    level-bearing setting (``epistrel.testing.covering``, read from ``ProfileSettings``), every
+    pair of levels in a candidate. Each candidate is validated: a refusal names a missing
+    dependency or an undelivered level, and each pair some valid configuration can hold is held
+    by one (repairs added where the array's valid rows miss it; none is ``uncovered_valid``).
+    Every valid configuration is created as a profile and plays the scenario smoke
+    (``epistrel.testing.smoke``: a story from the Sunday Dinner scenario, four turns with a
+    multi-character request, an ingest, a regeneration, a truncation, a fork, its configuration
+    and guarantees, both deleted) with no failure; the run's summary and any failure are
+    written to ``build/c17/``. No valid configuration fails at run time."""
+    found = covering.factors()
+    result = covering.cover(found.factors, seed=C17_SEED)
+    assert len(result.rows) <= covering.SIZE_MAX
+    assert all(c.valid or c.refused_for_a_reason for c in result.checked)
+    assert result.uncovered_valid(found.factors) == []
+    C17_DIR.mkdir(parents=True, exist_ok=True)
+    failures: list[dict[str, Any]] = []
+    async with respond_client(scratch.settings, scratch.db) as (client, lib):
+        locked, default = await scenario_support.cast_characters(client)
+        mother = await genesis.catalog_character_id(client, "June Harrow", age=60, labels=["warm"])
+        scenario_id, _ = await genesis.published_scenario(client, c17_scenario(locked, default))
+        creation = genesis.from_scenario(
+            scenario_id, slots={"mother": genesis.catalog_slot(mother)}
+        )
+        for index, row in enumerate(result.valid):
+            settings = covering.document(row)
             created = await ok(
                 await client.post(
-                    PROFILES, json=profile_body(settings=settings), headers=headers(A)
+                    PROFILES,
+                    json=profile_body(name=f"C-17 {index}", settings=settings),
+                    headers=headers(A),
                 ),
                 201,
             )
-            await _default(client, created["id"])
-            story, actor = await _story(client)
-            assert await _profile_of(scratch.db, story) == created["id"]
-            played = await client.post(
-                f"/stories/{story}/respond", json=respond_body(actor), headers=headers(A)
-            )
-            assert (await ok(played))["message"]["text"], settings
-            ran += 1
-        await _default(client, LITE_PRESET_ID)
-    assert ran == len(configurations)
+            played = await run_scenario_smoke(lib, created["id"], creation)
+            if not played.ok:
+                failures.append(
+                    {"settings": settings, "step": played.failed_step, "error": played.error}
+                )
+    summary = covering.summary(found, result)
+    summary["failures"] = len(failures)
+    (C17_DIR / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
+    (C17_DIR / "failures.jsonl").write_text(
+        "".join(json.dumps(f, default=str) + "\n" for f in failures)
+    )
+    assert failures == [], failures[:3]
 
 
 @pytest.mark.part("M3", "FR-PROF-4")

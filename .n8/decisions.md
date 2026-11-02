@@ -10909,3 +10909,24 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #233
 - **Decision:** the smoke suite (`Suite.structured = False`) applies under any configuration, Lite included. It plays Lite stories of its own, and certifying the Lite preset needs a suite that applies to it. `presets.needs` took every suite as structured; the Lite preset's eval run now plays smoke instead of reporting it `not_applicable`.
   **Issue:** #233
+
+### #243 — C-17 over the delivered schema, 2026-11-02
+
+- **Decision:** feasibility is decided by completion.
+  - A pair is `infeasible` when the dependency completion fails: start from the defaults with the pair set, then switch on every dependency the validator names, never touching the pair's own settings.
+  - The completion fails when a requirement falls on one of those settings, or on an undelivered value (`memory.episodic.reranking: true`).
+  - Repair rows pack in as many further uncovered pairs as still validate.
+  - At seed 243 the array is 51 configurations: 25 refused, every refusal naming a dependency or an undelivered value, and 26 valid, all smoke-played, with 103 pairs infeasible.
+  **Issue:** #243
+- **Decision:** the smoke regenerates before it ingests. An ingested narration is a turn with no reply, so "regenerate the last turn" after it is 422 `nothing_to_regenerate` in every configuration.
+  **Issue:** #243
+- **Decision:** C-17's Sunday Dinner body drops the roles' free-text seeds (`c17_scenario`). Under partitions a structured creation refuses them (`seed_unnormalizable`, FR-PROP-12), which is a creation refusal, not a runtime failure of the combination.
+  **Issue:** #243
+- **Decision:** `run_scenario_smoke` takes the creation body. `src/` cannot import the tests' Sunday Dinner fixture, so the test builds the published scenario and passes the request in.
+  **Issue:** #243
+- **Decision:** the State-call inapplicable case (`module_off`) is not exercised: the smoke makes no State call. Only `one_render_character` is listed as an allowed refusal.
+  **Issue:** #243
+- **Decision:** the CI job pins the stub through `EPISTREL_MODEL_ADAPTER: stub`. Pytest has no `--adapter` option, and the test builds its app on the stub as well. `test_module_combinations_job_runs_c17_on_the_stub` checks the job.
+  **Issue:** #243
+- **Decision:** C-17 also stays in the `integration-a-h` shard (about 75 s), so the job duplicates it rather than moving it. Moving it would change the shard partition `test_ci_shards_partition_the_test_files` guards.
+  **Issue:** #243

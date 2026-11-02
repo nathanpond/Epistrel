@@ -16,7 +16,7 @@ import re
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
-from itertools import combinations, product
+from itertools import combinations
 from typing import Any
 from unittest import mock
 
@@ -33,6 +33,7 @@ from epistrel.core.seeds.profiles import (
     STANDARD_PRESET_ID,
     STRUCTURED_M4_PROFILE_ID,
 )
+from epistrel.testing import covering
 from tests.conftest import REPO_ROOT
 from tests.event_support import execute_in_tx, rows, scalar
 
@@ -322,29 +323,16 @@ def delivered_rules(among: frozenset[str] | None = None) -> list[DependencyRule]
     ]
 
 
-def covering_array(factors: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """A small set of assignments (one value per factor) in which every pair of values of two
-    factors appears together at least once (greedy over the full product)."""
-    names = list(factors)
-    wanted = {
-        (a, va, b, vb) for a, b in combinations(names, 2) for va in factors[a] for vb in factors[b]
-    }
-    chosen: list[dict[str, Any]] = []
-    candidates = [dict(zip(names, values, strict=True)) for values in product(*factors.values())]
-    while wanted:
-        best = max(candidates, key=lambda c: len(_pairs(c, names) & wanted))
-        chosen.append(best)
-        wanted -= _pairs(best, names)
-    return chosen
-
-
-def _pairs(assignment: dict[str, Any], names: list[str]) -> set[tuple[str, Any, str, Any]]:
-    return {(a, assignment[a], b, assignment[b]) for a, b in combinations(names, 2)}
+def covering_array(factors: dict[str, list[Any]], seed: int = 0) -> list[dict[str, Any]]:
+    """A pairwise covering array over ``factors`` (#243: ``epistrel.testing.covering``)."""
+    return covering.pairwise(factors, seed)
 
 
 def covered_pairs(rows: list[dict[str, Any]]) -> Iterator[tuple[str, Any, str, Any]]:
     for row in rows:
-        yield from _pairs(row, list(row))
+        names = list(row)
+        for a, b in combinations(names, 2):
+            yield (a, row[a], b, row[b])
 
 
 # -- impact reports and fingerprints (#109) ------------------------------------------------------

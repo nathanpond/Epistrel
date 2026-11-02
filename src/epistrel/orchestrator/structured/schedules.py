@@ -113,6 +113,8 @@ async def committed(
         after = replace(at, step=min(POSITION_MAX, at.step + 1))
         if isinstance(statement, schedules.Create):
             fact = _fact_of(claim, canonized)
+            if fact is not None:
+                await _hold_time_of_day(conn, op, story_id, c, fact, at, after)
             if fact is None or speaker is None:
                 continue
             found.created += 1
@@ -166,6 +168,42 @@ async def committed(
         found.refused,
     )
     return found
+
+
+async def _hold_time_of_day(
+    conn: AsyncConnection,
+    op: Any,
+    story_id: str,
+    c: CheckedClaim,
+    fact: Fact,
+    at: Position,
+    after: Position,
+) -> None:
+    """#645: a create whose time of day the clock's anchor holds only as a range is held at its
+    frame minute (``stops.place_event``, as ``POST …/scheduled-events`` holds one), so #197's
+    pause applies to it; ``possibly_due`` at once when the range already holds it."""
+    sketch = c.claim.sketch
+    said = c.claim.time_text or (None if sketch is None else sketch.time_text)
+    if not said:
+        return
+    basis = await world_clock.time_basis(conn, story_id)
+    placed = schedules.range_placement(said, basis, at)
+    if placed is None or basis.anchor is None or schedules.place_time_exact(said, basis, at):
+        return
+    event = await stops.event_at(conn, story_id, fact.proposition_id)
+    if event is None or event.planned_anchor is not None:
+        return
+    current = basis.at(at) - basis.minute_zero
+    await stops.place_event(
+        conn,
+        op,
+        story_id,
+        event,
+        at=placed[1],
+        anchor=basis.anchor,
+        offset=current,
+        position=after,
+    )
 
 
 async def _believe(

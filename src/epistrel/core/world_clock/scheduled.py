@@ -537,7 +537,7 @@ async def _change(
                 f"the event is {current.status.value}: it cannot change any more",
                 {"field": "event_id", "reason": "event_settled", "status": current.status.value},
             )
-        offset = None if planned is None else await _planned(conn, story_id, planned)
+        offset, placed = (None, None) if planned is None else await _placed(conn, story_id, planned)
     written: list[stops.ScheduledEvent] = []
 
     async def step(conn: AsyncConnection) -> None:
@@ -547,6 +547,12 @@ async def _change(
             status_now, cause_now = found.status, stops.SHARED
         else:
             status_now, cause_now = status, cause
+        held: dict[str, Any] | None = None
+        if placed is not None and status_now is ScheduledStatus.PENDING:
+            # #645: a time of day a range-anchored clock holds, as ``POST`` places one.
+            held = {"at": int(placed.at)}
+            if placed.anchor.scheduled(placed.at, placed.offset) == "possibly_due":
+                status_now = ScheduledStatus.POSSIBLY_DUE
         done = await stops.record(
             conn,
             op,
@@ -557,6 +563,7 @@ async def _change(
             cause=cause_now,
             planned=offset,
             shared_owners=shared_owners,
+            planned_anchor=held,
         )
         written.append(done.event)
 

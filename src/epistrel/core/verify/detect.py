@@ -376,6 +376,8 @@ class DeclaredClaim:
     attribution: ClaimAttribution | None = None
     """#167: the declared claim reports someone's belief or speech act (not the speaker's own
     assertion)."""
+    time_text: str | None = None
+    """#645: the time as the beat declared it ("4 pm"), which a schedule's create is held at."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +432,8 @@ class DetectedClaim:
     """#167: whom the claim attributes its proposition to (declared, or the attribution
     lexicon's cue before its span): checked against the speaker's nested beliefs, never as the
     speaker's own assertion."""
+    time_text: str | None = field(default=None, compare=False, repr=False)
+    """#645: a declared claim's time as the beat said it (a detector claim's is its sketch's)."""
     recalled: str | None = field(default=None, compare=False, repr=False)
     """#172: a ``recall`` claim's recalled content (never in a payload)."""
     giver: str | None = None
@@ -1398,6 +1402,7 @@ def _detect_beat(
                 unnormalized=d.unnormalized if d.proposition is None else None,
                 matched_declared_id=d.id,
                 attribution=d.attribution,
+                time_text=d.time_text,
             )
         )
     _verb_hits(work, env.registry, env)

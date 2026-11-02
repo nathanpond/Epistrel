@@ -1886,7 +1886,12 @@ async def _check_turn(
                     )
                 else:
                     found.append(
-                        DeclaredClaim(claim_id, proposition=normalized, attribution=attributed)
+                        DeclaredClaim(
+                            claim_id,
+                            proposition=normalized,
+                            attribution=attributed,
+                            time_text=_sketch(sketch).time_text,
+                        )
                     )
             declared[beat.beat] = tuple(found)
         # #168: the character render's declared steps, normalized in the speaker's view at the

@@ -53,7 +53,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import WRITE
-from tests.structured_turn_support import beat, structured_story, turn_report
+from tests.structured_turn_support import beat, claim, structured_story, turn_report
 
 ONE, TWO, THREE = 13 * 60, 14 * 60, 15 * 60
 SIX = 18 * 60
@@ -396,3 +396,60 @@ async def test_s_anchor_meeting(
                 say="We linger till later.",  # #199: the player invites the skip
             )
             assert (await meeting_of(engine, story, meeting)).status.value == "missed", switch
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-18")
+async def test_s_anchor_meeting__patched_and_rendered(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#645: under the range anchor [13:00, 15:00) a time of day is held at its frame minute
+    whichever path makes it. ``PATCH`` to "17:00" holds the meeting at 17:00 (``pending``);
+    to "14:00", already inside the range, ``possibly_due`` at once. Jenni's own plan in a render,
+    "the bank at four", is a canon event held at 16:00, and "the post office at two" is
+    ``possibly_due`` from the start. Complement asserted: ``PATCH`` to an exact offset clears
+    the time of day it was held at."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await market(client, engine)
+        url = f"/stories/{story}/scheduled-events/{meeting}"
+        moved = await client.patch(url, json={"planned": "17:00"}, headers=WRITE)
+        assert moved.status_code == 200, moved.text
+        event = await meeting_of(engine, story, meeting)
+        assert (event.status.value, event.planned_anchor) == ("pending", {"at": 17 * 60})
+        moved = await client.patch(url, json={"planned": "14:00"}, headers=WRITE)
+        assert moved.status_code == 200, moved.text
+        event = await meeting_of(engine, story, meeting)
+        assert (event.status.value, event.planned_anchor) == ("possibly_due", {"at": 14 * 60})
+        moved = await client.patch(url, json={"planned": 300}, headers=WRITE)
+        assert moved.status_code == 200, moved.text
+        event = await meeting_of(engine, story, meeting)
+        assert (event.status.value, event.planned_anchor, event.planned) == ("pending", None, 300)
+
+        await ms.per_character(
+            engine,
+            story,
+            character_knowledge={"partitions": True},
+            perception={"level": "co_location"},
+        )
+        for text, errand, said, held, status in (
+            ("I'll go to the bank at four.", "the bank errand", "4 pm", 16 * 60, "pending"),
+            ("I'll go to the post office at two.", "the post office", "2 pm", 14 * 60, None),
+        ):
+            await turn(
+                client,
+                stub,
+                story,
+                ids,
+                beat("say", text, propositions=[claim("I", "scheduled", errand, time=said)]),
+            )
+            (made,) = [
+                e
+                for e in await ck.events(engine, story)
+                if e.event_id != meeting and (e.planned_anchor or {}).get("at") == held
+            ]
+            assert made.owner == ids["Jenni"]
+            assert made.status.value == (status or "possibly_due")

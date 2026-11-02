@@ -213,9 +213,17 @@ class Book:
     held: dict[rules.Key, Decimal] = field(default_factory=dict)
     """#216: each value's held decreases from earlier turns (negative): not in the value, but
     not available to spend again (``available``)."""
+    index: Any = None
+    """#630: the story's entity index as the attempt starts (``core.resolution``), which a
+    render's ``consideration`` must name an entity of (``None``: not checked)."""
     synchronous: dict[str, int] = field(default_factory=dict)
     """#212: the ``outbox`` States whose provider confirms ``synchronous``, each with the
     provider's ``confirm_wait_max_seconds``: an effect on one makes the turn a staged turn."""
+
+    def names_item(self, name: str) -> bool:
+        """#630: whether ``name`` names an entity of the story (``action_preconditions
+        .resolve``, the dry-run's rule); ``True`` when no index was read."""
+        return self.index is None or action_preconditions.resolve(name, self.index) is not None
 
     def available(self) -> dict[rules.Key, Value | UndefinedType]:
         """The values the dry-run spends from: ``values`` less the holds of earlier turns."""

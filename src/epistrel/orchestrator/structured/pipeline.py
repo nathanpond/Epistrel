@@ -250,7 +250,7 @@ from epistrel.core.propositions.registry import load as load_registry
 from epistrel.core.propositions.vocabulary import CLOCK_CHECKS, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import identity as identity_rules
-from epistrel.core.resolution.context import load_context
+from epistrel.core.resolution.context import load_context, load_index
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
 from epistrel.core.resolution.types import Mention
 from epistrel.core.retrieval.lexical import LexicalSearch
@@ -2424,6 +2424,7 @@ async def _follow_up(
                     states_level=None if book is None else book.level,
                     clock_level=None if book is None else book.clock_level,
                     clock_fixed=False if book is None else book.clock_fixed,
+                    items=None if book is None else book.names_item,
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,
@@ -4916,6 +4917,9 @@ async def play(
         # #187: the attempt's States (their declarations and values at its start).
         async with db.connect() as conn:
             books[:] = [await state_effects.load(conn, story_id, settings)]
+            if books[0].on:
+                # #630: an effect's ``consideration`` is validated against the story's entities.
+                books[0].index = await load_index(conn, story_id)
             # #194: the world clock as the attempt starts (its renders' time advances, pacing).
             books[0].clock = await clocking.read_clock(conn, story_id)
             # #196: its scheduled events, who is present and whether stops apply.
@@ -5144,6 +5148,7 @@ async def play(
                                 states_level=book.level,
                                 clock_level=book.clock_level,
                                 clock_fixed=book.clock_fixed,
+                                items=book.names_item,
                             ),
                             variant=NARRATOR_VARIANT,
                             params=params,
@@ -5199,6 +5204,7 @@ async def play(
                         states_level=book.level,
                         clock_level=book.clock_level,
                         clock_fixed=book.clock_fixed,
+                        items=book.names_item,
                     ),
                     variant=STRUCTURED,
                     params=params,
@@ -6779,6 +6785,7 @@ async def play(
                     states_level=book.level,
                     clock_level=book.clock_level,
                     clock_fixed=book.clock_fixed,
+                    items=book.names_item,
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,

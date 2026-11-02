@@ -225,6 +225,10 @@ class EvalHarness:
             duration_s=math.ceil(calls * estimates.CALL_LATENCY_MS / 1000),
         )
 
+    def committed_runs(self) -> list[dict[str, Any]]:
+        """The reports committed under ``docs/evals`` (#532), each its embedded summary."""
+        return _committed()
+
     async def run(self, request: HarnessRequest) -> HarnessOutcome:
         profile = Preset(
             name="certification",
@@ -267,6 +271,18 @@ class EvalHarness:
         found["errors"] = list(report.errors)
         found["finished_at"] = datetime.now(UTC).isoformat(timespec="seconds")
         return HarnessOutcome(summary=found, report_md=report_md, record=record)
+
+
+def _committed() -> list[dict[str, Any]]:
+    from epistrel.evals.report import read_summary, report_files
+    from epistrel.tools.generated import REPO_ROOT
+
+    found: list[dict[str, Any]] = []
+    for path in report_files(REPO_ROOT / "docs" / "evals"):
+        summary = read_summary(path)
+        if summary is not None:
+            found.append(summary)
+    return found
 
 
 def install(engine: Engine, *, adapter: AdapterConfig | None = None) -> EvalHarness:

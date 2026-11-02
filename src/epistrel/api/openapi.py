@@ -219,6 +219,7 @@ ERROR_STATUS: dict[str, int] = {
     "certification_not_found": 404,
     "backfill_not_found": 404,
     "checkpoint_not_found": 404,
+    "eval_run_not_found": 404,
     "certification_run_not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
@@ -588,6 +589,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     ),
     "get_certification_run": ("certification_run_not_found",),
     "get_certification": ("certification_not_found",),
+    "get_eval_run": ("eval_run_not_found",),
     "import_certification": ("invalid_certification_record", "certification_record_conflict"),
     "list_state_proposals": ("module_off",),
     "approve_state_proposal": (

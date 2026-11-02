@@ -5720,6 +5720,21 @@ class Engine:
         async with self.db.connect() as conn:
             return await certification.get_certification(conn, certification_id)
 
+    @refuses_nul()
+    async def list_eval_runs(
+        self, ctx: RequestContext, *, limit: int = 50, cursor: str | None = None
+    ) -> certification.EvalRunPage:
+        """The eval runs (#532): the committed reports and the certification runs' reports, newest
+        first, with each run's verdicts, metrics, seeds and sample size."""
+        async with self.db.connect() as conn:
+            return await certification.page_eval_runs(conn, limit=limit, cursor=cursor)
+
+    @refuses_nul()
+    async def get_eval_run(self, ctx: RequestContext, run_id: str) -> certification.EvalRun:
+        """One eval run (#532); 404 ``eval_run_not_found``."""
+        async with self.db.connect() as conn:
+            return await certification.get_eval_run(conn, run_id)
+
     async def import_certification(
         self, ctx: RequestContext, document: Mapping[str, Any]
     ) -> certification.CertificationImported:

@@ -28,6 +28,8 @@ from epistrel.core.profiles.certification import (
     Certification,
     CertificationImported,
     CertificationPage,
+    EvalRun,
+    EvalRunPage,
     RunEstimate,
 )
 from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN
@@ -39,6 +41,7 @@ from epistrel.orchestrator.jobs.handlers.certification_run import (
 
 router = APIRouter(tags=[PROFILES_TAG])
 admin_router = APIRouter(prefix="/certifications")
+evals_router = APIRouter(prefix="/evals")
 
 _ULID_EXAMPLE = "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
 ProfileId = Annotated[
@@ -287,4 +290,44 @@ async def import_certification(
     return answered(CertificationImportedBody.of(found), ctx, response, replayed=found.replayed)
 
 
-__all__ = ["admin_router", "router"]
+@evals_router.get(
+    "/runs",
+    response_model=EvalRunPage,
+    operation_id="list_eval_runs",
+    summary="List eval runs",
+    description=(
+        "Eval runs, newest first (#532): the reports committed under `docs/evals` and every "
+        "completed certification run's report (#233), the same sources certifications are "
+        "recorded from. Each run carries its date, model, version and fingerprint, preset, host "
+        "kind, verdicts per suite and per NFR-QUAL requirement, and (in a report written since "
+        "#532) each metric's value, floor, sample size and verdict, its seeds and sample size. "
+        "`cursor` continues a page from its `next_cursor`."
+    ),
+)
+async def list_eval_runs(
+    ctx: ContextDep,
+    engine: EngineDep,
+    limit: Annotated[int, Query(ge=1, le=200, description="At most this many.")] = 50,
+    cursor: Annotated[
+        str | None, Query(max_length=200, description="The previous page's next_cursor.")
+    ] = None,
+) -> EvalRunPage:
+    return await engine.list_eval_runs(ctx, limit=limit, cursor=cursor)
+
+
+@evals_router.get(
+    "/runs/{run_id}",
+    response_model=EvalRun,
+    operation_id="get_eval_run",
+    summary="Read an eval run",
+    description="One eval run (#532), as the list serves it. 404 `eval_run_not_found`.",
+)
+async def get_eval_run(
+    run_id: Annotated[str, Path(max_length=200, description="The run's id.")],
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> EvalRun:
+    return await engine.get_eval_run(ctx, run_id)
+
+
+__all__ = ["admin_router", "evals_router", "router"]

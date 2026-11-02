@@ -1539,3 +1539,10 @@ class InvalidView(EpistrelError):
 
     code = "invalid_view"
     http_status = 422
+
+
+class EvalRunNotFound(EpistrelError):
+    """No eval run has that id (#532)."""
+
+    code = "eval_run_not_found"
+    http_status = 404

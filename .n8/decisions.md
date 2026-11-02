@@ -11010,3 +11010,14 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 
   The spy test covers respond, regenerate and fork, not a lazy resolution. The import gate is `tools/gates/as_recorded.py` (`check-as-recorded-readers`, enforced by `tests/gates/test_as_recorded_gate.py`).
   **Issue:** #222
+
+### #532 — eval runs over REST, 2026-11-02
+
+- **Decision:** the runs come from two places, the same places certifications come from:
+  - the reports committed under `docs/evals`, read by the installed eval harness (`Harness.committed_runs`: the engine never imports `epistrel.evals`, and the image ships no `docs/`, so a process without the harness serves only the second source);
+  - every completed certification run's report (#233).
+
+  `GET /admin/evals/runs` (newest first, cursor = the last run id) and `/{run_id}` serve them. A report written before #532 has no `metrics`, `seeds` or `sample_size` in its embedded summary, so those read `null`. `summary()` now records them for new reports.
+  **Issue:** #532
+- **Decision:** the routes take no `viewpoint`. They sit under `/admin`, behind the service credential like every operator read (`/admin/escalation-yield`), and runs hold no story content. They need no ownership `CALLS` entry: they are not entity routes.
+  **Issue:** #532

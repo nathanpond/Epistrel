@@ -856,6 +856,8 @@ CERTIFICATION_RECORD: dict[str, Any] = {
 }
 """A hand run's certification record (#233), imported on both surfaces."""
 MISSING_RUN = "01JC0000000000000000000R99"
+COMMITTED_RUN = "74606ed2b224-2026-11-01"
+"""A report committed under ``docs/evals`` (#532)."""
 PROFILE_DRY_RUN = {"settings": undelivered()}
 PROFILE_ANSWERS = [
     ("create_profile", 201),
@@ -2626,6 +2628,17 @@ def _steps() -> list[Step]:
             "list_certifications",
             lambda ids: Rest("GET", "/certifications"),
             lambda e, ids: _dumped(e.list_certifications(CTX)),
+        ),
+        # #532: the eval runs (the committed reports; the harness is installed above).
+        Step(
+            "list_eval_runs",
+            lambda ids: Rest("GET", "/admin/evals/runs", params={"limit": 3}),
+            lambda e, ids: _dumped(e.list_eval_runs(CTX, limit=3)),
+        ),
+        Step(
+            "get_eval_run",
+            lambda ids: Rest("GET", f"/admin/evals/runs/{COMMITTED_RUN}"),
+            lambda e, ids: _dumped(e.get_eval_run(CTX, COMMITTED_RUN)),
         ),
         Step(
             "get_certification_run",

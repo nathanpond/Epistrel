@@ -46,6 +46,7 @@ router.include_router(feedback_export.router)
 router.include_router(verify.router)
 router.include_router(verify.gate_router)
 router.include_router(certifications.admin_router)
+router.include_router(certifications.evals_router)
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

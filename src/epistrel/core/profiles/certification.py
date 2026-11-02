@@ -460,6 +460,114 @@ async def load_committed(
     return written, skipped
 
 
+# -- eval runs (#532) --------------------------------------------------------------------------
+
+
+class EvalMetric(BaseModel):
+    """One metric of a run: its id, the NFR-QUAL requirement it measures, its value (the mean
+    across seeds), floor, sample size and verdict."""
+
+    id: str
+    requirement: str | None = None
+    value: float | None = None
+    floor: float | None = None
+    sample_size: int | None = None
+    verdict: str
+
+
+class EvalRun(BaseModel):
+    """One eval run as ``GET /admin/evals/runs`` serves it: when and against what it ran (model,
+    version, fingerprint, preset, host kind), its verdicts per suite and per requirement, its
+    metrics, seeds and sample size (``null`` in a report written before #532 recorded them), and
+    where it comes from (``committed``: a report under ``docs/evals``; ``certification``: a
+    certification run's report, #233)."""
+
+    run_id: str
+    date: str | None = None
+    model: str | None = None
+    model_version: str | None = None
+    fingerprint: str | None = None
+    preset: str | None = None
+    host: str | None = None
+    verdict: str | None = None
+    suites: dict[str, str] = Field(default_factory=dict)
+    requirements: dict[str, str] = Field(default_factory=dict)
+    metrics: list[EvalMetric] | None = None
+    seeds: list[int] | None = None
+    sample_size: int | None = None
+    source: Literal["committed", "certification"] = "committed"
+
+
+class EvalRunPage(BaseModel):
+    """A page of runs, newest first; ``next_cursor`` continues it."""
+
+    items: list[EvalRun]
+    next_cursor: str | None = None
+
+
+def eval_run(summary: Mapping[str, Any], *, source: str) -> EvalRun:
+    """A run from a report's embedded summary (``epistrel.evals.report.summary``)."""
+    metrics = summary.get("metrics")
+    return EvalRun(
+        run_id=str(summary.get("run_id") or ""),
+        date=summary.get("date"),
+        model=summary.get("model"),
+        model_version=summary.get("model_version"),
+        fingerprint=summary.get("fingerprint"),
+        preset=summary.get("preset"),
+        host=summary.get("host"),
+        verdict=summary.get("verdict"),
+        suites=dict(summary.get("suites") or {}),
+        requirements=dict(summary.get("requirements") or {}),
+        metrics=None if metrics is None else [EvalMetric.model_validate(m) for m in metrics],
+        seeds=summary.get("seeds"),
+        sample_size=summary.get("sample_size"),
+        source="certification" if source == "certification" else "committed",
+    )
+
+
+async def eval_runs(conn: AsyncConnection) -> list[EvalRun]:
+    """Every run: the committed reports (the installed harness reads them; none without it) and
+    every completed certification run's report (#233), newest first."""
+    from epistrel.core.tables import certification_runs
+
+    found: list[EvalRun] = []
+    if _HARNESS:
+        found += [eval_run(s, source="committed") for s in _HARNESS[0].committed_runs()]
+    rows = await conn.execute(
+        select(certification_runs.c.report).where(
+            certification_runs.c.status == "completed",
+            certification_runs.c.report.is_not(None),
+        )
+    )
+    found += [eval_run(dict(r.report), source="certification") for r in rows]
+    return sorted(found, key=lambda r: (r.date or "", r.run_id), reverse=True)
+
+
+async def page_eval_runs(
+    conn: AsyncConnection, *, limit: int = 50, cursor: str | None = None
+) -> EvalRunPage:
+    """A page of ``eval_runs``; ``cursor`` is the previous page's last run id."""
+    every = await eval_runs(conn)
+    start = 0
+    if cursor is not None:
+        ids = [r.run_id for r in every]
+        start = ids.index(cursor) + 1 if cursor in ids else len(every)
+    items = every[start : start + limit]
+    more = start + limit < len(every)
+    return EvalRunPage(items=items, next_cursor=items[-1].run_id if more and items else None)
+
+
+async def get_eval_run(conn: AsyncConnection, run_id: str) -> EvalRun:
+    """One run; 404 ``eval_run_not_found``."""
+    from epistrel.core.errors import EvalRunNotFound
+
+    for run in await eval_runs(conn):
+        if run.run_id == run_id:
+            return run
+    raise EvalRunNotFound("no such eval run", {"run_id": run_id})
+
+
 # -- the harness port ---------------------------------------------------------------------------
 
 
@@ -528,6 +636,10 @@ class Harness(Protocol):
         """Play the run on scratch stories and build its record."""
         ...
 
+    def committed_runs(self) -> list[dict[str, Any]]:
+        """The committed reports' embedded summaries (#532)."""
+        ...
+
 
 _HARNESS: list[Harness] = []
 
@@ -557,6 +669,9 @@ __all__ = [
     "CertificationImported",
     "CertificationPage",
     "CertificationRecord",
+    "EvalMetric",
+    "EvalRun",
+    "EvalRunPage",
     "FloorResult",
     "FloorsMet",
     "Harness",
@@ -566,13 +681,17 @@ __all__ = [
     "certified",
     "check_report",
     "committed_records",
+    "eval_run",
+    "eval_runs",
     "floors_met",
     "get_certification",
+    "get_eval_run",
     "harness",
     "import_record",
     "install_harness",
     "list_certifications",
     "load_committed",
+    "page_eval_runs",
     "parse_record",
     "quality_status",
     "report_hash",

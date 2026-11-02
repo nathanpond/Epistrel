@@ -395,6 +395,21 @@ def summary(report: Report) -> dict[str, Any]:
         "judges": {
             s.name: s.judge.model_dump(mode="json") for s in report.suites if s.judge is not None
         },
+        # #532: what GET /admin/evals/runs serves of a run beyond its verdicts.
+        "seeds": list(report.seeds),
+        "sample_size": max((m.sample_size for s in report.suites for m in s.metrics), default=0),
+        "metrics": [
+            {
+                "id": m.id,
+                "requirement": m.requirement,
+                "value": m.mean,
+                "floor": m.floor,
+                "sample_size": m.sample_size,
+                "verdict": m.verdict.value,
+            }
+            for s in report.suites
+            for m in s.metrics
+        ],
     }
 
 

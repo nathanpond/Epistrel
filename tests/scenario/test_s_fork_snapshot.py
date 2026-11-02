@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import sys
 from typing import Any
 
 import pytest
@@ -118,19 +119,30 @@ class _SerializationFailure(Exception):
 async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
     """A snapshot copy that hits a serialization failure is retried from scratch, and after
     ``SNAPSHOT_ATTEMPTS`` failures the fork is 503 ``database_unavailable`` with no story
-    written. Each retry waits a jittered pause that doubles per failure, and the last failure
-    waits none (#510). Complement: any other database error is not retried."""
+    written. Each retry waits a jittered pause that doubles per failure, the pause reaches
+    ``asyncio.sleep`` (#512), and the last failure waits none (#510). Complement: any other
+    database error is not retried."""
     story = await new_story(engine)
     await play_turn(engine, story, "turn 1")
     original = forking._copy
     calls: list[int] = []
     pauses: list[int] = []
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
 
     def pause(failures: int, rng: Any = None) -> float:
         pauses.append(failures)
-        return 0.0
+        return 0.001 * failures
+
+    async def recorded_sleep(delay: float, *args: Any, **kwargs: Any) -> Any:
+        # #512: record only the fork module's own waits (asyncio.sleep is module-global), so the
+        # test proves the computed pause reaches the sleep, not merely that it was computed.
+        if sys._getframe(1).f_globals.get("__name__") == forking.__name__:
+            slept.append(delay)
+        return await real_sleep(delay, *args, **kwargs)
 
     monkeypatch.setattr(forking, "snapshot_backoff_s", pause)
+    monkeypatch.setattr(asyncio, "sleep", recorded_sleep)
 
     def failing(times: int, error: Exception) -> Any:
         async def copy(*args: Any, **kwargs: Any) -> Any:
@@ -146,10 +158,12 @@ async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.M
     done = await fork(engine, story)
     assert len(calls) == 3
     assert pauses == [1, 2]
+    assert slept == [0.001, 0.002]
     assert await scalar(engine, "SELECT count(*) FROM stories") == stories_before + 1
 
     calls.clear()
     pauses.clear()
+    slept.clear()
     monkeypatch.setattr(
         forking, "_copy", failing(forking.SNAPSHOT_ATTEMPTS, _SerializationFailure())
     )
@@ -158,6 +172,7 @@ async def test_s_fork_snapshot__retry(engine: AsyncEngine, monkeypatch: pytest.M
     assert (refused.value.http_status, refused.value.code) == (503, "database_unavailable")
     assert len(calls) == forking.SNAPSHOT_ATTEMPTS
     assert pauses == list(range(1, forking.SNAPSHOT_ATTEMPTS))  # none after the last
+    assert slept == [0.001 * n for n in range(1, forking.SNAPSHOT_ATTEMPTS)]
     assert await scalar(engine, "SELECT count(*) FROM stories") == stories_before + 1
 
     calls.clear()

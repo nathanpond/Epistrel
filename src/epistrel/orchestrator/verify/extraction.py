@@ -962,10 +962,12 @@ async def apply_dependences(
     read_set: StructuredReadSet,
     registry: Registry | None = None,
     visibility_of: Callable[[CheckedClaim], Visibility | None] | None = None,
+    paired: list[tuple[CheckedClaim, lifecycle.Dependence]] | None = None,
 ) -> list[lifecycle.Dependence]:
     """Hand each dependence (``dependences``) to ``core.commit.lifecycle.depend`` in the turn's
     commit step, after re-finding its thunk through the keyed lookup (#146's read-set key).
-    ``visibility_of`` scopes a claim's resolution (#169; ``None``: ``objective``)."""
+    ``visibility_of`` scopes a claim's resolution (#169; ``None``: ``objective``); ``paired``
+    (#220) collects each claim with its dependence."""
     found: list[lifecycle.Dependence] = []
     story_id = str(operation.story_id)
     lookup = KeyedLookup(conn, read_set)
@@ -977,18 +979,19 @@ async def apply_dependences(
         if target is None:
             continue
         scope = None if visibility_of is None else visibility_of(c)
-        found.append(
-            await lifecycle.depend(
-                conn,
-                operation,
-                target.id,
-                proposition,
-                beat=c.claim.beat,
-                channel=cast(lifecycle.Channel, c.claim.channel),
-                registry=registry,
-                visibility=OBJECTIVE if scope is None else scope,
-            )
+        done = await lifecycle.depend(
+            conn,
+            operation,
+            target.id,
+            proposition,
+            beat=c.claim.beat,
+            channel=cast(lifecycle.Channel, c.claim.channel),
+            registry=registry,
+            visibility=OBJECTIVE if scope is None else scope,
         )
+        found.append(done)
+        if paired is not None:
+            paired.append((c, done))
     return found
 
 

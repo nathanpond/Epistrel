@@ -116,7 +116,7 @@ from sqlalchemy import func, insert, literal, select, text, update
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core import readset
+from epistrel.core import edges, readset
 from epistrel.core.antecedents import RecordAntecedent, is_author_act, probe_record
 from epistrel.core.canon.errors import UnknownPredicate
 from epistrel.core.enums import (
@@ -1285,6 +1285,21 @@ async def _transition(
         },
     )
     await _record_changes(conn, story_id, op.operation_id, changed)
+    # #220 (FR-DIRECT-7): the belief derives from its antecedent (``core.edges`` resolves a
+    # ``record`` antecedent in canon; nothing here reads ``facts``).
+    await edges.transition_edge(
+        conn,
+        op,
+        belief_id=belief.id,
+        proposition_id=belief.proposition_id,
+        subject_id=belief.proposition.subject_id,
+        predicate_id=belief.proposition.predicate_id,
+        kind=kind,
+        antecedent_kind=antecedent.kind,
+        antecedent_ref=antecedent.ref,
+        position=position,
+        event_id=event_id,
+    )
     row = (
         await conn.execute(
             select(belief_transitions).where(belief_transitions.c.id == transition_id)

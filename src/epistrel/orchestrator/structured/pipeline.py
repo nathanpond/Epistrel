@@ -399,7 +399,7 @@ from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.pinned import PinnedReads
 from epistrel.orchestrator.repair import ladder as repair_ladder
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
-from epistrel.orchestrator.structured import clocking, multi, planner, stopping
+from epistrel.orchestrator.structured import clocking, multi, planner, stopping, turn_edges
 from epistrel.orchestrator.structured import effects as state_effects
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
@@ -6260,6 +6260,7 @@ async def play(
         (``outcome_step``) runs the same hooks over its own beats only (no player input, no
         same-turn stage), and leaves the intent's turn report as it is."""
         committing = time.perf_counter()
+        depended_pairs: list[tuple[CheckedClaim, lifecycle.Dependence]] = []
         ids = await beat_event_ids(conn, op.operation_id)
         say_, do_ = (None, None) if outcome_step else (say, do)
         turn_stage = (
@@ -6322,6 +6323,8 @@ async def play(
             introductions=checked.introductions,
         )
         utterance_rows = []
+        # #220: each utterance's beat and stored (proposition id, proposition) pairs.
+        uttered: list[tuple[int, list[tuple[str, Proposition]]]] = []
         # #166: each say's stored proposition per claim id (a lie's divergence names it).
         said: list[tuple[int, str, dict[str, str]]] = []
         for beat in checked.beats:
@@ -6336,6 +6339,7 @@ async def play(
                 if c.proposition is not None
             ]
             utterance_rows.append(utterance_of(beat, props))
+            uttered.append((beat.beat, turn_edges.stored_props(asserted, props)))
             said.append(
                 (
                     beat.beat,
@@ -6364,6 +6368,7 @@ async def play(
                     props,
                 )
             )
+            uttered.append((1, turn_edges.stored_props(asserted, props)))
             said.append(
                 (
                     1,
@@ -6607,6 +6612,7 @@ async def play(
                     read_set=read_set,
                     registry=registry,
                     visibility_of=agent_scope(results) if partitioned else None,
+                    paired=depended_pairs,
                 )
                 depended += await resolve_details(conn, op, details, registry=registry)
                 await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
@@ -6682,6 +6688,21 @@ async def play(
                 for v in result.violations
                 if v.claim_id is not None
             },
+        )
+        # #220 (FR-DIRECT-7): the turn's typed dependency edges.
+        fixed["dependency_edges"] = await turn_edges.turn_edges(
+            conn,
+            op,
+            turn=read.turn,
+            beats=checked.beats,
+            checked=checked.checked,
+            event_ids=ids,
+            utterances=[
+                (uid, beat, pairs)
+                for uid, (beat, pairs) in zip(utterance_ids, uttered, strict=False)
+            ],
+            depended=depended_pairs,
+            mentions=await turn_edges.beat_mentions(conn, op.operation_id),
         )
         if outcome_step:
             # #212: the intent's turn report stands; the completion adds its own section.

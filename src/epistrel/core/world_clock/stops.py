@@ -87,6 +87,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import (
     Authority,
+    DependencyEdgeType,
+    DependencyTarget,
     EventCategory,
     Provenance,
     RecordProvenance,
@@ -986,7 +988,7 @@ async def on_canon_fact(
         from epistrel.core.membership import step_of
 
         position = replace(position, step=step_of(beat, operation.operation_id))
-    return await create(
+    created = await create(
         conn,
         operation,
         story_id,
@@ -998,6 +1000,28 @@ async def on_canon_fact(
         position=position,
         shared_owners=_SHARING.get(),
     )
+    if created is not None and created.event.version_id is not None:
+        # #220 (FR-DIRECT-7): the event exists because of its ``scheduled`` fact.
+        from epistrel.core import edges
+
+        await edges.record_edges(
+            conn,
+            operation,
+            [
+                edges.EdgeSpec(
+                    DependencyEdgeType.CAUSES,
+                    "scheduled_events",
+                    created.event.version_id,
+                    DependencyTarget.FACT,
+                    fact.id,
+                    target_subject_id=str(fact.subject_id),
+                    target_predicate_id=str(fact.predicate_id),
+                    position=position,
+                    source_event_ids=(created.record_id,),
+                )
+            ],
+        )
+    return created
 
 
 # -- a partially anchored clock (#197) -------------------------------------------------------------

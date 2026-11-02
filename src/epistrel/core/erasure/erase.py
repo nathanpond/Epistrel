@@ -180,6 +180,7 @@ from epistrel.core.tables import (
     character_versions,
     characters,
     config_changes,
+    dependency_edges,
     erasure_ledger,
     events,
     genesis_deferred,
@@ -889,6 +890,17 @@ async def _delete(
     run.markers.append((table, record_id))
     if run.write:
         await conn.execute(statement)
+        # #220: the dependency edges naming the row (as their dependent or their target) go
+        # with it (ids only; the edges' trigger lets an erasure delete them).
+        e = dependency_edges.c
+        await conn.execute(
+            delete(dependency_edges).where(
+                or_(
+                    and_(e.dependent_table == table, e.dependent_id == record_id),
+                    e.target_id == record_id,
+                )
+            )
+        )
 
 
 async def _redact_story_row(

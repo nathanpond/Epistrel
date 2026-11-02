@@ -34187,6 +34187,20 @@
             "title": "Default Safe Fallback",
             "type": "string"
           },
+          "dependency_search_max_depth": {
+            "default": 3,
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Dependency Search Max Depth",
+            "type": "integer"
+          },
+          "dependency_search_max_results": {
+            "default": 500,
+            "maximum": 100000.0,
+            "minimum": 1.0,
+            "title": "Dependency Search Max Results",
+            "type": "integer"
+          },
           "embedding_batch_max": {
             "default": 64,
             "maximum": 256.0,
@@ -42616,6 +42630,8 @@
                           "default_content_rating_id",
                           "default_engine_profile_id",
                           "default_safe_fallback",
+                          "dependency_search_max_depth",
+                          "dependency_search_max_results",
                           "embedding_batch_max",
                           "embedding_hnsw_ef_construction",
                           "embedding_hnsw_ef_search",

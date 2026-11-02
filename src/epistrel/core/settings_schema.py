@@ -855,6 +855,29 @@ ErasureSharedMedia = Literal["purge", "retire"]
 DEFAULT_ERASURE_SHARED_MEDIA: ErasureSharedMedia = "purge"
 
 
+DEFAULT_DEPENDENCY_SEARCH_MAX_RESULTS = 500
+"""How many dependents one ``core.edges.dependents`` search answers at most (#220)."""
+DEFAULT_DEPENDENCY_SEARCH_MAX_DEPTH = 3
+"""How deep a ``derives`` chain one search follows at most (#220)."""
+
+
+class DependencySettings(BaseModel):
+    """The dependency search's bounds (FR-DIRECT-7; #220), stored under
+    ``deployment_state.settings``: a search answers at most ``dependency_search_max_results``
+    dependents (``truncated`` past it) and follows ``derives`` chains at most
+    ``dependency_search_max_depth`` deep (a deeper request is clamped). Prospective: a search
+    reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    dependency_search_max_results: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_DEPENDENCY_SEARCH_MAX_RESULTS, ge=1, le=100_000
+    )
+    dependency_search_max_depth: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_DEPENDENCY_SEARCH_MAX_DEPTH, ge=1, le=10
+    )
+
+
 class ErasureSettings(BaseModel):
     """What a catalog-scope erasure does with a media asset that depicts or names only the
     erased subject but that a record the erasure leaves untouched still references (a story's
@@ -1209,6 +1232,7 @@ class DeploymentSettings(
     RetrievalSettings,
     VerifySettings,
     ProviderSettings,
+    DependencySettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

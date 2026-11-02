@@ -824,6 +824,7 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
 
 EXEMPT_TABLES: Mapping[str, str] = {
     "subject_references": "the index itself",
+    "dependency_edges": "ids and edge types only (#220)",
     "transcript_messages": "a projection of the story's events, which are indexed",
     "story_texts": "a projection of the pinned_memories_set and custom_instructions_set events",
     "story_heads": "a projection (the active variants)",

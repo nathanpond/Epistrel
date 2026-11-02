@@ -831,6 +831,13 @@ _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa
 
 ROW_FILTERS: dict[str, str] = {
     events.name: f"t.id IN {_EVENT_IDS}",
+    # #220: an edge of a copied operation whose dependent and target the fork copied too (a
+    # fork keeps an unmapped id as it is, so an edge naming a record left behind is excluded).
+    "dependency_edges": (
+        f"t.operation_id IN {_OPERATION_IDS} "  # noqa: S608
+        f"AND t.dependent_id::text IN (SELECT old_id FROM {_MAP}) "
+        f"AND t.target_id::text IN (SELECT old_id FROM {_MAP})"
+    ),
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
     # The outbox's outcome records (#210) follow the outbox rows the fork copies, and (#217) a
     # consumer-applied effect's follow its copied ``requested_effect`` (whose effect id a fork

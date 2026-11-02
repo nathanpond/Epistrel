@@ -13,6 +13,7 @@ from pathlib import Path
 from tools.gates.assignment import check_assignment
 from tools.gates.character_context import main as check_character_context
 from tools.gates.config import ConfigError, load_config
+from tools.gates.dependency_edges import main as check_dependency_edges
 from tools.gates.deps import DepsError, check_deps, load_deny, load_lock
 from tools.gates.epistemic import main as check_epistemic_separation
 from tools.gates.keyed_readers import main as check_keyed_readers
@@ -78,6 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="canon never reads beliefs and partitions never read facts (FR-EPI-1; #159)",
     )
     sub.add_parser(
+        "check-dependency-edges",
+        help="core.edges.record_edges is the only writer of dependency_edges (#220)",
+    )
+    sub.add_parser(
         "check-perception-authority",
         help="only core.epistemic.perception decides who perceives a beat (FR-TURN-10; #161)",
     )
@@ -102,6 +107,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return check_epistemic_separation([])
     if args.check == "check-perception-authority":
         return check_perception_authority([])
+    if args.check == "check-dependency-edges":
+        return check_dependency_edges([])
     if args.check == "check-character-context":
         return check_character_context([])
     if args.check == "check-licenses":

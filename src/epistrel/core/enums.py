@@ -259,6 +259,31 @@ class BeliefTransitionKind(StrEnum):
     AUTHOR_FIAT = "author_fiat"
 
 
+class DependencyEdgeType(StrEnum):
+    """Why a record depends on a fact (FR-DIRECT-7; #220): it was a reason for an event or a
+    decision (``causes``), narration assumes it true (``presupposes``), a belief or inference
+    was drawn from it (``derives``), a passing reference names it (``mentions``), or a speech
+    act claims it, true or not (``asserts``). Postgres enum ``dependency_edge_type``."""
+
+    CAUSES = "causes"
+    PRESUPPOSES = "presupposes"
+    DERIVES = "derives"
+    MENTIONS = "mentions"
+    ASSERTS = "asserts"
+
+
+class DependencyTarget(StrEnum):
+    """What a dependency edge points at (#220): a fact version, a proposition, an entity, an
+    amendment part (FR-REWRITE-11) or a State's value (``target_id`` the State's definition id,
+    ``target_subject_id`` its scope key). Postgres enum ``dependency_target``."""
+
+    FACT = "fact"
+    PROPOSITION = "proposition"
+    ENTITY = "entity"
+    AMENDMENT_PART = "amendment_part"
+    STATE = "state"
+
+
 class AntecedentKind(StrEnum):
     """What a belief transition's antecedent is (FR-EPI-14 (a) to (d); #160): a committed
     ``record``, a verified ``staged_beat`` earlier in the same turn, a verified ``render_step``

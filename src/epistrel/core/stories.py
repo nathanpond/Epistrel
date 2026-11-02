@@ -128,6 +128,7 @@ from epistrel.core.tables import (
     client_events,
     config_changes,
     content_ratings,
+    dependency_edges,
     deployment_state,
     engine_profiles,
     events,
@@ -208,6 +209,9 @@ STORY_NAME_MAX = 200
 SAFE_FALLBACK_MAX = 500
 
 STORY_TABLES: tuple[Table, ...] = (
+    # Dependency edges (#220): ids only, no foreign key; first here, so a fork maps and copies
+    # them after every record they name (``fork.ROW_FILTERS``).
+    dependency_edges,
     subject_references,
     feedback_history,
     message_feedback,

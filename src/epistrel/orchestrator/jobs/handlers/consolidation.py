@@ -63,8 +63,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock, timeline
-from epistrel.core.enums import Membership, MemoryKind, OperationKind, Provenance
+from epistrel.core import clock, edges, timeline
+from epistrel.core.enums import (
+    BeliefTransitionKind,
+    DependencyEdgeType,
+    Membership,
+    MemoryKind,
+    OperationKind,
+    Provenance,
+)
 from epistrel.core.epistemic import transitions
 from epistrel.core.epistemic.scene import PERCEPTION_INPUT
 from epistrel.core.errors import ScopeMismatch
@@ -591,6 +598,24 @@ def _output(
             if replaced:
                 await core.supersede_outputs(conn, story_id, replaced)
             await records.write_consolidated(conn, op, rows, covered)
+            # #220 (FR-DIRECT-7): each output derives from the window's input facts (a memory
+            # input writes no edge). Position-less: a consolidation's outputs are not a turn's.
+            fact_inputs = [i.record_id for i in planned.inputs if i.kind == "fact"]
+            if fact_inputs:
+                found: list[edges.EdgeSpec] = []
+                for memory_id in memory_ids:
+                    found += [
+                        replace(e, acquisition_kind=BeliefTransitionKind.INFERENCE.value)
+                        for e in await edges.fact_edges(
+                            conn,
+                            story_id,
+                            DependencyEdgeType.DERIVES,
+                            "memories",
+                            memory_id,
+                            fact_inputs,
+                        )
+                    ]
+                await edges.record_edges(conn, op, found)
             if level == 1 and scope.characters is not None:
                 # FR-BELIEF-10: the scope's beliefs from the window decay (#160's forgetting
                 # transition; nothing when the story keeps no partitions).

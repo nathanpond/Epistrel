@@ -10,7 +10,9 @@ dials in the profile defaults (FR-PROF-3)
   recorded the way ``core.profiles.store`` records an edit: ``config_revision`` moves once, one
   deployment-scope ``config_changes`` row ``engine_profile:<id>`` (the old and the new version)
   and one ``engine_profile:<id>.<path>`` row per setting whose value over the defaults changed,
-  each of its class, by ``system:migration:0110``.
+  each of its class, by ``system:migration:0110``. On a fresh deployment (no story and no
+  ``config_changes`` row yet) nothing is recorded and ``config_revision`` stays: Full is then
+  a seed, like Standard and Max.
 - **The pin branch** is computed here, never hard-coded: the delta between the row's latest
   version and Full, over the defaults, classified with #106's tags. When it raises any
   data-producing module (``schema.data_increases``), every following story with history (#109's
@@ -251,6 +253,11 @@ def _convert_full(defaults: Mapping[str, Any]) -> None:
         ),
         {"p": FULL_PRESET_ID, "v": new_version, "n": FULL_NAME},
     )
+    in_use = bind.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM stories) OR EXISTS (SELECT 1 FROM config_changes)")
+    ).scalar_one()
+    if not in_use:  # a fresh deployment: Full is its seed, like the presets beside it
+        return
     revision_number = int(
         bind.execute(
             sa.text(

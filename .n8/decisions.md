@@ -10858,3 +10858,12 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #221
 - **Decision (Rule 1):** `test_erasure_refusals` still expected `body.scope` for a story character erased at catalog scope. #504 (2fc543d) moved that refusal to `body.subject.story`, so the test now asserts the new field.
   **Issue:** #504
+
+### CI fixes after #227 and #649, 2026-11-02
+
+- **Decision (Rule 1):** migration 0110 records nothing on a fresh deployment, one with no story and no `config_changes` row. It writes no `config_changes` rows and does not move `config_revision`; Full is then a seed, like Standard and Max. Before this fix, `test_seed_rows` found `config_revision` 1 on a fresh database. A deployment in use still gets the recorded edit, as `test_presets_m7` asserts.
+  **Issue:** #227
+- **Decision (Rule 1):** the live P-04 and P-08 report checks expect the profile `Full v…` (the seeded Structured profile is Full since 0110).
+  **Issue:** #227
+- **Decision (Rule 1):** ADR-174's third Decision bullet loses its inline *[revised per ADR-177]* marker. The log's rules put that marker on Consequences lines only (`test_revised_per_marks_only_consequences_lines`). The bullet is not wrong, only extended, and its **Amended by** line names ADR-177.
+  **Issue:** #649

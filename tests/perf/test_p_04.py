@@ -698,7 +698,7 @@ def test_p_04__multi() -> None:
     info = sidecar["info"]
     assert info["scenario"] == "multi"
     assert info["host_class"] == newest.host_class
-    assert str(info["profile"]).startswith("Structured v"), info["profile"]
+    assert str(info["profile"]).startswith("Full v"), info["profile"]
     assert info["perception"] == "full"
     assert sidecar["passed"] == (newest.verdict == report.PASS)
     names = {c["name"] for c in sidecar["aggregate"]}
@@ -962,7 +962,7 @@ def test_p_04__multi_smoke(
     sidecar = json.loads(page.with_suffix(".json").read_text())
     info = sidecar["info"]
     assert (info["scenario"], info["smoke"], info["stories"]) == ("multi", True, SMOKE_STORIES)
-    assert info["profile"].startswith("Structured v"), info["profile"]
+    assert info["profile"].startswith("Full v"), info["profile"]
     assert info["perception"] == "full"
     by_name = {c["name"]: c for c in sidecar["aggregate"]}
     for name in (

@@ -786,6 +786,8 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
             continue
         if at > 0 and beat.tokens[at - 1].word in _DETERMINERS:
             continue
+        if _remaining(beat, table, lemma, at):
+            continue  # #633: "500 gold left" is what remains, not a departure
         if lemma.options.get("bare") and _continues(beat, end, at):
             continue  # #200: "came to the diner" is movement, "came to" alone a waking
         taken.append((start, end))
@@ -800,6 +802,27 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
         if not made:
             beat.noise += 1
             beat.risky.add(table.category)
+
+
+def _remaining(beat: _Beat, table: VerbTable, lemma: Lemma, at: int) -> bool:
+    """#633: a ``remaining_forms`` word ("left") right after a number or a quantifier (or one
+    word after it: "500 gold left"), in a clause that holds or has something before it ("Cal
+    has 500 gold left", "there's nothing left"), means remaining: no verb of the table."""
+    rule = table.options.get("remaining")
+    token = beat.tokens[at]
+    if not rule or token.word not in lemma.options.get("remaining_forms", ()):
+        return False
+    before = [t.word for t in beat.tokens[:at] if t.clause == token.clause]
+    numbers = _number_words()
+    quantifiers = frozenset(rule.get("quantifiers", ()))
+
+    def counted(word: str) -> bool:
+        return word.isdigit() or word in numbers or word in quantifiers
+
+    if not any(counted(w) for w in before[-2:]):
+        return False
+    holders = frozenset(rule.get("holders", ()))
+    return any(w in holders for w in before)
 
 
 def _continues(beat: _Beat, end: int, at: int) -> bool:

@@ -928,6 +928,17 @@ def _steering(read: TurnRead) -> str:
     return " ".join(x for x in lines if x)
 
 
+def _scene_last_beats(beats: Sequence[Any], character_id: str) -> tuple[str, ...]:
+    """The scene context's last beats (detection's: the extraction backstop's, salience's): the
+    rendering character's last observable beats, never a ``think`` or a ``latent`` of an
+    earlier turn (#629, FR-MODEL-13: a model sees a thought only in its own render)."""
+    return tuple(
+        b.text
+        for b in beats
+        if b.character_id == character_id and b.kind not in ("think", "latent")
+    )[-QUERY_BEATS:]
+
+
 def _with_time_steering(steering: str, schedule: stopping.Schedule | None) -> str:
     """#197: the narrator's steering line(s), with ``prompts.TIME_STEERING`` while an event is
     paused ``possibly_due`` for the anchor as it stands (``Schedule.establish_time``)."""
@@ -1002,7 +1013,7 @@ async def read_turn(
         for b in everyone
         if b.kind not in ("think", "latent")
     )
-    last_beats = tuple(b.text for b in mine if b.character_id == character.id)[-QUERY_BEATS:]
+    last_beats = _scene_last_beats(mine, character.id)
     scene_doings = tuple(b.text for b in everyone if b.kind == "do")
     lookup = KeyedLookup(conn, read_set)
     location, scene = await _scene(lookup, story_id, head - 1)

@@ -171,7 +171,9 @@ async def test_correct_crash_leaves_the_original(
         revision = await _revision(client, story)
         (original,) = await _inputs(engine, story)
 
-        child = EngineProcess(pg_url, CREDENTIAL_A, crash=crash_at(point, 1, "turn"))
+        # No job worker in the child (as X-03): a story-less job it held when killed would keep
+        # every orphan unswept until that job's lease ran out, past the recovery's bound.
+        child = EngineProcess(pg_url, CREDENTIAL_A, crash=crash_at(point, 1, "turn"), mode="api")
         async with child, httpx.AsyncClient(base_url=child.base_url, timeout=30) as remote:
             with contextlib.suppress(httpx.HTTPError):
                 await _correct(remote, story, 1, "Who goes there?")

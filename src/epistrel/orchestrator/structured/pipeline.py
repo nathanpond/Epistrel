@@ -893,6 +893,9 @@ class TurnRead:
     scene_doings: tuple[str, ...] = ()
     """#199 (FR-CLOCK-8): the ``do`` beats of the working-memory window (the player's inputs'
     included), oldest first: what the scene established as under way."""
+    output_viewpoint: str = OMNISCIENT
+    """#623 (owner decision): the viewpoint the turn is delivered to; narration is verified at
+    it, so hidden canon the viewpoint has no path to is repaired, not supported."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -2142,6 +2145,7 @@ async def _check_turn(
                 (turn, number),
                 operation_id=operation_id,
                 player_id=read.player_id,
+                narration_viewpoint=read.output_viewpoint,
                 scope_of=scope_of,
                 start=first_claim + len(checked),
                 intent_of=intent_of,
@@ -4798,7 +4802,7 @@ async def play(
             **stamped[0].record(captured.profile_id, captured.version),
             "overrides_revision": configuration.overrides_revision,
         }
-        return read
+        return replace(read, output_viewpoint=viewpoint)
 
     async def retrieve_for(actor: str, viewpoint_: str, text: str) -> RetrievalResult:
         embeddings = models.embeddings

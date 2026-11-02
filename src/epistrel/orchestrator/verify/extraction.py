@@ -790,6 +790,7 @@ async def verify_detected(
     *,
     operation_id: str | None = None,
     player_id: str | None = None,
+    narration_viewpoint: str = OMNISCIENT,
     asserter_of: Callable[[DetectedClaim], Asserter] | None = None,
     scope_of: Callable[[DetectedClaim], tuple[str, ...] | None] | None = None,
     start: int = 0,
@@ -801,7 +802,9 @@ async def verify_detected(
     ``<operation>:<n>`` from ``start``. A character's ``say`` claim (never the player's own,
     FR-EPI-12) is first-person: it names its speaker as the believer (#166), with its beat's
     declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``).
-    ``change_of`` (#198): whether the claim's beat states an explicit schedule change."""
+    ``change_of`` (#198): whether the claim's beat states an explicit schedule change.
+    ``narration_viewpoint`` (#623): the viewpoint narration is verified at (the turn's delivery
+    viewpoint; ``omniscient`` by default)."""
     checked: list[CheckedClaim] = []
     on = verifier is not None and verifier.config.on
     for n, claim in enumerate(outcome.claims, start):
@@ -850,10 +853,13 @@ async def verify_detected(
             )
             continue
         asserter = (asserter_of or (lambda c: asserter_for(c, player_id)))(claim)
-        # Narration is checked against the whole of canon (the director knows it); a character's
-        # claim against what that character may read.
+        # Narration is checked against canon as the turn's delivery viewpoint may read it (#623,
+        # the owner's decision: ``narration_viewpoint``; omniscient, the whole of canon); a
+        # character's claim against what that character may read.
         viewpoint = (
-            OMNISCIENT if claim.speaker == NARRATOR else viewpoint_of(claim.speaker, player_id)
+            narration_viewpoint
+            if claim.speaker == NARRATOR
+            else viewpoint_of(claim.speaker, player_id)
         )
         believer = (
             claim.speaker

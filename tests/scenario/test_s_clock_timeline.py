@@ -644,3 +644,78 @@ async def test_s_clock_timeline__external(
         assert _proposed(played) == []
         assert played["clock"]["after"]["offset"] > played["clock"]["before"]["offset"] == 700
         assert await ck.clock_changes(engine, story) > 0
+
+
+@pytest.mark.part("M6", "FR-CLOCK-3")
+async def test_s_clock_timeline__same_turn_anchor(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    clock_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#627: in one turn on an unanchored clock, the narration's first beat anchors "Friday
+    morning" and its second says "Saturday evening": the second is verified against the
+    anchor as the first beat narrowed it (the same-turn overlay), so it is ``contradicted``
+    and repaired, and only the first anchor commits. Complement: a second beat consistent
+    with the first ("It's 9:15") is not contradicted, and both narrow the anchor."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        market = await ps.place_entity(engine, story, "the market")
+        for who in (cal, ids["Mira"]):
+            await ps.put(engine, story, who, market)
+        await ck.set_level(engine, story, "on")
+        manual = await client.patch(
+            f"/stories/{story}/clock", json={"mode": "manual"}, headers=WRITE
+        )
+        assert manual.status_code == 200, manual.text
+        assert (await _anchor_at(engine, story)).is_unanchored
+
+        stub.reset()
+        es.narrator(
+            stub,
+            es.render(
+                beat("narration", "It was Friday morning at the market."),
+                beat("narration", "It was Saturday evening by then."),
+            ),
+        )
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the step.")))
+        answer = await respond(client, story, body(cal, None, do="looks around"))
+        assert answer.status_code == 200, answer.text
+        report = await turn_report(engine, story)
+        kinds = [v.get("kind") for v in report["verify"]["verdicts"]]
+        assert "contradicted" in kinds, report["verify"]
+        anchor = await _anchor_at(engine, story)
+        assert anchor.absolute_at(0).weekday == Exact("friday")
+        assert len(await _anchor_facts(engine, story)) == 1
+
+        # Complement: a consistent second beat narrows the anchor; nothing is contradicted.
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        market = await ps.place_entity(engine, story, "the market")
+        for who in (cal, ids["Mira"]):
+            await ps.put(engine, story, who, market)
+        await ck.set_level(engine, story, "on")
+        manual = await client.patch(
+            f"/stories/{story}/clock", json={"mode": "manual"}, headers=WRITE
+        )
+        assert manual.status_code == 200, manual.text
+        stub.reset()
+        es.narrator(
+            stub,
+            es.render(
+                beat("narration", "It was Friday morning at the market."),
+                beat("narration", "It's 9:15, said the town clock."),
+            ),
+        )
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the step.")))
+        answer = await respond(client, story, body(cal, None, do="looks around"))
+        assert answer.status_code == 200, answer.text
+        report = await turn_report(engine, story)
+        kinds = [v.get("kind") for v in report["verify"]["verdicts"]]
+        assert "contradicted" not in kinds, report["verify"]
+        here = (await _anchor_at(engine, story)).absolute_at(0)
+        assert here.weekday == Exact("friday")
+        assert [(s.lo, s.hi) for s in here.segments] == [(555, 556)]
+        assert len(await _anchor_facts(engine, story)) == 2

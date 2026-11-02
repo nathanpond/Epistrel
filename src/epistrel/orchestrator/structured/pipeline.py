@@ -216,7 +216,14 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import filtered_turn_beats
-from epistrel.core.membership import Position, active_operation, beat_steps, excluding, step_of
+from epistrel.core.membership import (
+    Position,
+    active_operation,
+    beat_steps,
+    bound_of,
+    excluding,
+    step_of,
+)
 from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Target
@@ -239,7 +246,7 @@ from epistrel.core.propositions.registry import (
     file_identity_proposal,
 )
 from epistrel.core.propositions.registry import load as load_registry
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.propositions.vocabulary import CLOCK_CHECKS, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context
@@ -307,7 +314,7 @@ from epistrel.core.verify.normalize import (
 )
 from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import PrivateRecord
-from epistrel.core.verify.rules import CANON, Record, VerdictKind, VerdictReason, check
+from epistrel.core.verify.rules import CANON, Record, Verdict, VerdictKind, VerdictReason, check
 from epistrel.core.viewpoint import (
     is_omniscient,
     resolve_viewpoint,
@@ -317,6 +324,7 @@ from epistrel.core.visibility import Visibility
 from epistrel.core.world_clock import schedule_statements
 from epistrel.core.world_clock import skips as skip_rules
 from epistrel.core.world_clock import timing as timing_rules
+from epistrel.core.world_clock import verify as clock_verify
 from epistrel.core.world_clock.service import turn_clock_of
 from epistrel.core.world_clock.timing import SEQUENTIAL as SEQUENTIAL_MODE
 from epistrel.core.world_clock.timing import SIMULTANEOUS as SIMULTANEOUS_MODE
@@ -427,6 +435,7 @@ from epistrel.orchestrator.verify.extraction import (
     DetectionOutcome,
 )
 from epistrel.orchestrator.verify.verifier import (
+    ANCHORING,
     ENTAILMENT_BUDGET,
     ClaimSource,
     TimeFrame,
@@ -1353,6 +1362,9 @@ async def plan_modeling(
 # -- the same-turn overlay -----------------------------------------------------------------------
 
 
+CONCLUSIVE = (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
+
+
 class StagedSource:
     """A ``ClaimSource`` over canon with the turn's earlier permitted claims laid over it (the
     same-turn overlay, #144's carried note): a claim canon leaves ``novel`` or ``uncertain`` is
@@ -1361,6 +1373,7 @@ class StagedSource:
     def __init__(self, inner: ClaimSource) -> None:
         self.inner = inner
         self.staged: list[Record] = []
+        self._clock: bool | None = None
 
     def stage(self, claim: Proposition, claim_id: str) -> None:
         self.staged.append(Record(claim, f"staged:{claim_id}"))
@@ -1375,6 +1388,13 @@ class StagedSource:
         verdict, fetched = found
         if verdict.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN):
             return found
+        if claim.predicate_id in CLOCK_CHECKS and await self._runs_clock():
+            # #627: a clock check is the clock's: decided against the anchor as the turn's
+            # earlier anchoring statements narrow it, never as a functional fact over them.
+            clocked = await self._clock_check(claim, **kwargs)
+            if clocked is not None and clocked.kind in CONCLUSIVE:
+                return clocked, fetched
+            return found
         staged = check(
             claim,
             self.staged,
@@ -1383,9 +1403,43 @@ class StagedSource:
             position=kwargs.get("position"),
             mover=kwargs.get("mover"),  # #518: a fluent change over the overlay too
         )
-        if staged.kind in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED):
+        if staged.kind in CONCLUSIVE:
             return staged, [*fetched, *self.staged]
         return found
+
+    async def _runs_clock(self) -> bool:
+        """Whether the story runs the world clock (read once per turn's overlay)."""
+        if self._clock is None:
+            conn = getattr(self.inner, "conn", None)
+            story_id = getattr(self.inner, "story_id", None)
+            self._clock = (
+                conn is not None
+                and story_id is not None
+                and await clock_verify.clock_on(conn, story_id)
+            )
+        return self._clock
+
+    async def _clock_check(self, claim: Proposition, **kwargs: Any) -> Verdict | None:
+        """#627: a canon holder's clock check against the clock's anchor as the turn's earlier
+        anchoring statements narrow it (``world_clock.verify.staged_anchor``); ``None`` for a
+        belief holder's, or when nothing anchoring is staged."""
+        holder = kwargs.get("holder")
+        if holder is not None and holder.kind == "belief":
+            return None
+        anchoring = [r.proposition for r in self.staged if r.proposition.predicate_id in ANCHORING]
+        if not anchoring:
+            return None
+        position = kwargs.get("position")
+        owned = await clock_verify.read(
+            self.inner.conn,  # type: ignore[attr-defined]
+            self.inner.story_id,  # type: ignore[attr-defined]
+            None,
+            None if position is None else bound_of(position),
+            kwargs.get("viewpoint", OMNISCIENT),
+        )
+        if not owned:
+            return None
+        return clock_verify.verdict(claim, [clock_verify.staged_anchor(owned[0], anchoring)])
 
     async def neighbors(self, claim: Proposition, **kwargs: Any) -> Any:
         return await self.inner.neighbors(claim, **kwargs)

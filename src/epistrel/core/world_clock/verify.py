@@ -283,6 +283,41 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     return uncertain(VerdictReason.APPROXIMATE_BOUNDS)
 
 
+def staged_anchor(owned: OwnedValue, staged: Sequence[Proposition]) -> OwnedValue:
+    """#627: the clock ``owned`` with the turn's earlier anchoring statements (``staged``, the
+    same-turn overlay's ``time_is`` and ``time_of_day_band`` commitments, in beat order) laid
+    over its anchor, each at its own time as ``commit_anchor`` would commit it; a statement
+    the anchor as narrowed so far contradicts is skipped (the commit drops it too). Pure."""
+    found = _clock([owned])
+    if found is None:
+        return owned
+    _, payload = found
+    anchor = _anchor(payload)
+    zero = int(payload.get("minute_zero", 0))
+    tolerance = int(payload.get("tolerance", 0))
+    changed = False
+    for claim in staged:
+        statement = statement_for(claim, anchor.clockwork, tolerance)
+        if statement is None or claim.polarity is not Polarity.AFFIRMED:
+            continue
+        own = _claim_minute(claim)
+        offset = int(payload.get("offset", 0)) if own is None else own - zero
+        refined = anchor.refine(statement, offset)
+        if isinstance(refined, Anchor):
+            anchor, changed = refined, True
+    if not changed:
+        return owned
+    return owned_value(
+        owned.proposition.subject_id,
+        anchor,
+        offset=int(payload.get("offset", 0)),
+        minute_zero=zero,
+        tolerance=tolerance,
+        factor=float(payload.get("factor", 2.0)),
+        at_claim=bool(payload.get("at_claim")),
+    )
+
+
 def _claim_minute(claim: Proposition) -> int | None:
     """The exact story-minute a claim's valid-time starts at (``None``: not exact)."""
     found = claim.valid_time
@@ -366,6 +401,7 @@ __all__ = [
     "owned_value",
     "read",
     "refinement",
+    "staged_anchor",
     "statement_for",
     "verdict",
 ]

@@ -173,7 +173,7 @@ async def advances(engine: AsyncEngine, story: str) -> list[tuple[str, int, Any,
         "SELECT c.source, c.delta, c.stopped_by_event_id, c.paused_for_event_id FROM "
         "state_changes c JOIN state_definitions d ON d.id = c.state_id WHERE c.story_id = :s "
         "AND d.name = 'world_clock' AND c.membership = 'active' "
-        "ORDER BY c.narrative_turn, c.slot_k, c.beat, c.step",
+        "ORDER BY c.narrative_turn, c.slot_k, c.beat, c.step, c.id",  # id: #684 (ties)
         s=story,
     )
     return [(r.source, int(r.delta), r.stopped_by_event_id, r.paused_for_event_id) for r in found]

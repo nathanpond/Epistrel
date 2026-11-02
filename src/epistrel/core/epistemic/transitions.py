@@ -1228,6 +1228,7 @@ async def _transition(
                 )
             )
         ],
+        fresh=True,  # #620: the transition row was just inserted
     )
     changed: list[tuple[Belief, readset.ChangeKind]] = []
     if existing is not None:

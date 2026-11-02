@@ -1279,6 +1279,7 @@ async def _append_event(
                 SimpleNamespace(id=event_id, story_id=story_id, character_id=None, payload=body)
             )
         ],
+        fresh=True,  # #620: the event row was just inserted
     )
     return event_id
 
@@ -1468,6 +1469,7 @@ async def _insert_belief(
                 )
             )
         ],
+        fresh=True,  # #620: the belief row was just inserted
     )
     written = await read_belief(conn, story_id, belief_id)
     assert written is not None  # noqa: S101 - just written

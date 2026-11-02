@@ -547,16 +547,20 @@ def recording() -> Iterator[list[str]]:
         _SPY.reset(token)
 
 
-async def index_records(conn: AsyncConnection, records: Sequence[Record]) -> int:
+async def index_records(
+    conn: AsyncConnection, records: Sequence[Record], *, fresh: bool = False
+) -> int:
     """(Re)write the rows of every one of ``records`` in ``conn``'s transaction (see the module
-    docstring); returns how many rows they have now."""
+    docstring); returns how many rows they have now. ``fresh`` (#620): the caller has just
+    inserted every one of ``records`` in this transaction, so none has rows to delete."""
     if not records:
         return 0
     spy = _SPY.get()
     if spy is not None:
         spy.extend(r.table for r in records)
     rows = await compute(conn, records)
-    await _delete_records(conn, list(dict.fromkeys((r.table, r.record_id) for r in records)))
+    if not fresh:
+        await _delete_records(conn, list(dict.fromkeys((r.table, r.record_id) for r in records)))
     await _write(conn, rows)
     stories_named = {r.story_id for r in records}
     log.debug(

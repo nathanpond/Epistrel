@@ -459,7 +459,7 @@ async def record_exposures(
             )
         )
     await insert_derived(conn, exposures, rows)
-    await index_records(conn, records)
+    await index_records(conn, records, fresh=True)  # #620: the rows were just inserted
     for (beat, step), ids in sorted(by_beat.items()):
         await partitions._append_event(
             conn,

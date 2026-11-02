@@ -155,3 +155,22 @@ async def test_retrieved_memories_are_touched_after_the_turn(
     if touches:
         committed = max(i for i, s in enumerate(statements) if s.startswith("INSERT INTO events"))
         assert touches[0] > committed
+
+
+async def test_new_epistemic_records_delete_no_references(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#620: the testimony turn's new beliefs, transitions and exposures index their subject
+    references without first deleting any (``index_records(fresh=True)``: a row just inserted
+    has none), so a turn that writes many of them saves a statement each."""
+    from tests.scenario import test_s_testimony as st
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, _things = await st._setup(client, engine)
+        with counting(monkeypatch, erasure_index, "_delete_records") as deletes:
+            await st._play(client, epistrel, story, ids)
+    tables = {table for (keys,) in deletes for table, _ in keys}
+    assert not tables & {"beliefs", "belief_transitions", "exposures"}, tables

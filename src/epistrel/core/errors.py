@@ -1517,3 +1517,25 @@ class NothingToBackfill(EpistrelError):
 
     code = "nothing_to_backfill"
     http_status = 409
+
+
+class CheckpointNotFound(EpistrelError):
+    """No committed checkpoint is at that turn, slot or variant (#222)."""
+
+    code = "checkpoint_not_found"
+    http_status = 404
+
+
+class CheckpointIncomplete(EpistrelError):
+    """The checkpoint is a staged turn still under way (#222): ``details``: ``turn``,
+    ``turn_stage``."""
+
+    code = "checkpoint_incomplete"
+    http_status = 409
+
+
+class InvalidView(EpistrelError):
+    """An unknown history view (#222): ``details``: ``allowed``."""
+
+    code = "invalid_view"
+    http_status = 422

@@ -89,6 +89,7 @@ from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
     EpistrelError,
     InvalidRequest,
+    InvalidView,
     LedgerUnavailable,
     ModuleOff,
     PrincipalRequired,
@@ -99,7 +100,7 @@ from epistrel.core.errors import (
 from epistrel.core.genesis import create as genesis
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
-from epistrel.core.history import History, read_history
+from epistrel.core.history import VIEWS, History, read_as_recorded, read_history
 from epistrel.core.idempotency import (
     DEPLOYMENT_SCOPE_ID,
     IdempotentCall,
@@ -1587,13 +1588,14 @@ class Engine:
         *,
         viewpoint: str | None = None,
         actor_character_id: str | None = None,
-        as_of: int | None = None,
+        as_of: int | str | None = None,
         limit: int = DEFAULT_HISTORY_LIMIT,
         before_turn: int | None = None,
         include_audit: bool = False,
         variant: variants.ChainRef | None = None,
         include_summary: bool = False,
         player_view: PlayerView | None = None,
+        view: str = "corrected",
     ) -> History:
         """The story's corrected history through ``as_of`` (default the head), produced for one
         output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
@@ -1603,8 +1605,30 @@ class Engine:
         whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards.
         ``variant`` reads along that chain instead of the active one (#66);
         ``include_summary`` adds the included rolling-summary segments (#72). ``player_view``
-        (#177): ``character`` or ``story`` over the story's setting (FR-RESP-13)."""
+        (#177): ``character`` or ``story`` over the story's setting (FR-RESP-13).
+
+        ``view="as_recorded"`` (#222, FR-STORE-23) answers the checkpoint ``as_of`` (``N`` or
+        ``N⁺k``) as originally recorded, to ``omniscient`` only (403 ``omniscient_required``,
+        checked first), with its ``boundary_tx`` and ``erasure_markers``; another ``view`` is 422
+        ``invalid_view``; a checkpoint that never committed is 404 ``checkpoint_not_found``."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        if view == "as_recorded":
+            return await read_as_recorded(
+                self.db, story_id, viewpoint=ctx.viewpoint, as_of=as_of, variant=variant
+            )
+        if view != "corrected":
+            if not is_omniscient(ctx.viewpoint or ""):
+                require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+            raise InvalidView(
+                "unknown history view", {"field": "query.view", "allowed": list(VIEWS)}
+            )
+        if isinstance(as_of, str):
+            if not as_of.isdigit():
+                raise InvalidRequest(
+                    "the corrected view's as_of is a turn",
+                    {"field": "query.as_of", "reason": "boundary"},
+                )
+            as_of = int(as_of)
         return await read_history(
             self.db,
             story_id,

@@ -13620,6 +13620,34 @@
             ],
             "title": "Audit"
           },
+          "boundary_tx": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary Tx"
+          },
+          "erasure_markers": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Erasure Markers"
+          },
           "items": {
             "items": {
               "anyOf": [
@@ -13681,6 +13709,21 @@
             },
             "title": "Turns",
             "type": "array"
+          },
+          "view": {
+            "anyOf": [
+              {
+                "enum": [
+                  "corrected",
+                  "as_recorded"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "View"
           }
         },
         "required": [
@@ -70485,7 +70528,7 @@
     },
     "/stories/{story_id}/history": {
       "get": {
-        "description": "The story's corrected history through `as_of` (default: the latest turn), produced for one **output viewpoint**: `?viewpoint=` (`character:<id>` or `omniscient`), else `?actor_character_id=`, else the story's `default_output_viewpoint`; when none resolves the read is refused (422 `viewpoint_unresolved`). `omniscient` is used only when named.\n\nA character viewpoint never receives `think` or `latent` beats. Under the `lite` profile perception is `none`, so every other beat is returned in full and `audience_filter` is `\"none\"`: Epistrel does not decide which callers may request which viewpoint. Omniscient items carry the true ages of the characters they name.\n\nWhere the story's perception is `co_location` or `full` (FR-RESP-13), a character read is filtered beat by beat by the same perception routing as the character's memory, from authoritative positions: a beat the character perceived is returned in full, one it perceived only the envelope of is returned as that envelope (`fidelity: envelope`, \"Jenni whispers something to Marcus\"), and any other is omitted; each turn's message is recomposed over what is returned, and `audience_filter` names the level. A character read's structured beats carry no verdicts, `detected` claims or `effects`. `player_view` (`character` | `story`; default the story's setting) `story` returns every beat in full instead, each with the `fidelity` the character would have perceived it at (`audience_filter: \"bypassed_by_player_view\"`); it is echoed as `player_view`.\n\n`include_audit=1` adds the turns' audit records and requires `viewpoint=omniscient` (403 `omniscient_required`). Pages hold whole turns, newest first, up to `limit` items; pass `next_before_turn` as `before_turn` for the previous page.\n\n`variant=turn:variant` reads along another chain of the story (`GET /stories/{id}/variants`), e.g. a dormant continuation or a regenerated reply's earlier variant: the active history up to where it parts, then that chain's turns; `as_of` defaults to its tip. A chain that names no variant, or continues in more than one way, is 409 `unknown_chain`.\n\n`include_summary=1` adds `summary`: the Lite rolling-summary segments the prompt includes now (wholly at or before `as_of`), oldest first, each `{level, covers_from, covers_to, text, operation_id}`; they are never history items.",
+        "description": "The story's corrected history through `as_of` (default: the latest turn), produced for one **output viewpoint**: `?viewpoint=` (`character:<id>` or `omniscient`), else `?actor_character_id=`, else the story's `default_output_viewpoint`; when none resolves the read is refused (422 `viewpoint_unresolved`). `omniscient` is used only when named.\n\nA character viewpoint never receives `think` or `latent` beats. Under the `lite` profile perception is `none`, so every other beat is returned in full and `audience_filter` is `\"none\"`: Epistrel does not decide which callers may request which viewpoint. Omniscient items carry the true ages of the characters they name.\n\nWhere the story's perception is `co_location` or `full` (FR-RESP-13), a character read is filtered beat by beat by the same perception routing as the character's memory, from authoritative positions: a beat the character perceived is returned in full, one it perceived only the envelope of is returned as that envelope (`fidelity: envelope`, \"Jenni whispers something to Marcus\"), and any other is omitted; each turn's message is recomposed over what is returned, and `audience_filter` names the level. A character read's structured beats carry no verdicts, `detected` claims or `effects`. `player_view` (`character` | `story`; default the story's setting) `story` returns every beat in full instead, each with the `fidelity` the character would have perceived it at (`audience_filter: \"bypassed_by_player_view\"`); it is echoed as `player_view`.\n\n`include_audit=1` adds the turns' audit records and requires `viewpoint=omniscient` (403 `omniscient_required`). Pages hold whole turns, newest first, up to `limit` items; pass `next_before_turn` as `before_turn` for the previous page.\n\n`variant=turn:variant` reads along another chain of the story (`GET /stories/{id}/variants`), e.g. a dormant continuation or a regenerated reply's earlier variant: the active history up to where it parts, then that chain's turns; `as_of` defaults to its tip. A chain that names no variant, or continues in more than one way, is 409 `unknown_chain`.\n\n`include_summary=1` adds `summary`: the Lite rolling-summary segments the prompt includes now (wholly at or before `as_of`), oldest first, each `{level, covers_from, covers_to, text, operation_id}`; they are never history items.\n\n`view=as_recorded` (#222, FR-STORE-23; default `corrected`) answers the checkpoint `as_of` (`N`, or `N+k` for turn N's inter-turn slots 1..k; default the latest committed one) as originally recorded: what the story held when the checkpoint committed (`boundary_tx`), before any later amendment, discard or derived record, audit records included and with the story's `erasure_markers` (an erasure is the one change it cannot undo). It needs `viewpoint=omniscient`: any other viewpoint, or none, is 403 `omniscient_required` with no records, checked first; an unknown `view` is then 422 `invalid_view`, and a checkpoint that never committed 404 `checkpoint_not_found` (409 `checkpoint_incomplete` for a staged turn still under way). `variant` picks the chain whose turn N sets the boundary. The corrected view's `as_of` is a turn number.",
         "operationId": "history",
         "parameters": [
           {
@@ -70510,7 +70553,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "type": "integer"
+                  "type": "string"
                 },
                 {
                   "type": "null"
@@ -70618,6 +70661,16 @@
             }
           },
           {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "default": "corrected",
+              "title": "View",
+              "type": "string"
+            }
+          },
+          {
             "description": "The output viewpoint: `character:<id>` of the cast or `omniscient` (FR-RESP-12).",
             "in": "query",
             "name": "viewpoint",
@@ -70677,7 +70730,7 @@
                 }
               }
             },
-            "description": "Not found: `not_found`."
+            "description": "Not found: `checkpoint_not_found`, `not_found`."
           },
           "409": {
             "content": {
@@ -70687,7 +70740,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `unknown_chain`."
+            "description": "Conflict; nothing was written: `checkpoint_incomplete`, `unknown_chain`."
           },
           "422": {
             "content": {
@@ -70697,7 +70750,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `invalid_view`, `validation_error`, `viewpoint_unresolved`."
           },
           "503": {
             "content": {

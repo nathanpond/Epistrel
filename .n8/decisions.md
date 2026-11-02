@@ -10989,3 +10989,24 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - The gap-fill preview is stored under its `Idempotency-Key` like a write, so a replay answers it.
   - C-03 plays a gap fill: preview, start, read, cancel.
   **Issue:** #228
+
+### #222 — a checkpoint as originally recorded, 2026-11-02
+
+- **Decision:** what the view does:
+  - `membership_at` folds operation commits with the `truncate`, `untruncate` and `swap` events up to the boundary. A turn commit makes the same turn's other variants inactive.
+  - It never reads the current column, and it is computed per request.
+  - The boundary of a turn defaults to its active variant, else (a truncated tail) the variant committed last.
+  - The `in_place` reversal of memories and `state_changes` from `patch_before`, and the derived sections (beliefs, memories, State values), are not in the view yet. `HistoryView` carries the events, the canon facts as recorded (`canon_as_recorded`) and the erasure markers. Logged as a gap.
+  **Issue:** #222
+- **Decision:** the route:
+  - `as_of` becomes a string on the history route; the corrected view still takes a turn number (anything else is 422 `validation_error`). Check order: 403 viewpoint, then 422 `invalid_view`, then 404 checkpoint.
+  - Items take their kind, channel and actor from the transcript rows, and their text from the raw event with the overlays in effect at the boundary.
+  - `erasure_markers` lists every erasure of the story (no subject ids), not only those touching records in the view.
+  **Issue:** #222
+- **Decision:** the S-ORIGINAL-AT-SLOT and S-AUDIT-VIEW tests stand on smaller fixtures:
+  - slots are inter-turn operations with a message, not a State set and a late settlement;
+  - S-AUDIT-VIEW plays 30 turns, not S-AMEND-SURVIVES' 1,000;
+  - the reflection, staged-turn and TIME Hypothesis parts are not written yet.
+
+  The spy test covers respond, regenerate and fork, not a lazy resolution. The import gate is `tools/gates/as_recorded.py` (`check-as-recorded-readers`, enforced by `tests/gates/test_as_recorded_gate.py`).
+  **Issue:** #222

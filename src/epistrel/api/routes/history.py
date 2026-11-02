@@ -50,6 +50,16 @@ HISTORY_DESCRIPTION = (
     "409 `unknown_chain`.\n\n`include_summary=1` adds `summary`: the Lite rolling-summary "
     "segments the prompt includes now (wholly at or before `as_of`), oldest first, each "
     "`{level, covers_from, covers_to, text, operation_id}`; they are never history items."
+    "\n\n`view=as_recorded` (#222, FR-STORE-23; default `corrected`) answers the checkpoint "
+    "`as_of` (`N`, or `N+k` for turn N's inter-turn slots 1..k; default the latest committed "
+    "one) as originally recorded: what the story held when the checkpoint committed "
+    "(`boundary_tx`), before any later amendment, discard or derived record, audit records "
+    "included and with the story's `erasure_markers` (an erasure is the one change it cannot "
+    "undo). It needs `viewpoint=omniscient`: any other viewpoint, or none, is 403 "
+    "`omniscient_required` with no records, checked first; an unknown `view` is then 422 "
+    "`invalid_view`, and a checkpoint that never committed 404 `checkpoint_not_found` (409 "
+    "`checkpoint_incomplete` for a staged turn still under way). `variant` picks the chain "
+    "whose turn N sets the boundary. The corrected view's `as_of` is a turn number."
 )
 
 
@@ -356,10 +366,24 @@ class HistoryResponse(BaseModel):
     as_of: int
     timeline_revision: int
     next_before_turn: int | None
+    view: Literal["corrected", "as_recorded"] | None = None
+    """#222: ``as_recorded`` on an as-recorded read (absent on a corrected one)."""
+    boundary_tx: str | None = None
+    """#222: when the checkpoint committed (ISO-8601, UTC, microseconds)."""
+    erasure_markers: list[dict[str, str]] | None = None
+    """#222: the story's erasures, ``{erasure_id, at}`` (no subject ids)."""
 
     @classmethod
     def of(cls, found: History) -> HistoryResponse:
         extra: dict[str, Any] = {}
+        if found.view == "as_recorded":
+            extra["view"] = found.view
+            extra["boundary_tx"] = (
+                found.boundary_tx.isoformat(timespec="microseconds")
+                if found.boundary_tx is not None
+                else None
+            )
+            extra["erasure_markers"] = list(found.erasure_markers or [])
         if found.audit is not None:
             extra["audit"] = [item_model(i) for i in found.audit]
         if found.summary is not None:
@@ -389,7 +413,7 @@ async def history(
     story_id: StoryId,
     ctx: ContextDep,
     engine: EngineDep,
-    as_of: int | None = None,
+    as_of: str | None = None,
     limit: int = DEFAULT_LIMIT,
     before_turn: int | None = None,
     actor_character_id: str | None = None,
@@ -397,10 +421,12 @@ async def history(
     variant: str | None = None,
     include_summary: bool = False,
     player_view: Literal["character", "story"] | None = None,
+    view: str = "corrected",
 ) -> HistoryResponse:
     found = await engine.history(
         ctx,
         story_id,
+        view=view,
         actor_character_id=actor_character_id,
         as_of=as_of,
         limit=limit,

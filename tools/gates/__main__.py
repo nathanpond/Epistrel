@@ -87,6 +87,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="only core.epistemic.perception decides who perceives a beat (FR-TURN-10; #161)",
     )
     sub.add_parser(
+        "check-as-recorded-readers",
+        help="only the history read reaches the as-recorded view (FR-STORE-23; #222)",
+    )
+    sub.add_parser(
         "check-character-context",
         help="a character's prompt is built only by build_context (NFR-PRIV-4; #170)",
     )
@@ -109,6 +113,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return check_perception_authority([])
     if args.check == "check-dependency-edges":
         return check_dependency_edges([])
+    if args.check == "check-as-recorded-readers":
+        from tools.gates import as_recorded
+
+        return as_recorded.main()
     if args.check == "check-character-context":
         return check_character_context([])
     if args.check == "check-licenses":

@@ -10686,3 +10686,47 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Decision:** #623 follows the owner's decision. `TurnRead.output_viewpoint` carries the respond's resolved viewpoint, and narrator claims are verified at it (`verify_detected(narration_viewpoint=)`). Public canon verifies as before, while hidden canon and hidden State values the viewpoint has no belief about are repaired. An omniscient response is unchanged.
   **Why:** the owner's decision (a privacy fix). It is narrow because most canon is public, so only hidden-scope content moves.
   **Issue:** #623
+
+### Batch D — 2026-11-02
+
+- **Decision (correction to batch C):** #623 is narrowed. The full scenario run showed that verifying every narrator claim at the delivery viewpoint repaired #566/#546's narrated reveals (S-PHONE `__narrated_reveal`, S-ENTITY-IDENTITY `__m5_widening[narration]`). Now only a `state_value` claim (a hidden State's value) is checked at the delivery viewpoint. Hidden canon that a perceived narration states stays a reveal, because the narration is the viewpoint's path to it. S-EXT-PINNED's narrated hidden marks are now delivered `omniscient`.
+  **Why:** the two owner-accepted behaviours conflict only for hidden canon. No narration reveals a State value ("values are not knowledge"), so the State half of the decision stands without touching #566. The issue comment offers the one-line reversal if the owner meant otherwise.
+  **Issue:** #623 (and #566, #546)
+- **Blocker:** #611 is reverted (d42a0af) and marked `blocked` and `needs-owner-action`. Both of its options remove the detector's transfer reading of "Olivia sent the text", and S-TESTIMONY (Marcus adjudicated, the witness-only prompt), S-POLLUTION (two exposures) and S-REACTIVE are built on that reading. The fix changes what four docs/04 scenarios exercise, so it is not a low-cost call.
+  **Options:** message nouns (and switch those scenarios to a physical item), same-span suppression, or keep today's behaviour as intended.
+  **Issue:** #611
+- **Decision:** #655 backs off rather than parks. A settlement the story's state refuses waits `WAIT * 2**waits`, capped at `WAIT_MAX` (10 min), counted in `SettlePayload.waits`. An incomplete staged turn keeps the 5 s wait.
+  **Why:** parking needs Core's resume/unarchive to enqueue Orchestrator work, which crosses the core→orchestrator import contract. The cost is a delay of at most 10 min after a resume.
+  **Issue:** #655
+- **Decision:** #656 and #657 share one commit. `core.outbox.request_effects` and `request_statuses` list a turn's requests (outbox rows and `requested_effect` events) with their current status. History appends them, and the response's `committed()` reads the same statuses. The outbox row's effect keeps `pinned`, the value the turn read, as an internal key (`INTERNAL_EFFECT_KEYS`), never listed or sent, so a resumed turn's `old_value` is restored.
+  **Why:** a jsonb key avoids a schema change, and the provider's `Effect` is built field by field.
+  **Issue:** #656, #657
+- **Decision:** #658. `staged.drain_kicked(timeout_s)` waits with `asyncio.wait`, not `wait_for`, so reaching the bound doesn't cancel the resumes before the count. `Engine.stop_workers` drains first, bounded by the worker's `DRAIN_S`.
+  **Why:** the issue's expected behaviour, with a bound.
+  **Issue:** #658
+- **Decision:** #625. `to_turn == head` is accepted when the head's inter-turn slots hold active operations: they are discarded and the head turn kept. Otherwise it is still 422, with a "nothing to discard" message.
+  **Why:** FR-STORE-31's reading in the issue.
+  **Issue:** #625
+- **Decision:** #614. Byte identity is now by construction. `ResultCodec.store` dumps keys in JSONB order (`jsonb_ordered`), and a keyed call answers `codec.settle(value)`, the round trip without the replay mark. `GET /operations`' `result.body` is documented as the stored library result. Changing what is stored would change the API contract.
+  **Why:** this keeps the documented promise ("identical response") rather than relaxing it.
+  **Issue:** #614
+- **Decision:** #682 is schema only. `VIEWPOINT_OPERATIONS` gains the State and scheduled-event reads, and `create_story` declares 404 `not_found`.
+  **Issue:** #682
+- **Decision:** #606. `inspect/beliefs?kind=nested|speech_act` reads those belief records (`partition(kind=)`) at every level, paged by belief id, with optional item fields (`attributed_holder_id`, `attributed_level`, `depth`, `speaker_character_id`). The first-order default is unchanged.
+  **Why:** the issue's first option, additive to the existing route.
+  **Issue:** #606
+- **Decision:** #647. `first_draft` takes the operation id from any beat of the result.
+  **Issue:** #647
+- **Decision:** #608 is documentation only: respond declares 409 `module_off`, and `AdjudicationBody` names `state`.
+  **Issue:** #608
+- **Decision:** #680. `GET /stories/{id}/states/{name}/definition` answers the declaration document (`StateDefinition.document()`, as POST and PATCH answer), `created_by`, and the latest `config_changes` revision for `state:<name>`. It reads by viewpoint, and a hidden State is 404 for a character viewpoint.
+  **Issue:** #680
+- **Decision:** #681. `GET /stories/{id}/operations` is story-scoped only; the deployment-wide alternative is not built. Labels are derived as the by-id read derives them, with SQL narrowing for staged and genesis. Summaries carry no content, so there is no viewpoint gate.
+  **Why:** the Console's need is per story.
+  **Issue:** #681
+- **Decision:** #679. `GET /stories/{id}/outbox` is an omniscient read, because an effect's reason is story text. It lists every row with its status, `compensated` included, plus `contingent` (a story-owned change waits on it) for the issue's "contingency". A redacted row shows ids, status and position only.
+  **Issue:** #679
+- **Decision:** #607. The perception trace is recorded at routing time in `turn_report.perception.trace` (existing jsonb; no beat text) and served on `GET /operations/{id}` for `omniscient` only. It is not reconstructed.
+  **Why:** the issue asks for what was applied when the turn ran.
+  **Issue:** #607
+- **Console surfaces** (Engine gained capabilities): #606 (nested beliefs inspector), #607 (perception grid), #679 (effects monitor), #680 (definition editor pre-fill), #681 (staged-turn filter), #682 (typed viewpoint and 404), #661 (resolve action). These are for nathanpond/Epistrel-Console; they don't change this repo's plan.

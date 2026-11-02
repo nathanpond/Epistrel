@@ -65,6 +65,7 @@ from epistrel.core.errors import (
     AmendmentInvalidPart,
     AmendmentTargetInactive,
     ScheduleNotAmendable,
+    StateNotAmendable,
 )
 from epistrel.core.events.registry import validate
 from epistrel.core.events.types import AmendmentRecorded, AmendmentReverted, TranscriptPatch
@@ -88,6 +89,9 @@ from epistrel.core.tables import (
 CORRECTION_SETTING = "epistrel.allow_record_correction"
 """Set to the corrected row's id for its in-place correction (migration 0112's guards)."""
 SCHEDULE_ROUTE = "PATCH /stories/{id}/scheduled-events/{event_id}"
+PROPOSITION_CHANGES = True
+"""Off only under ``epistrel.testing.faults.amendment_proposition_changes_skipped`` (the
+negative run of S-ABSENT-FACT M7, #236, which must then fail)."""
 
 
 class AmendmentKind(StrEnum):
@@ -175,7 +179,22 @@ class RecordPartDraft:
     patch: Mapping[str, Any] = field(default_factory=dict)
 
 
-PartDraft = PropositionPartDraft | RecordPartDraft
+@dataclass(frozen=True, slots=True)
+class StatePartDraft:
+    """A correction to a story-owned State's value over a valid-time (#236): the State
+    ``state`` (its name; ``scope_key`` the character of a per-character State) held ``value``
+    instead (a ``set``) from ``valid_from_minutes`` (``None``: since the story began) until
+    ``valid_to_minutes`` (``None``: open), clock offsets. A relative correction is converted to
+    a ``set`` by #223's parse."""
+
+    state: str
+    value: Any
+    scope_key: str | None = None
+    valid_from_minutes: int | None = None
+    valid_to_minutes: int | None = None
+
+
+PartDraft = PropositionPartDraft | RecordPartDraft | StatePartDraft
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,16 +316,28 @@ async def _apply_proposition(
     valid = None
     if draft.valid_from_minutes is not None or draft.valid_to_minutes is not None:
         valid = Interval.of(draft.valid_from_minutes, draft.valid_to_minutes)
-    written = await canon.commit_fact(
-        conn,
-        story_id,
-        proposition,
-        provenance=RecordProvenance.AUTHOR,
-        authority=FactAuthority.AUTHOR,
-        operation=op,
-        valid_time=valid,
-        amendment_part_id=part_id,
-    )
+    from epistrel.core import readset
+
+    # #136's ``proposition_changes`` writer runs as a fact hook (FR-CONC-12: a turn in flight
+    # whose key the part touches regenerates); off only under the fault
+    # ``epistrel.testing.faults.amendment_proposition_changes_skipped``.
+    skipped = not PROPOSITION_CHANGES and readset.record_fact_change in canon.FACT_HOOKS
+    if skipped:
+        canon.remove_fact_hook(readset.record_fact_change)
+    try:
+        written = await canon.commit_fact(
+            conn,
+            story_id,
+            proposition,
+            provenance=RecordProvenance.AUTHOR,
+            authority=FactAuthority.AUTHOR,
+            operation=op,
+            valid_time=valid,
+            amendment_part_id=part_id,
+        )
+    finally:
+        if skipped:
+            canon.FACT_HOOKS.insert(0, readset.record_fact_change)
     return {
         "kind": "proposition",
         "subject_id": proposition.subject_id,
@@ -319,6 +350,196 @@ async def _apply_proposition(
         "written_fact_id": written.id,
         "superseded_fact_ids": list(written.superseded_ids),
     }
+
+
+# -- State proposition parts (#236) ------------------------------------------------------------
+
+
+async def _state_definition(conn: AsyncConnection, story_id: str, ordinal: int, name: str) -> Any:
+    """The active State ``name``; 422 ``state_not_amendable`` for one an amendment may not
+    correct (see ``StateNotAmendable``)."""
+    from epistrel.core import states
+    from epistrel.core.enums import StateType
+    from epistrel.core.errors import StateNotFound
+    from epistrel.core.states.model import WORLD_CLOCK, derived_rule
+
+    def refused(reason: str) -> StateNotAmendable:
+        return StateNotAmendable(
+            f"State {name!r} cannot be amended ({reason})",
+            {"ordinal": ordinal, "state": name, "reason": reason},
+        )
+
+    try:
+        state = await states.definition(conn, story_id, name)
+    except StateNotFound:
+        try:
+            await states.definition(conn, story_id, name, view=states.View.AS_RECORDED)
+        except StateNotFound:
+            raise _invalid(ordinal, "record_not_found", state=name) from None
+        raise refused("discarded") from None
+    if state.name == WORLD_CLOCK or state.type is StateType.CLOCK:
+        raise refused("clock")
+    if derived_rule(state) is not None:
+        raise refused("derived")
+    if (state.transfer or {}).get("conserved"):
+        raise refused("transfer_conserved")
+    if str(getattr(state.owner, "value", state.owner)) != "story":
+        raise refused("external")
+    return state
+
+
+def amended_checkpoints(state: Any, changes: Sequence[Any], change_id: str | None) -> Any:
+    """The first checkpoint at which the folded value of ``changes`` (``ChangeRow``s, the
+    amendment change ``change_id`` among them; ``None``: any checkpoint) breaks ``state``'s
+    constraints while that change is eligible: ``(at, broken, folded)`` (``at`` the last
+    positioned change's position, ``None`` before any), else ``None``. Each checkpoint is the
+    fold through one more positioned change, with the amendment changes eligible at its
+    story-time (#221's ``eligible``, carried forward from the last known minute;
+    ``Undecidable`` is in)."""
+    from epistrel.core.amendments.eligibility import PartTiming, eligible
+    from epistrel.core.states.model import fold, violation
+
+    positioned = sorted((c for c in changes if c.position is not None), key=lambda c: c.order())
+    amended = [c for c in changes if c.position is None]
+    latest: int | None = None
+    for n in range(len(positioned) + 1):
+        if n and positioned[n - 1].valid_time is not None:
+            minute = positioned[n - 1].valid_time
+            latest = minute if latest is None else max(latest, minute)
+        inside = [
+            a
+            for a in amended
+            if eligible(PartTiming(valid_from_minutes=a.valid_time), story_time=latest).folds
+        ]
+        if change_id is not None and change_id not in {a.id for a in inside}:
+            continue
+        folded = fold(state.initial_value, [*positioned[:n], *inside]).value
+        broken = violation(state, folded)
+        if broken is not None:
+            at = positioned[n - 1].position if n else None
+            return at, broken, folded
+    return None
+
+
+async def _apply_state(
+    conn: AsyncConnection, op: Any, story_id: str, ordinal: int, part_id: str, draft: Any
+) -> dict[str, Any]:
+    """A State part: a position-less ``set`` (``source = author``, ``unconditional``,
+    ``committed``) carrying ``amendment_part_id``, checked against the State's constraints at
+    every checkpoint where it is eligible (422 ``state_constraint_violation``)."""
+    from epistrel.core import states
+    from epistrel.core.enums import StateChangeKind, StateChangeStatus
+    from epistrel.core.erasure.index import index_records
+    from epistrel.core.erasure.records import state_change_record
+    from epistrel.core.errors import EpistrelError, StateConstraintViolation
+    from epistrel.core.membership import insert_derived
+    from epistrel.core.states.model import ChangeRow, coerce, to_json
+
+    state = await _state_definition(conn, story_id, ordinal, draft.state)
+    states._scope_ok(state, draft.scope_key)
+    if (
+        draft.valid_from_minutes is not None
+        and draft.valid_to_minutes is not None
+        and draft.valid_to_minutes <= draft.valid_from_minutes
+    ):
+        raise _invalid(ordinal, "empty_window")
+    try:
+        value = coerce(state.type, draft.value)
+    except EpistrelError:
+        raise StateConstraintViolation(
+            f"State {state.name!r} takes no such value",
+            {
+                "ordinal": ordinal,
+                "state_id": state.id,
+                "scope_key": draft.scope_key,
+                "constraint": "type",
+                "attempted": _jsonable(draft.value),
+            },
+        ) from None
+    change_id = new_ulid()
+    existing = await states._changes(conn, story_id, state, draft.scope_key)
+    mine = ChangeRow(
+        id=change_id,
+        kind=StateChangeKind.SET,
+        value=value,
+        delta=None,
+        status=StateChangeStatus.COMMITTED,
+        position=None,
+        valid_time=draft.valid_from_minutes,
+        valid_to=draft.valid_to_minutes,
+    )
+    failed = amended_checkpoints(state, [*existing, mine], change_id)
+    if failed is not None:
+        at, broken, folded = failed
+        raise StateConstraintViolation(
+            f"the amendment leaves State {state.name!r} outside its constraints",
+            {
+                "ordinal": ordinal,
+                "state_id": state.id,
+                "scope_key": draft.scope_key,
+                "at_checkpoint": None if at is None else list(at.key()),
+                "constraint": broken,
+                "attempted": to_json(value),
+                "folded": None if folded is None else _jsonable(to_json(folded)),
+            },
+        )
+    row = {
+        "id": change_id,
+        "story_id": story_id,
+        "state_id": state.id,
+        "scope_key": draft.scope_key,
+        "kind": StateChangeKind.SET.value,
+        "value": to_json(value),
+        "delta": None,
+        "reason": "amendment",
+        "source": "author",
+        "operation_id": op.operation_id,
+        "narrative_turn": None,
+        "turn_variant": None,
+        "valid_time_minutes": draft.valid_from_minutes,
+        "tx_from": await conn.scalar(select(func.transaction_timestamp())),
+        "amendment_part_id": part_id,
+    }
+    await insert_derived(conn, state_changes, [row])
+    await index_records(conn, [state_change_record(SimpleNamespace(**row))])
+    return {
+        "kind": "proposition",
+        "state_id": state.id,
+        "scope_key": draft.scope_key,
+        "valid_from_minutes": draft.valid_from_minutes,
+        "valid_to_minutes": draft.valid_to_minutes,
+        "valid_spec": None
+        if draft.valid_from_minutes is None
+        else {"offset_minutes": draft.valid_from_minutes},
+        "patch_after": {"value": to_json(value)},
+        "written_state_change_id": change_id,
+    }
+
+
+async def _recheck_state(conn: AsyncConnection, story_id: str, state_id: str, scope: Any) -> None:
+    """After a revert: the key's fold still meets its constraints at every checkpoint (else
+    422 ``state_constraint_violation``; #238 surfaces it as a conflict)."""
+    from epistrel.core import states
+    from epistrel.core.errors import StateConstraintViolation
+    from epistrel.core.states.model import to_json
+
+    by_id = {s.id: s for s in await states.definitions(conn, story_id)}
+    state = by_id.get(state_id)
+    if state is None:
+        return
+    failed = amended_checkpoints(state, await states._changes(conn, story_id, state, scope), None)
+    if failed is not None:
+        at, broken, folded = failed
+        raise StateConstraintViolation(
+            f"the revert leaves State {state.name!r} outside its constraints",
+            {
+                "state_id": state_id,
+                "scope_key": scope,
+                "at_checkpoint": None if at is None else list(at.key()),
+                "constraint": broken,
+                "folded": None if folded is None else _jsonable(to_json(folded)),
+            },
+        )
 
 
 # -- record parts -----------------------------------------------------------------------------
@@ -515,7 +736,8 @@ async def _check_state_change(
     ordered = sorted(corrected, key=lambda c: c.order())
     at = _row_key(row)
     for n in range(1, len(ordered) + 1):
-        if ordered[n - 1].position.key() < at:
+        position = ordered[n - 1].position
+        if position is None or position.key() < at:
             continue
         broken = violation(state, fold(state.initial_value, ordered[:n]).value)
         if broken is not None:
@@ -639,6 +861,17 @@ async def _version_fact(
 # -- recording ----------------------------------------------------------------------------------
 
 
+def _mark_control(op: Any, parts: Sequence[Any]) -> None:
+    """An amendment with any record or State part is a control action (#236, FR-CONC-12): the
+    commit records ``stories.last_control_revision``, so ordinary turns in flight abandon with
+    ``timeline_changed`` (the Lite read set does not see overlays). A proposition-only
+    amendment reaches them through ``proposition_changes`` (#133's fact hooks) instead."""
+    if getattr(op, "bumps_revision", False) and any(
+        not isinstance(p, PropositionPartDraft) for p in parts
+    ):
+        op.control_action = True
+
+
 async def record_amendment(
     conn: AsyncConnection,
     op: Any,
@@ -674,11 +907,15 @@ async def record_amendment(
     part_ids: list[str] = []
     written: list[str] = []
     transcript: list[TranscriptPatch] = []
+    state_keys: list[tuple[str, str | None]] = []
     for ordinal, draft in enumerate(parts):
         part_id = new_ulid()
         # The part row first: a version written for it names it (deferred FK either way).
         if isinstance(draft, PropositionPartDraft):
             values = await _apply_proposition(conn, op, story_id, ordinal, part_id, draft)
+        elif isinstance(draft, StatePartDraft):
+            values = await _apply_state(conn, op, story_id, ordinal, part_id, draft)
+            state_keys.append((str(values["state_id"]), draft.scope_key))
         elif draft.table == "facts":
             spec = CORRECTABLE_TABLES["facts"]
             if draft.action not in spec.actions:
@@ -715,6 +952,12 @@ async def record_amendment(
         if isinstance(fact_id, str):
             written.append(fact_id)
         await edges.amendment_edges(conn, op, part_id, list(relies_on))
+    if state_keys:
+        from epistrel.core import states
+
+        # After the part rows: a read folds an amendment change by its part's status.
+        await states.refresh(conn, story_id, state_keys)
+    _mark_control(op, parts)
     await _index(conn, op, amendment_id)
     event_id = await _append_event(
         conn,
@@ -797,6 +1040,21 @@ def inverse_parts(parts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
                     "inverts": part["id"],
                 }
             )
+        elif part.get("state_id") is not None:
+            # A State part's inverse writes nothing: the reverted part's change leaves every
+            # fold (``core.states`` reads an amendment change by its part's status).
+            found.append(
+                {
+                    "kind": "proposition",
+                    "state_id": part["state_id"],
+                    "scope_key": part.get("scope_key"),
+                    "valid_from_minutes": part.get("valid_from_minutes"),
+                    "valid_to_minutes": part.get("valid_to_minutes"),
+                    "valid_spec": part.get("valid_spec"),
+                    "patch_before": part.get("patch_after"),
+                    "inverts": part["id"],
+                }
+            )
         else:
             found.append(
                 {
@@ -851,12 +1109,19 @@ async def revert_amendment(
     now = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
     transcript: list[TranscriptPatch] = []
     written: list[str] = []
+    state_keys: list[tuple[str, str | None]] = []
+    if getattr(op, "bumps_revision", False) and any(
+        r["kind"] == "record" or r.get("state_id") is not None for r in rows
+    ):
+        op.control_action = True  # as the original was (``_mark_control``)
     for n, inverse in enumerate(inverse_parts(rows)):
         part_id = new_ulid()
         values: dict[str, Any] = {
             k: v for k, v in inverse.items() if k not in ("inverts", "restores", "closes")
         }
-        if inverse["kind"] == "proposition":
+        if inverse.get("state_id") is not None:
+            state_keys.append((str(inverse["state_id"]), inverse.get("scope_key")))
+        elif inverse["kind"] == "proposition":
             restored: list[str] = []
             closes = inverse.get("closes")
             for fact_id in inverse.get("restores") or []:
@@ -902,6 +1167,12 @@ async def revert_amendment(
         .where(amendments.c.id == amendment_id)
         .values(status="reverted", reverted_by=by_amendment_id)
     )
+    if state_keys:
+        from epistrel.core import states
+
+        for state_id, scope in state_keys:
+            await _recheck_state(conn, story_id, state_id, scope)
+        await states.refresh(conn, story_id, state_keys)
     await _index(conn, op, by_amendment_id)
     await _append_event(
         conn,
@@ -988,6 +1259,8 @@ __all__ = [
     "PropositionPartDraft",
     "RecordPartDraft",
     "RecordedAmendment",
+    "StatePartDraft",
+    "amended_checkpoints",
     "inverse_parts",
     "merged_payload",
     "record_amendment",

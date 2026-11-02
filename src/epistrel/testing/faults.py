@@ -52,7 +52,9 @@ reconcile would load an earlier session's erasures into the test database as pen
 
 In-process faults (#136): ``readset_intersection_disabled()`` turns off the structured read set's
 key-against-change-index intersection (``core.readset.INTERSECTION_ENABLED``) for the block, so a
-test can run a build without the FR-CONC-12 check and watch the scenario that relies on it fail.
+test can run a build without the FR-CONC-12 check and watch the scenario that relies on it fail;
+``amendment_proposition_changes_skipped()`` (#236) records amendments' proposition parts without
+their ``proposition_changes`` rows (``core.amendments.store.PROPOSITION_CHANGES``).
 
 Nothing in ``create_app`` or the Engine imports this module.
 """
@@ -456,6 +458,19 @@ def readset_intersection_disabled() -> Iterator[None]:
         yield
     finally:
         readset.INTERSECTION_ENABLED = True
+
+
+@contextlib.contextmanager
+def amendment_proposition_changes_skipped() -> Iterator[None]:
+    """Record amendments' proposition parts without #136's ``proposition_changes`` rows (the
+    fault point ``amend.skip_proposition_changes``, #236)."""
+    from epistrel.core.amendments import store
+
+    store.PROPOSITION_CHANGES = False
+    try:
+        yield
+    finally:
+        store.PROPOSITION_CHANGES = True
 
 
 def main(argv: list[str] | None = None) -> int:

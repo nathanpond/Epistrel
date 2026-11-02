@@ -624,3 +624,42 @@ async def test_exposure_frame__trust_set_object(
         if r.predicate_id == oath.predicate_id
     }
     assert keys == {((ann,), bobby, FRAME.key()), ((bobby,), ann, FRAME.key())}
+
+
+# -- M7: amendments correcting history before E apply (#236) ---------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-BELIEF-6; FR-STORE-20")
+@pytest.mark.parametrize("since", ["always", "later"])
+async def test_exposure_frame__m7(engine: AsyncEngine, since: str) -> None:
+    """An amendment recorded after the exposure that corrects history before E is used by the
+    lazy resolution (a retcon has always been true): Ann and Bobby were always friends, so the
+    novel claim from Bobby is ``believed`` where, without it, it is only ``suspected``. The
+    narrative revelation committed after E (the claim's negation, in a later turn) is still
+    excluded: the verdict is ``novel`` and every key of the resolver's read set is bounded at E.
+    Complement: an amendment whose valid-time begins after E's story-time is not eligible at E
+    (``suspected``)."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from tests import amendment_support as am
+
+    w, claim = await _world(engine)
+    story = w.story_id
+    ann, bobby = w.characters["Ann"], w.characters["Bobby"]
+    await xs.plain_turn(engine, story)
+    exposure_id, _ = await xs.expose(engine, story, ann, claim, source=bobby)
+    await c.commit(engine, story, claim.negation())  # the revelation, after E
+    start = None if since == "always" else 100_000  # minutes: long after E
+    await am.amend(engine, story, [PropositionPartDraft(friends(w), valid_from_minutes=start)])
+    resolution, _ = await xs.resolve(engine, story, exposure_id)
+    assert resolution.outcome.verdict == VerdictKind.NOVEL.value
+    assert resolution.outcome.decision == testimony.ACCEPT
+    expected = (
+        BeliefConfidenceLevel.BELIEVED if since == "always" else BeliefConfidenceLevel.SUSPECTED
+    )
+    assert resolution.outcome.confidence is expected
+    assert resolution.reads
+    for read in resolution.reads:
+        assert read.through is not None, read
+        assert read.through <= FRAME.key(), read
+    assert [r for r in resolution.reads if r.predicate_id == FRIEND_OF]

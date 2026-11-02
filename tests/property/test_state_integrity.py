@@ -662,3 +662,256 @@ async def test_state_integrity__m6_inertness(
         played = await respond(client, story, body(cal, None, do="asks for a nail"))
         assert played.status_code == 200, played.text
         assert any("## Tracked values" in p for p in ms.render_prompts(stub, "Mira"))
+
+
+# -- M7: amendments in the sequence (#236) ------------------------------------------------------
+
+BOUNDED = BY_NAME["gold"]
+"""Non-negative, at most 50, initially 10: an amendment ``set`` can break either bound."""
+
+
+@st.composite
+def amended_history(draw: st.DrawFn) -> tuple[list[model.ChangeRow], list[model.ChangeRow]]:
+    """Positioned changes at non-decreasing story-minutes, and amendment ``set``s, each with an
+    optional valid start and window end (FR-STORE-20's position-less corrections)."""
+    positioned: list[model.ChangeRow] = []
+    minute = 0
+    for n in range(draw(st.integers(0, 8))):
+        minute += draw(st.integers(0, 30))
+        is_set = draw(st.booleans())
+        positioned.append(
+            model.ChangeRow(
+                f"p{n:02}",
+                StateChangeKind.SET if is_set else StateChangeKind.DELTA,
+                Decimal(draw(st.integers(0, 50))) if is_set else None,
+                None if is_set else Decimal(draw(st.integers(-15, 15))),
+                StateChangeStatus.COMMITTED,
+                Position(n + 1, 0, 0, 1, 1),
+                valid_time=minute,
+            )
+        )
+    amended: list[model.ChangeRow] = []
+    for n in range(draw(st.integers(0, 3))):
+        start = draw(st.none() | st.integers(0, minute + 30))
+        end = draw(st.none() | st.integers((start or 0) + 1, minute + 60))
+        amended.append(
+            model.ChangeRow(
+                f"a{n:02}",
+                StateChangeKind.SET,
+                Decimal(draw(st.integers(-5, 60))),
+                None,
+                StateChangeStatus.COMMITTED,
+                None,
+                valid_time=start,
+                valid_to=end,
+            )
+        )
+    return positioned, amended
+
+
+def _story_time(positioned: list[model.ChangeRow], k: int) -> int | None:
+    times = [c.valid_time for c in positioned[:k] if c.valid_time is not None]
+    return max(times) if times else None
+
+
+def _oracle(positioned: list[model.ChangeRow], amended: list[model.ChangeRow], k: int) -> Any:
+    """The value through the ``k``-th positioned change, stated independently of ``ordered``:
+    every change on one timeline sorted by (story-minute, positioned before amendments, order),
+    an amendment with no valid start before them all; an amendment counts when its start is at
+    or before the checkpoint's minute and its window has not closed by it."""
+    at = _story_time(positioned, k)
+    timeline: list[tuple[float, int, float, str, model.ChangeRow]] = [
+        (float(c.valid_time or 0), 0, 0.0, c.id, c) for c in positioned[:k]
+    ]
+    for a in amended:
+        if at is not None and a.valid_time is not None and a.valid_time > at:
+            continue
+        if at is not None and a.valid_to is not None and a.valid_to <= at:
+            continue
+        start = float("-inf") if a.valid_time is None else float(a.valid_time)
+        if at is None and a.valid_time is not None:
+            start = float("inf")  # no minute known yet: after every positioned change
+        own = float("-inf") if a.valid_time is None else float(a.valid_time)
+        timeline.append((start, 1, own, a.id, a))
+    value: Any = BOUNDED.initial_value
+    for *_, change in sorted(timeline, key=lambda t: t[:4]):
+        value = model.step(value, change.kind, change.value, change.delta)
+    return value
+
+
+@pytest.mark.part("M7", "FR-STATE-4")
+@settings(max_examples=EXAMPLES, deadline=None)
+@given(amended_history())
+def test_state_integrity__m7_amend(
+    history: tuple[list[model.ChangeRow], list[model.ChangeRow]],
+) -> None:
+    """With amendments in the sequence (#236): the value through every checkpoint is the fold
+    of the positioned changes there and the amendment changes eligible there (#221's
+    ``eligible`` at the checkpoint's story-minute), each at its valid time and reverting after
+    its window; and an amendment ``record_amendment`` would accept
+    (``store.amended_checkpoints`` finds no breach) leaves no checkpoint outside the State's
+    constraints. Complement: one it refuses names a checkpoint whose value is outside them."""
+    from epistrel.core.amendments.eligibility import PartTiming, eligible
+    from epistrel.core.amendments.store import amended_checkpoints
+
+    positioned, amended = history
+    every = [*positioned, *amended]
+    for k in range(len(positioned) + 1):
+        at = _story_time(positioned, k)
+        inside = [
+            a
+            for a in amended
+            if eligible(PartTiming(valid_from_minutes=a.valid_time), story_time=at).folds
+        ]
+        assert model.fold(BOUNDED.initial_value, [*positioned[:k], *inside]).value == _oracle(
+            positioned, amended, k
+        )
+    breach = amended_checkpoints(BOUNDED, every, None)
+    values = [_oracle(positioned, amended, k) for k in range(len(positioned) + 1)]
+    if breach is None:
+        assert all(model.violation(BOUNDED, v) is None for v in values), values
+    else:
+        _, broken, folded = breach
+        assert broken is not None
+        assert model.violation(BOUNDED, folded) == broken
+        assert folded in values
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-STATE-4")
+async def test_state_integrity__m7_amend_postgres(
+    engine: AsyncEngine, states_delivered: None, clock_delivered: None
+) -> None:
+    """On Postgres (#236): Cal's gold is set to 100 at turn 1 (minute 0) and spent by 10 at
+    turns 2 (minute 60) and 3 (minute 120). An amendment says he held 500 from minute 60: it
+    is in ``value_of(through=turn 2)`` (500, after turn 2's spend at the same minute) and
+    ``through=turn 3`` (490), not ``through=turn 1`` (100); the projection is the fold and its
+    ``since_position`` the last positioned change. A revert restores 80 with nothing deleted.
+    Complement: a part that would leave a negative balance at turn 3 (5 from minute 60) is 422
+    ``state_constraint_violation`` naming the checkpoint, nothing written; parts on the
+    ``world_clock``, a derived State, a transfer-conserved State, an external State or a
+    discarded definition are 422 ``state_not_amendable``, nothing written; the
+    ``scheduled_events`` row count never changes."""
+    from epistrel.core.amendments.store import StatePartDraft
+    from epistrel.core.errors import EpistrelError
+    from tests import amendment_support as am
+    from tests import clock_support as clock
+    from tests import provider_support as ps
+
+    w = await c.world(engine)
+    story, cal = w.story_id, w.characters["Cal"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await clock.set_level(engine, story, "on")
+    await ss.define_all(
+        engine,
+        story,
+        ss.gold(),
+        StateDefinition.model_validate(
+            {
+                "name": "weight",
+                "type": "number",
+                "rules": {"kind": "derived", "expression": "1 + 1"},
+                "authorization": {"sources": ["rule", "author"]},
+            }
+        ),
+        ss.gold(name="coin", transfer={"conserved": True, "counterparties": ["till"]}),
+    )
+    scheduled = "SELECT count(*) AS n FROM scheduled_events WHERE story_id = :s"
+    before = (await rows(engine, scheduled, s=story))[0].n
+    one, _ = await ss.change(engine, story, ss.set_to("gold", 100, scope_key=cal))
+    await clock.advance(engine, story, 60)
+    two, _ = await ss.change(engine, story, ss.delta("gold", -10, scope_key=cal))
+    await clock.advance(engine, story, 60)
+    three, _ = await ss.change(engine, story, ss.delta("gold", -10, scope_key=cal))
+    turns = [int(op.narrative_turn or 0) for op in (one, two, three)]
+
+    async def through(turn: int | None) -> Any:
+        if turn is None:
+            return await ss.value(engine, story, "gold", cal)
+        return await ss.value(engine, story, "gold", cal, through=ss.at(turn))
+
+    assert [await through(t) for t in turns] == [100, 90, 80]
+    _, made, _ = await am.amend(
+        engine, story, [StatePartDraft("gold", 500, scope_key=cal, valid_from_minutes=60)]
+    )
+    assert [await through(t) for t in turns] == [100, 500, 490]
+    assert await through(None) == 490
+    assert await ss.stored_values(engine, story) == await ss.folded_values(engine, story)
+    (part,) = await rows(
+        engine, "SELECT * FROM amendment_parts WHERE amendment_id = :a", a=made.amendment_id
+    )
+    (row,) = await rows(
+        engine, "SELECT * FROM state_changes WHERE amendment_part_id = :p", p=part.id
+    )
+    assert part.written_state_change_id == row.id
+    assert (row.kind, row.source, row.contingency, row.status) == (
+        "set",
+        "author",
+        "unconditional",
+        "committed",
+    )
+    assert (row.narrative_turn, row.valid_time_minutes) == (None, 60)
+    (stored,) = [
+        r
+        for r in await rows(engine, "SELECT * FROM state_values WHERE story_id = :s", s=story)
+        if r.scope_key == cal
+    ]
+    assert stored.since_turn == turns[2]
+
+    # A revert restores the fold and deletes nothing.
+    count = "SELECT count(*) AS n FROM state_changes WHERE story_id = :s"
+    rows_before = (await rows(engine, count, s=story))[0].n
+    await am.amend(engine, story, [], kind="undo", revert=made.amendment_id)
+    assert [await through(t) for t in turns] == [100, 90, 80]
+    assert (await rows(engine, count, s=story))[0].n == rows_before
+    assert await ss.stored_values(engine, story) == await ss.folded_values(engine, story)
+
+    # Complement: a breach at turn 3, and the States an amendment may not correct.
+    async def refused(draft: StatePartDraft) -> EpistrelError:
+        parts_before = await am.table_rows(engine, "amendment_parts", story)
+        with pytest.raises(EpistrelError) as found:
+            await am.amend(engine, story, [draft])
+        assert await am.table_rows(engine, "amendment_parts", story) == parts_before
+        assert (await rows(engine, count, s=story))[0].n == rows_before
+        return found.value
+
+    breach = await refused(StatePartDraft("gold", 5, scope_key=cal, valid_from_minutes=60))
+    assert breach.code == "state_constraint_violation"
+    assert breach.details["at_checkpoint"][0] == turns[2]
+    assert breach.details["folded"] == -5
+    typed = await refused(StatePartDraft("gold", "lots", scope_key=cal))
+    assert typed.code == "state_constraint_violation"
+    for name, reason in (
+        ("world_clock", "clock"),
+        ("weight", "derived"),
+        ("coin", "transfer_conserved"),
+    ):
+        scope = cal if name == "coin" else None
+        found = await refused(StatePartDraft(name, 1, scope_key=scope))
+        assert (found.code, found.details["reason"]) == ("state_not_amendable", reason), name
+    # A definition a truncation discarded (declared after turn 3, then cut).
+    await ss.define_all(engine, story, ss.gold(name="ribbon", scope="story"))
+    await ss.change(engine, story, ss.delta("gold", 1, scope_key=cal))
+    await truncate(engine, story, turns[2])
+    rows_before = (await rows(engine, count, s=story))[0].n
+    gone = await refused(StatePartDraft("ribbon", 1))
+    assert (gone.code, gone.details["reason"]) == ("state_not_amendable", "discarded")
+    assert (await rows(engine, scheduled, s=story))[0].n == before
+
+    other = await c.world(engine)
+    await use_structured(engine, other.story_id)
+    await ss.set_level(engine, other.story_id, "on")
+    ledger = ps.unique_name("ledger")
+    await ps.register(engine, ps.in_process_spec(ledger))
+    await ps.external_gold(engine, other.story_id, ledger)
+    with pytest.raises(EpistrelError) as external:
+        await am.amend(
+            engine,
+            other.story_id,
+            [StatePartDraft("gold", 1, scope_key=other.characters["Cal"])],
+        )
+    assert (external.value.code, external.value.details["reason"]) == (
+        "state_not_amendable",
+        "external",
+    )

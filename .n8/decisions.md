@@ -11058,3 +11058,35 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #234
 - **Decision:** C-18's stale clause misses on the smoke suite's `smoke.instruction_followed` floor (`SmokeSuite.stub_answers` patched to omit the word), not on the entailment false-support floor. #233's C-18 certifies Full on the smoke suite, so smoke floors are the ones it passed. "In use" counts reference certifications whatever their preset; it does not check that one is the newest per preset.
   **Issue:** #234
+
+### CI fixes after #228 and #234, 2026-11-02
+
+- **Decision (Rule 1):** `test_u_11` (an M4 part) named the M7 term `backfill` in its enum list, which check-lexicon refuses. It now checks M4's four trust tiers and that the database enum equals `MemoryTrustTier`. `test_config_changes` stores a canary setting, so #234's `CertificationCanarySettings` section is covered.
+  **Issue:** #228, #234
+- **Decision:** S-EFFECT-CRASH's `staged.after_claim` case failed once on CI at b040970 (`sent_before == 1`) and passes locally (6/6). It is treated as a flake for now: the next CI run on the branch decides. If it recurs it gets its own issue.
+  **Issue:** #236 (the CI run it was seen on)
+
+### #236 — amendments reach States, belief frames, turns in flight and jobs, 2026-11-02
+
+- **Decision:** a State part is a new draft type, `StatePartDraft(state, value, scope_key, valid_from_minutes, valid_to_minutes)`, naming the State by name. It writes an `amendment_parts` row of kind `proposition` with `state_id`/`scope_key` (0112's CHECK already allows that) and a position-less `state_changes` row (`set`, `source = author`, `unconditional`, `committed`, `reason = "amendment"`), and sets `written_state_change_id`.
+  **Issue:** #236
+- **Decision:** a revert writes no `cancel` row, so there is no migration and no new `state_change_kind` value. The reverted part's status (`reverted`) already takes its change out of every fold: `core.states` reads an amendment change through its part (`_select_changes`), and the revert deletes nothing. The inverse part records the State key and the value it withdrew (`patch_before`).
+  **Why:** `revert_amendment` already marks parts `reverted` for every other kind. A second marker on `state_changes` would be a second source of truth for the same fact.
+  **Issue:** #236
+- **Decision:** fold order (`model.ordered`): positioned changes in position order; an amendment change goes before the first positioned change whose story-minute (carried forward) is later than its valid start, so at an equal minute the positioned change comes first. Amendments are ordered among themselves by valid start, then id (a ULID, so creation order), not by `tx_from`. No valid start means since the story began. A window whose `valid_to` is at or before the last positioned minute in the view drops out. Through a checkpoint, amendment changes are filtered by #221's `eligible` at that checkpoint's story-minute (`world_clock.story_time_at`, as `canon()` does).
+  **Issue:** #236
+- **Decision:** `state_values.since_*` is NOT NULL, so a key whose only counted changes are amendments gets `since` = position (0, 0, 0, 0, 0), the story start (`STORY_START`). The plan said "null", which the column does not allow.
+  **Issue:** #236
+- **Decision:** the constraint check (`store.amended_checkpoints`) folds at every checkpoint (one more positioned change each), with the amendments eligible there, and refuses with 422 `state_constraint_violation`, details `{ordinal, state_id, scope_key, at_checkpoint, constraint, attempted, folded}`. A value of the wrong type is the same code with `constraint: "type"`. A revert re-checks the key and refuses the same way; #238 turns that into a conflict. Dormant chains are not re-checked; that is #239's swap check.
+  **Issue:** #236
+- **Decision:** refusals are 422 `state_not_amendable` (new code, `StateNotAmendable`), with `reason` `clock`, `derived`, `transfer_conserved`, `external` or `discarded` (a definition only in the as-recorded view).
+  **Issue:** #236
+- **Decision:** `record_amendment` marks its operation a control action (`op.control_action = True`, read by `_finalise`) when any part is a record or State part, and so does a revert of such an amendment. Proposition-only amendments reach turns in flight through #133's fact hooks (`proposition_changes`) only. The fault point is `epistrel.testing.faults.amendment_proposition_changes_skipped()` (`store.PROPOSITION_CHANGES`). A staged turn past its intent commit is not abandoned, because its later stages commit as a continuation (`_continuing`); `test_s_absent_fact__m7_staged` corrects a reply while the payment is being sent, and the turn completes.
+  **Issue:** #236
+- **Decision:** `record_version` (`core.input_versions.record_versions`) is the latest `tx_from` of an active record part on any of the operation's events (a join of `amendment_parts` and `events`). The `operations` version becomes `[membership, membership_tx, record_version]`. A job queued before this change re-runs once, because its stored two-element version differs; that costs one recompute. Memories need no change: #138's reader versions them by their text.
+  **Issue:** #236
+- **Decision:** the tests are scaled down:
+  - STATE-INTEGRITY M7 is an in-memory Hypothesis property over positioned changes and amendment `set`s, checked against an independently stated timeline oracle, plus one Postgres example (fold through checkpoints, revert, every refusal, `scheduled_events` unchanged). Amendment steps are not added to the M6 seeded Postgres sequence.
+  - EXPOSURE-FRAME M7 and S-POLLUTION M7 correct the witness's trust (an amendment that they were always friends) rather than the claim itself: the corrected fact changes the resolution (`believed` instead of `suspected`), while every key stays bounded at the frame.
+  - S-WORKER-AMEND-RACE uses turns 100–140, not 700–800, and corrects both the turn's event (overlay) and its memory (in place), so the recomputed reflection reads the amended text.
+  **Issue:** #236

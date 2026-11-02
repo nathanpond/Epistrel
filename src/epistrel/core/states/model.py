@@ -37,7 +37,9 @@ changes in position order (``(turn, slot_k, beat, step)``, then id, which is cre
 (#216, ``core.states.contingency``; never backdated). A delta on an
 undefined value leaves it undefined. Which changes are in a view (active, or as recorded, through
 a position) is the caller's; the fold is the same function everywhere, so the projection, the
-reads and the property tests agree by construction.
+reads and the property tests agree by construction. An amendment's position-less ``set`` (#236)
+sits at its valid time among the positioned changes, and its window's end reverts it
+(``ordered``).
 
 **Constraints** (FR-STATE-6's bounds half). ``violation`` names the first constraint a value
 breaks (``type``, ``min``, ``max``, ``non_negative``, ``allowed_values``, ``max_length``), or
@@ -568,10 +570,19 @@ class ChangeRow:
     value: Value | None
     delta: Decimal | None
     status: StateChangeStatus
-    position: Position
+    position: Position | None
+    """``None`` for an amendment's position-less change (#236)."""
+    valid_time: int | None = None
+    """The story-minute the change took effect (an amendment's: its part's valid start)."""
+    valid_to: int | None = None
+    """An amendment's change: the story-minute its window closes (``None``: open)."""
 
-    def order(self) -> tuple[tuple[int, int, int, int], str]:
-        return (self.position.key(), self.id)
+    @property
+    def amendment(self) -> bool:
+        return self.position is None
+
+    def order(self) -> tuple[tuple[int, ...], str]:
+        return ((-1,) if self.position is None else self.position.key(), self.id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -938,16 +949,54 @@ def step(
     return current + delta
 
 
+def ordered(changes: Iterable[ChangeRow]) -> list[ChangeRow]:
+    """``changes`` in fold order (#236): positioned changes in position order; an amendment's
+    position-less change at its valid time among them, after every positioned change whose
+    story-minute (carried forward from the last one known) is at or before it (no valid start:
+    before them all), amendments by valid time, at one point by id (creation order). An
+    amendment whose window closed (``valid_to`` at or before the last positioned change's
+    story-minute) is left out: the value reverts to the underlying fold after it."""
+    positioned = sorted((c for c in changes if c.position is not None), key=ChangeRow.order)
+    amended = sorted(
+        (c for c in changes if c.position is None),
+        key=lambda c: (c.valid_time is not None, c.valid_time or 0, c.id),
+    )
+    if not amended:
+        return positioned
+    times: list[int | None] = []
+    latest: int | None = None
+    for change in positioned:
+        if change.valid_time is not None:
+            latest = change.valid_time if latest is None else max(latest, change.valid_time)
+        times.append(latest)
+    found: list[ChangeRow] = []
+    pending = list(amended)
+    for change, at in zip(positioned, times, strict=True):
+        while pending and (
+            pending[0].valid_time is None or (at is not None and pending[0].valid_time < at)
+        ):
+            found.append(pending.pop(0))
+        found.append(change)
+    found.extend(pending)
+    return [
+        c
+        for c in found
+        if c.position is not None or c.valid_to is None or latest is None or c.valid_to > latest
+    ]
+
+
 def fold(initial: Value | None, changes: Iterable[ChangeRow]) -> Folded:
-    """The value ``changes`` leave on ``initial`` (see the module docstring)."""
+    """The value ``changes`` leave on ``initial`` (see the module docstring; ``ordered``), and
+    the position of the last positioned counted change (an amendment's has none)."""
     current: Value | UndefinedType = Undefined if initial is None else initial
     since: Position | None = None
     count = 0
-    for change in sorted(changes, key=ChangeRow.order):
+    for change in ordered(changes):
         if change.status not in COUNTED:
             continue
         current = step(current, change.kind, change.value, change.delta)
-        since = change.position
+        if change.position is not None:
+            since = change.position
         count += 1
     return Folded(current, since, count)
 
@@ -1015,6 +1064,7 @@ __all__ = [
     "from_json",
     "hhmm_minutes",
     "number",
+    "ordered",
     "step",
     "to_json",
     "validate_definition",

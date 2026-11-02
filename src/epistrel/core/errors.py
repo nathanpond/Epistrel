@@ -1436,6 +1436,17 @@ class ScheduleNotAmendable(EpistrelError):
     http_status = 422
 
 
+class StateNotAmendable(EpistrelError):
+    """A State proposition part on a State an amendment may not correct (#236): the
+    ``world_clock`` (clock advances are corrected with forward directives, the owner's decision
+    3), a derived State, a transfer-conserved State, an externally owned State or a discarded
+    definition. ``details``: ``ordinal``, ``state`` and ``reason`` (``clock``, ``derived``,
+    ``transfer_conserved``, ``external``, ``discarded``). Nothing is written."""
+
+    code = "state_not_amendable"
+    http_status = 422
+
+
 class AmendmentAlreadyReverted(EpistrelError):
     """The amendment was reverted already (#221, #238): ``details``: ``amendment_id``,
     ``reverted_by``."""

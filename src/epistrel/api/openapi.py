@@ -289,6 +289,7 @@ ERROR_STATUS: dict[str, int] = {
     "invalid_certification_record": 422,
     "invalid_view": 422,
     "schedule_not_amendable": 422,
+    "state_not_amendable": 422,
     "unknown_erasure_candidate": 422,
     "invalid_listing_status": 422,
     "invalid_profile": 422,

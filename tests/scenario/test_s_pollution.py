@@ -104,21 +104,24 @@ async def _turn(client: Any, epistrel: Any, story: str, ids: dict[str, str], *be
     assert response.status_code == 200, response.text
 
 
-async def _setup(client: Any, engine: AsyncEngine) -> tuple[str, dict[str, str], dict[str, str]]:
+def _friends(ids: dict[str, str]) -> Proposition:
+    return Proposition(
+        subject_id=ids["Bobby"],
+        predicate_id=FRIEND_OF,
+        object_id=ids["Jenni"],
+        valid_time=Interval.of(None, None),
+    )
+
+
+async def _setup(
+    client: Any, engine: AsyncEngine, *, friends: bool = True
+) -> tuple[str, dict[str, str], dict[str, str]]:
     story, ids, things = await ts.room(client, engine, *NAMES)
     async with engine.begin() as conn:
         things["the letter"] = await store.add_entity(conn, story, "item", "the letter")
     await ts.enable_testimony(engine, story, "defaulted", salience="rules")
-    await ps._author(
-        engine,
-        story,
-        Proposition(
-            subject_id=ids["Bobby"],
-            predicate_id=FRIEND_OF,
-            object_id=ids["Jenni"],
-            valid_time=Interval.of(None, None),
-        ),
-    )
+    if friends:
+        await ps._author(engine, story, _friends(ids))
     return story, ids, things
 
 
@@ -308,3 +311,42 @@ async def test_s_intra_turn_frame(
         # Resolved in the (turn 1, beat 2, step 1) frame: beat 3's truth was excluded.
         assert (held.held_from_turn, held.held_from_beat, held.held_from_step) == (1, 2, 1)
         assert held.resolution_operation_id == await _turn_op(engine, story, 3)
+
+
+@pytest.mark.part("M7", "FR-BELIEF-6; FR-STORE-20")
+async def test_s_pollution__m7(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Variant (#236): Bobby and Jenni's friendship is not in canon when Jenni speaks (turn 1),
+    and the truth enters canon unseen at turn 2. An amendment recorded after turn 2 (msg 45)
+    says they were always friends, a fact that held before turn 1 (a retcon has always been
+    true). The lazy resolution at turn 3 uses it: Bobby trusted Jenni, so he ``believed`` her
+    (without the amendment the novel claim is only ``suspected``), while turn 2's narrative
+    revelation is still excluded: the verdict is ``novel`` and every read is bounded at the
+    frame."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from tests import amendment_support as am
+
+    made = _spy(monkeypatch)
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids, things = await _setup(client, engine, friends=False)
+        bobby = ids["Bobby"]
+        await _turn(client, epistrel, story, ids, _says())
+        (exposed,) = await _exposures(engine, story, bobby, things["sent"])
+        await _turn(client, epistrel, story, ids, beat("do", "She looks away."), _truth())
+        await am.amend(engine, story, [PropositionPartDraft(_friends(ids))])
+        await _turn(client, epistrel, story, ids, _tells(bobby))
+        frame = Position(1, 0, 0, int(exposed.position_beat), 1)
+        (resolution,) = [r for r in made if r.exposure.id == str(exposed.id)]
+        assert resolution.outcome.verdict == VerdictKind.NOVEL.value
+        assert resolution.outcome.decision == "accept"
+        assert resolution.reads
+        for read in resolution.reads:
+            assert read.through is not None, read
+            assert read.through <= frame.key(), read  # turn 2's canon was never read
+        assert [r for r in resolution.reads if r.predicate_id == FRIEND_OF]
+        (held,) = await _sending(engine, story, bobby, things)
+        assert (held.polarity, held.confidence_level) == ("affirmed", "believed")

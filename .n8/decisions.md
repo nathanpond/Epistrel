@@ -10730,3 +10730,28 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Why:** the issue asks for what was applied when the turn ran.
   **Issue:** #607
 - **Console surfaces** (Engine gained capabilities): #606 (nested beliefs inspector), #607 (perception grid), #679 (effects monitor), #680 (definition editor pre-fill), #681 (staged-turn filter), #682 (typed viewpoint and 404), #661 (resolve action). These are for nathanpond/Epistrel-Console; they don't change this repo's plan.
+
+### Batch E — 2026-11-02
+
+- **Decision:** #621. `registry.turn_cache()` is a contextvar cache of `load` per story for the whole structured respond (planning, input gate and turn), and `KeyedLookup` memoizes per story. Every registry writer calls `forget()`; a rebase restart forgets too, and a nested scope reuses the outer one.
+  **Why:** a turn already captures its configuration, and the rebase catches a concurrent registry change through `predicate_registry`.
+  **Issue:** #621
+- **Decision:** #622. Migration 0106 adds two partial indexes matching the scheduler's reads exactly, rather than moving scheduling post-commit.
+  **Why:** index-only, no behaviour change.
+  **Issue:** #622
+- **Decision:** #616. JIT is off for `canon_refs`' statement alone (`set_config`, transaction-local, prior value restored), not deployment-wide, and the join is story-scoped.
+  **Why:** scoped to the read the issue names. Engine-wide `jit=off` is a broader operator choice.
+  **Issue:** #616
+- **Decision:** #617. Migration 0107 adds `ix_propositions_story_object`, a jsonb_path_ops GIN `ix_propositions_object_set` and `ix_facts_proposition`, and `_canon_where` scopes propositions to the story for object and member reads.
+  **Issue:** #617
+- **Decision:** #615. A new `core.turn_memo` (a contextvar per-turn memo, cleared on any `RevalidationRequired`) shares `load_private_records`. The belief statements are one light SQL read (no `Belief` decode), limited to `THOUGHTS_MAX`.
+  **Issue:** #615
+- **Decision:** #619. `story_subjects` (forgotten on a character insert), `story_erasures` and `is_player` are per-turn memos. Not memoized: `load_time_basis` (a turn's anchor refinement changes it), `effective_configuration` (config writes in the commit and the rebase re-capture), and `_delete_records` (handled in #620 for fresh rows). The commit statement target (≤ 220 at P-04 scale) is measured by the weekly-p04 dispatch, not locally. The local guard pins a ceiling of 800 statements for a key-room two-primary turn (755 measured).
+  **Issue:** #619
+- **Decision:** #618. The vector statement runs with `enable_sort` off for itself alone, so the HNSW index serves the ordered `LIMIT`. Retrieval touches are deferred within a structured turn and flushed once after it. The lexical arm is unchanged, since no Done-when item covers it.
+  **Why:** the docstring's design (HNSW with iterative scan). The touch is a nicety off the turn's critical path.
+  **Issue:** #618
+- **Decision:** #620 is partially addressed. `index_records(fresh=True)` skips the delete for just-inserted epistemic records, and #619's memo removes the `story_subjects` re-reads. Per-belief write batching (a rework of transitions, partitions and exposure) is not done in this pass. The weekly-p04 dispatch measures the first-turn commit; if it misses ≤ 1 s and ≤ 600 statements, #620 stays open with the numbers.
+  **Issue:** #620
+- **Batch E close-out:** weekly-p04 was dispatched on the branch (run 41413355016, `gh workflow run perf.yml -f suite=weekly-p04`). Its report is committed under perf/results/ when it lands, closing #665's evidence too.
+  **Issue:** #619, #665

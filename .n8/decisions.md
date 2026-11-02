@@ -10554,3 +10554,23 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
 - **Not changed:** epics #24–#27 and their AC; no coverage-claim changes beyond M7's three HOUSEKEEPING rows.
 - **Open for the owner:** #632's body records two calls the drafter made (Lite due-event stops stay structured-only; a refused Lite skip is not applied, the reply stands and the clock moves by pacing). Decision 1 leaves `scheduled_events.amendment_part_id` with no M7 writer, since decision 4 refuses scheduled-plan amendments.
 - **Outside scope:** ~30 milestone-less needs-triage issues from M6 (#638–#665, #679–#684); several (#650, #659, #660) touch code M7 rewrites. Triage before `/n8-exec M7`.
+
+## /n8-exec M7 — 2026-11-01
+
+Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run first, in batches A–E (the M7 description's order), with one full-suite run per batch. As in M6, CI on the milestone PR is that full run (a local full run takes about 2h18m). Feature stories keep the per-story full-suite gate.
+
+- **Decision:** #665 (weekly perf run failed) gets no code change. The failed run (41294965485) was at `7d181b35`, main before M6 merged. Its report shows a backlog: engine-only p50 ≈ 55 s against a 60 s interval, 28 turns still queued when the 120 s drain ended. The first `weekly-p04` dispatch after M6, 41333068686 at `21954c92`, passed `weekly-multi` (281/281, 0 lost). The issue closes on the `weekly-p04` dispatch that closes batch E (#619).
+  **Why:** the cause was fixed by M6's #522 spike work. A rerun at M7's head is the evidence the issue asks for, and batch E runs one anyway.
+  **Issue:** #665, #619
+- **Decision:** #684 splits C-08's inner run into four parallel shards, each on its own migrated database, with their telemetry merged. It does not raise `RUN_TIMEOUT_S`. The shards are packed by file size, and `EPISTREL_TEST_C08_SHARDS` overrides the count. Each shard keeps the 1500 s bound. Output goes to temp files, not pipes, so one shard can't block another.
+  **Why:** a higher bound only moves the cliff while `tests/scenario` grows. The CI runner has four cores, and the inner run is CPU-bound.
+  **Issue:** #684
+- **Decision:** #653: P-05 now requires S-test Lite turns only when its Lite sentinel S-test (`test_s_double_submit.py`) *passed* in the session, which the census records through `pytest_runtest_logreport`. Before, it required them whenever any scenario test was *collected*. P-05 also checks that its own turns are attributed to itself, so attribution is proven in every session.
+  **Why:** most S-tests play no Lite turn (structured and fork tests). Requiring Lite turns when the tests that make them ran keeps the check's purpose and drops the order dependence.
+  **Issue:** #653
+- **Decision:** #609: production gets one no-op hook, `idempotency.waiting_on_original(call)`, called before each wait on an in-flight original. Tests replace it (`tests/idempotency_support.waits_on_original`). The notify test turns timers off, so nothing caps the hour's wait, and enqueues only after `LoopLog` (moved to `tests/loop_support.py`) shows the loop in that wait.
+  **Why:** the issue's own suggestion. A module-level function costs nothing in production and can't change behaviour.
+  **Issue:** #609
+- **Decision:** #626: no behaviour change. A paused story keeps taking a State definition PATCH and `PATCH /clock`, and `core/pause.py` now lists them among the configuration writes a pause allows. A test pins paused → accepted and archived → 409.
+  **Why:** FR-CONC-5 refuses truth-changing calls. These are configuration writes: `config_revision` moves, `timeline_revision` doesn't, and FR-CONC-16 rebases in-flight work. Settings without policies, profile and overrides, and participation already behave this way. Refusing these two alone would be the inconsistency the issue asks about.
+  **Issue:** #626

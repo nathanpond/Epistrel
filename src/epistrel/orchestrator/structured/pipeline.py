@@ -538,6 +538,14 @@ def resolve_structured_cast(
     return ResolvedCast(actor=resolved.actor, render=(chosen,))
 
 
+def _skip_key(candidate: skipping.Candidate) -> tuple[Any, ...]:
+    """#638: one skip as the turn decided it: its beat and, declared, its reason and minutes;
+    undeclared, the sentence that narrates it."""
+    if candidate.declared:
+        return (candidate.beat, True, candidate.reason, candidate.minutes)
+    return (candidate.beat, False, candidate.text)
+
+
 def _planned_cast(cast_: ResolvedCast, plan: planner.TurnPlan) -> ResolvedCast:
     """The cast the plan renders (#174: the primaries the budget deferred left out)."""
     if len(cast_.render) <= plan.primaries:
@@ -4232,6 +4240,10 @@ async def play(
     """#196: the scheduled events' lifecycle steps the commit writes."""
     skip_seen: set[int] = set()
     """#199: the beats whose skips the turn has decided."""
+    skip_text: dict[int, str] = {}
+    """#638: each decided beat's text as it was decided (a repair that rewrites it re-scans)."""
+    skip_keys: set[tuple[Any, ...]] = set()
+    """#638: the skips the turn has decided, so a re-scanned beat decides only new ones."""
     skip_decisions: list[skipping.Decision] = []
     """#199: what the turn decided for each skip (``turn_report.clock.skips``)."""
     refused_skips: set[int] = set()
@@ -4435,10 +4447,19 @@ async def play(
             # #663: at ``prompt_only`` a skip is neither estimated nor refused.
             budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
             return
-        fresh = [b for b in target.beats if b.beat not in skip_seen]
+        # #638: a beat a repair rewrote since its skips were decided is scanned again, for the
+        # skips its new text brings (each skip is decided once).
+        fresh = [
+            b
+            for b in target.beats
+            if b.beat not in skip_seen or skip_text.get(b.beat, b.text) != b.text
+        ]
         skip_seen.update(b.beat for b in fresh)
-        found = skipping.candidates(fresh, read_clock)
+        scanned = {b.beat for b in fresh}
+        found = [c for c in skipping.candidates(fresh, read_clock) if _skip_key(c) not in skip_keys]
+        skip_keys.update(_skip_key(c) for c in found)
         if not found:
+            skip_text.update({b.beat: b.text for b in target.beats if b.beat in scanned})
             budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
             return
         player = " ".join(t for t in (typed_say, typed_do) if t)
@@ -4525,6 +4546,7 @@ async def play(
             beat = next(b for b in target.beats if b.beat == number)
             claims = state_effects.claims_of(mine_, [beat], f"{op.operation_id}:unestimated")
             _merge_repair(target, repair_ladder.settled(beat, claims))
+        skip_text.update({b.beat: b.text for b in target.beats if b.beat in scanned})
 
     def settle_skips(target: Checked) -> None:
         """#199: each beat whose skip was refused stays in the present: one the ladder could
@@ -4997,6 +5019,8 @@ async def play(
         surfacing.clear()
         paused_mid_turn[0] = False
         skip_seen.clear()
+        skip_text.clear()
+        skip_keys.clear()
         skip_decisions.clear()
         refused_skips.clear()
         fluents[0] = None
@@ -5548,6 +5572,8 @@ async def play(
                         book=book,
                         stage=turn_stage,
                     )
+                    # #638: a beat the ladder rewrote is decided again for any skip it brings.
+                    await time_skips(read_k, checked_k, [] if merged is None else merged.beats)
                     settle_skips(checked_k)
                     reach_stops(checked_k)
                     checked_k.staged = _restaged(() if merged is None else merged.staged, checked_k)
@@ -5654,6 +5680,8 @@ async def play(
             book=book,
             stage=turn_stage,
         )
+        # #638: a beat the ladder rewrote is decided again for any skip it brings.
+        await time_skips(read_k, checked, [])
         settle_skips(checked)
         reach_stops(checked)
         clock.add("repair", time.perf_counter() - repairing)

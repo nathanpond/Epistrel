@@ -560,3 +560,42 @@ async def test_s_movie__prompt_only(
             p=CLOCK_ANCHOR,
         )
         assert after[0].n == anchors[0].n
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-7,8")
+async def test_s_movie__skip_in_a_repair(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#638: a beat the ladder regenerated for another reason (here a contradicted claim) is
+    decided again for the skips its new text brings: "An hour later, the doorbell rings", with
+    nothing in the scene establishing it, is refused and its sentence removed, as it is when a
+    first render narrates it (``test_s_movie``)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await movie(client, engine, stub, watching=False)
+        flat = await ps.place_entity(engine, story, "the flat")
+        await ps.put(engine, story, ids["Jenni"], flat)
+        found = await night(
+            client,
+            stub,
+            story,
+            ids,
+            beat(
+                "narration",
+                "Jenni is not in the flat.",
+                propositions=[claim("Jenni", "located_at", "the flat", negated=True)],
+            ),
+            regenerated="Jenni stretches. An hour later, the doorbell rings.",
+        )
+        narrated = [b["text"] for b in found["beats"] if b["kind"] == "beat_narration"]
+        assert narrated == ["Jenni stretches."], narrated
+        assert found["clock"]["after"]["offset"] == TWENTY_TO_EIGHT
+        report = await turn_report(engine, story)
+        assert report["clock"]["skips"]["refused"] == 1, report["clock"]
+        assert estimations(stub) == []
+        assert await skips(engine, story) == []

@@ -185,6 +185,7 @@ from epistrel.core.enums import (
     OperationStatus,
     Provenance,
     RecordProvenance,
+    ScheduledStatus,
     StagedTurnStage,
     StateType,
     StoryStatus,
@@ -343,6 +344,7 @@ from epistrel.orchestrator.budget import (
     FOLLOW_UP,
     NARRATOR_RENDER,
     SALIENCE,
+    STOP,
     TurnBudget,
     counted_embedder,
 )
@@ -1375,6 +1377,8 @@ async def plan_modeling(
 
 
 CONCLUSIVE = (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
+CROSSABLE = frozenset({ScheduledStatus.PENDING, ScheduledStatus.POSSIBLY_DUE})
+"""#636: the events an advance can still stop at (a stop's regeneration is reserved for them)."""
 
 
 class StagedSource:
@@ -4944,6 +4948,19 @@ async def play(
             pending_lines = await state_effects.pending_outcomes(
                 conn, story_id, read.turn, books[0].names or dict(read.names)
             )
+        # #636: a due-event stop's regeneration is planned work: one is reserved (inside the
+        # cap, from the remainder) while stops apply and an open event could be crossed.
+        budget.release_named(STOP)
+        schedule_now = schedules[0]
+        if (
+            schedule_now is not None
+            and schedule_now.stops
+            and any(e.status in CROSSABLE for e in schedule_now.events)
+        ):
+            extraction = 1 if plan is not None and plan.reservation.extraction else 0
+            stop_cost = 1 + extraction + output_checks
+            if not budget.expired() and budget.can_afford_unreserved(stop_cost):
+                budget.reserve(STOP, stop_cost)
         stop_marks.clear()
         surfacing.clear()
         paused_mid_turn[0] = False
@@ -5738,6 +5755,8 @@ async def play(
             # #214: the turn's last render finished without a synchronous effect, so the
             # outcome step's reservation (O) goes back to the pool; the polish may use it.
             planner.release_outcome(budget)
+        # #636: every render and its repairs are done: an unused stop regeneration goes back.
+        budget.release_named(STOP)
         if call is not None:
             call.result_in_commit = None if staged_turn[0] else result
         composing_at = time.perf_counter()

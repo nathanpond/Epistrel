@@ -1079,3 +1079,51 @@ async def test_s_diner__belief_only_report(
         await turn(client, stub, story, ids, said)
         verdict = await statement_of(engine, story)
         assert verdict["speech"]["belief_relation"] == "consistent"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-9,16")
+async def test_s_diner__stop_under_the_default_budget(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#636: with the default turn budget, a narrator-and-character turn whose render skips
+    past the 17:00 meeting is stopped there and its interrupted beat is regenerated to end at
+    the cutoff (the reserved ``time_stop`` regeneration), never replaced by the safe fallback
+    line. Complement asserted: the clock stops at 17:00 and the sentinel past it never
+    commits."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await diner(client, engine)
+        await ck.advance(engine, story, 345)  # 16:45
+        stub.reset()
+        es.narrator(stub, es.render(beat("narration", "The diner hums around them.")))
+        ms.renders_for(
+            stub,
+            "Jenni",
+            ms.render(
+                beat("say", "We could talk forever.", effects=[skip(75)]),
+                beat("do", f"They end up {SENTINEL}."),
+            ),
+        )
+        stub.script("regeneration", [json.dumps({"text": INTERRUPTED})])
+        answer = await respond(
+            client,
+            story,
+            body(
+                ids["Cal"],
+                None,
+                do="loses track of time and talks until 6",
+                render_character_ids=[ids["Jenni"]],
+            ),
+        )
+        assert answer.status_code == 200, answer.text
+        found = answer.json()
+        texts = " ".join(b["text"] for b in found["beats"])
+        assert INTERRUPTED in texts
+        assert "changes the subject" not in texts
+        assert SENTINEL not in texts
+        assert found["clock"]["after"]["offset"] == MEETING
+        assert await ck.statuses(engine, story, meeting) == ["pending", "due", "surfaced"]

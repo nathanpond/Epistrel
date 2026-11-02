@@ -83,6 +83,11 @@ an owner-only named slot no call is charged to: nothing else may spend it (not t
 an escalation, a re-hold or any optional work). It is either released once the turn's last
 render has finished without a synchronous effect, or drawn (``draw``) into the outcome step's
 own slots when the turn is staged."""
+STOP = "stop"
+"""#636: a due-event stop's regeneration (``time_stop``: its render, extraction and output
+checks), an owner-only named slot a structured attempt reserves from the remainder when stops
+are on and an open event could be crossed; only the repair ladder's ``time_stop`` draws it, and
+an unused one is released once the renders and their repairs are done."""
 SALIENCE = "salience"
 DIRECTOR_ORDER = "director_order"
 """#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""

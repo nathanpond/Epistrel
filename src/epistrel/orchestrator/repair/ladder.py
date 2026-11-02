@@ -126,6 +126,7 @@ from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.protected import viewpoint_of
 from epistrel.core.verify.rules import Rule, VerdictKind
 from epistrel.orchestrator.budget import REPAIR as BUDGET_REPAIR
+from epistrel.orchestrator.budget import STOP as BUDGET_STOP
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.lite.prompt import prompt_hash
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -747,8 +748,13 @@ class RepairLadder:
                 break
             cost = self.regeneration_cost
             held = budget.held
-            # Optional work (#156): never a reserved call, and only while it could start.
-            if not budget.try_optional(BUDGET_REPAIR, cost):
+            stopping = any(f.tag == TIME_STOP for f in stating)
+            if stopping and budget.named.get(BUDGET_STOP, 0) >= cost:
+                # #636: a due-event stop's regeneration is planned work (its reserved slot).
+                budget.draw(BUDGET_STOP)
+                budget.hold(cost)
+            elif not budget.try_optional(BUDGET_REPAIR, cost):
+                # Optional work (#156): never a reserved call, and only while it could start.
                 degradation.append((REPAIR_DETERMINISTIC, "budget"))
                 break
             self.attempts_used += 1

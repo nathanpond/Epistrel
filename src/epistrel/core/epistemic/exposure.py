@@ -398,11 +398,16 @@ async def _subject_characters(
 
 
 async def record_exposures(
-    conn: AsyncConnection, op: BeliefOperation, exposed: Sequence[Exposed]
+    conn: AsyncConnection,
+    op: BeliefOperation,
+    exposed: Sequence[Exposed],
+    *,
+    inferred: bool = False,
 ) -> list[str]:
     """Write ``exposed`` in ``op``'s commit transaction (see the module docstring): the erasure
     guard over the witnesses and sources, the rows (``resolved`` when a transition is named),
-    their erasure index rows and one ``exposure_recorded`` event per beat. Answers the ids."""
+    their erasure index rows and one ``exposure_recorded`` event per beat. Answers the ids.
+    ``inferred`` (#228): a backfill read the witnesses' presence from the text."""
     story_id = op.story_id
     if story_id is None:
         raise InvalidRequest("an exposure belongs to a story", {"field": "operation"})
@@ -443,6 +448,7 @@ async def record_exposures(
                 "source_event_ids": [item.source_event_id],
                 "narrative_turn": op.narrative_turn,
                 "turn_variant": op.turn_variant,
+                "inferred": inferred,
             }
         )
         subject, obj = await _subject_characters(conn, story_id, item.proposition)

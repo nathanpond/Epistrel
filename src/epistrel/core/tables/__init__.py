@@ -9,6 +9,12 @@ naming them (``tests/integration/test_feedback.py``) sees each one (FR-FB-2).
 from epistrel.core.tables import feedback as _feedback  # noqa: F401 - registers the tables
 from epistrel.core.tables.amendments import amendment_parts, amendments
 from epistrel.core.tables.audit_log import audit_log
+from epistrel.core.tables.backfill import (
+    backfill_chunks,
+    backfill_conflicts,
+    capability_coverage,
+    story_backfills,
+)
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
 from epistrel.core.tables.beliefs import (
     belief_state,
@@ -100,9 +106,12 @@ __all__ = [
     "amendment_parts",
     "amendments",
     "audit_log",
+    "backfill_chunks",
+    "backfill_conflicts",
     "belief_state",
     "belief_transitions",
     "beliefs",
+    "capability_coverage",
     "certification_runs",
     "character_catalog",
     "character_snapshots",
@@ -169,6 +178,7 @@ __all__ = [
     "state_proposals",
     "state_values",
     "stories",
+    "story_backfills",
     "story_heads",
     "story_profile_overrides",
     "story_provider_bindings",

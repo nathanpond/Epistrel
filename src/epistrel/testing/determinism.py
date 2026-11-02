@@ -286,6 +286,15 @@ ORDER: dict[str, str] = {
         "t.position_beat NULLS FIRST, t.position_step NULLS FIRST, t.edge_type, "
         "t.dependent_table, t.target_kind, t.acquisition_kind NULLS FIRST, t.created_at"
     ),
+    # Backfill (#228): backfills by when they were asked for; chunks by index; conflicts by
+    # their subject; coverage by capability and range.
+    "story_backfills": f"{_STORY_RANK}, t.created_at, t.kind, t.status",
+    "certification_runs": f"{_STORY_RANK} NULLS FIRST, t.created_at, t.fingerprint",
+    "backfill_chunks": f"{_STORY_RANK}, t.chunk_index",
+    "backfill_conflicts": f"{_STORY_RANK}, t.subject::text, t.status",
+    "capability_coverage": (
+        f"{_STORY_RANK}, t.capability, t.from_turn, t.to_turn NULLS LAST, t.source"
+    ),
     # Amendments (#221): by when they were recorded, then kind; parts by their amendment's
     # time and their ordinal.
     "amendments": f"{_STORY_RANK}, t.tx_time, t.kind, t.status",

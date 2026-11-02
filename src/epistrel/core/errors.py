@@ -1488,3 +1488,32 @@ class CertificationUnavailable(EpistrelError):
 
     code = "certification_unavailable"
     http_status = 503
+
+
+class BackfillNotFound(EpistrelError):
+    """The story has no backfill (or none running, for a cancel) (#228)."""
+
+    code = "backfill_not_found"
+    http_status = 404
+
+
+class BackfillNotCancellable(EpistrelError):
+    """The story's latest backfill has ended, so it cannot be cancelled (#228): ``details``:
+    ``backfill_id``, ``status``."""
+
+    code = "backfill_not_cancellable"
+    http_status = 409
+
+
+class BackfillInProgress(EpistrelError):
+    """A backfill of the story is running (#228): ``details``: ``backfill_id``, ``status``."""
+
+    code = "backfill_in_progress"
+    http_status = 409
+
+
+class NothingToBackfill(EpistrelError):
+    """Every capability the story has on already covers its turns (#228)."""
+
+    code = "nothing_to_backfill"
+    http_status = 409

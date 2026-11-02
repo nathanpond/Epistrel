@@ -607,11 +607,15 @@ class TwoStageResult[T]:
     timeline_revision: int | None = None
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    backfill: Any = None
+    """#228: the backfill a confirmed data-producing upgrade started instead of applying
+    (``core.backfill.Started``; ``applied`` is false, and the change applies on completion)."""
 
     def kept(self) -> bool:
-        """Whether the call's result is stored under its ``Idempotency-Key``: only once it is
-        applied (a report alone writes nothing, so its key is released)."""
-        return self.applied
+        """Whether the call's result is stored under its ``Idempotency-Key``: once it is
+        applied, or once it started a backfill (a report alone writes nothing, so its key is
+        released)."""
+        return self.applied or self.backfill is not None
 
 
 async def two_stage[T](

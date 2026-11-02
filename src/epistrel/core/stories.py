@@ -125,6 +125,10 @@ from epistrel.core.tables import (
     amendment_parts,
     amendments,
     audit_log,
+    backfill_chunks,
+    backfill_conflicts,
+    capability_coverage,
+    certification_runs,
     character_snapshots,
     characters,
     client_events,
@@ -147,6 +151,7 @@ from epistrel.core.tables import (
     relationships,
     scene_state,
     stories,
+    story_backfills,
     story_heads,
     story_profile_overrides,
     story_texts,
@@ -298,6 +303,12 @@ STORY_TABLES: tuple[Table, ...] = (
     # (FR-STORE-21), and a fork copies the amendments of its copied operations.
     amendment_parts,
     amendments,
+    # Backfill (#228): the chunks and conflicts before the backfill they belong to, and the
+    # coverage (no foreign key); a fork copies only the coverage, clipped to its fork point.
+    backfill_chunks,
+    backfill_conflicts,
+    story_backfills,
+    capability_coverage,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
@@ -326,6 +337,9 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         escalations.name,
         state_proposals.name,
         reconciliation_marks.name,
+        backfill_chunks.name,
+        backfill_conflicts.name,
+        story_backfills.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -348,9 +362,10 @@ other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 
-STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name})
+STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name, certification_runs.name})
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
-column instead of removing the row. ``audit_log`` (#56) is the one member."""
+column instead of removing the row. ``audit_log`` (#56) and ``certification_runs`` (#233: a
+story's certification run is a deployment record)."""
 
 STORY_DELETE_SETTING = "epistrel.allow_story_delete"
 """The transaction setting the ``events`` trigger reads to let one story's events be deleted."""
@@ -728,6 +743,10 @@ async def create_story_from(
         )
         # The story's ids at its providers (#204), checked against each manifest.
         await providers.bind_all(conn, story_id, spec.provider_bindings)
+        # #228: which capabilities' data the story has from its first turn.
+        from epistrel.core.backfill import coverage
+
+        await coverage.seed_story(conn, story_id)
 
     async def insert_cast(conn: AsyncConnection) -> None:
         # One multi-row VALUES (not executemany) so ``age_recorded_at`` can be the commit's
@@ -1622,6 +1641,11 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
     )
     removed[config_changes.name] = result.rowcount
     await audit.detach_story(conn, story_id)  # kept, no longer naming the story
+    await conn.execute(  # #233: a certification run outlives the story it certified
+        update(certification_runs)
+        .where(certification_runs.c.story_id == story_id)
+        .values(story_id=None)
+    )
     result = await conn.execute(delete(stories).where(stories.c.id == story_id))
     removed[stories.name] = result.rowcount
     return removed

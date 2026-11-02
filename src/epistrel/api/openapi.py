@@ -217,6 +217,7 @@ ERROR_STATUS: dict[str, int] = {
     "not_found": 404,
     "fact_not_found": 404,
     "certification_not_found": 404,
+    "backfill_not_found": 404,
     "certification_run_not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
@@ -225,6 +226,9 @@ ERROR_STATUS: dict[str, int] = {
     "record_inactive": 409,
     "amendment_already_reverted": 409,
     "certification_record_conflict": 409,
+    "backfill_not_cancellable": 409,
+    "backfill_in_progress": 409,
+    "nothing_to_backfill": 409,
     "certification_run_in_progress": 409,
     "already_corrected": 409,
     "revision_conflict": 409,
@@ -565,6 +569,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Engine-proposed States (#192): an analysis request, the list, and the review (an approval
     # declares the State at an inter-turn slot, as define_state does).
     "analyze_state_proposals": ("story_archived", "story_paused", "module_off"),
+    # Backfill (#228): a gap fill, its read and its cancel.
+    "start_backfill": ("backfill_in_progress", "nothing_to_backfill", "story_archived"),
+    "get_backfill": ("backfill_not_found",),
+    "cancel_backfill": ("backfill_not_found", "backfill_not_cancellable"),
     # Certifications (#233): runs need the eval harness; one run per fingerprint at a time.
     "request_certification_run_profile": (
         "certification_run_in_progress",
@@ -812,8 +820,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # A story's configuration (#109): a preview refuses what the change itself would; the
     # assignment and the overrides (#113) are story configuration writes.
     "impact_preview": ("invalid_profile", "profile_deleted"),
-    "assign_engine_profile": ("invalid_profile", "profile_deleted", "story_archived"),
-    "set_profile_overrides": ("invalid_profile", "story_archived"),
+    "assign_engine_profile": (
+        "invalid_profile",
+        "profile_deleted",
+        "story_archived",
+        "backfill_in_progress",
+    ),
+    "set_profile_overrides": ("invalid_profile", "story_archived", "backfill_in_progress"),
     # Principal lookup and offboarding (#117): a page's cursor another page gave; a request
     # that cannot run, or a principal already being offboarded.
     "lookup_principal": ("cursor_invalid", "ledger_unavailable"),

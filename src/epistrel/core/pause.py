@@ -38,13 +38,15 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import StoryPaused
-from epistrel.core.tables import rating_check_jobs, stories
+from epistrel.core.tables import rating_check_jobs, stories, story_backfills
 
 RATING_CHECK = "rating_check"
 """The ``cause`` of a pause by a rating tightening's history check."""
 REACTIVATION_CHECK = "reactivation_check"
 """The ``cause`` of a pause by a reactivation check (#120)."""
 REACTIVATION_KIND = "reactivation"
+BACKFILL = "backfill"
+"""The ``cause`` of a pause by a backfill (#228)."""
 """``rating_check_jobs.kind`` of a reactivation check."""
 
 _holding: ContextVar[str | None] = ContextVar("epistrel_pause_holding", default=None)
@@ -65,7 +67,8 @@ def is_paused(status: str | StoryStatus | None) -> bool:
 
 
 async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
-    """What paused ``story_id``: the check's job id, its cause and its progress."""
+    """What paused ``story_id``: the check's (or backfill's, #228) job id, its cause and its
+    progress."""
     row = (
         await conn.execute(
             select(stories.c.paused_by, rating_check_jobs.c.progress, rating_check_jobs.c.kind)
@@ -73,6 +76,17 @@ async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
             .where(stories.c.id == story_id)
         )
     ).one_or_none()
+    if row is not None and row.paused_by is not None and row.kind is None:
+        backfill = (
+            await conn.execute(select(story_backfills).where(story_backfills.c.id == row.paused_by))
+        ).one_or_none()
+        if backfill is not None:
+            return {
+                "story_id": story_id,
+                "job_id": backfill.job_id or backfill.id,
+                "cause": BACKFILL,
+                "progress": backfill_progress(backfill),
+            }
     progress = dict(row.progress or {}) if row is not None else {}
     return {
         "story_id": story_id,
@@ -89,13 +103,25 @@ async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
     }
 
 
+def backfill_progress(row: Any) -> dict[str, Any]:
+    """A backfill's progress (#228): its phase, chunks extracted of its total, the last turn its
+    reconciliation committed and the range's last turn."""
+    return {
+        "phase": str(row.status),
+        "chunks_done": int(row.chunks_done or 0),
+        "chunks_total": int(row.chunks_total or 0),
+        "reconciled_through_turn": row.reconcile_cursor,
+        "last_turn": int(row.range_to_turn),
+    }
+
+
 async def paused_error(conn: AsyncConnection, story_id: str) -> StoryPaused:
     found = await details(conn, story_id)
-    what = (
-        "its rating is checked"
-        if found["cause"] == RATING_CHECK
-        else "the turns an edit would reactivate are checked"
-    )
+    what = {
+        RATING_CHECK: "its rating is checked",
+        REACTIVATION_CHECK: "the turns an edit would reactivate are checked",
+        BACKFILL: "its structured data is backfilled",
+    }[found["cause"]]
     return StoryPaused(f"story {story_id} is paused while {what}; try again when it resumes", found)
 
 
@@ -122,9 +148,11 @@ async def _refuse_in(conn: AsyncConnection, story_id: str) -> None:
 
 
 __all__ = [
+    "BACKFILL",
     "RATING_CHECK",
     "REACTIVATION_CHECK",
     "REACTIVATION_KIND",
+    "backfill_progress",
     "details",
     "holding",
     "is_paused",

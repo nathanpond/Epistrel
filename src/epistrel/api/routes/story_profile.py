@@ -23,7 +23,11 @@ makes one ``Engine`` call.
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Response
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId, route_flags
 from epistrel.api.idempotency import answered
@@ -128,6 +132,20 @@ OVERRIDES_DESCRIPTION = (
 )
 
 
+class BackfillStartedBody(BaseModel):
+    """A started backfill (#228): its id, its job and its status."""
+
+    id: str
+    job_id: str
+    status: str
+
+    @classmethod
+    def of(cls, found: Any) -> BackfillStartedBody:
+        if isinstance(found, dict):
+            return cls(id=found["id"], job_id=found["job_id"], status=found["status"])
+        return cls(id=found.id, job_id=found.job_id, status=found.status)
+
+
 class StoryProfileWriteBody(MutationResponse):
     """An assignment's or an overrides write's two stages (FR-PROF-7): ``applied``; the
     ``impact`` report on the story; and ``result``, the story's effective configuration once the
@@ -139,6 +157,12 @@ class StoryProfileWriteBody(MutationResponse):
     impact: ImpactReport
     result: EffectiveConfig | None
     config_revision: int
+    backfill: BackfillStartedBody | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="#228: the backfill a confirmed data-producing upgrade of a story with "
+        "history started (REST 202, `applied: false`): the change applies when it completes.",
+    )
 
     @classmethod
     def of(cls, write: TwoStageResult[EffectiveConfig]) -> StoryProfileWriteBody:
@@ -150,7 +174,19 @@ class StoryProfileWriteBody(MutationResponse):
             result=write.result,
             config_revision=write.config_revision,
             timeline_revision=write.timeline_revision,
+            backfill=BackfillStartedBody.of(write.backfill) if write.backfill is not None else None,
         )
+
+
+def _answered(
+    body: StoryProfileWriteBody, ctx: ContextDep, response: Response, *, replayed: bool
+) -> StoryProfileWriteBody | JSONResponse:
+    found = answered(body, ctx, response, replayed=replayed)
+    if found.backfill is None:
+        return found
+    return JSONResponse(
+        found.model_dump(mode="json"), status_code=202, headers=dict(response.headers)
+    )
 
 
 @router.post(
@@ -196,6 +232,7 @@ async def get_story_guarantees(
 @router.put(
     "/stories/{story_id}/engine-profile",
     response_model=StoryProfileWriteBody,
+    responses={202: {"model": StoryProfileWriteBody, "description": "A backfill started."}},
     operation_id="assign_engine_profile",
     summary="Assign a story's engine profile",
     description=ASSIGN_DESCRIPTION,
@@ -206,14 +243,15 @@ async def assign_engine_profile(
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
-) -> StoryProfileWriteBody:
+) -> StoryProfileWriteBody | JSONResponse:
     write = await engine.assign_engine_profile(ctx, story_id, body)
-    return answered(StoryProfileWriteBody.of(write), ctx, response, replayed=write.replayed)
+    return _answered(StoryProfileWriteBody.of(write), ctx, response, replayed=write.replayed)
 
 
 @router.patch(
     "/stories/{story_id}/profile-overrides",
     response_model=StoryProfileWriteBody,
+    responses={202: {"model": StoryProfileWriteBody, "description": "A backfill started."}},
     operation_id="set_profile_overrides",
     summary="Change a story's overrides of its profile",
     description=OVERRIDES_DESCRIPTION,
@@ -224,6 +262,6 @@ async def set_profile_overrides(
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
-) -> StoryProfileWriteBody:
+) -> StoryProfileWriteBody | JSONResponse:
     write = await engine.set_profile_overrides(ctx, story_id, body)
-    return answered(StoryProfileWriteBody.of(write), ctx, response, replayed=write.replayed)
+    return _answered(StoryProfileWriteBody.of(write), ctx, response, replayed=write.replayed)

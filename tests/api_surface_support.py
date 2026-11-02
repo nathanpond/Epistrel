@@ -26,9 +26,14 @@ from epistrel.core.tables.ownership import EntityType
 from tests.conftest import REPO_ROOT
 
 TABLE_PATH = REPO_ROOT / "tests" / "fixtures" / "api" / "fr_api_6_routes.json"
-CURRENT = "M3"
+CURRENT = "M7"
 """The milestone this table was checked at: every ``present`` row is delivered by it, every
-``not_yet`` row by a later one."""
+``not_yet`` row by a later one (or named in ``PENDING``)."""
+PENDING: dict[tuple[str, str], str] = {
+    ("POST", "/stories/{id}/backfill/conflicts/{cid}"): "#230 (M7) delivers it",
+}
+"""``not_yet`` rows of ``CURRENT``'s milestone still being built, each with the story that
+delivers it (M7 is in progress: #228 served the backfill routes, #230 serves this one)."""
 
 ITEMS = (
     "characters",
@@ -125,7 +130,7 @@ def surface_problems(app: FastAPI, table: dict[str, Any]) -> list[str]:
             if row.route not in served:
                 problems.append(f"not served: {row.method} {row.path} ({row.item})")
         elif row.status == "not_yet":
-            if _milestone(row.milestone) <= _milestone(CURRENT):
+            if _milestone(row.milestone) <= _milestone(CURRENT) and row.route not in PENDING:
                 problems.append(f"not_yet row without a later milestone: {row}")
             if row.route in served:
                 problems.append(f"served, but listed not_yet: {row.method} {row.path}")
@@ -153,6 +158,7 @@ __all__ = [
     "CURRENT",
     "ITEMS",
     "OWNED_PATHS",
+    "PENDING",
     "TABLE_PATH",
     "Row",
     "load_table",

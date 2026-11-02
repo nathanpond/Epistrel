@@ -61,6 +61,34 @@ from tests.story_support import WRITE, create, dump, public_tables, rest, story_
 AUTHOR = RequestContext(principal="p-author")
 
 
+async def _plant_m7_jobs(engine: AsyncEngine, story_id: str) -> None:
+    """A backfill of the story's (#228), planted: its row, a chunk and a resolved conflict."""
+    backfill_id = new_ulid()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO story_backfills (id, story_id, status, kind, capabilities, "
+                "range_from_turn, range_to_turn, requested_by) VALUES (:b, :s, 'cancelled', "
+                "'gap_fill', ARRAY['verification'], 1, 2, 'p-author')"
+            ),
+            {"b": backfill_id, "s": story_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO backfill_chunks (backfill_id, story_id, chunk_index, from_turn, "
+                "to_turn) VALUES (:b, :s, 0, 1, 2)"
+            ),
+            {"b": backfill_id, "s": story_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO backfill_conflicts (id, backfill_id, story_id, subject) "
+                "VALUES (:c, :b, :s, '{}'::jsonb)"
+            ),
+            {"c": new_ulid(), "b": backfill_id, "s": story_id},
+        )
+
+
 async def _amend(engine: AsyncEngine, story_id: str) -> None:
     """An amendment of the story's (#221) correcting a reply: its row and its part."""
     reply = await scalar(
@@ -592,6 +620,7 @@ async def test_s_delete(engine: AsyncEngine, settings: Settings) -> None:
             # A one-shot timer of the victim's (#71): the deletion takes it too.
             await timers.schedule(conn, "test_timer", victim, _due(), story_id=victim)
         await _amend(engine, victim)
+        await _plant_m7_jobs(engine, victim)
 
         owned = await _rows_of(engine, victim)
         assert all(owned.values()), {t: len(r) for t, r in owned.items() if not r}
@@ -725,6 +754,8 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
             # event the part that wrote it (a deferred key); all of one story.
             ("amendment_id", "amendments", "id"),
             ("amendment_part_id", "amendment_parts", "id"),
+            # #228: a backfill's chunks and conflicts name it; all of one story.
+            ("backfill_id", "story_backfills", "id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

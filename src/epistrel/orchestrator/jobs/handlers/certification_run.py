@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -41,7 +41,7 @@ from epistrel.core.profiles import certification, effective, tiers
 from epistrel.core.profiles.certification import HarnessRequest, RunEstimate
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
-from epistrel.core.tables import certification_runs, deployment_state, engine_profiles
+from epistrel.core.tables import certification_runs, deployment_state, engine_profiles, stories
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.observability.logging import get_logger
 from epistrel.orchestrator.jobs import queue
@@ -65,10 +65,10 @@ class CertificationRunRequest(BaseModel):
         json_schema_extra={"examples": [{"suites": ["smoke"], "seeds": 2, "confirm": True}]},
     )
 
-    version: int | None = Field(default=None, ge=1)
-    suites: list[str] | None = Field(default=None, min_length=1, max_length=50)
-    seeds: int = Field(default=DEFAULT_SEEDS, ge=1, le=5)
-    sample: int | None = Field(default=None, ge=SAMPLE_MIN)
+    version: StrictInt | None = Field(default=None, ge=1)
+    suites: list[StrictStr] | None = Field(default=None, min_length=1, max_length=50)
+    seeds: StrictInt = Field(default=DEFAULT_SEEDS, ge=1, le=5)
+    sample: StrictInt | None = Field(default=None, ge=SAMPLE_MIN)
     confirm: StrictBool = False
 
 
@@ -84,6 +84,8 @@ class CertificationRunAnswer:
     config_revision: int
     run_id: str | None = None
     job_id: str | None = None
+    timeline_revision: int | None = None
+    """A story's run: the story's revision (unchanged)."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
@@ -212,12 +214,23 @@ async def request_run(
             )
             or 0
         )
+        story_revision = (
+            None
+            if story_id is None
+            else int(
+                await conn.scalar(
+                    select(stories.c.timeline_revision).where(stories.c.id == story_id)
+                )
+                or 0
+            )
+        )
         if not body.confirm:
             return CertificationRunAnswer(
                 estimate=estimate,
                 fingerprint=target.fingerprint,
                 suites=suites,
                 config_revision=revision,
+                timeline_revision=story_revision,
             )
         t = certification_runs
         running = await conn.scalar(
@@ -255,6 +268,7 @@ async def request_run(
         config_revision=revision,
         run_id=run_id,
         job_id=job_id,
+        timeline_revision=story_revision,
     )
 
 

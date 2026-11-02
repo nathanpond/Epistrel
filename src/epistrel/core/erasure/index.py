@@ -841,6 +841,13 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "client_events": "ingest de-duplication: client ids and the ids of the events written",
     "audit_log": "deployment audit records: identifiers and outcomes (docs/04's M4 clause)",
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
+    "capability_coverage": "turn intervals and capability names (#228)",
+    "story_backfills": "a backfill's configurations, range, counts and report (counts and ids "
+    "only; #228)",
+    "backfill_chunks": "an extraction checkpoint: event ids, kinds, speakers' and present "
+    "characters' ids and normalized propositions, never the transcript's text (read again from "
+    "the transcript at reconciliation, so an erasure's redaction holds; #228)",
+    "backfill_conflicts": "a contradiction's subject, positions and event ids (#228)",
     "profile_certifications": "deployment records (#233): fingerprints, metric ids, counts, "
     "bounds and a report hash, no story content",
     "certification_runs": "deployment records (#233): what a certification run plays, its "

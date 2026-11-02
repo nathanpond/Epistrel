@@ -27,6 +27,7 @@ from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
+from epistrel.core import backfill as core_backfill
 from epistrel.core import config_changes as config_log
 from epistrel.core import (
     config_vocabulary,
@@ -141,6 +142,7 @@ from epistrel.core.states import api as state_api
 from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
 from epistrel.core.tables import events
+from epistrel.core.tables import stories as stories_table
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
@@ -168,6 +170,7 @@ from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
+from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
 from epistrel.orchestrator.jobs.handlers import certification_run
 from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
@@ -324,6 +327,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     # #192: an analysis requested, and a proposal approved or dismissed.
     "analyze_state_proposals": ResultCodec.of(state_proposals.AnalysisQueued, status=202),
+    # Backfill (#228): story-scoped.
+    "start_backfill": ResultCodec.of(
+        core_backfill.GapFill, status=lambda found: 202 if found.backfill is not None else 200
+    ),
+    "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
     # Certification runs and imported records (#233): deployment-scoped.
     "request_certification_run_profile": ResultCodec.of(
         certification_run.CertificationRunAnswer,
@@ -455,10 +463,14 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "delete_profile": ResultCodec.of(profiles.DeletedProfile, revision_field=_CONFIG),
     # A story's profile and overrides (#113): story-scoped configuration writes, two-stage.
     "assign_engine_profile": ResultCodec.of(
-        TwoStageResult[effective.EffectiveConfig], revision_field=_CONFIG
+        TwoStageResult[effective.EffectiveConfig],
+        revision_field=_CONFIG,
+        status=lambda found: 202 if found.backfill is not None else 200,
     ),
     "set_profile_overrides": ResultCodec.of(
-        TwoStageResult[effective.EffectiveConfig], revision_field=_CONFIG
+        TwoStageResult[effective.EffectiveConfig],
+        revision_field=_CONFIG,
+        status=lambda found: 202 if found.backfill is not None else 200,
     ),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
@@ -752,6 +764,7 @@ class Engine:
         lite_summary_job.bind(self.models)
         importance_job.bind(self.models)
         consolidation_job.bind(self.models)
+        backfill_job.bind(self.models)
         extraction_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
@@ -5936,6 +5949,7 @@ class Engine:
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
                 safety=await self._safety_facts(story_id),
+                start_job=backfill_job.start_job,
             )
 
         return await self._keyed(
@@ -5972,6 +5986,7 @@ class Engine:
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
                 safety=await self._safety_facts(story_id),
+                start_job=backfill_job.start_job,
             )
 
         return await self._keyed(
@@ -5981,6 +5996,60 @@ class Engine:
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
             keep=TwoStageResult.kept,
+        )
+
+    # -- backfill (FR-PROF-9; #228) ----------------------------------------------------------------
+
+    async def start_backfill(
+        self, ctx: RequestContext, story_id: str, request: core_backfill.BackfillRequest
+    ) -> core_backfill.GapFill:
+        """A gap fill of the story's history (#228): the capabilities its configuration has on
+        (or ``request.capabilities``), over the turns they do not cover. Without
+        ``ignore_warnings`` it answers the estimate and writes nothing; with it the story is
+        paused and a backfill job queued (REST 202). 409 ``nothing_to_backfill`` with no gap,
+        409 ``backfill_in_progress`` while one runs."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> core_backfill.GapFill:
+            return await core_backfill.gap_fill(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                start_job=backfill_job.start_job,
+            )
+
+        return await self._keyed(
+            ctx,
+            "start_backfill",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def get_backfill(self, ctx: RequestContext, story_id: str) -> core_backfill.Backfill:
+        """The story's latest backfill, any kind (#228); 404 ``backfill_not_found``."""
+        return await core_backfill.get(self.db, story_id)
+
+    async def cancel_backfill(
+        self, ctx: RequestContext, story_id: str
+    ) -> core_backfill.BackfillCancelled:
+        """Cancel the story's running backfill (#228): its rows discarded, its chunks dropped, the
+        story resumed on its configuration. 404 ``backfill_not_found``, 409
+        ``backfill_not_cancellable`` once it has ended."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> core_backfill.BackfillCancelled:
+            found = await core_backfill.cancel(self.db, story_id)
+            async with self.db.connect() as conn:
+                revision = await conn.scalar(
+                    select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)
+                )
+            return core_backfill.BackfillCancelled(found, int(revision or 0))
+
+        return await self._keyed(
+            ctx, "cancel_backfill", run, story_id=story_id, material={"story_id": story_id}
         )
 
     # -- message feedback (FR-FB-1,2; #112) --------------------------------------------------------

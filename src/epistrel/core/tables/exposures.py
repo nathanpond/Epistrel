@@ -26,7 +26,7 @@ witness's alone (never read for anyone else).
 
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Column, Index, Table, text
+from sqlalchemy import Boolean, CheckConstraint, Column, Index, Table, false, text
 
 from epistrel.core.enums import ExposureFidelity, ExposureKind, ExposureState
 from epistrel.core.membership import (
@@ -62,6 +62,8 @@ exposures = Table(
     Column("source_event_id", ulid_type(), nullable=False),
     Column("kind", pg_enum(ExposureKind, "exposure_kind"), nullable=False),
     Column("fidelity", pg_enum(ExposureFidelity, "exposure_fidelity"), nullable=False),
+    # #228: an exposure a backfill inferred from the transcript (presence read from the text).
+    Column("inferred", Boolean, nullable=False, server_default=false()),
     *position_group("position", nullable=False),
     Column(
         "state",

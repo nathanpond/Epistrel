@@ -14,7 +14,7 @@ recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#210), and the
 ``reservation_expiry`` timer kind that releases an expired State hold (#216), and the late
 settlement of an outcome at the next inter-turn slot, ``outcome_settlement`` (#217). M7 adds
-the on-demand ``certification_run`` (#233). A kind
+the on-demand ``certification_run`` (#233) and ``backfill`` (#228). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -22,6 +22,7 @@ no handler is registered for is refused at enqueue and ends ``failed`` if a work
 
 from __future__ import annotations
 
+from epistrel.orchestrator.jobs.handlers.backfill import BACKFILL_HANDLER
 from epistrel.orchestrator.jobs.handlers.certification_run import CERTIFICATION_RUN_HANDLER
 from epistrel.orchestrator.jobs.handlers.consolidation import CONSOLIDATION_HANDLER
 from epistrel.orchestrator.jobs.handlers.erasure_reconcile import (
@@ -111,6 +112,7 @@ for _handler in (
     RESERVATION_EXPIRY_HANDLER,
     SETTLE_HANDLER,
     CERTIFICATION_RUN_HANDLER,
+    BACKFILL_HANDLER,
 ):
     register(_handler)
 for _task in (

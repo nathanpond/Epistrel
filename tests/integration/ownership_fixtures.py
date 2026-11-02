@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx2 as httpx
@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import REGISTRY
+from epistrel.core.profiles.certification import install_harness
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import bearer
@@ -218,6 +219,22 @@ Prepare = Callable[[httpx.AsyncClient, Kind, Entity], Awaitable[dict[str, Any]]]
 
 
 async def _nothing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {}
+
+
+CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
+
+
+async def _harness(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The eval harness a certification run's estimate needs (#233; it plays nothing)."""
+    from epistrel.evals.certify import EvalHarness
+
+    install_harness(EvalHarness(cast(Any, None)))
+    return {}
+
+
+async def _no_harness(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    install_harness(None)
     return {}
 
 
@@ -762,6 +779,17 @@ ENTRY_READS: tuple[dict[str, str], ...] = (
 CALLS: dict[tuple[str, str], Call] = {
     # -- stories: writes
     ("POST", f"{S}/respond"): Call(200, respond_body),
+    # #228: a story with no backfill reads and cancels none (404 for every requester).
+    ("GET", f"{S}/backfill"): Call(404),
+    ("DELETE", f"{S}/backfill"): Call(404),
+    ("POST", f"{S}/backfill"): Call(409, {}),  # a story with no turn has nothing to backfill
+    # #233: a certification run's estimate (the harness installed; nothing written).
+    ("POST", f"{S}/certification-runs"): Call(
+        200, CERTIFICATION_RUN, prepare=_harness, cleanup=_no_harness
+    ),
+    ("POST", f"{P}/certification-runs"): Call(
+        200, CERTIFICATION_RUN, prepare=_harness, cleanup=_no_harness
+    ),
     ("POST", f"{S}/regenerate"): Call(200, {}, prepare=_played),
     # #598 (FR-RESP-14): the played turn replaced with new input.
     ("POST", f"{S}/correct"): Call(

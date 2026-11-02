@@ -126,6 +126,7 @@ from sqlalchemy import (
     not_,
     or_,
     select,
+    true,
     update,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -207,7 +208,7 @@ _TRUST: Mapping[RecordProvenance, MemoryTrustTier] = {
     RecordProvenance.EXTERNAL: MemoryTrustTier.EXTERNAL,
     RecordProvenance.SYSTEM_CONSOLIDATED: MemoryTrustTier.ENGINE,
     RecordProvenance.RESOLUTION: MemoryTrustTier.ENGINE,
-    RecordProvenance.BACKFILL: MemoryTrustTier.ENGINE,
+    RecordProvenance.BACKFILL: MemoryTrustTier.BACKFILL,  # #228: the lowest tier
     RecordProvenance.IN_WORLD: MemoryTrustTier.IN_WORLD,
     RecordProvenance.RENDER: MemoryTrustTier.IN_WORLD,
     RecordProvenance.DIRECTOR: MemoryTrustTier.IN_WORLD,
@@ -437,7 +438,7 @@ async def _names(conn: AsyncConnection, story_id: str) -> dict[str, str]:
 async def _check_beats(
     conn: AsyncConnection,
     story_id: str,
-    operation_id: str,
+    operation_id: str | None,
     beats: Sequence[Beat],
     cast: Mapping[str, str],
 ) -> None:
@@ -452,7 +453,7 @@ async def _check_beats(
         await conn.scalars(
             select(events.c.id).where(
                 events.c.story_id == story_id,
-                events.c.operation_id == operation_id,
+                true() if operation_id is None else events.c.operation_id == operation_id,
                 events.c.id.in_(ids),
             )
         )
@@ -490,11 +491,13 @@ async def write_episodic(
     beats: Sequence[Beat],
     *,
     settings: ProfileSettings | None = None,
+    foreign_events: bool = False,
 ) -> list[Memory]:
     """Write one episodic memory per observable beat of ``beats`` (see the module docstring),
     inside ``operation``'s commit transaction; answers the memories written (none when the
     ``episodic`` module is off). ``settings`` is the story's effective configuration when the
-    caller already holds it."""
+    caller already holds it. ``foreign_events`` (#228's backfill): the beats' events are the
+    story's earlier turns' (each memory still cites its own), not the writing operation's."""
     story_id = operation.story_id
     if story_id is None:
         raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
@@ -504,7 +507,9 @@ async def write_episodic(
     if not observable:
         return []
     cast = await _names(conn, story_id)
-    await _check_beats(conn, story_id, operation.operation_id, observable, cast)
+    await _check_beats(
+        conn, story_id, None if foreign_events else operation.operation_id, observable, cast
+    )
     rows: list[dict[str, Any]] = []
     contents: list[guard.Content] = []
     for beat in observable:

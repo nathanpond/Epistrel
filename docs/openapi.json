@@ -196,7 +196,7 @@
         "description": "One story a change affects: the capabilities it gains and loses, its backfill, whether\nthe upgrade is unavailable to it (it has history, and the change adds data-producing\ncapability), and its fingerprint before and after with the capabilities enabled and the\nquality status after: those of the configuration it would run under, which is its current\none when the upgrade is unavailable (FR-PROF-16).",
         "properties": {
           "backfill": {
-            "$ref": "#/components/schemas/Backfill"
+            "$ref": "#/components/schemas/epistrel__core__profiles__impact__Backfill"
           },
           "capabilities_after": {
             "anyOf": [
@@ -523,28 +523,33 @@
         "title": "AuthoredBeliefBody",
         "type": "object"
       },
-      "Backfill": {
-        "description": "Whether the change needs a backfill for this story, and its estimate when it does. In M3\none is needed exactly when the upgrade is unavailable (no backfill exists until M7).",
+      "BackfillCancelledBody": {
+        "description": "A cancelled backfill's final state.",
         "properties": {
-          "estimate": {
+          "backfill": {
+            "$ref": "#/components/schemas/epistrel__core__backfill__Backfill"
+          },
+          "idempotency_key": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/BackfillEstimate"
+                "type": "string"
               },
               {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Idempotency Key"
           },
-          "needed": {
-            "title": "Needed",
-            "type": "boolean"
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
           }
         },
         "required": [
-          "needed"
+          "timeline_revision",
+          "backfill"
         ],
-        "title": "Backfill",
+        "title": "BackfillCancelledBody",
         "type": "object"
       },
       "BackfillEstimate": {
@@ -569,6 +574,64 @@
           "duration_s"
         ],
         "title": "BackfillEstimate",
+        "type": "object"
+      },
+      "BackfillRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/backfill``: a gap fill of the capabilities the story has on (or of\n``capabilities``, a subset of them). Without ``ignore_warnings`` it answers the estimate\nand changes nothing.",
+        "examples": [
+          {
+            "ignore_warnings": true
+          }
+        ],
+        "properties": {
+          "capabilities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 50,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          },
+          "ignore_warnings": {
+            "default": false,
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          }
+        },
+        "title": "BackfillRequest",
+        "type": "object"
+      },
+      "BackfillStartedBody": {
+        "description": "A started backfill (#228): its id, its job and its status.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "job_id",
+          "status"
+        ],
+        "title": "BackfillStartedBody",
         "type": "object"
       },
       "BeatPropositionModel": {
@@ -5341,6 +5404,28 @@
         "title": "ConfigReplacement",
         "type": "object"
       },
+      "ConflictCounts": {
+        "description": "A backfill's contradictions by status (#230 opens and resolves them).",
+        "properties": {
+          "open": {
+            "default": 0,
+            "title": "Open",
+            "type": "integer"
+          },
+          "resolved": {
+            "default": 0,
+            "title": "Resolved",
+            "type": "integer"
+          },
+          "uncertain": {
+            "default": 0,
+            "title": "Uncertain",
+            "type": "integer"
+          }
+        },
+        "title": "ConflictCounts",
+        "type": "object"
+      },
       "ConsolidateRequest": {
         "additionalProperties": false,
         "description": "``POST /admin/stories/{id}/consolidate`` (``Engine.consolidate``): consolidate turns\n``from_turn``..``to_turn`` of ``scope`` (the shared scope when omitted) now, rerunning a\nwindow already consolidated (FR-MEM-10's explicit request).",
@@ -8244,6 +8329,21 @@
           "overrides": {
             "$ref": "#/components/schemas/OverridesRef"
           },
+          "pending_backfill": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#228: the running backfill (`{id}`) whose completion applies a held change; until then this is the configuration the story runs under.",
+            "title": "Pending Backfill"
+          },
           "profile": {
             "$ref": "#/components/schemas/ProfileRef"
           },
@@ -10116,6 +10216,30 @@
           "is_gate"
         ],
         "title": "EscalationYieldBody",
+        "type": "object"
+      },
+      "Estimate": {
+        "description": "What a backfill would take: model calls, tokens and duration (#109's formula).",
+        "properties": {
+          "duration_s": {
+            "title": "Duration S",
+            "type": "number"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "tokens": {
+            "title": "Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model_calls",
+          "tokens",
+          "duration_s"
+        ],
+        "title": "Estimate",
         "type": "object"
       },
       "EvalHooksBody": {
@@ -12466,6 +12590,57 @@
           "variant_chain"
         ],
         "title": "ForkedFromBody",
+        "type": "object"
+      },
+      "GapFillBody": {
+        "description": "A gap fill's answer: ``applied`` is false; without ``ignore_warnings`` the ``backfill``\npreview (needed, estimate, range, capabilities), with it also ``started``, the backfill\nqueued (REST 202).",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "backfill": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Preview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "started": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BackfillStartedBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "applied",
+          "backfill"
+        ],
+        "title": "GapFillBody",
         "type": "object"
       },
       "GateBody": {
@@ -22485,6 +22660,36 @@
         "title": "PredicateListBody",
         "type": "object"
       },
+      "Preview": {
+        "description": "A gap fill's preview: whether one is needed, its estimate, range and capabilities.",
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/Estimate"
+          },
+          "needed": {
+            "title": "Needed",
+            "type": "boolean"
+          },
+          "range": {
+            "$ref": "#/components/schemas/TurnRange"
+          }
+        },
+        "required": [
+          "needed",
+          "estimate",
+          "range",
+          "capabilities"
+        ],
+        "title": "Preview",
+        "type": "object"
+      },
       "PrincipalLookup": {
         "additionalProperties": false,
         "description": "Every entity linked to ``principal`` (FR-AUTH-7), owned and related, by type.",
@@ -22533,6 +22738,19 @@
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
             "title": "Profile Id",
             "type": "string"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "const": "backfill",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How a confirmed change that adds data-producing capability reaches a story with history (#228): `backfill` (the default) re-derives the history's structured data first, pausing the story, and applies the change when it completes.",
+            "title": "Upgrade Mode"
           },
           "version": {
             "anyOf": [
@@ -25772,6 +25990,19 @@
             },
             "title": "ProfileSettings",
             "type": "object"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "const": "backfill",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "As `PUT /stories/{id}/engine-profile` takes it (#228).",
+            "title": "Upgrade Mode"
           }
         },
         "required": [
@@ -27616,6 +27847,47 @@
           "kind"
         ],
         "title": "ProfileWarning",
+        "type": "object"
+      },
+      "Progress": {
+        "description": "Where a backfill is: its phase, the chunks extracted of its total, the last turn its\nreconciliation committed (``null`` before), and the range's last turn.",
+        "properties": {
+          "chunks_done": {
+            "title": "Chunks Done",
+            "type": "integer"
+          },
+          "chunks_total": {
+            "title": "Chunks Total",
+            "type": "integer"
+          },
+          "last_turn": {
+            "title": "Last Turn",
+            "type": "integer"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "reconciled_through_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciled Through Turn"
+          }
+        },
+        "required": [
+          "phase",
+          "chunks_done",
+          "chunks_total",
+          "reconciled_through_turn",
+          "last_turn"
+        ],
+        "title": "Progress",
         "type": "object"
       },
       "Projection": {
@@ -40257,6 +40529,75 @@
         "title": "StoryBody",
         "type": "object"
       },
+      "StoryCertificationRunBody": {
+        "description": "A story's run request's answer (#233): as ``CertificationRunBody``, with the story's\n``timeline_revision`` (unchanged) beside the deployment's ``config_revision``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/RunEstimate"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "suites": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suites",
+            "type": "array"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "estimate",
+          "fingerprint",
+          "suites",
+          "config_revision"
+        ],
+        "title": "StoryCertificationRunBody",
+        "type": "object"
+      },
       "StoryCharacterBody": {
         "description": "A character added to the story: its id, name and place in the cast (``ordinal``), with\nthe story's revision after the addition.",
         "properties": {
@@ -40852,6 +41193,17 @@
           "applied": {
             "title": "Applied",
             "type": "boolean"
+          },
+          "backfill": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BackfillStartedBody"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#228: the backfill a confirmed data-producing upgrade of a story with history started (REST 202, `applied: false`): the change applies when it completes."
           },
           "config_revision": {
             "title": "Config Revision",
@@ -42510,6 +42862,25 @@
         "title": "TurnMessageModel",
         "type": "object"
       },
+      "TurnRange": {
+        "description": "A range of turns, both ends included.",
+        "properties": {
+          "from_turn": {
+            "title": "From Turn",
+            "type": "integer"
+          },
+          "to_turn": {
+            "title": "To Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_turn",
+          "to_turn"
+        ],
+        "title": "TurnRange",
+        "type": "object"
+      },
       "TurnSummaryModel": {
         "description": "A turn on the page and its reply; ``message`` is null for a reply-less turn.",
         "properties": {
@@ -43988,6 +44359,104 @@
         "title": "PositionBody",
         "type": "object"
       },
+      "epistrel__core__backfill__Backfill": {
+        "description": "``GET /stories/{id}/backfill``: the story's latest backfill (see the module docstring).",
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "conflicts": {
+            "$ref": "#/components/schemas/ConflictCounts"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/Progress"
+          },
+          "range": {
+            "$ref": "#/components/schemas/TurnRange"
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "kind",
+          "capabilities",
+          "range",
+          "progress",
+          "conflicts",
+          "requested_by",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "error"
+        ],
+        "title": "Backfill",
+        "type": "object"
+      },
       "epistrel__core__memory__consolidation__Scope": {
         "additionalProperties": false,
         "description": "One viewpoint scope: shared (``characters`` ``None``) or the characters named.",
@@ -44051,6 +44520,30 @@
           "module"
         ],
         "title": "RequiredModule",
+        "type": "object"
+      },
+      "epistrel__core__profiles__impact__Backfill": {
+        "description": "Whether the change needs a backfill for this story, and its estimate when it does. In M3\none is needed exactly when the upgrade is unavailable (no backfill exists until M7).",
+        "properties": {
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BackfillEstimate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needed": {
+            "title": "Needed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "needed"
+        ],
+        "title": "Backfill",
         "type": "object"
       },
       "epistrel__core__profiles__validate__RequiredModule": {
@@ -65809,6 +66302,506 @@
         ]
       }
     },
+    "/stories/{story_id}/backfill": {
+      "delete": {
+        "description": "Cancel the running backfill (#228): its rows are discarded (never deleted), its extraction checkpoints dropped, the configuration it held is not applied, and the story resumes. The answer is the backfill's final state. 404 `backfill_not_found` without one; 409 `backfill_not_cancellable` once it has ended.",
+        "operationId": "cancel_backfill",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackfillCancelledBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `backfill_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `backfill_not_cancellable`, `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel a story's backfill",
+        "tags": [
+          "stories"
+        ]
+      },
+      "get": {
+        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report. 404 `backfill_not_found` when the story never had one.",
+        "operationId": "get_backfill",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/epistrel__core__backfill__Backfill"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `backfill_not_found`, `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story's latest backfill",
+        "tags": [
+          "stories"
+        ]
+      },
+      "post": {
+        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability the story does not have on is 422 `validation_error`. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
+        "operationId": "start_backfill",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackfillRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GapFillBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GapFillBody"
+                }
+              }
+            },
+            "description": "The backfill is queued.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `nothing_to_backfill`, `revision_conflict`, `story_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Backfill the gaps in a story's structured data",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/certification-runs": {
       "post": {
         "description": "A certification run of the story's effective configuration: its profile version with its overrides, under the deployment's models (FR-PROF-17; `version` is ignored). Without `confirm`, the answer is the estimate (`model_calls`, `tokens`, `duration_s`; `cost` only when the model matrix prices tokens), the configuration's `fingerprint` and the `suites` the run would play, and nothing is written. With `confirm: true` a `certification_run` job is queued: 202 `{run_id, job_id}` with the estimate repeated (409 `certification_run_in_progress` while a run for the same fingerprint is queued or running). `suites` defaults to every suite the configuration enables; naming one it does not enable, or an unknown one, is 422 `validation_error`. `seeds` is 1-5 (default 3) and `sample` a per-suite case cap of at least 10 (under 300 cases a zero-tolerance floor is `insufficient_evidence`, NFR-QUAL-8). The run plays the suites on scratch stories with the deployment's models and records a certification when a floor passes; it never changes the configuration. The fingerprint is captured now: a later change does not affect the run. 503 `certification_unavailable` when the process has no eval harness.",
@@ -65875,7 +66868,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CertificationRunBody"
+                  "$ref": "#/components/schemas/StoryCertificationRunBody"
                 }
               }
             },
@@ -65901,7 +66894,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CertificationRunBody"
+                  "$ref": "#/components/schemas/StoryCertificationRunBody"
                 }
               }
             },
@@ -68669,6 +69662,32 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryProfileWriteBody"
+                }
+              }
+            },
+            "description": "A backfill started.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
           "400": {
             "content": {
               "application/json": {
@@ -68715,7 +69734,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_archived`."
           },
           "422": {
             "content": {
@@ -73430,6 +74449,32 @@
               }
             }
           },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryProfileWriteBody"
+                }
+              }
+            },
+            "description": "A backfill started.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
           "400": {
             "content": {
               "application/json": {
@@ -73476,7 +74521,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_archived`."
           },
           "422": {
             "content": {

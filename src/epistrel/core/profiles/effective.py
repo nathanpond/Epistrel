@@ -63,7 +63,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -93,8 +93,10 @@ from epistrel.core.tables import (
     engine_profile_versions,
     engine_profiles,
     stories,
+    story_backfills,
     story_profile_overrides,
 )
+from epistrel.core.tables.backfill import ACTIVE_STATUSES
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 STORED = ("settings",)
@@ -845,6 +847,12 @@ class EffectiveConfig(BaseModel):
     fingerprint: str
     capabilities: list[str]
     quality_status: QualityStatus
+    pending_backfill: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="#228: the running backfill (`{id}`) whose completion applies a held "
+        "change; until then this is the configuration the story runs under.",
+    )
 
 
 def view(found: StoryProfile, facts: RuntimeFacts) -> EffectiveConfig:
@@ -871,7 +879,16 @@ async def read(db: AsyncEngine, story_id: str, facts: RuntimeFacts) -> Effective
     story."""
     async with db.connect() as conn:
         found = await effective_configuration(conn, story_id)
-    return view(found, facts)
+        pending = await conn.scalar(
+            select(story_backfills.c.id).where(
+                story_backfills.c.story_id == story_id,
+                story_backfills.c.status.in_(ACTIVE_STATUSES),
+            )
+        )
+    shown = view(found, facts)
+    if pending is not None:
+        shown = shown.model_copy(update={"pending_backfill": {"id": str(pending)}})
+    return shown
 
 
 async def read_guarantees(db: AsyncEngine, story_id: str) -> guarantees.GuaranteeTable:

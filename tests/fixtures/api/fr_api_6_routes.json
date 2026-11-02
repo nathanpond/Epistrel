@@ -347,22 +347,22 @@
     {
       "item": "per story — backfill start",
       "method": "POST",
-      "path": "/stories/{id}/backfill",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill",
+      "status": "present",
       "milestone": "M7"
     },
     {
       "item": "per story — backfill progress",
       "method": "GET",
-      "path": "/stories/{id}/backfill",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill",
+      "status": "present",
       "milestone": "M7"
     },
     {
       "item": "per story — backfill cancel",
       "method": "DELETE",
-      "path": "/stories/{id}/backfill",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill",
+      "status": "present",
       "milestone": "M7"
     },
     {

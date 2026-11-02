@@ -13,7 +13,7 @@ Every handler makes one ``Engine`` call (``core.profiles.certification`` holds t
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Body, Path, Query, Response
 from fastapi.responses import JSONResponse
@@ -21,7 +21,7 @@ from pydantic import Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
-from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.api.responses import DeploymentMutationResponse, MutationResponse
 from epistrel.api.routes.engine_profiles import PROFILES_TAG
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.profiles.certification import (
@@ -91,10 +91,39 @@ class CertificationRunBody(DeploymentMutationResponse):
         )
 
 
+class StoryCertificationRunBody(MutationResponse):
+    """A story's run request's answer (#233): as ``CertificationRunBody``, with the story's
+    ``timeline_revision`` (unchanged) beside the deployment's ``config_revision``."""
+
+    estimate: RunEstimate
+    fingerprint: str
+    suites: list[str]
+    config_revision: int
+    run_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    job_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @classmethod
+    def of(cls, found: CertificationRunAnswer) -> StoryCertificationRunBody:
+        return cls(
+            estimate=found.estimate,
+            fingerprint=found.fingerprint,
+            suites=list(found.suites),
+            run_id=found.run_id,
+            job_id=found.job_id,
+            config_revision=found.config_revision,
+            timeline_revision=found.timeline_revision or 0,
+        )
+
+
 def _answer(
     found: CertificationRunAnswer, ctx: ContextDep, response: Response
-) -> CertificationRunBody | JSONResponse:
-    body = answered(CertificationRunBody.of(found), ctx, response, replayed=found.replayed)
+) -> CertificationRunBody | StoryCertificationRunBody | JSONResponse:
+    shown = (
+        StoryCertificationRunBody.of(found)
+        if found.timeline_revision is not None
+        else CertificationRunBody.of(found)
+    )
+    body = answered(shown, ctx, response, replayed=found.replayed)
     if found.run_id is None:
         return body
     return JSONResponse(
@@ -123,13 +152,13 @@ async def request_certification_run_profile(
     engine: EngineDep,
 ) -> CertificationRunBody | JSONResponse:
     found = await engine.request_certification_run(ctx, body, profile_id=profile_id)
-    return _answer(found, ctx, response)
+    return cast(CertificationRunBody | JSONResponse, _answer(found, ctx, response))
 
 
 @router.post(
     "/stories/{story_id}/certification-runs",
-    response_model=CertificationRunBody,
-    responses={202: {"model": CertificationRunBody, "description": "The run is queued."}},
+    response_model=StoryCertificationRunBody,
+    responses={202: {"model": StoryCertificationRunBody, "description": "The run is queued."}},
     operation_id="request_certification_run_story",
     summary="Certify a story's effective configuration",
     description=(
@@ -144,9 +173,9 @@ async def request_certification_run_story(
     response: Response,
     ctx: ContextDep,
     engine: EngineDep,
-) -> CertificationRunBody | JSONResponse:
+) -> StoryCertificationRunBody | JSONResponse:
     found = await engine.request_certification_run(ctx, body, story_id=story_id)
-    return _answer(found, ctx, response)
+    return cast(StoryCertificationRunBody | JSONResponse, _answer(found, ctx, response))
 
 
 @router.get(

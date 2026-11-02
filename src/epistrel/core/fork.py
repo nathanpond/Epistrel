@@ -669,6 +669,13 @@ OVERRIDES: dict[str, dict[str, str]] = {
     # Bitemporal canon (#133): links to other versions name the fork's copies; a version
     # closed by one the fork does not copy (after N) keeps its tx_to but loses the link, and is
     # current in the fork, since no copied row closes it.
+    # #228: a closed coverage interval past the fork point ends there; an open one stays open.
+    "capability_coverage": {
+        "to_turn": "CASE WHEN t.to_turn IS NULL THEN NULL ELSE LEAST(t.to_turn, "  # noqa: S608
+        "(SELECT COALESCE(max(o.narrative_turn), 0) FROM operations o "
+        f"WHERE o.operation_id IN (SELECT old_id FROM {_MAP} WHERE kind = 'operation'))) END",
+        "operation_id": "NULL",
+    },
     "facts": {
         # #154: a version a regeneration reverted (``revised``, out of the timeline) that the
         # fork copies into its active timeline is committed there again, as a swap back would.
@@ -828,6 +835,11 @@ def _overrides(table: Table) -> dict[str, str]:
 
 _EVENT_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'event')"  # noqa: S608
 _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa: S608
+_THROUGH = (
+    "(SELECT COALESCE(max(o.narrative_turn), 0) FROM operations o "  # noqa: S608
+    f"WHERE o.operation_id IN {_OPERATION_IDS})"
+)
+"""The last turn a fork copies (its fork point)."""
 
 ROW_FILTERS: dict[str, str] = {
     events.name: f"t.id IN {_EVENT_IDS}",
@@ -839,6 +851,8 @@ ROW_FILTERS: dict[str, str] = {
         f"AND t.target_id::text IN (SELECT old_id FROM {_MAP})"
     ),
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
+    # Capability coverage (#228): the intervals that begin at or before the fork point.
+    "capability_coverage": f"t.from_turn <= {_THROUGH}",
     # Amendments (#221): an amendment follows its operation (the default); its parts follow it.
     "amendment_parts": (
         f"t.amendment_id::text IN (SELECT old_id FROM {_MAP} WHERE kind = 'amendments')"  # noqa: S608

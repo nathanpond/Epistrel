@@ -10930,3 +10930,62 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #243
 - **Decision:** C-17 also stays in the `integration-a-h` shard (about 75 s), so the job duplicates it rather than moving it. Moving it would change the shard partition `test_ci_shards_partition_the_test_files` guards.
   **Issue:** #243
+
+### #228 — backfill, 2026-11-02
+
+- **Decision (scope, logged as partial):** what this delivers:
+  - the backfill engine, coverage, pause and cancel;
+  - chunked extraction with per-chunk checkpoints, and ordered reconciliation into dormant rows;
+  - completion that applies the held configuration;
+  - the three routes and the single-story trigger.
+
+  Reconciliation writes:
+  - facts, from `extraction_backstop` claims normalized against the story's entities;
+  - episodic memories, trust tier `backfill`;
+  - inferred exposures for the characters present at a `say`;
+  - `last_mention` conflicts.
+
+  Not built yet, still open on the issue:
+  - clock advances, `time_estimation` and `skipped_skips`. They need the story's clock State, which a Lite story lacks until #231 materializes deferred genesis content; the rest of the clock work follows that.
+  - narrated State changes (`state_changes.inferred`, #190's detector).
+  - commitments and thunks (`salience_detection`).
+  - placements (`located_at`).
+  - observation and testimony transitions; a backfill writes unresolved exposures, which later turns resolve lazily as they do live ones.
+  - the losing statement labelled as an in-world claim (#166). The earlier version is closed, and the conflict row records both statements.
+  - `belief_transitions.inferred`.
+  - the `/health` and audit-log rows for cancel or failure.
+
+  #228 therefore stays open after the milestone PR, which names it without `Closes`.
+  **Issue:** #228
+- **Decision:** extraction calls `extraction_backstop` once per turn: every message of the turn is a beat, and a turn's claims land on their message. The planner had one call per chunk; the purpose caps its beats per call (`EXTRACTION_MAX_BEATS`). A claim's time expression marks it `changed` (a narrated change) and is dropped before normalization, so the clock can place it later (#199).
+  **Issue:** #228
+- **Decision:** contradiction:
+  - **When:** a functional key whose value differs from the backfill's last open-ended version (`valid_to` null), with no change narrated. An earlier remainder of a superseded version is not compared.
+  - **Resolution:** canon's own supersession makes the later statement canon.
+  - **Fixture:** the planner's car colours become Bobby's `age` (thirty at 100, thirty-five at 400; turned thirty-five at 250 in the changed variant), because the core vocabulary has no colour predicate.
+  **Issue:** #228
+- **Decision:** episodic memories follow the structured `pipeline` capability, not `episodic`, which is a behavioral module and so never in coverage. The writer still checks the target configuration has `episodic` on.
+  **Issue:** #228
+- **Decision:** coverage levels:
+  - Coverage records the pipeline's level (`lite`/`structured`) beside the clock's and States'. A Lite story's `pipeline` interval does not cover a `structured` upgrade, so the gap is real.
+  - Every applied configuration change extends `live` coverage from the story's next turn (`coverage.extend_live`). Story creation and genesis seed it from turn 1 (`coverage.seed_story`).
+  **Issue:** #228
+- **Decision:** checkpoint and live-writer details:
+  - The extraction checkpoint keeps ids, kinds, speakers, presence and propositions, never the transcript's text; reconciliation reads the text again from the transcript, so an erasure's redaction holds. All four tables are therefore in `EXEMPT_TABLES` with their reasons, not subject writers.
+  - The backfill's writes go through the live writers, which are registered write paths: `commit_fact`, `memory.records`, `epistemic.exposure`.
+  - `write_episodic` gains `foreign_events` (beats citing earlier turns' events), and `record_exposures` gains `inferred`.
+  **Issue:** #228
+- **Decision:** the job takes one step per run and requeues itself at once:
+  - **begin:** the step opens a committed `backfill` operation.
+  - **chunks:** each run extracts one chunk.
+  - **reconcile:** each run reconciles one span, reactivating the operation's earlier rows inside its transaction and making them all `dormant` again before it commits.
+  - **complete:** the final step completes the backfill.
+
+  It runs on the backfill's own story job (an erasure block holds it). `backfill_parallelism` is not used: one chunk per run is the checkpoint.
+  **Issue:** #228
+- **Decision:** the route table and parity:
+  - `fr_api_6_routes.json` flips the three backfill rows to `present`.
+  - `CURRENT` moves to `M7`, and `PENDING` names the conflicts route as #230's.
+  - The gap-fill preview is stored under its `Idempotency-Key` like a write, so a replay answers it.
+  - C-03 plays a gap fill: preview, start, read, cancel.
+  **Issue:** #228

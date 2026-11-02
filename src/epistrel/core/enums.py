@@ -197,14 +197,28 @@ class MemoryKind(StrEnum):
 class MemoryTrustTier(StrEnum):
     """How far a memory is trusted (FR-MEM-4; #135), derived mechanically from its provenance
     (``core.memory.records.trust_tier_of``): ``author`` (the author or a scenario seed),
-    ``external`` (an external authority), ``engine`` (consolidation, a resolution, a backfill)
-    or ``in_world`` (what happened or was said in the story). Postgres enum
+    ``external`` (an external authority), ``engine`` (consolidation, a resolution)
+    ``in_world`` (what happened or was said in the story) or ``backfill`` (re-derived from the
+    transcript, #228; the lowest). Postgres enum
     ``memory_trust_tier``."""
 
     AUTHOR = "author"
     EXTERNAL = "external"
     ENGINE = "engine"
     IN_WORLD = "in_world"
+    BACKFILL = "backfill"
+    """#228: re-derived from the transcript, the lowest tier (below ``in_world``)."""
+
+
+TRUST_RANK: dict[MemoryTrustTier, int] = {
+    MemoryTrustTier.AUTHOR: 4,
+    MemoryTrustTier.EXTERNAL: 3,
+    MemoryTrustTier.ENGINE: 2,
+    MemoryTrustTier.IN_WORLD: 1,
+    MemoryTrustTier.BACKFILL: 0,
+}
+"""#228's explicit order of the trust tiers (higher wins a tie), never the enum's order:
+``author > external > engine > in_world > backfill``."""
 
 
 class RetrievalTier(StrEnum):

@@ -69,6 +69,7 @@ from epistrel.api.routes.admin.stories import (
     RebuildQueuedResponse,
     RebuildResponse,
 )
+from epistrel.api.routes.backfill import BackfillCancelledBody, GapFillBody
 from epistrel.api.routes.catalog_characters import (
     CharacterDraftBody,
     CharacterListBody,
@@ -84,7 +85,11 @@ from epistrel.api.routes.catalog_scenarios import (
     ScenarioStatusBody,
     ScenarioVersionsBody,
 )
-from epistrel.api.routes.certifications import CertificationImportedBody, CertificationRunBody
+from epistrel.api.routes.certifications import (
+    CertificationImportedBody,
+    CertificationRunBody,
+    StoryCertificationRunBody,
+)
 from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
@@ -178,6 +183,7 @@ from epistrel.api.routes.timeline import (
 )
 from epistrel.config import Settings
 from epistrel.core import outbox as core_outbox
+from epistrel.core.backfill import BackfillRequest
 from epistrel.core.catalog.characters import (
     CharacterCreate,
     CharacterPatch,
@@ -1313,6 +1319,32 @@ def _steps() -> list[Step]:
             "consolidate",
             lambda ids: Rest("POST", f"/admin{s}/consolidate", {"from_turn": 1, "to_turn": 2}),
             lambda e, ids: _consolidate(e, ids["story"]),
+        ),
+        # #228: a gap fill (the Lite pipeline's coverage dropped, so its turns are a gap): the
+        # preview, the backfill started, read, and cancelled (the story resumes).
+        Step(
+            "start_backfill",
+            lambda ids: Rest("POST", f"{s}/backfill", {}),
+            lambda e, ids: _gap_fill(e.start_backfill(CTX, ids["story"], BackfillRequest())),
+            prepare=_coverage_gap,
+        ),
+        Step(
+            "start_backfill",
+            lambda ids: Rest("POST", f"{s}/backfill", {"ignore_warnings": True}),
+            lambda e, ids: _gap_fill(
+                e.start_backfill(CTX, ids["story"], BackfillRequest(ignore_warnings=True))
+            ),
+            status=lambda body: 202 if body.get("started") else 200,
+        ),
+        Step(
+            "get_backfill",
+            lambda ids: Rest("GET", f"{s}/backfill"),
+            lambda e, ids: _dumped(e.get_backfill(CTX, ids["story"])),
+        ),
+        Step(
+            "cancel_backfill",
+            lambda ids: Rest("DELETE", f"{s}/backfill"),
+            lambda e, ids: _cancelled(e.cancel_backfill(CTX, ids["story"])),
         ),
         Step(
             "archive_story",
@@ -3411,6 +3443,23 @@ async def _dumped(call: Awaitable[BaseModel]) -> dict[str, Any]:
     return dump(await call)
 
 
+async def _coverage_gap(engine: Engine, ids: Ids) -> None:
+    """Drop the story's ``pipeline`` coverage: its turns become the gap fill's range (#228)."""
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
+            {"s": ids["story"]},
+        )
+
+
+async def _gap_fill(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(GapFillBody.of(await call))
+
+
+async def _cancelled(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(BackfillCancelledBody.of(await call))
+
+
 async def _harness(engine: Engine, ids: Ids) -> None:
     """The eval harness the certification-run estimate needs (#233), over this surface's
     engine (the estimate plays nothing)."""
@@ -3419,8 +3468,9 @@ async def _harness(engine: Engine, ids: Ids) -> None:
 
 async def _certification_run(call: Awaitable[Any]) -> dict[str, Any]:
     found = await call
-    body = CertificationRunBody.of(found)
-    return dump(body)
+    if found.timeline_revision is not None:
+        return dump(StoryCertificationRunBody.of(found))
+    return dump(CertificationRunBody.of(found))
 
 
 async def _certification_imported(call: Awaitable[Any]) -> dict[str, Any]:

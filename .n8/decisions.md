@@ -10824,3 +10824,14 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #649
 - **Decision:** the scenario's "Marcus, who holds no belief" complement is played as the same line in a story without the fiat (the room's cast is Cal, Jenni and Bobby). The locked-canon complement is in the unit row.
   **Issue:** #649
+
+### #662 — the Lite read set covers time and tracked values, 2026-11-02
+
+- **Decision:** the members `time` and `tracked_values` hash the section lines themselves, as `core.lite_context.read_lite_context` (moved from `orchestrator/lite/context.py`, which re-exports it) reads them. They are not separate ids and offsets.
+  **Why:** one reader for the prompt and the read set, so the hash is exactly what the prompt shows and cannot drift.
+  **Effect:** they read empty unless the story runs the Lite pipeline, so a structured turn never regenerates for them; its own keyed read set covers States and the clock. `LiteReadSet.before_turn` lets a regenerate hash the clock as its turn started.
+  **Issue:** #662
+- **Decision:** the test covers the State-set race by bypassing the slot (`core.states.api.turn_slot` patched to no slot). The State API takes the story's turn slot, so through the API a set waits (`queue`) or is 423 (`reject`) while a Lite turn generates. Clock advances and scheduled-event changes take no slot, so they race through the API as written.
+  **Issue:** #662
+- **Decision:** M2's member pins narrow to the M2/M3 prefix (`test_read_set_members_are_fixed`, and `test_revisions`' read-set keys). `test_i_18__m7_members` holds the full pin.
+  **Issue:** #662

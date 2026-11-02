@@ -817,7 +817,7 @@ async def _play(
         op,
         begin=begin,
         generate=generate,
-        read_set=LiteReadSet(),
+        read_set=LiteReadSet(before_turn=before_turn),
         config_recheck=output_recheck(db, models, budget),
     )
     timing.observe(calls)

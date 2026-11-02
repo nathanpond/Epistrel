@@ -18,6 +18,8 @@ test ID per milestone in one file."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
+from collections.abc import AsyncIterator
 from typing import Annotated, Any, get_args, get_origin
 
 import annotated_types
@@ -28,6 +30,7 @@ from pydantic.fields import FieldInfo
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.concurrency import READ_SET_MEMBERS, LiteReadSet, register_read_set_member
 from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import BudgetBelowSafetyMinimum, GuardrailViolation
@@ -36,6 +39,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.propositions import store
 from epistrel.core.ratings import story_guidance
 from epistrel.core.settings_schema import StorySettings
+from epistrel.core.states import api as state_api
 from epistrel.core.stories import StorySpec
 from epistrel.core.story_settings import update_story_settings
 from epistrel.core.summary import included_segments
@@ -1173,3 +1177,143 @@ async def test_i_18__m6(stub_settings: Settings, engine: AsyncEngine) -> None:
         assert "## Tracked values" not in sent
         assert "clock" not in plain
         assert await rows(engine, CLOCK_ROWS, s=off) == []
+
+
+async def _held(
+    client: Any, engine: AsyncEngine, stub: Any, story: str, actor: str, change: Any
+) -> tuple[list[Any], list[dict[str, Any]]]:
+    """A Lite turn held in its generation while ``change`` (a coroutine factory) commits;
+    answers the turn's generation calls and its attempt records."""
+    stub.reset()
+    latch = stub.hold("generation")
+    task = asyncio.ensure_future(respond(client, story, body(actor, "Anything new?")))
+    await asyncio.wait_for(latch.entered.wait(), 5)
+    _ok(await change())
+    latch.release()
+    turn = await task
+    assert turn.status_code == 200, turn.text
+    attempts = await scalar(
+        engine,
+        "SELECT attempts FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "ORDER BY narrative_turn DESC, turn_variant DESC LIMIT 1",
+        s=story,
+    )
+    return generation_calls(stub), attempts
+
+
+@contextlib.asynccontextmanager
+async def _no_slot(db: Any, story_id: str, operation_id: str) -> AsyncIterator[None]:
+    """``core.states.api.turn_slot`` without the slot: a State write that commits while the
+    turn generates (the State API itself waits for the turn's slot, so only a writer outside it
+    can race the turn; the read set must still cover it)."""
+    del db, story_id, operation_id
+    yield
+
+
+@pytest.mark.part("M7", "FR-CONC-4; FR-LITE-5")
+async def test_i_18__m7_read_set(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#662 (FR-CONC-4, FR-LITE-5): the Lite read set covers what the prompt-only sections show.
+    A Lite turn with the prompt-only clock and States regenerates when, while it generates, (a)
+    the player-visible ``gold`` it shows is set, (b) the clock is advanced through the API, or
+    (c) the scheduled event it shows is rescheduled: two generation calls, the attempt records
+    ``regenerate`` naming the touched member, and the second prompt shows the new value, time
+    or event time.
+
+    Complements: setting the hidden ``trust`` (not shown) moves the revision but the turn
+    rebases, with one call; the same members on a story with both modules off read empty, so
+    a change elsewhere never makes it regenerate."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, overrides=LITE_FORMS)
+        await clock_support.anchor_at(engine, story, 10 * 60)
+        s = f"/stories/{story}"
+        visible = {"name": "gold", "type": "number", "initial_value": 10}
+        hidden = {"name": "trust", "type": "number", "initial_value": 3, "visibility": "hidden"}
+        for definition in (visible, hidden):
+            _ok(
+                await client.post(f"{s}/states", json={"definition": definition}, headers=WRITE),
+                201,
+            )
+        monkeypatch.setattr(state_api, "turn_slot", _no_slot)
+        made = _ok(
+            await client.post(
+                f"{s}/scheduled-events",
+                json={"proposition": "the delivery", "planned": 60},
+                headers=WRITE,
+            ),
+            201,
+        )
+        event = made["event"]["event_id"]
+        actor = ids[PLAYER]
+
+        def gold() -> Any:
+            return client.put(
+                f"{s}/states/gold", json={"delta": 7, "reason": "a purse"}, headers=WRITE
+            )
+
+        def advance() -> Any:
+            return client.post(
+                f"{s}/clock/advance", json={"minutes": 45, "reason": "they wait"}, headers=WRITE
+            )
+
+        def reschedule() -> Any:
+            return client.patch(
+                f"{s}/scheduled-events/{event}", json={"planned": 300}, headers=WRITE
+            )
+
+        def section(call: Any, title: str) -> str:
+            return system_of(call).split(f"## {title}\n", 1)[1].split("\n\n", 1)[0]
+
+        for change, member, title, line in (
+            (gold, "tracked_values", "Tracked values", "- gold: "),
+            (advance, "time", "Time", "It is now "),
+            (reschedule, "time", "Time", "Scheduled: the delivery, at "),
+        ):
+            calls, attempts = await _held(client, engine, stub, story, actor, change)
+            assert len(calls) == 2, member
+            regenerated = [a for a in attempts if a["outcome"] == "regenerate"]
+            assert regenerated, attempts
+            assert member in regenerated[0]["touched"], attempts
+            old, new = (next(x for x in section(c, title).splitlines() if line in x) for c in calls)
+            assert old != new, (member, old, new)  # the regenerated prompt shows the change
+        assert "- gold: 17" in section(generation_calls(stub)[-1], "Tracked values")
+
+        def trust() -> Any:
+            return client.put(
+                f"{s}/states/trust", json={"delta": 1, "reason": "kindness"}, headers=WRITE
+            )
+
+        calls, attempts = await _held(client, engine, stub, story, actor, trust)
+        assert len(calls) == 1
+        assert [a["outcome"] for a in attempts] == ["rebase"], attempts
+
+        off, off_ids = await new_story(client, PLAYER, FIRST)
+        async with engine.connect() as conn:
+            values = await LiteReadSet().values(conn, off)
+        assert (values["time"], values["tracked_values"]) == ([], [])
+        stub.reset()
+        await played(client, off, body(off_ids[PLAYER], "Hello?"))
+        assert len(generation_calls(stub)) == 1
+
+
+@pytest.mark.part("M7", "FR-CONC-4")
+def test_i_18__m7_members() -> None:
+    """#662 (FR-CONC-4): the full Lite read-set member tuple, the M2/M3 members leading in order
+    and #662's ``time`` and ``tracked_values`` appended (#244 appends after them); a name that is
+    no member still cannot be registered."""
+    assert READ_SET_MEMBERS == (
+        "window",
+        "segments",
+        "pins",
+        "instructions",
+        "definitions",
+        "guidance_text",
+        "scenario_text",
+        "director_notes",
+        "time",
+        "tracked_values",
+    )
+    with pytest.raises(ValueError, match="not a Lite read-set member"):
+        register_read_set_member("guardrails", lambda conn, story, spec: None)  # type: ignore[arg-type,return-value]

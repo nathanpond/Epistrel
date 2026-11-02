@@ -695,6 +695,9 @@ class Requested:
     planned_index: int | None = None
     """#216: which of the turn's planned effects (``planned(beats)``'s order) it is a side of:
     a contingent story-owned side of the same effect waits on it."""
+    provider: tuple[str, str] | None = None
+    """#639: the ``(provider, value)`` a dispatched request goes to when its State is not in the
+    turn's book (an external clock's advance)."""
     authorized: tuple[str, str] | None = None
     """#214: the declared effect it is a side of, as #188 authorized it at intent: ``(State,
     source)`` (the declared State, not a transfer's other side; ``source`` an
@@ -817,10 +820,14 @@ def requested_of(book: Book, beats: Sequence[TurnBeat]) -> list[Requested]:
     return found
 
 
-def time_requests(timing: TurnTiming) -> list[Requested]:
+def time_requests(
+    timing: TurnTiming, *, dispatch: bool = False, provider: tuple[str, str] | None = None
+) -> list[Requested]:
     """An external world clock's advances for the turn (#194's pacing increments and declared
-    skips, #196's stops already cut them) as requests of kind ``time_advance`` (FR-CLOCK-5): the
-    consumer's clock is never moved by Epistrel."""
+    skips, #196's stops already cut them) as requests of kind ``time_advance`` (FR-CLOCK-5):
+    Epistrel never moves the clock itself. #639 (FR-EXT-10): with a write-capable provider
+    (``dispatch``) each is dispatched through the outbox (its minutes the effect's ``delta``,
+    to ``provider``'s value); with a read-only one the consumer applies it."""
     return [
         Requested(
             effect_id=new_ulid(),
@@ -831,6 +838,9 @@ def time_requests(timing: TurnTiming) -> list[Requested]:
             beat=a.beat_position,
             minutes=int(a.minutes),
             step=a.step_position,
+            delta=int(a.minutes) if dispatch else None,
+            dispatch=dispatch,
+            provider=provider if dispatch else None,
         )
         for a in timing.advances
         if a.minutes
@@ -1181,21 +1191,30 @@ def outbox_rows(book: Book, requested: Sequence[Requested]) -> list[core_outbox.
     found: list[core_outbox.Intended] = []
     for r in requested:
         definition = book.definitions.get(r.state)
-        if not r.dispatch or definition is None or definition.provider_id is None:
+        if r.provider is not None:
+            provider_name, value_name = r.provider
+        elif definition is not None and definition.provider_id is not None:
+            provider_name = definition.provider_id
+            value_name = definition.external_value_name or definition.name
+        else:
+            continue
+        if not r.dispatch:
             continue
         effect: dict[str, Any] = {"kind": r.kind, "state": r.state, "reason": r.reason}
         if r.delta is not None:
             effect["delta"] = r.delta
         else:
             effect["value"] = r.value
+        if r.minutes is not None:
+            effect["minutes"] = r.minutes
         if r.authorized is not None:
             # #214: what #188 authorized at intent, re-checked at claim (never sent on).
             effect["authorized"] = {"state": r.authorized[0], "source": r.authorized[1]}
         found.append(
             core_outbox.Intended(
                 id=r.effect_id,
-                provider_name=definition.provider_id,
-                value_name=definition.external_value_name or definition.name,
+                provider_name=provider_name,
+                value_name=value_name,
                 scope_key=r.scope_key,
                 effect=effect,
                 beat=r.beat,

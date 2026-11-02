@@ -85,6 +85,11 @@ class ClockRead:
     max_unprompted: int = 1440
     """#199 (FR-CLOCK-8): the clock's ``max_unprompted_skip_minutes`` (0: no model-initiated
     skip)."""
+    dispatch: bool = False
+    """#639 (FR-EXT-10): an external clock whose provider is write-capable: its advances go
+    through the outbox, not to the consumer."""
+    provider: tuple[str, str] | None = None
+    """#639: an external clock's ``(provider, value)``."""
 
     @property
     def fixed(self) -> bool:
@@ -102,6 +107,18 @@ async def read_clock(conn: AsyncConnection, story_id: str) -> ClockRead | None:
     assert found is not None  # noqa: S101 - the clock's definition carries its settings
     start = (await world_clock.clock_at(conn, story_id, world_clock.HEAD)).offset_minutes
     anchor = await world_clock.anchor_at(conn, story_id)
+    external = external_mode.is_external(definition)
+    dispatch = False
+    provider: tuple[str, str] | None = None
+    if external and definition.provider_id is not None:
+        from epistrel.core.providers import find_provider
+
+        provider = (
+            definition.provider_id,
+            definition.external_value_name or definition.name,
+        )
+        found_provider = await find_provider(conn, definition.provider_id)
+        dispatch = found_provider is not None and bool(found_provider.write_capable)
     return ClockRead(
         level=level,
         mode=found.mode,
@@ -110,8 +127,10 @@ async def read_clock(conn: AsyncConnection, story_id: str) -> ClockRead | None:
         anchor=anchor,
         clockwork=world_clock.clockwork(found),
         minute=minute_of_day(anchor, start),
-        external=external_mode.is_external(definition),
+        external=external,
         max_unprompted=found.max_unprompted_skip_minutes,
+        dispatch=dispatch,
+        provider=provider,
     )
 
 

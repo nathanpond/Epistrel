@@ -646,6 +646,70 @@ async def test_s_clock_timeline__external(
         assert await ck.clock_changes(engine, story) > 0
 
 
+@pytest.mark.part("M6", "FR-CLOCK-5")
+async def test_s_clock_timeline__external_outbox(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#639 (owner decision, FR-EXT-10): an external clock whose provider can write its value
+    has the turn's pacing increments and declared skip dispatched through the outbox: one
+    ``intended`` outbox row each, the minutes as the effect's ``delta``, listed ``pending``
+    with its ``outbox_id`` in ``state_effects``, and no ``requested_effect`` event. Complement
+    asserted: ``test_s_clock_timeline__external``'s read-only provider keeps the consumer's
+    requests."""
+    name = pv.unique_name("gameclock")
+    spec = pv.in_process_spec(
+        name,
+        {"elapsed": "number"},
+        writable=["elapsed"],
+        confirmation="asynchronous",
+    )
+    await pv.register(engine, spec)
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = pv.ScriptedProvider(name).attach(epistrel)
+        fake.script("elapsed", 600)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal, mira = ids["Cal"], ids["Mira"]
+        square = await ps.place_entity(engine, story, "the square")
+        for who in (cal, mira):
+            await ps.put(engine, story, who, square)
+        await ck.set_clock(engine, story, "on")
+        await pv.bind(engine, story, name, {"player": "p-1"})
+        patched = await client.patch(
+            f"/stories/{story}/clock",
+            json={"mode": "external", "provider_value": f"{name}.elapsed"},
+            headers=WRITE,
+        )
+        assert patched.status_code == 200, patched.text
+        played = await _external_turn(
+            client,
+            stub,
+            story,
+            cal,
+            beat("say", "We could wait here a while.", effects=[_skip(30)]),
+            narration=_words(60),
+        )
+        proposed = _proposed(played)
+        assert 30 in proposed
+        dispatched = [e for e in played["state_effects"] if e.get("kind") == "time_advance"]
+        assert all(e["outbox_id"] == e["effect_id"] for e in dispatched)
+        assert {e["status"] for e in dispatched} == {"pending"}
+        rows_ = await pv.outbox_rows(engine, story)
+        assert sorted(int(r.effect["delta"]) for r in rows_) == sorted(proposed)
+        assert {(r.effect["kind"], r.value_name) for r in rows_} == {("time_advance", "elapsed")}
+        requested = await rows(
+            engine,
+            "SELECT count(*) AS n FROM events WHERE story_id = :s AND type = 'requested_effect'",
+            s=story,
+        )
+        assert requested[0].n == 0
+        assert await ck.clock_changes(engine, story) == 0
+        await pv.drop_outbox_jobs(engine, story)
+
+
 @pytest.mark.part("M6", "FR-CLOCK-3")
 async def test_s_clock_timeline__same_turn_anchor(
     stub_settings: Settings,

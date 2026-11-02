@@ -5934,8 +5934,13 @@ async def play(
             requested += state_effects.requested_of(books[0], checked.beats)
         if timings[0] is not None:
             if books[0].clock is not None and books[0].clock.external:
-                # #209 (FR-CLOCK-5): an external clock's advances are requested, not written.
-                requested += state_effects.time_requests(timings[0])
+                # #209 (FR-CLOCK-5): an external clock's advances are requested, not written;
+                # #639 (FR-EXT-10): through the outbox when its provider is write-capable.
+                requested += state_effects.time_requests(
+                    timings[0],
+                    dispatch=books[0].clock.dispatch,
+                    provider=books[0].clock.provider,
+                )
             else:
                 # #194: the turn's clock advances, the commit's first step.
                 op.add_commit_step(partial(record_clock, timing=timings[0]))

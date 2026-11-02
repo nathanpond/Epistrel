@@ -574,6 +574,8 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "external_value_source": ExternalValueSource,
     "scheduled_status": ScheduledStatus,
     "turn_stage": StagedTurnStage,
+    "dependency_edge_type": DependencyEdgeType,
+    "dependency_target": DependencyTarget,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

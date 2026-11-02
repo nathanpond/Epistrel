@@ -280,6 +280,12 @@ ORDER: dict[str, str] = {
     "reconciliation_marks": f"{_STORY_RANK}, t.since, t.reason, t.resolved_by NULLS FIRST",
     # Engine-proposed States (#192): by name.
     "state_proposals": f"{_STORY_RANK}, t.name",
+    # Dependency edges (#220): by the dependent's position, then type, tables and kinds.
+    "dependency_edges": (
+        f"{_STORY_RANK}, t.position_turn NULLS FIRST, t.position_slot_k NULLS FIRST, "
+        "t.position_beat NULLS FIRST, t.position_step NULLS FIRST, t.edge_type, "
+        "t.dependent_table, t.target_kind, t.acquisition_kind NULLS FIRST, t.created_at"
+    ),
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

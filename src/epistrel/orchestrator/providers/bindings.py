@@ -14,7 +14,9 @@
   binding is stored either way.
 - ``require_bound`` is the turn-start guard: a turn of a story that needs a provider (an
   active externally owned State names it, or its live ``required_providers`` lists it) with no
-  binding to it fails closed with 422 ``provider_unbound`` before anything is recorded. #205's
+  binding to it fails closed with 422 ``provider_unbound`` before anything is recorded (422
+  ``provider_unregistered`` when this deployment has not registered it at all, as an imported
+  story's may not have: #251). #205's
   read path calls it too.
 """
 
@@ -148,13 +150,20 @@ async def story_binding(db: AsyncEngine, story_id: str, name: str) -> ProviderBi
 
 
 async def require_bound(db: AsyncEngine | AsyncConnection, story_id: str) -> None:
-    """422 ``provider_unbound`` when a provider the story needs has no binding (see the
-    module docstring). An unknown story passes: the caller's own checks answer 404."""
+    """422 ``provider_unregistered`` when a provider the story needs is not registered on this
+    deployment (an imported story's, FR-EXT-19, #251: its bindings came with the bundle), else
+    422 ``provider_unbound`` when one has no binding (see the module docstring). An unknown
+    story passes: the caller's own checks answer 404."""
+
+    async def missing_of(conn: AsyncConnection) -> list[str]:
+        await core_providers.require_registered(conn, await core_providers.needed(conn, story_id))
+        return await core_providers.unbound(conn, story_id)
+
     if isinstance(db, AsyncConnection):
-        missing = await core_providers.unbound(db, story_id)
+        missing = await missing_of(db)
     else:
         async with db.connect() as conn:
-            missing = await core_providers.unbound(conn, story_id)
+            missing = await missing_of(conn)
     if missing:
         raise ProviderUnbound(
             "the story has no binding to providers it needs: " + ", ".join(missing),

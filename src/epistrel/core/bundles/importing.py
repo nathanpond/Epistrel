@@ -67,6 +67,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.schema import metadata
 from epistrel.core.tables import stories
 from epistrel.observability.logging import get_logger
+from epistrel.testing import crash
 
 log = get_logger(__name__)
 
@@ -643,6 +644,7 @@ async def insert_bundle(
         for start in range(0, len(rows), BATCH):
             await conn.execute(insert(table).values(rows[start : start + BATCH]))
         counts[table.name] = len(rows)
+        crash.hit("bundles.import.mid_records")
     operation_id = await _import_operation(
         conn,
         story_id,

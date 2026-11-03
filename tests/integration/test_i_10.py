@@ -530,9 +530,16 @@ async def _run_import_job(engine: AsyncEngine, bundle_id: str) -> None:
         )
 
 
-async def _nothing_left(engine: AsyncEngine, stories_before: int) -> None:
-    """#250's complement after a refusal: no story, no import job queued or running."""
+async def _nothing_left(
+    engine: AsyncEngine, stories_before: int, *, story_id: str | None = None
+) -> None:
+    """#250's complement after a refusal: no story, no import job queued or running, and
+    (``story_id``: a story the request created) no row with its id in any table of #50's
+    enumeration."""
     assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+    if story_id is not None:
+        left = await _rows_left(engine, story_id)
+        assert {t: n for t, n in left.items() if n} == {}, story_id
     assert (
         await count(
             engine,
@@ -700,7 +707,11 @@ async def test_i_10__m7_import_bad_bundles(
                     None,
                 )
                 assert refused.status["report"]["errors"], refused.status
-            await _nothing_left(engine, stories_before)
+            await _nothing_left(
+                engine,
+                stories_before,
+                story_id=None if refused.status is None else refused.story_id,
+            )
         # The staged uploads are deleted with the refusals (their records keep no path).
         assert (
             await count(
@@ -1469,3 +1480,1061 @@ async def test_i_10__m7_import_older_format(
         monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, "1.0.0", ("1.0.9", step))
         gap = await _import(client, engine, data)
         assert gap.error["code"] == "unsupported_format_version", gap.error
+
+
+# -- M7: the import job's crash recovery and refusals (#722, #250) -----------------------------
+
+
+async def _import_state(db: AsyncEngine, bundle_id: str) -> Any:
+    (found,) = await rows(
+        db,
+        "SELECT b.status, b.stage, b.attempts, b.story_id, j.status AS job_status "
+        "FROM bundle_jobs b LEFT JOIN jobs j ON j.id = b.job_id WHERE b.id = :b",
+        b=bundle_id,
+    )
+    return found
+
+
+async def _until_terminal(db: AsyncEngine, bundle_id: str, timeout_s: float = 60.0) -> Any:
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        found = await _import_state(db, bundle_id)
+        if found.status in ("ready", "refused", "failed"):
+            return found
+        assert loop.time() < deadline, found
+        await asyncio.sleep(0.2)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_crash_resume(pg_url: str, tmp_path: Any) -> None:
+    """#250: a worker killed mid-import (``SIGKILL`` at a crash point) is recovered by the
+    job's lease: the reclaimed attempt deletes the partial story's rows, recreates the story
+    row and starts again from the staged file, and the import ends ``ready`` with one story
+    whose rows are exactly a clean import's (no duplicate). Two points: mid-way through the
+    insert transaction (``bundles.import.mid_records``, nothing of it committed) and after the
+    bundle's rows committed, before any gate (``bundles.import.after_insert``: the partial rows
+    are there when the worker dies). Complement: the crash really left the import ``running``
+    with its story ``importing``."""
+    import secrets
+
+    from sqlalchemy import text
+
+    from epistrel.core.db import make_engine
+    from epistrel.testing import crash
+    from epistrel.testing.faults import EngineProcess
+    from tests.auth_support import CREDENTIAL_A, auth_settings
+    from tests.conformance.conftest import migrated_database
+
+    with migrated_database(pg_url, f"epistrel_imp_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(url, model_adapter="stub").model_copy(
+            update={"bundle_dir": tmp_path / "bundles"}
+        )
+        db = make_engine(settings)
+        child = EngineProcess(url, CREDENTIAL_A, mode="all")
+        try:
+            async with rest(settings, db) as client:
+                source = (await create(client, story_body("Wren", "Ada")))["story_id"]
+                for turn in range(3):
+                    await play_turn(db, source, f"Line {turn}.", principal="p-export")
+                data = await _exported(client, db, source, tmp_path)
+                before = await _rows_left(db, source)
+                for point in ("bundles.import.mid_records", "bundles.import.after_insert"):
+                    started = await _started(client, data)
+                    assert started.status_code == 202, started.text
+                    bundle, imported = started.json()["job_id"], started.json()["story_id"]
+                    child.crash = crash.crash_at(point, 2 if point.endswith("records") else 1)
+                    await child.start()
+                    assert await child.wait_exit(60) == crash.EXIT_STATUS, point
+                    crashed = await _import_state(db, bundle)
+                    assert (crashed.status, crashed.attempts) == ("running", 1), crashed
+                    assert crashed.job_status == "running", crashed
+                    (story_row,) = await rows(
+                        db, "SELECT status FROM stories WHERE id = :s", s=imported
+                    )
+                    assert story_row.status == "importing"
+                    partial = await count(
+                        db, "SELECT count(*) FROM events WHERE story_id = :s", s=imported
+                    )
+                    if point.endswith("after_insert"):
+                        assert partial > 0  # the committed rows the next attempt purges
+                    else:
+                        assert partial == 0  # the insert transaction died with the worker
+                    # The lease lapses (sooner than its full length, which is what the
+                    # worker's reaper waits out).
+                    async with db.begin() as conn:
+                        await conn.execute(
+                            text(
+                                "UPDATE jobs SET lease_until = now() - interval '1 second' "
+                                "WHERE id = (SELECT job_id FROM bundle_jobs WHERE id = :b)"
+                            ),
+                            {"b": bundle},
+                        )
+                    child.crash = None
+                    await child.start()
+                    done = await _until_terminal(db, bundle)
+                    await child.kill()
+                    assert (done.status, done.story_id, done.attempts) == (
+                        "ready",
+                        imported,
+                        2,
+                    ), done
+                    assert (
+                        await count(db, "SELECT count(*) FROM stories WHERE id = :s", s=imported)
+                        == 1
+                    )
+                    # The bundle's rows once each (the worker's later background work, an
+                    # embed job's ``maintenance`` operation, is not the import's).
+                    imported_only = (
+                        "story_id = :s AND operation_id NOT IN (SELECT operation_id FROM "
+                        "operations WHERE story_id = :s AND kind = 'maintenance')"
+                    )
+                    for table in ("operations", "events"):
+                        sql = f"SELECT count(*) FROM {table} WHERE {imported_only}"  # noqa: S608
+                        extra = 1 if table == "operations" else 0
+                        assert await count(db, sql, s=imported) == before[table] + extra, (
+                            point,
+                            table,
+                        )
+                    assert (
+                        await count(
+                            db, "SELECT count(*) FROM characters WHERE story_id = :s", s=imported
+                        )
+                        == before["characters"]
+                    )
+                    assert (
+                        await count(
+                            db,
+                            "SELECT count(*) FROM operations WHERE story_id = :s "
+                            "AND kind = 'import'",
+                            s=imported,
+                        )
+                        == 1
+                    )
+                assert await _rows_left(db, source) == before
+        finally:
+            await child.kill()
+            await db.dispose()
+
+
+def _story_routes() -> list[tuple[str, str]]:
+    """Every ``(method, path)`` the app serves under ``/stories/{story_id}`` and
+    ``/admin/stories/{story_id}``, from ``app.routes``."""
+    from fastapi.routing import APIRoute, iter_route_contexts
+
+    from epistrel.api.app import create_app
+    from tests.auth_support import auth_settings
+
+    app = create_app(auth_settings("postgresql+psycopg://unused/unused"))
+    found: set[tuple[str, str]] = set()
+    for context in iter_route_contexts(app.routes):
+        path = context.path or ""
+        if not isinstance(context.original_route, APIRoute):
+            continue
+        for item in ("/stories/{story_id}", "/admin/stories/{story_id}"):
+            if path == item or path.startswith(f"{item}/"):
+                found.update((method, path) for method in context.methods or ())
+    return sorted(found)
+
+
+def _documented(method: str, path: str) -> tuple[Any, dict[str, str]]:
+    """The committed OpenAPI document's request for ``method path``: its body schema's first
+    example (or ``None``), and its required query parameters, each an id no record holds."""
+    from tests.openapi_support import COMMITTED
+
+    operation = COMMITTED["paths"][path.replace("{principal:path}", "{principal}")][method.lower()]
+    content = operation.get("requestBody", {}).get("content", {}).get("application/json", {})
+    ref = content.get("schema", {}).get("$ref")
+    examples = (
+        COMMITTED["components"]["schemas"][ref.rsplit("/", 1)[-1]].get("examples") if ref else None
+    )
+    query = {
+        q["name"]: "01J00000000000000000000000"
+        for q in operation.get("parameters", [])
+        if q.get("in") == "query" and q.get("required")
+    }
+    return (examples[0] if examples else None), query
+
+
+class _AnyId(dict[str, str]):
+    """A cast lookup any name answers (an id no story holds)."""
+
+    def __missing__(self, key: str) -> str:
+        return "01J00000000000000000000000"
+
+
+def _probe(path: str, story: str) -> str:
+    """``path`` for ``story``, its other path values ones no record holds."""
+    import re
+
+    filled = path.replace("{story_id}", story).replace("{principal:path}", "{principal}")
+    return re.sub(
+        r"\{([a-z_]+)\}",
+        lambda m: (
+            "01J00000000000000000000000"
+            if m.group(1).endswith("id") or m.group(1) in ("listing", "cid")
+            else {"principal": "p-other", "relation": "editor", "name": "lamp"}.get(m.group(1), "1")
+        ),
+        filled,
+    )
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_importing__running(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#250: the import job held at ``bundles.import.before_ready`` (the bundle inserted, every
+    gate passed, the story still ``importing``): every route under ``/stories/{id}`` and
+    ``/admin/stories/{id}``, enumerated from ``app.routes`` and sent the minimal request the
+    ownership matrix uses (``CALLS``), answers 409 ``story_importing`` naming the job and its
+    stage, and nothing is written (the story's operation and event counts unchanged).
+    Complement: the import's status route answers ``running`` at stage ``embedding``, another
+    story's routes answer normally, and once released the import is ``ready``."""
+    import asyncio
+
+    from epistrel.testing import pauses
+    from tests.integration.ownership_fixtures import CALLS, Entity
+
+    routes = _story_routes()
+    assert len(routes) > 60, routes  # the whole surface, not a sample
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        started = await _started(client, data)
+        assert started.status_code == 202, started.text
+        imported, job = started.json()["story_id"], started.json()["job_id"]
+        entity = Entity(imported, _AnyId())
+        with pauses.held(pauses.BUNDLE_IMPORT_BEFORE_READY) as hold:
+            running = asyncio.create_task(_run_import_job(engine, job))
+            try:
+                await hold.arrived()
+                state = await client.get(f"/admin/stories/imports/{job}", headers=READ)
+                assert (state.json()["status"], state.json()["stage"]) == (
+                    "running",
+                    "embedding",
+                ), state.text
+                operations = await _operations(engine, imported)
+                events = await count(
+                    engine, "SELECT count(*) FROM events WHERE story_id = :s", s=imported
+                )
+                assert operations > 0  # the bundle is in, not served
+                assert events > 0
+                answered: dict[tuple[str, str], Any] = {}
+                for method, path in routes:
+                    call = CALLS.get((method, path))
+                    example, query = _documented(method, path)
+                    body = example if call is None else call.body(entity)
+                    if body is None and method in ("POST", "PUT", "PATCH"):
+                        body = {}
+                    sent = await client.request(
+                        method,
+                        _probe(path, imported),
+                        json=body,
+                        params={**query, **({} if call is None else call.queries[-1])},
+                        headers=WRITE,
+                    )
+                    error = sent.json().get("error", {}) if sent.content else {}
+                    if sent.status_code != 409 or error.get("code") != "story_importing":
+                        answered[(method, path)] = (sent.status_code, error.get("code"))
+                        continue
+                    assert error["details"]["job_id"] == job, (path, error)
+                    assert error["details"]["stage"] == "embedding", (path, error)
+                assert answered == {}, sorted(answered.items())
+                assert await _operations(engine, imported) == operations
+                assert (
+                    await count(
+                        engine, "SELECT count(*) FROM events WHERE story_id = :s", s=imported
+                    )
+                    == events
+                )
+                other = await client.get(f"/stories/{story}/history", headers=READ)
+                assert other.status_code == 200, other.text
+                assert (await client.get(f"/stories/{story}", headers=READ)).status_code == 200
+            finally:
+                hold.release()
+                await running
+        state = await client.get(f"/admin/stories/imports/{job}", headers=READ)
+        assert state.json()["status"] == "ready", state.text
+        served = await client.get(f"/stories/{imported}", headers=READ)
+        assert served.status_code == 200, served.text
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_refusal_leaves_nothing(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#250's complement after a refusal found by the job, once the bundle's rows and media
+    are in (a gate's refusal, here #251's guardrail gate): no row with the story's id in any
+    table of #50's enumeration (the story row included), the story count unchanged, no
+    ``story_import`` job queued or running, the staged file gone; the media the import stored
+    are ``retired``, and after the media sweep with the clock 2 h on they are gone, while the
+    source's asset with the same checksum keeps its row and the bytes."""
+    from datetime import timedelta
+
+    from epistrel.core import clock
+    from epistrel.core.media.stores import make_store
+    from epistrel.core.media.sweep import sweep
+    from tests import bundle_support as bs
+    from tests.media_support import blob_path
+    from tests.policy_support import unique
+
+    operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+    word = f"quuxly{unique('w').lower().replace('-', '')}"
+    async with rest(settings, engine) as client:
+        rich = await bs.build_rich_story(client, engine)
+        await play_turn(engine, rich.story_id, f"I hold the {word}.", principal="p-export")
+        job = await _export(client, engine, rich.story_id, tmp_path)
+        data = (await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)).content
+        made = await client.post(
+            "/admin/policies",
+            json={
+                "scope": "global",
+                "name": unique("import-refusal"),
+                "rule": {"type": "wordlist", "words": [word]},
+                "message": "Not here.",
+            },
+            headers=operator,
+        )
+        assert made.status_code == 201, made.text
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        try:
+            refused = await _import(client, engine, data)
+        finally:
+            gone = await client.delete(f"/admin/policies/{made.json()['id']}", headers=operator)
+            assert gone.status_code in (200, 204), gone.text
+        assert refused.error["code"] == "rating_check_failed", refused.error
+        assert refused.status is not None
+        bundle = refused.started.json()["job_id"]
+        (record,) = await rows(
+            engine, "SELECT request, path, story_id FROM bundle_jobs WHERE id = :b", b=bundle
+        )
+        assert (record.path, record.story_id) == (None, None)
+        media_ids = list(record.request["media_ids"])
+        assert media_ids  # the import stored the image before the gate refused it
+        await _nothing_left(engine, stories_before, story_id=refused.story_id)
+        assert not list((settings.bundle_dir / "imports").glob(f"{bundle}*"))
+        states = await rows(
+            engine, "SELECT state FROM media_assets WHERE id = ANY(:m)", m=media_ids
+        )
+        assert {r.state for r in states} == {"retired"}
+        await sweep(engine, make_store(settings), now=clock.now() + timedelta(hours=2))
+        assert (
+            await rows(engine, "SELECT id FROM media_assets WHERE id = ANY(:m)", m=media_ids) == []
+        )
+        (kept,) = await rows(
+            engine, "SELECT checksum, state FROM media_assets WHERE id = :m", m=rich.media_id
+        )
+        assert (kept.checksum, kept.state) == (bs.IMAGE_SHA, "live")
+        assert blob_path(settings.media_root, bs.IMAGE_SHA).exists()
+
+
+async def _aged_audit_event(engine: AsyncEngine, story: str, operation_id: str, days: int) -> str:
+    """An ``audit`` event of ``operation_id`` recorded ``days`` days ago (the log is
+    append-only, so a test writes it aged rather than aging it)."""
+    from sqlalchemy import text
+
+    from epistrel.core.ids import new_ulid
+
+    event_id = new_ulid()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO events (id, story_id, seq, operation_id, category, principal, type, "
+                "payload, valid_time, tx_time, provenance, authority) "
+                "SELECT :id, :s, coalesce(max(seq), 0) + 1, :o, 'audit', 'p-test', "
+                "'guardrail_output_rejected', CAST(:payload AS jsonb), "
+                "now() - make_interval(days => :d), now() - make_interval(days => :d), "
+                "'engine', 'authoritative' FROM events WHERE story_id = :s"
+            ),
+            {
+                "id": event_id,
+                "s": story,
+                "o": operation_id,
+                "d": days,
+                "payload": json.dumps({"text": f"aged {days}", "reason": "test"}),
+            },
+        )
+    return event_id
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-30")
+async def test_i_10__m7_retention(settings: Settings, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#250 (FR-STORE-30): imported events keep their original ``tx_time``, so retention
+    counts from when they were recorded, not from the import. The source holds an audit event
+    aged 100 days and one aged 89 under a deployment retention of 365 (the sweep keeps both);
+    it is exported, the retention set to 90 and the bundle imported: after the sweep the
+    imported 100-day event is gone and the 89-day one remains."""
+    from epistrel.orchestrator.jobs.handlers import retention
+
+    operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        turn = await play_turn(engine, story, "Line.", principal="p-export")
+        await _aged_audit_event(engine, story, turn.operation_id, 100)
+        await _aged_audit_event(engine, story, turn.operation_id, 89)
+
+        async def aged(of: str) -> set[str]:
+            found = await rows(
+                engine,
+                "SELECT payload->>'text' AS said FROM events WHERE story_id = :s "
+                "AND category = 'audit' AND payload->>'text' LIKE 'aged %'",
+                s=of,
+            )
+            return {str(r.said) for r in found}
+
+        longer = await client.put(
+            "/admin/settings", json={"audit_retention_days": 365}, headers=operator
+        )
+        assert longer.status_code == 200, longer.text
+        try:
+            await retention.sweep_retention(engine)
+            assert await aged(story) == {"aged 100", "aged 89"}
+            data = await _exported(client, engine, story, tmp_path)
+            shorter = await client.put(
+                "/admin/settings", json={"audit_retention_days": 90}, headers=operator
+            )
+            assert shorter.status_code == 200, shorter.text
+            made = await _import(client, engine, data)
+            assert made.ready, made.status
+            assert await aged(made.story_id) == {"aged 100", "aged 89"}
+            await retention.sweep_retention(engine)
+            assert await aged(made.story_id) == {"aged 89"}
+        finally:
+            restored = await client.put(
+                "/admin/settings", json={"audit_retention_days": 90}, headers=operator
+            )
+            assert restored.status_code == 200, restored.text
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_conflicts(settings: Settings, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#250: the same bundle imported twice gives two stories, and a turn on one leaves the
+    other's rows unchanged; the same ``Idempotency-Key`` again returns the first story; the same
+    key with a different bundle is 409 ``idempotency_conflict`` and creates nothing."""
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        await play_turn(engine, story, "Another line.", principal="p-export")
+        other = await _exported(client, engine, story, tmp_path)
+        assert other != data
+        key = {"Idempotency-Key": "01JB0000000000000000000CNF"}
+        first = await _import(client, engine, data, key)
+        second = await _import(client, engine, data)
+        assert first.ready, first.status
+        assert second.ready, second.status
+        assert first.story_id != second.story_id
+        untouched = await _rows_left(engine, second.story_id)
+        await play_turn(engine, first.story_id, "Only here.", principal="p-import")
+        assert await _rows_left(engine, second.story_id) == untouched
+        replayed = await _started_keyed(client, data, key)
+        assert replayed.status_code == 202, replayed.text
+        assert replayed.json()["story_id"] == first.story_id
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        conflict = await _started_keyed(client, other, key)
+        assert conflict.status_code == 409, conflict.text
+        assert conflict.json()["error"]["code"] == "idempotency_conflict"
+        assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+
+
+async def _started_keyed(client: Any, data: bytes, key: dict[str, str]) -> Any:
+    return await client.post(
+        "/admin/stories/import",
+        files={
+            "metadata": (None, json.dumps({}), "application/json"),
+            "file": ("story.epistrel.tgz", data, "application/gzip"),
+        },
+        headers={**WRITE, **key},
+    )
+
+
+# -- M7: the import gates' slices (#721, #251) ----------------------------------------------------
+
+
+async def _event_texts(engine: AsyncEngine, story_id: str) -> list[str]:
+    found = await rows(
+        engine,
+        "SELECT payload->>'text' AS line FROM events WHERE story_id = :s "
+        "AND type IN ('player_input', 'message_rendered') ORDER BY seq",
+        s=story_id,
+    )
+    return [str(r.line) for r in found if r.line is not None]
+
+
+async def _import_with(client: Any, engine: AsyncEngine, data: bytes, **meta: Any) -> _Imported:
+    return await _import(client, engine, data, metadata=meta or None)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-ADMIN-9; FR-STORE-7")
+async def test_i_10__m7_erasure_on_import(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#251's erasure gate, the slices #721 names.
+
+    - **Confirmed candidates (ADR-154).** "Will Black" is erased from the source after its
+      export, with the candidate "Will you come?" confirmed and "Black clouds gather." left
+      unconfirmed. The import of the earlier bundle removes the confirmed candidate too
+      (its id translated through the import's id map) and keeps the other, which the report
+      counts in ``candidates_remaining``.
+    - **An unrelated story's erasure.** "Ty" is erased only in another story; the bundle also
+      has a "Ty" (another character), and she is **not** erased from the import.
+    - The source story's other content is intact in the import."""
+    from tests import erasure_support as es
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import new_story, played, respond_client
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Will Black", "Ty")
+        lib.models.stub.script("generation", ["Ty nods.", "Ty shrugs.", "The rain falls."])
+        for line in ("Will you come?", "Black clouds gather.", "Ty asked Will Black."):
+            await played(client, story, respond_body(ids["Wren"], line))
+        data = await _exported(client, engine, story, tmp_path)
+        listed = await es.erase(client, "character", ids["Will Black"], story, dry_run=True)
+        confirmed = [c["candidate_id"] for c in listed["candidates"] if "Will you" in c["snippet"]]
+        unconfirmed = [c for c in listed["candidates"] if "Black clouds" in c["snippet"]]
+        assert confirmed
+        assert unconfirmed
+        done = await es.erase(client, "character", ids["Will Black"], story, confirm=confirmed)
+        assert done["candidates_remaining"] == len(unconfirmed)
+        assert "Will you come?" not in await _event_texts(engine, story)
+        # The unrelated story: its own "Ty", erased there only.
+        other, other_ids = await new_story(client, "Wren", "Ty")
+        lib.models.stub.script("generation", ["Ty waits."])
+        await played(client, other, respond_body(other_ids["Wren"], "Hello, Ty."))
+        await es.erase(client, "character", other_ids["Ty"], other)
+
+        imported = await _import(client, engine, data)
+        assert imported.ready, imported.status
+        assert imported.status is not None
+        erasure = imported.status["report"]["erasure"]
+        assert erasure["applied"] == 1, erasure
+        assert erasure["candidates_remaining"] >= len(unconfirmed), erasure
+        texts = await _event_texts(engine, imported.story_id)
+        assert "Will you come?" not in texts  # the confirmed candidate, translated
+        assert "[erased] you come?" in texts
+        assert "Black clouds gather." in texts  # unconfirmed: kept
+        assert not any(es.naming(t, ["Will Black"]) for t in texts)
+        names = {
+            r.name
+            for r in await rows(
+                engine, "SELECT name FROM characters WHERE story_id = :s", s=imported.story_id
+            )
+        }
+        assert "Ty" in names  # erased only in an unrelated story
+        assert "Will Black" not in names
+        assert {"Ty nods.", "Ty shrugs.", "The rain falls."} <= set(texts)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-ADMIN-9; FR-STORE-7")
+async def test_i_10__m7_erasure_on_import__catalog(
+    pg_url: str, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251's catalog-scope variant: a catalog character the bundle's snapshot references
+    ("June Harrow", cast as the mother) is erased from the catalog after the export; the import
+    of the earlier bundle erases her story character (no record names her) and empties her card
+    in the genesis creation report (#382: only ids, version and status kept). Complement: the
+    card is in the bundle's report before, and the story's other characters are intact."""
+    from tests import erasure_support as es
+    from tests.integration.test_i_27 import CARD_LABEL, _card, _cast_june, _report
+    from tests.respond_support import respond_client
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, _):
+        story, _june, mother = await _cast_june(client, f"{CARD_LABEL}-import")
+        assert _card(await _report(engine, story), mother)["name"] == "June Harrow"
+        data = await _exported(client, engine, story, tmp_path)
+        source_names = {
+            r.name
+            for r in await rows(engine, "SELECT name FROM characters WHERE story_id = :s", s=story)
+        }
+        await es.erase(client, "catalog_character", mother)
+        imported = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert imported.ready, imported.status
+        assert imported.status is not None
+        assert imported.status["report"]["erasure"]["applied"] == 1
+        names = {
+            r.name
+            for r in await rows(
+                engine, "SELECT name FROM characters WHERE story_id = :s", s=imported.story_id
+            )
+        }
+        assert "June Harrow" not in names
+        assert names == source_names - {"June Harrow"}
+        card = _card(await _report(engine, imported.story_id), mother)
+        assert (card["name"], card["public_description"], card["labels"]) == (None, None, [])
+        texts = await _event_texts(engine, imported.story_id)
+        assert not any(es.naming(t, ["June Harrow", "June"]) for t in texts)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-RATE-7; FR-STORE-7")
+async def test_i_10__m7_guardrails_on_import(
+    pg_url: str, engine: AsyncEngine, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#251's guardrail gate, the slices #721 names.
+
+    - **The minors policy.** An Explicit story with a 16-year-old in its cast, whose active
+      history holds a line the (stub) guardrail model flags under the age-conditioned policy.
+      First with the gate removed (a test-only change of ``IMPORT_GATES``) the bundle imports
+      and is served, which shows the gate is what stops it; then with the gate it is
+      ``refused`` ``rating_check_failed``, the violation listing its position and the minors
+      policy, and nothing remains.
+    - **The named rating's own policy.** A bundle imported under a rating whose own policy its
+      history breaks is refused the same way. Complement: named its own rating, it imports."""
+    from epistrel.core.bundles import import_job
+    from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+    from tests import minors_support as mi
+    from tests import policy_support as pol
+    from tests.respond_support import respond_client
+
+    phrase = "a fixture phrase the guardrail model flags"
+    async with respond_client(auth_settings_stub(pg_url), engine) as (client, lib):
+        story = await mi.explicit_story(engine, minor=True)
+        await play_turn(engine, story, f"Then {phrase}.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        mi.recognise(lib.models.stub, phrase)
+
+        gates = [g for g in import_job.IMPORT_GATES if g[0] != "check_guardrails"]
+        with monkeypatch.context() as patched:
+            patched.setattr(import_job, "IMPORT_GATES", gates)
+            served = await _import(client, engine, data)
+        assert served.ready, served.status
+        assert (await client.get(f"/stories/{served.story_id}", headers=READ)).status_code == 200
+
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        refused = await _import(client, engine, data)
+        assert refused.status is not None
+        assert refused.status["status"] == "refused", refused.status
+        assert refused.error["code"] == "rating_check_failed", refused.error
+        violations = refused.error["details"]["violations"]
+        assert MINORS_POLICY_ID in {v["policy_id"] for v in violations}, violations
+        assert {v["position"].get("turn") for v in violations if v.get("position")} == {1}
+        await _nothing_left(engine, stories_before, story_id=refused.story_id)
+
+        word = f"glorp{pol.unique('w').lower().replace('-', '')}"
+        plain = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, plain, f"I carry the {word}.", principal="p-export")
+        plain_data = await _exported(client, engine, plain, tmp_path)
+        rating, policy = await pol.rated_policy_rating(lib, engine, pol.words(word))
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        strict = await _import(client, engine, plain_data, metadata={"content_rating_id": rating})
+        assert strict.error["code"] == "rating_check_failed", strict.error
+        assert {v["policy_id"] for v in strict.error["details"]["violations"]} == {policy.id}
+        await _nothing_left(engine, stories_before, story_id=strict.story_id)
+        (source_rating,) = await rows(
+            engine, "SELECT content_rating_id FROM stories WHERE id = :s", s=plain
+        )
+        named = await _import(
+            client,
+            engine,
+            plain_data,
+            metadata={"content_rating_id": str(source_rating.content_rating_id)},
+        )
+        assert named.ready, named.status
+
+
+@pytest.mark.part("M7", "FR-RATE-7")
+async def test_i_10__m7_inactive_reactivation(pg_url: str, tmp_path: Any) -> None:
+    """#251 (FR-RATE-7): forbidden content only in the bundle's dormant continuation (turn 2's
+    first variant) and its truncated tail (turn 3). Imported under Teen, whose policy forbids
+    it, the clean active history passes and the import is ready; but no imported inactive turn
+    carries this deployment's stamp, so untruncate, swap back to the dormant chain and promote
+    that chain into a fork are each held for #120's check (202) and ``refused`` with the
+    violation listed: no membership changes and no fork is created (the story count
+    unchanged)."""
+    from epistrel.core.seeds.ratings import EXPLICIT_ID, TEEN_ID
+    from tests.integration.test_rating_change import (
+        _count,
+        _edit,
+        _ended,
+        _held,
+        _memberships,
+        _played_story,
+        _truncated,
+    )
+    from tests.rating_change_support import guard_rating, rating_db
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import played
+
+    async with rating_db(pg_url) as s:
+        dragons = await guard_rating(s)
+        explicit = "A dragon lands on the roof."
+        story, ids = await _played_story(s, EXPLICIT_ID, "A cat purrs.", explicit)
+        await _truncated(s, story, 1)
+        s.lib.models.stub.script("generation", ["Wind."])
+        await played(s.client, story, respond_body(ids["Wren"]))
+        s.lib.models.stub.script("generation", [f"Again: {explicit}"])
+        await played(s.client, story, respond_body(ids["Wren"]))
+        await _truncated(s, story, 2)
+        source = await _memberships(s, story)
+        assert {(2, 1, "dormant"), (3, 1, "discarded")} <= set(source), source
+
+        data = await _exported(s.client, s.db, story, tmp_path)
+        made = await _import(s.client, s.db, data, metadata={"content_rating_id": TEEN_ID})
+        assert made.ready, made.status
+        imported = made.story_id
+        before = await _memberships(s, imported)
+        assert before == source
+        stories_before = await _count(s, "stories")
+
+        for path, payload in (
+            ("untruncate", None),
+            ("swap", {"to_variant_chain": {"turn": 2, "variant": 1}}),
+            ("fork", {"variant_chain": {"turn": 2, "variant": 1}}),
+        ):
+            job = await _held(await _edit(s, imported, path, payload), imported)
+            ended = await _ended(s, imported, job)
+            assert ended["status"] == "refused", (path, ended)
+            assert ended["violations"], (path, ended)
+            assert {v["policy_id"] for v in ended["violations"]} == {dragons.id}, path
+            assert "dragon lands" not in str(ended).lower()
+            assert await _memberships(s, imported) == before, path
+            assert await _count(s, "stories") == stories_before, path
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_profile_on_import(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251's profile gate, the slices #721 names: a Lite bundle imported under Full without
+    ``ignore_warnings`` answers ``{applied: false, impact}`` and creates nothing: no story
+    row, no ``bundle_jobs`` row, no ``story_import`` job and no staged file. With
+    ``upgrade_mode: forward_only`` it imports, attaches Full and ends ``ready`` and active
+    (not paused, no backfill), the gap reported. Complement: the default mode (``backfill``)
+    pauses it for a backfill."""
+    from epistrel.core.seeds.profiles import FULL_PRESET_ID
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        counted = {
+            "stories": "SELECT count(*) FROM stories",
+            "bundle_jobs": "SELECT count(*) FROM bundle_jobs WHERE kind = 'import'",
+            "jobs": "SELECT count(*) FROM jobs WHERE kind = 'story_import'",
+        }
+
+        async def counts() -> dict[str, int]:
+            return {name: await count(engine, sql) for name, sql in counted.items()}
+
+        staged = settings.bundle_dir / "imports"
+        files_before = set(staged.glob("*")) if staged.exists() else set()
+        before = await counts()
+        warned = await _started(client, data, {"engine_profile_id": FULL_PRESET_ID})
+        assert warned.status_code == 200, warned.text
+        assert warned.json()["applied"] is False
+        assert warned.json()["impact"]["warnings"]
+        assert await counts() == before
+        assert (set(staged.glob("*")) if staged.exists() else set()) == files_before
+
+        forward = await _import(
+            client,
+            engine,
+            data,
+            metadata={
+                "engine_profile_id": FULL_PRESET_ID,
+                "ignore_warnings": True,
+                "upgrade_mode": "forward_only",
+            },
+        )
+        assert forward.ready, forward.status
+        assert forward.status is not None
+        assert forward.status["report"]["profile"]["upgrade_mode"] == "forward_only"
+        (row,) = await rows(
+            engine,
+            "SELECT status, engine_profile_id FROM stories WHERE id = :s",
+            s=forward.story_id,
+        )
+        assert (row.status, str(row.engine_profile_id)) == ("active", FULL_PRESET_ID)
+        assert (
+            await count(
+                engine,
+                "SELECT count(*) FROM story_backfills WHERE story_id = :s",
+                s=forward.story_id,
+            )
+            == 0
+        )
+        backfilled = await _import(
+            client,
+            engine,
+            data,
+            metadata={"engine_profile_id": FULL_PRESET_ID, "ignore_warnings": True},
+        )
+        assert backfilled.ready, backfilled.status
+        (paused,) = await rows(
+            engine, "SELECT status FROM stories WHERE id = :s", s=backfilled.story_id
+        )
+        assert paused.status == "paused"
+        async with engine.begin() as conn:
+            await conn.execute(
+                __import__("sqlalchemy").text(
+                    "DELETE FROM jobs WHERE kind = 'backfill' AND story_id = :s"
+                ),
+                {"s": backfilled.story_id},
+            )
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_external_effects(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#251's outbox gate, the slices #721 names. The bundle holds three outbox rows of one
+    write-capable provider: one ``intended`` (its turn ``awaiting_outcome``, a staged turn
+    mid-flight, with a ``held`` sword reservation on a State that expires holds after 30
+    minutes), one ``unknown`` and one ``confirmed`` (its outcome recorded).
+
+    After the import, with the dispatcher, ``outbox_recovery`` and the staged-turn recovery
+    sweep each run three times: the provider is never called; both non-terminal rows are
+    parked ``imported_unsettled``, listed with their source ids; the confirmed row is kept as
+    recorded with its outcome; the source's rows are unchanged; the staged turn is closed as a
+    fork closes it (``completed``, the fork's closure narrated) and not resumed; the held
+    reservation's ``reservation_expiry`` timer is re-armed 30 minutes after the import, and
+    releases it when it fires. ``resolve {abandoned}`` on a parked row clears its listing
+    without a call; ``compensate`` on the other writes the compensating effect (owner decision
+    5); ``resolve`` on the confirmed row (not listed ``imported_unsettled``) is 404
+    ``no_listing``."""
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from epistrel.core import clock
+    from epistrel.core.enums import StateContingency
+    from epistrel.core.turns.staged import FORK_CLOSURE
+    from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
+    from epistrel.orchestrator.jobs.handlers import reservations
+    from epistrel.orchestrator.structured import staged as staged_turns
+    from tests import late_settlement_support as ls
+    from tests import provider_support as ps
+    from tests import staged_support as sp
+    from tests.respond_support import respond_client
+
+    async with respond_client(auth_settings_stub(pg_url), engine) as (client, epistrel):
+        story, cal, bank, fake = await sp.sync_story(client, engine, epistrel)
+        await ls.swords(engine, story, reservation_expiry_minutes=30)
+        pending, staged_op = await ls.intent(
+            engine, story, bank, cal, [ls.Side(cal, 1, StateContingency.RESERVATION)]
+        )
+        await ls.set_stage(engine, staged_op.operation_id, "awaiting_outcome")
+        lost, _ = await ls.intent(engine, story, bank, cal, [])
+        await ls.set_stage(engine, staged_op.operation_id, "completed")
+        done, _ = await ls.intent(engine, story, bank, cal, [])
+        await ls.answer(engine, epistrel, done)
+        await ls.set_stage(engine, staged_op.operation_id, "awaiting_outcome")
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE external_effect_outbox SET status = 'unknown' WHERE id = :o"),
+                {"o": lost},
+            )
+        await ps.drop_outbox_jobs(engine, story)
+        calls_before = len(fake.writes)
+        source_rows = await rows(
+            engine,
+            "SELECT id, status, executable FROM external_effect_outbox WHERE story_id = :s "
+            "ORDER BY id",
+            s=story,
+        )
+        data = await _exported(client, engine, story, tmp_path)
+        imported_at = clock.now()
+        made = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert made.ready, made.status
+        imported = made.story_id
+        for _ in range(3):
+            await dispatcher.recover(engine)
+            for row in await rows(
+                engine, "SELECT id FROM external_effect_outbox WHERE story_id = :s", s=imported
+            ):
+                await dispatcher.dispatch(
+                    engine, str(row.id), registry=epistrel.in_process_providers
+                )
+            await staged_turns.resume_stalled(engine, registry=epistrel.in_process_providers)
+        assert len(fake.writes) == calls_before
+
+        parked = await rows(
+            engine,
+            "SELECT o.id, o.status, o.executable, m.detail FROM external_effect_outbox o "
+            "JOIN reconciliation_marks m ON m.outbox_id = o.id AND m.reason = 'imported_unsettled' "
+            "WHERE o.story_id = :s ORDER BY o.id",
+            s=imported,
+        )
+        assert {(r.status, r.executable) for r in parked} == {("imported_unsettled", False)}
+        by_source = {r.detail["source_outbox_id"]: str(r.id) for r in parked}
+        assert set(by_source) == {pending, lost}
+        assert all(r.detail["source_story_id"] == story for r in parked)
+        listed = await client.get(
+            f"/stories/{imported}/reconciliation",
+            params={"viewpoint": "omniscient"},
+            headers=READ,
+        )
+        assert listed.status_code == 200, listed.text
+        assert {(e["outbox_id"], e["reason"]) for e in listed.json()["listings"]} >= {
+            (by_source[pending], "imported_unsettled"),
+            (by_source[lost], "imported_unsettled"),
+        }
+        (kept,) = await rows(
+            engine,
+            "SELECT o.id, o.status, o.executable, count(x.id) AS outcomes "
+            "FROM external_effect_outbox o LEFT JOIN outbox_outcomes x ON x.outbox_id = o.id "
+            "WHERE o.story_id = :s AND o.id <> ALL(:p) GROUP BY o.id",
+            s=imported,
+            p=list(by_source.values()),
+        )
+        assert (kept.status, kept.outcomes) == ("confirmed", 1)
+        assert (
+            await rows(
+                engine,
+                "SELECT id, status, executable FROM external_effect_outbox WHERE story_id = :s "
+                "ORDER BY id",
+                s=story,
+            )
+            == source_rows
+        )
+
+        (closed,) = await rows(
+            engine,
+            "SELECT operation_id, turn_stage FROM operations WHERE story_id = :s "
+            "AND kind = 'turn' AND narrative_turn = :t",
+            s=imported,
+            t=staged_op.narrative_turn,
+        )
+        assert closed.turn_stage == "completed"
+        narrated = await rows(
+            engine,
+            "SELECT payload->>'text' AS said FROM events WHERE operation_id = :o "
+            "AND type = 'beat_narration'",
+            o=closed.operation_id,
+        )
+        assert FORK_CLOSURE in {r.said for r in narrated}
+
+        (hold,) = await rows(
+            engine,
+            "SELECT id, status FROM state_changes WHERE story_id = :s AND status = 'held'",
+            s=imported,
+        )
+        (timer,) = await rows(
+            engine,
+            "SELECT due_at FROM timers WHERE kind = :k AND target = :t",
+            k=reservations.RESERVATION_EXPIRY,
+            t=str(hold.id),
+        )
+        after = timer.due_at - imported_at
+        assert timedelta(minutes=30) <= after < timedelta(minutes=31), after
+        assert await reservations.expire(engine, str(hold.id)) == reservations.RELEASED
+        (released,) = await rows(
+            engine, "SELECT status FROM state_changes WHERE id = :i", i=hold.id
+        )
+        assert released.status == "released"
+
+        resolved = await client.post(
+            f"/stories/{imported}/reconciliation/{by_source[pending]}/resolve",
+            json={"resolution": "abandoned"},
+            headers=WRITE,
+        )
+        assert resolved.status_code == 200, resolved.text
+        cal_here = next(
+            str(r.id)
+            for r in await rows(
+                engine,
+                "SELECT id FROM characters WHERE story_id = :s AND name = 'Cal'",
+                s=imported,
+            )
+        )
+        refund = await client.post(
+            f"/stories/{imported}/reconciliation/{by_source[lost]}/compensate",
+            json={
+                "effect": {"state": "gold", "scope_key": cal_here, "delta": 500, "reason": "refund"}
+            },
+            headers=WRITE,
+        )
+        assert refund.status_code == 201, refund.text
+        assert refund.json()["compensates"] == by_source[lost]
+        (written,) = await rows(
+            engine,
+            "SELECT status, compensates FROM external_effect_outbox WHERE id = :o",
+            o=refund.json()["outbox_id"],
+        )
+        assert (written.status, str(written.compensates)) == ("intended", by_source[lost])
+        refused = await client.post(
+            f"/stories/{imported}/reconciliation/{kept.id}/resolve",
+            json={"resolution": "abandoned"},
+            headers=WRITE,
+        )
+        assert refused.status_code == 404, refused.text
+        assert refused.json()["error"]["details"]["reason"] == "no_listing"
+        assert len(fake.writes) == calls_before
+        await ps.drop_outbox_jobs(engine, imported)
+
+
+def _renamed(data: bytes, old: str, new: str) -> bytes:
+    """``data`` (a bundle) with every ``old`` in its members replaced by ``new``, its manifest's
+    checksums recomputed."""
+    import hashlib
+
+    members = bundles_read(data)
+    body = [(n, d.replace(old.encode(), new.encode())) for n, d in members[1:]]
+    manifest = json.loads(members[0][1].replace(old.encode(), new.encode()))
+    sums = {n: hashlib.sha256(d).hexdigest() for n, d in body}
+    manifest["files"] = [
+        {**f, "sha256": sums.get(f["path"], f["sha256"])} for f in manifest["files"]
+    ]
+    return _tar([("manifest.json", json.dumps(manifest).encode()), *body])
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_unregistered_provider(
+    pg_url: str, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251 (FR-EXT-19): a bundle naming a provider this deployment has not registered imports
+    (a warning, never a refusal), with a ``provider_unregistered`` entry in its report's
+    ``warnings[]``, and its next turn is refused 422 ``provider_unregistered`` naming it before
+    anything is recorded. Complement: the same bundle with its provider registered imports with
+    no such warning."""
+    from tests import provider_support as ps
+    from tests import staged_support as sp
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import respond_client
+
+    async with respond_client(auth_settings_stub(pg_url), engine) as (client, epistrel):
+        story, _cal, bank, _ = await sp.sync_story(client, engine, epistrel)
+        data = await _exported(client, engine, story, tmp_path)
+        registered = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert registered.ready, registered.status
+        assert registered.status is not None
+        assert not [
+            w
+            for w in registered.status["report"]["warnings"]
+            if w["code"] == "provider_unregistered"
+        ]
+        stranger = ps.unique_name("nowhere")
+        renamed = _renamed(data, bank, stranger)
+        made = await _import(client, engine, renamed, metadata={"ignore_warnings": True})
+        assert made.ready, made.status
+        assert made.status is not None
+        assert {"code": "provider_unregistered", "provider": stranger} in made.status["report"][
+            "warnings"
+        ]
+        operations = await _operations(engine, made.story_id)
+        cal_here = next(
+            str(r.id)
+            for r in await rows(
+                engine,
+                "SELECT id FROM characters WHERE story_id = :s AND name = 'Cal'",
+                s=made.story_id,
+            )
+        )
+        turn = await client.post(
+            f"/stories/{made.story_id}/respond",
+            json=respond_body(cal_here, "Hello."),
+            headers=WRITE,
+        )
+        assert turn.status_code == 422, turn.text
+        assert turn.json()["error"]["code"] == "provider_unregistered", turn.text
+        assert stranger in turn.json()["error"]["details"]["providers"]
+        assert await _operations(engine, made.story_id) == operations

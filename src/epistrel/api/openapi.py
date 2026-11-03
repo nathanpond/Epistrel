@@ -501,6 +501,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_GATED,
         *_TURN,
         "provider_unbound",
+        # #251: a provider an imported story names that this deployment has not registered.
+        "provider_unregistered",
         "story_archived",
         "story_paused",
         "story_busy",
@@ -513,6 +515,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_GATED,
         *_TURN,
         "provider_unbound",
+        # #251: a provider an imported story names that this deployment has not registered.
+        "provider_unregistered",
         "story_archived",
         "story_paused",
         "story_busy",
@@ -525,6 +529,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_GATED,
         *_TURN,
         "provider_unbound",
+        # #251: a provider an imported story names that this deployment has not registered.
+        "provider_unregistered",
         "story_archived",
         "story_paused",
         "story_busy",

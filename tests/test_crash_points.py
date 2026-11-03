@@ -60,7 +60,12 @@ def test_crash_at_names_a_point_and_an_occurrence() -> None:
         "staged.after_outcome",
         "staged.after_completion",
     }
-    assert (*faults.COMMIT_POINTS, *faults.STAGED_POINTS) == faults.POINTS
+    # #250: a story import's job.
+    assert set(crash.IMPORT_POINTS) == {
+        "bundles.import.mid_records",
+        "bundles.import.after_insert",
+    }
+    assert (*faults.COMMIT_POINTS, *faults.STAGED_POINTS, *crash.IMPORT_POINTS) == faults.POINTS
     assert crash.parse("staged.after_claim:2") == faults.crash_at("staged.after_claim", 2)
     with pytest.raises(ValueError, match="unknown crash point"):
         faults.crash_at("mid_air")

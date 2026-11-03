@@ -34,6 +34,10 @@ The points:
   to apply one pending ledger entry again; its story is blocked and the entry is not applied yet
   (#125).
 
+- ``bundles.import.before_ready``: a story import's job (#250) has inserted the bundle, passed
+  every gate and rebuilt the projections; the story is still ``importing`` and the job
+  ``running`` (stage ``embedding``), the finishing transaction not begun.
+
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
 
@@ -56,6 +60,7 @@ FEEDBACK_RETRACT_LOCKED = "feedback.retract.locked"
 ERASURE_RECONCILE_BEFORE_REAPPLY = "erasure.reconcile.before_reapply"
 BUNDLE_EXPORT_AFTER_SNAPSHOT = "bundles.export.after_snapshot"
 BUNDLE_EXPORT_BEFORE_SCAN = "bundles.export.before_scan"
+BUNDLE_IMPORT_BEFORE_READY = "bundles.import.before_ready"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -70,6 +75,7 @@ POINTS = (
     ERASURE_RECONCILE_BEFORE_REAPPLY,
     BUNDLE_EXPORT_AFTER_SNAPSHOT,
     BUNDLE_EXPORT_BEFORE_SCAN,
+    BUNDLE_IMPORT_BEFORE_READY,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -132,6 +138,7 @@ def held(point: str) -> Iterator[Hold]:
 __all__ = [
     "BUNDLE_EXPORT_AFTER_SNAPSHOT",
     "BUNDLE_EXPORT_BEFORE_SCAN",
+    "BUNDLE_IMPORT_BEFORE_READY",
     "CATALOG_PUBLISH_LOCKED",
     "CATALOG_SAVE_BEFORE_CAS",
     "ERASURE_RECONCILE_BEFORE_REAPPLY",

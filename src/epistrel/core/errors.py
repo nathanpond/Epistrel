@@ -1581,6 +1581,23 @@ class DirectiveAmbiguous(EpistrelError):
     http_status = 422
 
 
+class DirectiveSplitRequired(EpistrelError):
+    """A directive mixes a change to now that a rewrite cannot make (a clock advance, a State
+    set, a scheduled-event change) with a change to the past (#696): 422; nothing is written.
+    ``details``: ``now`` (the kinds of the now-changes)."""
+
+    code = "directive_split_required"
+    http_status = 422
+
+
+class SteerBudgetExceeded(EpistrelError):
+    """Queueing the steer would push the story's unconsumed steers past their token budget
+    (#696): 409; nothing is written. ``details``: ``tokens`` and ``max``."""
+
+    code = "steer_budget_exceeded"
+    http_status = 409
+
+
 class AuthorityConflict(EpistrelError):
     """A write of a lower authority tier would supersede a fact a higher tier holds (#226,
     FR-DIRECT-6): narrative canon never supersedes the author's locked canon. Internal: the

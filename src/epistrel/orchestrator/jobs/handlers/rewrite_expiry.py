@@ -3,8 +3,9 @@
 
 A recurring task every 10 minutes (fixed). One global sweep moves up to 500 idle sessions
 (``awaiting_answers`` or ``awaiting_approval``) to ``expired``; an ``applying`` session never
-expires. Like the other sweeps it records its outcome on its ``recurring_tasks`` row, runs once
-per due time (``max_attempts = 1``), writes no story state and stores a count only.
+expires. #696: the same sweep drops unconsumed steers older than ``directive_steer_ttl_minutes``
+(disposition ``expired``). Like the other sweeps it records its outcome on its ``recurring_tasks``
+row, runs once per due time (``max_attempts = 1``), writes no story state and stores a count only.
 """
 
 from __future__ import annotations
@@ -20,7 +21,11 @@ INTERVAL = timedelta(minutes=10)
 
 
 async def _run(ctx: JobContext) -> JobOutput:
-    return JobOutput(result={"expired": await expire_idle(ctx.db)})
+    from epistrel.orchestrator.directives import expire_steers
+
+    return JobOutput(
+        result={"expired": await expire_idle(ctx.db), "steers_expired": await expire_steers(ctx.db)}
+    )
 
 
 REWRITE_EXPIRY_HANDLER = JobHandler(

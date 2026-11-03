@@ -1185,11 +1185,14 @@ class RewrittenRecord(BaseModel):
 class DirectiveChange(BaseModel):
     """One change a durable directive makes (#226): a ``proposition`` (as a rewrite's), a
     ``state`` set (a value or a delta), a ``clock`` advance (``minutes`` or ``to``, a time of
-    day "HH:MM"), or a ``belief`` a character comes to hold (``holder`` and the proposition)."""
+    day "HH:MM"), a ``belief`` a character comes to hold (``holder`` and the proposition), or
+    (#696) a scheduled ``event`` (``name``, ``planned``: minutes from the story's start or
+    "HH:MM", ``participants``, ``place``), a ``reschedule`` of the ``event`` named to
+    ``planned``, or a ``cancel_event``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: Literal["proposition", "state", "clock", "belief"]
+    kind: Literal["proposition", "state", "clock", "belief", "event", "reschedule", "cancel_event"]
     subject: str | None = Field(default=None, max_length=200)
     predicate: str | None = Field(default=None, max_length=120)
     object: str | None = Field(default=None, max_length=200)
@@ -1206,6 +1209,14 @@ class DirectiveChange(BaseModel):
     confidence: Literal["suspected", "believed", "known"] | None = None
     qualifiers: dict[str, str | int | float | bool] | None = None
     """The proposition's key qualifiers (``{"degree_id": "bobby_ba"}``), when it has any."""
+    name: str | None = Field(default=None, max_length=200)
+    """#696: a new scheduled event's name."""
+    event: str | None = Field(default=None, max_length=200)
+    """#696: the scheduled event a ``reschedule`` or ``cancel_event`` names."""
+    planned: int | str | None = None
+    """#696: minutes from the story's start, or a time of day "HH:MM"."""
+    participants: list[str] = Field(default_factory=list, max_length=20)
+    place: str | None = Field(default=None, max_length=200)
 
 
 class DirectiveBinding(BaseModel):
@@ -1230,6 +1241,9 @@ class DirectiveParseResult(BaseModel):
     changes: list[DirectiveChange] = Field(default_factory=list, max_length=REWRITE_MAX_CHANGES)
     steer_text: str = Field(default="", max_length=2_000)
     binding: list[DirectiveBinding] = Field(default_factory=list, max_length=4)
+    standing: bool = False
+    """#696: the direction is standing guidance ("always describe the weather"): a steer for
+    the next reply, with the hint to set it as custom instructions instead."""
 
 
 # -- purposes ---------------------------------------------------------------------------------

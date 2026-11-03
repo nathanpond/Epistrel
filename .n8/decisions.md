@@ -11693,3 +11693,24 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
 - **Decision (deviation from the AC's wording):** the variant is rendered when the session is applied. It is not rendered when the session opens and then held across the question round (`held_render`). The read-set revalidation therefore needs nothing new: the turn's own revalidation runs at its commit, and the plan's #237 check runs in the same transaction.
   **Why:** the defect was the non-atomic pair of commits, and a render held across an HTTP round trip would need a stored-render commit path the structured pipeline does not have. The author still sees the plan and answers before anything commits.
   **Issue:** #712
+
+### #696 — directive follow-ups
+
+- **Decision (steer TTL):** the sweep runs inside the existing `rewrite_session_expiry` recurring task, every 10 minutes, rather than as a new task. `expire_steers` sets `disposition = expired` on unconsumed `steer_queued` rows older than the new deployment setting `RewriteSettings.directive_steer_ttl_minutes` (default 1440, 10 to 43,200). The task records `steers_expired`.
+  **Why:** the plan says "#71's sweep". The rewrite sweep is the side-channel's own, already registered, and needs no new recurring row.
+  **Issue:** #696
+- **Decision (errors):**
+  - **422 `directive_split_required` `{now: [kinds]}`.** A clock, State or scheduled-event change is mixed with a change to the past (`temporal_scope = past`, or a proposition starting before now).
+  - **409 `steer_budget_exceeded` `{tokens, max: 500}`.** The queued unconsumed steers plus the new one pass 500 tokens, by `core.summary.estimate_tokens`, the deployment's token estimator. Nothing is written.
+  - **Registration.** Both are in the OpenAPI status map and on `apply_directive`'s error list.
+  **Issue:** #696
+- **Decision (Rule 1):** an ephemeral directive whose text was over 2,000 characters (the parse schema's `steer_text` bound; requests allow 4,000) failed with a 500, because building `DirectiveParseResult` raised. The request's own text now bypasses that bound (`model_construct`). The steer budget then decides.
+  **Issue:** #696
+- **Decision (scheduled events):** `directive_parse` gains `event {name, planned, participants, place}`, `reschedule {event, planned}` and `cancel_event {event}`.
+  - **Resolution.** Participants resolve to characters by entity name, and the place to a place entity. A name that needs a question routes the directive to a rewrite, as other ambiguities do. An event names exactly one open event by its name, else 422 `directive_ambiguous {candidates}`.
+  - **The writers.** They are #196's, refactored into step-level `scheduled.prepare_create`/`create_in` and `prepare_change`/`change_in`, so every change runs in the directive's one slot operation with `owner = author`. The public routes use the same code.
+  **Issue:** #696
+- **Decision (standing guidance):** the parse result gains `standing: bool`. A steer the model marks standing answers `hints: ["use_custom_instructions"]`, and stays one steer for the next turn.
+  **Issue:** #696
+- **Decision (`AuthorityConflict` in verification):** `check_with` reads which fetched canon facts are `author_locked`. A non-author claim whose `fluent_change` would close one is `contradicted` by the new rule `authority`, citing the locked fact, so #142 repairs it instead of the commit raising. `check_with(..., author=True)` keeps the author's own claims (#145's `mutation._check`) as they were.
+  **Issue:** #696

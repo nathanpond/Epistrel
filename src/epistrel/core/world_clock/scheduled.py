@@ -405,65 +405,15 @@ async def create_event(
     idempotency_key: str | None = None,
 ) -> ScheduledEventWritten:
     """A canon event created between turns (see the module docstring)."""
-    from epistrel.core.canon.facts import commit_fact
-    from epistrel.core.propositions import store
-    from epistrel.core.propositions.model import Granularity, Instant, Proposition
-    from epistrel.core.propositions.vocabulary import SCHEDULED
     from epistrel.core.stories import require_writable
 
     await require_writable(db, story_id)
     async with db.connect() as conn:
-        await require_clock(conn, story_id)
-        story = await _story(conn, story_id)
-        await _validated(conn, story_id, request, story.cast)
-        planned, placed = await _placed(conn, story_id, request.planned)
+        planned, placed = await prepare_create(conn, story_id, request)
     written: list[stops.ScheduledEvent] = []
 
     async def step(conn: AsyncConnection) -> None:
-        position = slot_position(op)
-        event_entity = await store.add_entity(
-            conn, story_id, "event", request.proposition, operation_id=op.operation_id
-        )
-        zero = (await time_basis(conn, story_id)).minute_zero
-        qualifiers: dict[str, Any] = {}
-        if request.participants:
-            qualifiers["participants"] = list(dict.fromkeys(request.participants))
-        if request.place is not None:
-            qualifiers["place"] = request.place
-        subject = request.participants[0] if request.participants else event_entity
-        with stops.sharing(request.shared_owners):
-            fact = await commit_fact(
-                conn,
-                story_id,
-                Proposition(
-                    subject_id=subject,
-                    predicate_id=SCHEDULED,
-                    object_id=event_entity,
-                    qualifiers=qualifiers,
-                    valid_time=Instant.of(zero + planned, Granularity.MINUTE),
-                ),
-                provenance=RecordProvenance.AUTHOR
-                if request.owner == OWNER_AUTHOR
-                else RecordProvenance.IN_WORLD,
-                operation=op,
-                slot_k=position.slot_k,
-            )
-        found = await stops.event_at(conn, story_id, fact.proposition_id)
-        assert found is not None  # noqa: S101 - commit_fact made the fact an event
-        if placed is not None:
-            found = (
-                await stops.place_event(
-                    conn,
-                    op,
-                    story_id,
-                    found,
-                    at=placed.at,
-                    anchor=placed.anchor,
-                    offset=placed.offset,
-                    position=replace(found.position, step=found.position.step + 1),
-                )
-            ).event
-        written.append(found)
+        written.append(await create_in(conn, op, story_id, request, planned, placed))
 
     op = open_inter_turn(
         db,
@@ -476,6 +426,77 @@ async def create_event(
         op.add_commit_step(step)
         await op.commit()
     return await _answer(db, story_id, op, written[0])
+
+
+async def prepare_create(
+    conn: AsyncConnection, story_id: str, request: ScheduledEventCreate
+) -> tuple[int, _Placed | None]:
+    """#696: a create's checks and its planned offset, before its operation (a directive's
+    scheduled-event changes run in the directive's own slot operation)."""
+    await require_clock(conn, story_id)
+    story = await _story(conn, story_id)
+    await _validated(conn, story_id, request, story.cast)
+    return await _placed(conn, story_id, request.planned)
+
+
+async def create_in(
+    conn: AsyncConnection,
+    op: Any,
+    story_id: str,
+    request: ScheduledEventCreate,
+    planned: int,
+    placed: _Placed | None,
+) -> stops.ScheduledEvent:
+    """The create's write in ``op``'s commit (``create_event``'s, and a directive's, #696)."""
+    from epistrel.core.canon.facts import commit_fact
+    from epistrel.core.propositions import store
+    from epistrel.core.propositions.model import Granularity, Instant, Proposition
+    from epistrel.core.propositions.vocabulary import SCHEDULED
+
+    position = slot_position(op)
+    event_entity = await store.add_entity(
+        conn, story_id, "event", request.proposition, operation_id=op.operation_id
+    )
+    zero = (await time_basis(conn, story_id)).minute_zero
+    qualifiers: dict[str, Any] = {}
+    if request.participants:
+        qualifiers["participants"] = list(dict.fromkeys(request.participants))
+    if request.place is not None:
+        qualifiers["place"] = request.place
+    subject = request.participants[0] if request.participants else event_entity
+    with stops.sharing(request.shared_owners):
+        fact = await commit_fact(
+            conn,
+            story_id,
+            Proposition(
+                subject_id=subject,
+                predicate_id=SCHEDULED,
+                object_id=event_entity,
+                qualifiers=qualifiers,
+                valid_time=Instant.of(zero + planned, Granularity.MINUTE),
+            ),
+            provenance=RecordProvenance.AUTHOR
+            if request.owner == OWNER_AUTHOR
+            else RecordProvenance.IN_WORLD,
+            operation=op,
+            slot_k=position.slot_k,
+        )
+    found = await stops.event_at(conn, story_id, fact.proposition_id)
+    assert found is not None  # noqa: S101 - commit_fact made the fact an event
+    if placed is not None:
+        found = (
+            await stops.place_event(
+                conn,
+                op,
+                story_id,
+                found,
+                at=placed.at,
+                anchor=placed.anchor,
+                offset=placed.offset,
+                position=replace(found.position, step=found.position.step + 1),
+            )
+        ).event
+    return found
 
 
 async def _answer(
@@ -541,31 +562,19 @@ async def _change(
     written: list[stops.ScheduledEvent] = []
 
     async def step(conn: AsyncConnection) -> None:
-        position: Position = slot_position(op)
-        found = await _existing(conn, story_id, event_id)
-        if status is None:  # #198: only the sharing changes
-            status_now, cause_now = found.status, stops.SHARED
-        else:
-            status_now, cause_now = status, cause
-        held: dict[str, Any] | None = None
-        if placed is not None and status_now is ScheduledStatus.PENDING:
-            # #645: a time of day a range-anchored clock holds, as ``POST`` places one.
-            held = {"at": int(placed.at)}
-            if placed.anchor.scheduled(placed.at, placed.offset) == "possibly_due":
-                status_now = ScheduledStatus.POSSIBLY_DUE
-        done = await stops.record(
-            conn,
-            op,
-            story_id,
-            found,
-            status_now,
-            position=position,
-            cause=cause_now,
-            planned=offset,
-            shared_owners=shared_owners,
-            planned_anchor=held,
+        written.append(
+            await change_in(
+                conn,
+                op,
+                story_id,
+                event_id,
+                status=status,
+                cause=cause,
+                offset=offset,
+                placed=placed,
+                shared_owners=shared_owners,
+            )
         )
-        written.append(done.event)
 
     op = open_inter_turn(
         db,
@@ -578,6 +587,62 @@ async def _change(
         op.add_commit_step(step)
         await op.commit()
     return await _answer(db, story_id, op, written[0])
+
+
+async def prepare_change(
+    conn: AsyncConnection, story_id: str, event_id: str, planned: int | str | None
+) -> tuple[int | None, _Placed | None]:
+    """#696: a reschedule's or cancel's checks and its new offset, before its operation."""
+    await require_clock(conn, story_id)
+    current = await _existing(conn, story_id, event_id)
+    if current.status in (ScheduledStatus.CANCELLED, ScheduledStatus.COMPLETED):
+        raise InvalidRequest(
+            f"the event is {current.status.value}: it cannot change any more",
+            {"field": "event_id", "reason": "event_settled", "status": current.status.value},
+        )
+    if planned is None:
+        return None, None
+    return await _placed(conn, story_id, planned)
+
+
+async def change_in(
+    conn: AsyncConnection,
+    op: Any,
+    story_id: str,
+    event_id: str,
+    *,
+    status: ScheduledStatus | None,
+    cause: str,
+    offset: int | None,
+    placed: _Placed | None,
+    shared_owners: Sequence[str] | None = None,
+) -> stops.ScheduledEvent:
+    """The change's write in ``op``'s commit (``_change``'s, and a directive's, #696)."""
+    position: Position = slot_position(op)
+    found = await _existing(conn, story_id, event_id)
+    if status is None:  # #198: only the sharing changes
+        status_now, cause_now = found.status, stops.SHARED
+    else:
+        status_now, cause_now = status, cause
+    held: dict[str, Any] | None = None
+    if placed is not None and status_now is ScheduledStatus.PENDING:
+        # #645: a time of day a range-anchored clock holds, as ``POST`` places one.
+        held = {"at": int(placed.at)}
+        if placed.anchor.scheduled(placed.at, placed.offset) == "possibly_due":
+            status_now = ScheduledStatus.POSSIBLY_DUE
+    done = await stops.record(
+        conn,
+        op,
+        story_id,
+        found,
+        status_now,
+        position=position,
+        cause=cause_now,
+        planned=offset,
+        shared_owners=shared_owners,
+        planned_anchor=held,
+    )
+    return done.event
 
 
 async def reschedule_event(
@@ -635,9 +700,13 @@ __all__ = [
     "ScheduledEventView",
     "ScheduledEventWritten",
     "cancel_event",
+    "change_in",
     "create_event",
+    "create_in",
     "event_names",
     "list_events",
     "may_change",
+    "prepare_change",
+    "prepare_create",
     "reschedule_event",
 ]

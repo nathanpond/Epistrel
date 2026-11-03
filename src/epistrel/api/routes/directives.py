@@ -33,6 +33,9 @@ class DirectiveBody(MutationResponse):
     applied: DirectiveApplied | None = Field(default=None, exclude_if=lambda v: v is None)
     rewrite_session: RewriteSession | None = Field(default=None, exclude_if=lambda v: v is None)
     steer_text: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    hints: list[str] = Field(default_factory=list, exclude_if=lambda v: not v)
+    """#696: ``use_custom_instructions`` when the guidance is standing (set it as custom
+    instructions; a steer applies to one turn)."""
 
     @classmethod
     def of(cls, found: DirectiveResult) -> DirectiveBody:
@@ -44,6 +47,7 @@ class DirectiveBody(MutationResponse):
             applied=found.applied,
             rewrite_session=found.rewrite_session,
             steer_text=found.steer_text,
+            hints=list(found.hints),
             timeline_revision=found.timeline_revision,
         )
 
@@ -70,9 +74,13 @@ class DirectiveBody(MutationResponse):
         "timeline membership: `applied.author_fact {id, position, text}`); one about the past "
         "opens a Lite rewrite session (#245, 202 `routed_to_rewrite`). 422 "
         "`guardrail_violation` (nothing written), `directive_unparseable`, "
-        "`directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 "
-        "`story_paused`, `revision_conflict`; 423 `story_busy`. An omniscient call: 403 "
-        "`omniscient_required` for a character."
+        "`directive_no_changes`, `directive_split_required` (a clock, State or scheduled-event "
+        "change to now mixed with a change to the past), `directive_ambiguous`, "
+        "`state_constraint_violation`, `clock_backward`; 409 `story_paused`, "
+        "`revision_conflict`, `steer_budget_exceeded` (the queued steers would pass 500 tokens); "
+        "423 `story_busy`. Scheduled events are created, rescheduled and cancelled with the "
+        "author as owner; standing guidance answers `hints: [use_custom_instructions]`. An "
+        "omniscient call: 403 `omniscient_required` for a character."
     ),
 )
 async def apply_directive(

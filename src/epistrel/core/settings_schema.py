@@ -943,6 +943,11 @@ class RewriteSettings(BaseModel):
         default=1_440, ge=10, le=30 * 1_440
     )
     rewrite_stale_retries: Annotated[StrictInt, PROSPECTIVE] = Field(default=2, ge=0, le=10)
+    directive_steer_ttl_minutes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=1_440, ge=10, le=30 * 1_440
+    )
+    """#696: an unconsumed ephemeral directive (a steer) older than this is dropped
+    (disposition ``expired``) by the ``rewrite_session_expiry`` sweep."""
 
 
 DAY_S = 86_400

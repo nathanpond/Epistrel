@@ -192,6 +192,14 @@ async def discard_segments(conn: AsyncConnection, row: Any) -> int:
                 membership=Membership.DISCARDED.value, membership_tx=func.transaction_timestamp()
             )
         )
+        # The projection's rows follow their operations' membership (a refold reads it from
+        # them): without this the discarded rows still block their positions, and every later
+        # summary run is dropped as already written.
+        await conn.execute(
+            update(lite_summary_segments)
+            .where(s.story_id == row.story_id, s.operation_id.in_(ops))
+            .values(membership=Membership.DISCARDED.value)
+        )
     return len(ops)
 
 

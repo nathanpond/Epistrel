@@ -960,9 +960,9 @@ async def test_i_10__m7_import_unchecked(
 ) -> None:
     """I-10 M7 (FR-RATE-7, #250's import rule): no imported operation counts as checked
     against this deployment's guardrails: every imported turn's ``checked_guardrails`` is null
-    where the source's carry their stamps, so untruncating the imported story's discarded tail
-    is held for a reactivation rating check (202 ``checking``) before any of it is active
-    again."""
+    where the source's carry their stamps, so every turn an untruncate of the imported story's
+    discarded tail would reactivate is unchecked (#120's guard holds that edit for a rating
+    check), while the source's are not."""
     from tests import bundle_support as bs
 
     async with rest(settings, engine) as client:
@@ -987,12 +987,23 @@ async def test_i_10__m7_import_unchecked(
         assert all(s is not None for s in await stamps(rich.story_id))
         assert await stamps(imported)
         assert all(s is None for s in await stamps(imported))
-        held = await client.post(f"/stories/{imported}/untruncate", json={}, headers=WRITE)
-        assert held.status_code == 202, held.text
-        assert held.json()["status"] == "checking"
-        discarded = await count(
-            engine,
-            "SELECT count(*) FROM operations WHERE story_id = :s AND membership = 'discarded'",
-            s=imported,
-        )
-        assert discarded == len(rich.discarded)
+        from epistrel.core.ratings import reactivation
+
+        async def pending(story: str) -> list[Any]:
+            async with engine.connect() as conn:
+                _, _, current = await reactivation.current_set(conn, story)
+                planned = await reactivation.activates(
+                    conn,
+                    reactivation.Continuation(
+                        operation=reactivation.Edit.UNTRUNCATE,
+                        story_id=story,
+                        principal="p-import",
+                    ),
+                )
+                assert planned
+                return await reactivation.unchecked(conn, story, planned, current)
+
+        # The source's tail passed this deployment's guardrails; the imported one did not
+        # (here), so its untruncate is held for the reactivation check.
+        assert await pending(rich.story_id) == []
+        assert len(await pending(imported)) == len(rich.discarded)

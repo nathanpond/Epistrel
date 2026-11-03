@@ -792,6 +792,13 @@ async def test_i_19__m7_resummarize_cancel(stub_settings: Any, engine: AsyncEngi
             s=story,
         )
         assert left == []
+        rows_left = await rows(
+            engine,
+            "SELECT segment_id FROM lite_summary_segments WHERE story_id = :s "
+            "AND membership = 'active'",
+            s=story,
+        )
+        assert rows_left == []  # the rows follow their operations (a later run is not dropped)
 
         seen: list[str] = []
         real_retrieve, real_check = retrieval.retrieve, rules.check_with

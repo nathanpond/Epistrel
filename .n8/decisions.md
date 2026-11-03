@@ -11942,3 +11942,5 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   - **Reach relation.** A Lite reach hit's relation is compared through `lite._conflicting`, so #104's relation-literal scan does not read it as an ownership decision.
   - **Queue fold.** The #229 queue fold runs only for a version that changes data-producing settings; a behavioral edit leaves a queued upgrade as it is (`test_two_stage::test_reports_list_at_most_the_cap`).
   **Issue:** #702, #703, #700, #698
+- **Decision (Rule 1, #709):** `summary_rebuild.discard_segments` now also sets the cancelled rebuild's segment rows to `discarded`. Before, only their operations were flipped and the projection rows stayed `active`. Every later summary run was then dropped as "already written" and requeued forever: CI's `test_notify_wakes_a_worker_before_its_poll` found the worker always busy. The import-unchecked test now asserts through #120's guard functions instead of leaving a reactivation check pending on the shared database.
+  **Issue:** #709, #705

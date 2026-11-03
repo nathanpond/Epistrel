@@ -311,6 +311,18 @@
             "title": "Story Id",
             "type": "string"
           },
+          "summary_backfill": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary Backfill"
+          },
           "upgrade_mode": {
             "anyOf": [
               {

@@ -100,7 +100,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, turn_gate
+from epistrel.core import idempotency, pause, summary_rebuild, turn_gate
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
@@ -805,6 +805,13 @@ async def _play(
                 conn, story_id, committed.narrative_turn, committed.turn_variant
             ),
         }
+        if await summary_rebuild.rebuilding(conn, story_id):
+            # #232: the summary is rebuilt after a downgrade; the reply read what exists so far.
+            fields["degradation"] = [*fields.get("degradation", []), summary_rebuild.REBUILDING]
+            fields["degradation_details"] = [
+                *fields.get("degradation_details", []),
+                DegradationStep(step=summary_rebuild.REBUILDING, cause="resummarize"),
+            ]
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
         return RespondResult(**fields)

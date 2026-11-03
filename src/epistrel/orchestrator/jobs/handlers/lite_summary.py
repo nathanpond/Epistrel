@@ -52,7 +52,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import summary, summary_port, timeline
+from epistrel.core import summary, summary_port, summary_rebuild, timeline
 from epistrel.core.enums import Membership, OperationKind, Provenance
 from epistrel.core.events.operation import Operation
 from epistrel.core.events.types import (
@@ -367,6 +367,8 @@ async def _fan_out(ctx: JobContext) -> JobOutput:
             exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
             if exists is not None and await schedule_in(conn, story_id):
                 scheduled += 1
+            elif exists is not None:
+                await summary_rebuild.settle(conn, story_id)  # #232: caught up since
     return JobOutput(result={"stories": len(candidates), "scheduled": scheduled})
 
 
@@ -376,6 +378,12 @@ async def _run_story(ctx: JobContext, story_id: str) -> JobOutput:
         raise NoModels("no Model Access Layer is bound for the lite_summary job")
     async with ctx.snapshot() as conn:
         state = await summary.summary_state(conn, story_id)
+    if not state.needs_work:
+        async with ctx.db.begin() as conn:
+            await summary_rebuild.settle(conn, story_id)  # #232: the rebuild has caught up
+        return JobOutput(result={"segments": 0, "calls": 0})
+    async with ctx.snapshot() as conn:
+        state = await summary.summary_state(conn, story_id)  # the inputs' own snapshot
         if not state.needs_work:
             return JobOutput(result={"segments": 0, "calls": 0})
         for segment in state.segments:

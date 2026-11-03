@@ -188,6 +188,9 @@ class AffectedStory(BaseModel):
     deferred_to_materialize: dict[str, Any] | None = None
     """#231: the story's deferred genesis content the change enables, ``{by_capability}``
     counts; ``null`` when none."""
+    summary_backfill: dict[str, Any] | None = None
+    """#232: a structured to lite change rebuilds the rolling summary from the transcript:
+    ``{needed, estimate: {model_calls}}``; ``null`` otherwise."""
     genesis_conflicts_unchecked: bool | None = None
     """#231: under ``forward_only``, a story with history gets deferred seeds whose conflicts
     with its earlier turns are never checked (their structured data is never derived)."""
@@ -298,6 +301,8 @@ class Delta:
     """#231: the data-producing modules the change stops (their data is kept dormant)."""
     settings_after: Any = None
     """#231: the configuration after, for the deferred genesis content it enables."""
+    settings_before: Any = None
+    """#232: the configuration before (a structured to lite change rebuilds the summary)."""
 
 
 def _moved(before: ProfileSettings, after: ProfileSettings, *, up: bool) -> set[str]:
@@ -325,6 +330,7 @@ def delta(before: Configuration, after: Configuration, facts: RuntimeFacts) -> D
         after=after.stamp(facts),
         decreases=tuple(schema.data_increases(after.settings, before.settings)),
         settings_after=after.settings,
+        settings_before=before.settings,
     )
 
 
@@ -360,6 +366,7 @@ def affected(
     span: tuple[int, int] | None = None,
     queue_position: int | None = None,
     deferred: Mapping[str, int] | None = None,
+    summary: Mapping[str, Any] | None = None,
 ) -> AffectedStory:
     """``story_id``'s entry: a backfill is needed when the change adds data-producing
     capability and the story has history (#229: never unavailable from M7 on), estimated over
@@ -394,6 +401,7 @@ def affected(
         forward_only_gap=gap,
         data_kept_dormant=bool(change.decreases),
         deferred_to_materialize={"by_capability": dict(deferred)} if deferred else None,
+        summary_backfill=None if summary is None else dict(summary),
         genesis_conflicts_unchecked=True
         if deferred and history and (mode == "forward_only")
         else None,
@@ -502,6 +510,17 @@ async def deferred_counts(conn: AsyncConnection, story_id: str, change: Delta) -
     from epistrel.core.genesis import deferred
 
     return await deferred.pending(conn, story_id, change.settings_after)
+
+
+async def summary_counts(
+    conn: AsyncConnection, story_id: str, change: Delta
+) -> dict[str, Any] | None:
+    """#232: a structured to lite change's ``summary_backfill`` (``None`` for any other)."""
+    from epistrel.core import summary_rebuild
+
+    if not summary_rebuild.downgraded(change.settings_before, change.settings_after):
+        return None
+    return await summary_rebuild.estimate(conn, story_id)
 
 
 async def queued_count(conn: AsyncConnection) -> int:
@@ -634,6 +653,7 @@ async def following_report(
             span=spans.get(s),
             queue_position=order.get(s),
             deferred=await deferred_counts(conn, s, overridden.get(s, change)),
+            summary=await summary_counts(conn, s, overridden.get(s, change)),
         )
         for s in listed
     ]
@@ -708,6 +728,7 @@ async def stories_report(
             span=spans.get(s),
             queue_position=order.get(s),
             deferred=await deferred_counts(conn, s, changes[s]),
+            summary=await summary_counts(conn, s, changes[s]),
         )
         for s in ids[:AFFECTED_MAX]
     ]
@@ -947,6 +968,7 @@ __all__ = [
     "queued_count",
     "single_report",
     "stories_report",
+    "summary_counts",
     "transcripts",
     "two_stage",
     "unmet",

@@ -11432,3 +11432,21 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #231
 - **Decision (correction to the #229 entry):** `check-traceability --write` does retire the interim entry; #306 is in place. §15's FR-PROF-7 row now reads `C-16 (M4, retired at M7)` and gains `C-16 (M7)`. The earlier "changed nothing" came from a stale `build/parts.json`: the gates read it, so `check-parts --json` must run first. CI at 18d88e3 failed `check-lexicon` (an M3 part's docstring said "backfill") and `check-traceability` for this reason; both are fixed.
   **Issue:** #229
+
+### #232 — downgrade to Lite and back, 2026-11-02
+
+- **Decision:** `core.summary_rebuild`. A configuration write that moves the effective pipeline from structured to lite starts a `resummarize` `story_backfills` row (status `extracting`, range from the summary's compressible chunks).
+  - The trigger is checked in `_write_assignment`, `_write_overrides` and the profile-edit followers.
+  - The rebuild itself is #72's normal incremental `lite_summary` job. The story is not paused.
+  - Lite replies carry `degradation: summary_rebuilding` while the summary still has work. The row is settled (`completed`) lazily: by the reply's check, by the job when it finds no work, and by the recurring fan-out.
+  - The job is enqueued after the commit (`summary_port.notify` from `Engine.assign_engine_profile` and `set_profile_overrides`). It is not enqueued in the same transaction, because core cannot enqueue Orchestrator jobs; the recurring task covers profile edits.
+  - A resummarize row is always supersedable (`waiting`), so a later upgrade is never 409.
+  **Issue:** #232
+- **Decision (not built):**
+  - No `rolling_summary` coverage capability (it is not data-producing in the schema).
+  - Cancelling a resummarize row does not discard the segments already written.
+  - No rebuild-mode payload for `lite_summary`.
+  - The reader spies (zero structured reads under Lite) are not added.
+  - S-PROFILE-SWITCH is reduced to a twenty-turn story with preset copies. Its diner fixture, scheduled-event, per-character belief and pacing-fold assertions are not built.
+  - The downgrade report's `summary_backfill.estimate` is `{model_calls}` only.
+  **Issue:** #232

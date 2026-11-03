@@ -47,6 +47,7 @@ from epistrel.core import (
     ratings,
     stories,
     story_texts,
+    summary_port,
     timeline,
     turn_gate,
     variants,
@@ -6192,7 +6193,7 @@ class Engine:
                 start_job=backfill_job.start_job,
             )
 
-        return await self._keyed(
+        found = await self._keyed(
             ctx,
             "assign_engine_profile",
             run,
@@ -6200,6 +6201,10 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
             keep=TwoStageResult.kept,
         )
+        if found.applied:
+            # #232: a downgrade to Lite rebuilds the summary; its job runs after the commit.
+            await summary_port.notify(self.db, story_id)
+        return found
 
     async def set_profile_overrides(
         self, ctx: RequestContext, story_id: str, request: story_profile.ProfileOverridesPatch
@@ -6210,8 +6215,8 @@ class Engine:
         ``invalid_profile``); ``request.expected_revision``, when given, must be the overrides'
         revision (409 ``revision_conflict``). Two-stage (#109), like an assignment. A
         story-scoped configuration change: the story's ``config_revision`` and the overrides'
-        revision move. A confirmed patch whose upgrade is unavailable (M3's interim rule) is
-        applied with the story's configuration as it was, and writes nothing. 404 for an unknown
+        revision move. A confirmed patch that adds data-producing capability to a story with
+        history upgrades it by ``upgrade_mode`` (#228, #229). 404 for an unknown
         story, 409 ``story_archived`` for an archived story when the call would change
         something (a patch that changes no setting answers 200 and writes nothing)."""
         principal = self.require_principal(ctx)
@@ -6229,7 +6234,7 @@ class Engine:
                 start_job=backfill_job.start_job,
             )
 
-        return await self._keyed(
+        found = await self._keyed(
             ctx,
             "set_profile_overrides",
             run,
@@ -6237,6 +6242,10 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
             keep=TwoStageResult.kept,
         )
+        if found.applied:
+            # #232: a downgrade to Lite rebuilds the summary; its job runs after the commit.
+            await summary_port.notify(self.db, story_id)
+        return found
 
     # -- backfill (FR-PROF-9; #228) ----------------------------------------------------------------
 

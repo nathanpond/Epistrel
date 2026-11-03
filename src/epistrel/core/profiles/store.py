@@ -621,6 +621,7 @@ async def update_profile(
                     forward=forward,
                     principal=principal,
                     start_job=start_job,
+                    previous_settings=before,
                 )
             if new_version:
                 await _record_version(
@@ -654,6 +655,7 @@ async def _upgrade_following(
     forward: bool,
     principal: str,
     start_job: core_backfill.StartJob | None,
+    previous_settings: Any = None,
 ) -> tuple[core_backfill.Queued, ...]:
     """#229: after a new version that adds data-producing capability, every story now
     following it records its ``live`` coverage from its next turn; under ``forward_only`` the
@@ -673,11 +675,19 @@ async def _upgrade_following(
             .order_by(stories.c.id)
         )
     )
+    from epistrel.core import summary_rebuild
     from epistrel.core.genesis import deferred
 
     for story in now_following:
         await coverage.extend_live(conn, str(story))
         await deferred.on_configuration(conn, str(story), principal)  # #231
+        before = changes.get(str(story))
+        await summary_rebuild.on_configuration(  # #232
+            conn,
+            str(story),
+            previous_settings if before is None else before.settings_before,
+            principal,
+        )
     if forward or start_job is None:
         return ()
     return await queue_upgrades(

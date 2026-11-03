@@ -698,6 +698,8 @@ async def enqueue(
 async def waiting(conn: AsyncConnection, row: Any) -> bool:
     """Whether ``row`` is a profile edit's backfill not yet claimed (its story not paused by
     it)."""
+    if str(row.kind) == "resummarize":
+        return True  # #232: a summary rebuild never pauses its story and is superseded
     if str(row.origin) != PROFILE_EDIT or str(row.status) != "queued":
         return False
     paused_by = await conn.scalar(select(stories.c.paused_by).where(stories.c.id == row.story_id))
@@ -717,7 +719,7 @@ async def supersede_queued(conn: AsyncConnection, story_id: str) -> bool:
         .where(story_backfills.c.id == found.id)
         .values(status="cancelled", error="superseded", finished_at=clock.now())
     )
-    log.info("queued backfill superseded", backfill_id=str(found.id))
+    log.info("queued backfill superseded", backfill_id=str(found.id), kind=str(found.kind))
     return True
 
 

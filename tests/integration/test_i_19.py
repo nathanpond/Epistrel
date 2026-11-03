@@ -18,7 +18,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import clock
-from epistrel.core.seeds.profiles import FULL_PRESET_ID
+from epistrel.core.seeds.profiles import FULL_PRESET_ID, LITE_PRESET_ID
 from epistrel.engine import Engine
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
 from epistrel.orchestrator.jobs.types import ClaimedJob
@@ -490,6 +490,107 @@ async def test_i_19__m7_conflicts(stub_settings: Any, engine: AsyncEngine) -> No
         assert (await ok(await client.get(f"/stories/{resumed}/backfill", headers=READ)))[
             "status"
         ] == "completed"
+
+
+@pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
+async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#232: a 400-turn Lite story upgraded to Full (backfilled), then switched back to Lite:
+    the downgrade applies at once (no pause, no structured backfill), reports
+    ``data_kept_dormant`` and ``summary_backfill``, keeps every fact (same ids and membership)
+    and closes the structured coverage at turn 400, and starts a ``resummarize`` backfill: a
+    Lite reply carries ``summary_rebuilding`` until the summary job catches up, and the row
+    then completes. More Lite turns, then Full again: the backfill's range is exactly the turns
+    played since, and the facts from before the downgrade are still there with their ids."""
+    from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
+    from tests.summary_support import run_due_jobs
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, actor, _ = await _story(client, engine, lib, 2 * lls.LATE)
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        facts = [
+            tuple(r)
+            for r in await rows(
+                engine,
+                "SELECT id, membership::text FROM facts WHERE story_id = :s ORDER BY id",
+                s=story,
+            )
+        ]
+        assert facts
+        down = await ok(
+            await client.put(
+                f"/stories/{story}/engine-profile",
+                json={"profile_id": LITE_PRESET_ID, "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        assert down["applied"] is True
+        (entry,) = down["impact"]["affected_stories"]
+        assert entry["data_kept_dormant"] is True
+        assert entry["summary_backfill"]["needed"] is True
+        assert entry["summary_backfill"]["estimate"]["model_calls"] > 0
+        (rebuild,) = await rows(
+            engine,
+            "SELECT kind, status FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
+            s=story,
+        )
+        assert rebuild.status == "extracting"
+        kept = [
+            tuple(r)
+            for r in await rows(
+                engine,
+                "SELECT id, membership::text FROM facts WHERE story_id = :s ORDER BY id",
+                s=story,
+            )
+        ]
+        assert kept == facts
+        closed = await rows(
+            engine,
+            "SELECT to_turn FROM capability_coverage WHERE story_id = :s "
+            "AND capability = 'pipeline' AND level = 'structured'",
+            s=story,
+        )
+        assert [r.to_turn for r in closed] == [lls.LATE]
+        played = await ok(
+            await client.post(f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE)
+        )
+        assert "summary_rebuilding" in played["degradation"]
+        assert lib.models is not None
+        for _ in range(40):  # each run compresses at most twenty chunks
+            if not await lite_summary_job.schedule(engine, story):
+                break
+            await run_due_jobs(engine, lib.models, story, limit=5)
+        caught_up = await ok(
+            await client.post(f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE)
+        )
+        assert "summary_rebuilding" not in caught_up["degradation"]
+        (done,) = await rows(
+            engine,
+            "SELECT status FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
+            s=story,
+        )
+        assert done.status == "completed"
+
+        await lls.long_lite_story(engine, story, actor, 20)  # ten more turns
+        up = await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        latest = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert latest["kind"] == "upgrade"
+        assert latest["range"] == {"from_turn": lls.LATE + 1, "to_turn": lls.LATE + 12}
+        assert up["backfill"]["id"] == latest["id"]
+        await run_backfill(engine, story)
+        again = {
+            str(r.id)
+            for r in await rows(
+                engine,
+                "SELECT id FROM facts WHERE story_id = :s AND membership = 'active'",
+                s=story,
+            )
+        }
+        assert {f[0] for f in facts if f[1] == "active"} <= again
 
 
 async def test_backfill__gap_fill(stub_settings: Any, engine: AsyncEngine) -> None:

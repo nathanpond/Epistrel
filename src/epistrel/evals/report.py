@@ -608,8 +608,11 @@ the procedure.
 """
 
 
-def render_index(summaries: Iterable[tuple[str, Mapping[str, Any]]]) -> str:
-    """``INDEX.md`` from ``(file name, summary)`` pairs."""
+def render_index(
+    summaries: Iterable[tuple[str, Mapping[str, Any]]], presets: str | None = None
+) -> str:
+    """``INDEX.md`` from ``(file name, summary)`` pairs; ``presets`` (#235: the Presets section,
+    ``evals.index.presets_section``) sits at the top, above the runs."""
     rows = sorted(summaries, key=lambda item: (item[1]["date"], item[0]), reverse=True)
     requirements = sorted(
         {req for _, s in rows for req in s.get("requirements", {})},
@@ -625,7 +628,12 @@ def render_index(summaries: Iterable[tuple[str, Mapping[str, Any]]]) -> str:
         *requirements,
         "Run",
     ]
-    lines = [INDEX_INTRO, "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    lines = [INDEX_INTRO]
+    if presets is not None:
+        from epistrel.evals.index import RUNS_HEADING
+
+        lines += [presets, RUNS_HEADING, ""]
+    lines += ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     if not rows:
         lines.append("| " + " | ".join([EM_DASH] * len(header)) + " |")
     for name, s in rows:
@@ -645,8 +653,16 @@ def render_index(summaries: Iterable[tuple[str, Mapping[str, Any]]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def index_text(reports_dir: Path) -> tuple[str, list[str]]:
-    """The index the reports in ``reports_dir`` produce, and the files with no summary."""
+def index_text(reports_dir: Path, records_dir: Path | None = None) -> tuple[str, list[str]]:
+    """The index the reports in ``reports_dir`` and the certification records in
+    ``records_dir`` (default: the committed ones, #235) produce, and the files with no
+    summary."""
+    from epistrel.evals.index import presets_section
+
+    if records_dir is None:
+        from epistrel.core.profiles.certification import SEEDS_DIR
+
+        records_dir = SEEDS_DIR
     pairs: list[tuple[str, Mapping[str, Any]]] = []
     unreadable: list[str] = []
     for path in report_files(reports_dir):
@@ -655,11 +671,12 @@ def index_text(reports_dir: Path) -> tuple[str, list[str]]:
             unreadable.append(path.name)
         else:
             pairs.append((path.name, found))
-    return render_index(pairs), unreadable
+    presets = presets_section(records_dir, index_dir=reports_dir)
+    return render_index(pairs, presets), unreadable
 
 
-def write_index(reports_dir: Path) -> Path:
-    text, _ = index_text(reports_dir)
+def write_index(reports_dir: Path, records_dir: Path | None = None) -> Path:
+    text, _ = index_text(reports_dir, records_dir)
     path = reports_dir / INDEX_NAME
     path.write_text(text, encoding="utf-8")
     return path

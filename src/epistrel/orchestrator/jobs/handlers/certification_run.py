@@ -178,6 +178,16 @@ async def _target(
     return request, settings
 
 
+async def profile_configuration(
+    conn: AsyncConnection, profile_id: str, *, facts: RuntimeFacts, version: int | None = None
+) -> tuple[HarnessRequest, Any]:
+    """#235: a profile version's configuration as a certification run plays it (its
+    fingerprint and models under ``facts``, its document) and its resolved settings: what a
+    hand-run certification (``epistrel evals certify``) records, computed as this deployment
+    computes a turn's."""
+    return await _target(conn, profile_id=profile_id, story_id=None, version=version, facts=facts)
+
+
 async def request_run(
     db: AsyncEngine,
     body: CertificationRunRequest,
@@ -409,5 +419,6 @@ __all__ = [
     "CertificationRunRequest",
     "RunPayload",
     "get_run",
+    "profile_configuration",
     "request_run",
 ]

@@ -8,6 +8,9 @@
     uv run python -m epistrel.evals run --preset standard …  # #227: lite|standard|full|max
     uv run python -m epistrel.evals run --suite smoke …     # rerun one suite into today's run
     uv run python -m epistrel.evals index                    # regenerate docs/evals/INDEX.md
+    uv run python -m epistrel.evals index --check            # #235: INDEX.md current (lint)
+    uv run epistrel evals certify --presets standard,full,max --base-url … --model … \
+        --embedding-model … --seeds 3 --reference          # #235: see ``certify_cli``
     uv run python -m epistrel.evals --check                  # suites ↔ guarantees ↔ index
     uv run python -m epistrel.evals --check-sets             # labeled sets (#157), lint job
     uv run python -m epistrel.evals author                   # regenerate #157's sets
@@ -214,11 +217,21 @@ def parser() -> argparse.ArgumentParser:
         help="calibrate the quality judge on the labeled pairs and store its agreement (#158)",
     )
     _endpoint_options(calibrate)
+    from epistrel.evals import certify_cli
+
+    certify_cli.add_parser(sub)
     sub.add_parser("author", help="regenerate #157's labeled sets from their authoring modules")
     sub.add_parser("digest", help="regenerate docs/evals/sets-digest.md")
     index = sub.add_parser("index", help="regenerate docs/evals/INDEX.md from the reports")
     index.add_argument(
         "--reports-dir", type=Path, default=checks.REPORTS_DIR, help=argparse.SUPPRESS
+    )
+    index.add_argument("--records-dir", type=Path, help=argparse.SUPPRESS)
+    index.add_argument(
+        "--check",
+        action="store_true",
+        dest="index_check",
+        help="regenerate in memory and exit 1 when INDEX.md differs (#235: the lint job)",
     )
     return p
 
@@ -384,6 +397,22 @@ def _load(path: Path) -> dict[str, object]:
     return loaded
 
 
+def index_check(reports_dir: Path, records_dir: Path | None = None) -> int:
+    """``index --check`` (#235): ``INDEX.md`` byte for byte what the committed reports, the
+    committed certification records and the preset constants regenerate; exit 1 when not."""
+    expected, _ = reports.index_text(reports_dir, records_dir)
+    path = reports_dir / reports.INDEX_NAME
+    if not path.is_file() or path.read_text(encoding="utf-8") != expected:
+        print(
+            f"{path} is stale (a preset, a template or a record changed): run "
+            "`uv run python -m epistrel.evals index`",
+            file=sys.stderr,
+        )
+        return EX_FAILED
+    print(f"{path} is current")
+    return 0
+
+
 def check() -> int:
     found = checks.problems()
     for problem in found:
@@ -422,8 +451,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_run(args))
     if args.command == "calibrate-judge":
         return asyncio.run(_calibrate(args))
+    if args.command == "certify":
+        from epistrel.evals import certify_cli
+
+        return certify_cli.run(args, _adapter(args))
     if args.command == "index":
-        path = reports.write_index(args.reports_dir)
+        if args.index_check:
+            return index_check(args.reports_dir, args.records_dir)
+        path = reports.write_index(args.reports_dir, args.records_dir)
         print(f"wrote {path}")
         return 0
     parser().print_help(sys.stderr)

@@ -65,6 +65,12 @@ jobs:
       - name: evals-check
         run: uv run python -m epistrel.evals --check
         if: always()
+      # #235 (NFR-QUAL-11): INDEX.md's Presets table is what the committed certification records
+      # and the preset constants regenerate, so a preset (or a prompt template) edited after its
+      # certification turns its row uncertified and this step red until the index is regenerated.
+      - name: evals-index-check
+        run: uv run python -m epistrel.evals index --check
+        if: always()
       # Labeled sets (#157): every set loads under its suite's schema and meets its size, matches
       # its authoring module, has a PROVENANCE.md with the owner's review line, and the review
       # digest is current. A set the owner has not approved yet passes on a branch and fails on
@@ -275,15 +281,20 @@ jobs:
       # a sample of 100 can draw 5 of them and sit exactly on the 95 % floor.
       # #179's zero-leak suites (q04, priv_think_leak) need their full sets (NFR-QUAL-8's 300 cases a
       # metric) and run as the `evals-zero-leak` job below.
-      - name: evals (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate --preset ${{ matrix.preset }}
-      - name: upload the stub eval report
+      # #235 (NFR-QUAL-11): the run goes through the certification command (owner decision 2),
+      # so CI exercises the whole path on the stub: the preset's fingerprint as a deployment
+      # computes it, every suite the preset enables, its report, its certification record and a
+      # scratch INDEX.md, under build/evals/certify/. One preset per matrix job, as before: the
+      # three presets in one process would triple the job's wall time.
+      - name: evals (stub, certify)
+        run: uv run python -m epistrel.evals certify --presets ${{ matrix.preset }} --adapter stub --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate --out build/evals/certify/
+      - name: upload the stub certification
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-stub-report-${{ matrix.preset }}
+          name: evals-certify-stub-${{ matrix.preset }}
           path: |
-            build/evals/stub-report-${{ matrix.preset }}.md
+            build/evals/certify/
             build/evals/*.json
             build/evals/*.jsonl
           if-no-files-found: warn

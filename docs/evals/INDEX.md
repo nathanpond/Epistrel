@@ -6,6 +6,22 @@ model, whatever its verdict. Generated from the reports' embedded summaries by
 this file is stale. [README.md](README.md) has the policy (no automated real-model runs) and
 the procedure.
 
+## Presets
+
+The quality floors each shipped preset is certified for on the reference model (NFR-QUAL-11),
+from the committed certification records and the presets as they ship. A preset edited after
+its certification reads `uncertified` here until it is certified again. `epistrel evals
+certify` writes the reports and records; [README.md](README.md) has the procedure.
+
+| Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Lite | `48157377a4b9` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
+| Standard | `63fd9a058bfb` | uncertified | — | — | — | — | — | — | — | — | — |
+| Full | `d55ec3a34105` | uncertified | — | — | — | — | — | — | — | — | — |
+| Max | `63ab92705d05` | uncertified | — | — | — | — | — | — | — | — | — |
+
+## Runs
+
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-11-01 | `cydonia-24b-v4.3` | structured | `74606ed2b224` | local | `e09` pass | — | — | — | — | — | — | — | pass | — | — | — | [pass](74606ed2b224-2026-11-01.md) |

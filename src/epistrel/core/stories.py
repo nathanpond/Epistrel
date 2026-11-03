@@ -127,6 +127,7 @@ from epistrel.core.tables import (
     audit_log,
     backfill_chunks,
     backfill_conflicts,
+    bundle_jobs,
     capability_coverage,
     certification_runs,
     character_snapshots,
@@ -312,6 +313,8 @@ STORY_TABLES: tuple[Table, ...] = (
     rewrite_sessions,
     # Directives (#226): an author's directions; not copied by a fork.
     directives,
+    # Story exports (#249): the jobs and their archives; not copied by a fork.
+    bundle_jobs,
     # Backfill (#228): the chunks and conflicts before the backfill they belong to, and the
     # coverage (no foreign key); a fork copies only the coverage, clipped to its fork point.
     backfill_chunks,
@@ -352,6 +355,7 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         rewrite_questions.name,
         rewrite_sessions.name,
         directives.name,
+        bundle_jobs.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,

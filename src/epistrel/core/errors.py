@@ -1783,6 +1783,48 @@ class PruneTargetIneligible(EpistrelError):
     http_status = 422
 
 
+class ExportNotFound(EpistrelError):
+    """No story export of that id (#249)."""
+
+    code = "job_not_found"
+    http_status = 404
+
+
+class ExportNotReady(EpistrelError):
+    """The export's archive is not written yet (#249): ``details.status``."""
+
+    code = "export_not_ready"
+    http_status = 409
+
+
+class ExportExpired(EpistrelError):
+    """The export's archive has expired and is gone (#249)."""
+
+    code = "export_expired"
+    http_status = 410
+
+
+class BundleTooLarge(EpistrelError):
+    """An imported bundle exceeds a limit while it decompresses (#250): ``details.limit``."""
+
+    code = "bundle_too_large"
+    http_status = 413
+
+
+class CorruptBundle(EpistrelError):
+    """An imported bundle is not a valid story bundle (#250): ``details.reason``."""
+
+    code = "corrupt_bundle"
+    http_status = 422
+
+
+class UnsupportedFormatVersion(EpistrelError):
+    """An imported bundle's format is newer than this deployment reads (#250)."""
+
+    code = "unsupported_format_version"
+    http_status = 422
+
+
 class CheckpointNotFound(EpistrelError):
     """No committed checkpoint is at that turn, slot or variant (#222)."""
 

@@ -28,8 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
 from epistrel.core import backfill as core_backfill
-from epistrel.core import config_changes as config_log
 from epistrel.core import (
+    bundles,
     config_vocabulary,
     deployment,
     feedback,
@@ -52,6 +52,7 @@ from epistrel.core import (
     turn_gate,
     variants,
 )
+from epistrel.core import config_changes as config_log
 from epistrel.core import control as control_ops
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
@@ -59,6 +60,7 @@ from epistrel.core import prune as core_prune
 from epistrel.core import story_settings as settings_store
 from epistrel.core.amendments import read as amendment_reads
 from epistrel.core.backfill import conflicts as backfill_conflicts
+from epistrel.core.bundles import importing as bundle_import
 from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -190,6 +192,7 @@ from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import prune_policy as prune_policy_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
+from epistrel.orchestrator.jobs.handlers import story_export as story_export_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -349,6 +352,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
     "prune_story": ResultCodec.of(core_prune.PruneOutcome),
+    "export_story": ResultCodec.of(bundles.ExportStarted, status=202),
+    "import_story": ResultCodec.of(bundle_import.Imported, status=201),
     "resolve_backfill_conflict": ResultCodec.of(backfill_conflicts.Resolved),
     # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
     "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
@@ -815,6 +820,16 @@ class Engine:
         consolidation_job.bind(self.models)
         backfill_job.bind(self.models)
         prune_policy_job.bind(core_prune.run_policy)  # #248
+        story_export_job.configure(  # #249
+            directory=self.settings.bundle_dir,
+            secrets=tuple(
+                s.get_secret_value()
+                for s in (
+                    *self.settings.service_credentials,
+                    *([self.settings.config_key] if self.settings.config_key else []),
+                )
+            ),
+        )
         backfill_job.configure(
             concurrency=self.settings.backfill_concurrency,
             wait_s=self.settings.worker_poll_interval,
@@ -2799,6 +2814,53 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
             keep=lambda found: found.applied,
         )
+
+    async def export_story(self, ctx: RequestContext, story_id: str) -> bundles.ExportStarted:
+        """Export the story as a bundle (FR-STORE-7, FR-ADMIN-4; #249): a background job
+        (REST 202) reads it at one revision and writes the archive; poll ``export_status``.
+        404 for an unknown story."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> bundles.ExportStarted:
+            async with self.db.begin() as conn:
+                bundle_id = await bundles.start(conn, story_id, principal=principal)
+                await story_export_job.enqueue(conn, bundle_id)
+                revision = await conn.scalar(
+                    select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)
+                )
+            return bundles.ExportStarted(bundle_id, story_id, timeline_revision=int(revision or 0))
+
+        return await self._keyed(ctx, "export_story", run, material={"story_id": story_id})
+
+    async def import_story(
+        self, ctx: RequestContext, data: bytes, request: bundle_import.ImportRequest
+    ) -> bundle_import.Imported:
+        """Import a story bundle as a new story (FR-STORE-7, FR-ADMIN-4; #250; REST 201): the
+        archive is checked under limits, every id it owns remapped, its rows written in one
+        transaction and its projections rebuilt. 413 ``bundle_too_large``, 422
+        ``corrupt_bundle`` / ``unsupported_format_version``; a refusal leaves nothing."""
+        principal = self.require_principal(ctx)
+        digest = hashlib.sha256(data).hexdigest()
+
+        async def run(_: RequestContext) -> bundle_import.Imported:
+            return await bundle_import.import_story(self.db, data, request, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "import_story",
+            run,
+            material={"sha256": digest, **request.model_dump(mode="json")},
+        )
+
+    @refuses_nul()
+    async def export_status(self, ctx: RequestContext, job_id: str) -> bundles.ExportJob:
+        """An export's state (#249); 404 ``job_not_found``."""
+        return await bundles.status(self.db, job_id)
+
+    @refuses_nul()
+    async def open_export_bundle(self, ctx: RequestContext, job_id: str) -> bundles.Bundle:
+        """A ready export's archive (#249): 409 ``export_not_ready``, 410 ``export_expired``."""
+        return await bundles.bundle(self.db, job_id)
 
     @refuses_nul()
     async def list_prune_runs(self, ctx: RequestContext, story_id: str) -> core_prune.PruneRuns:

@@ -11551,3 +11551,53 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #248
 - **Decision (not built; #703):** the `pruning` block on `GET /stories/{id}`; the partial expression index on `stories.settings->'prune_policy'`; the X-07 missed-run and X-01 soak slices; the never-suggests check over 50 dormant chains. The policy test sits in `tests/scenario/test_s_prune.py`, since one file per test ID per milestone is allowed.
   **Issue:** #248
+
+### #249 — story export, 2026-11-03
+
+- **Decision:**
+  - **Module and job.** `core.bundles` holds the classification, the canonical writer and the export. A `bundle_jobs` table (migration 0125) records each export, and the `story_export` job writes it.
+  - **Classification.** `REBUILD` covers the projections, the subject index and the transcript projection. `NEVER` covers deployment-level and transient work: jobs, queue, timers, idempotency, check jobs, backfills, rewrite sessions, the read-set index, escalations, the extraction shadow and the export jobs. Every other `story_id` table is `EXPORT`, plus `erasure_ledger` by `story_ref`. A coverage test fails on an unclassified table.
+  - **Snapshot.** One `REPEATABLE READ` read-only snapshot covers the story, its committed operations, its events in `seq` order, and every `EXPORT` table.
+  - **Archive.** `manifest.json` comes first, with format `1.0.0`, the Alembic head, files with SHA-256/size/records, and counts. The archive is reproducible: tar members with mtime 0, canonical JSON. Two exports of one revision differ only in the manifest.
+  - **Secret scan.** Before anything is kept, every member is scanned for the service credentials and the config key, raw, base64 and hex. A hit fails the job (`secret_detected`) and no file is written.
+  - **Storage.** Archives go to `Settings.bundle_dir` (`EPISTREL_BUNDLE_DIR`), staged then renamed, with a 24-hour `expires_at`.
+  - **Routes.** `POST /admin/stories/{id}/export` (202, `Location`), `GET /admin/stories/exports/{job}`, `GET …/bundle` (409 `export_not_ready`, 410 `export_expired`). They are registered before the admin stories router. Errors: `job_not_found`, `export_not_ready`, `export_expired`.
+  **Issue:** #249
+- **Decision (not built; #704):**
+  - media and `catalog/` members;
+  - the bundle JSON Schema in OpenAPI and per-line validation against it;
+  - the erasure race restart and the `story_exports` erasure target;
+  - the retention sweep's expiry deletion;
+  - deleting the files with the story;
+  - provider-credential secrets in the scan;
+  - the rich-story fixture and the concurrent-snapshot test.
+  **Issue:** #249
+
+### #250 — story import (partial), 2026-11-03
+
+- **Decision (scope, partial):**
+  - **Shape.** Built as a synchronous import in one transaction (`core/bundles/importing.py`, `POST /admin/stories/import`, 201), not the planned background job with an `importing` status.
+  - **Why.** The full story is a job, a status gate on every route, claim skips, staging, format migrations and per-table schemas. That is more than the run's remaining budget, and one transaction already gives the hard guarantee: a refusal leaves no story, row or job.
+  - **Request.** The body is the raw archive (`application/octet-stream`; C-01's schemathesis has no gzip serializer), with `owner` and `engine_profile_id` as query parameters, instead of the planned multipart form.
+  - **Limits.** Module constants, not deployment settings.
+  - **Status.** #250 stays open (no `Closes`). What is left is filed as #705.
+  **Issue:** #250
+- **Decision (built):**
+  - **Reading.** The archive is read with `tarfile` `r|gz` and counted while it decompresses: entries, per-entry and total bytes give `bundle_too_large` with `details.limit`.
+  - **Checks.** A non-regular member or a climbing/absolute path is `corrupt_bundle` `entry_outside_archive`. The manifest must come first, and every member must be listed once with a matching SHA-256. Each line must be a JSON object. Major ≠ 1 is `unsupported_format_version`.
+  - **Id remap.** Every primary-key ULID the bundle owns, the story's included, gets a fresh ULID. Values are rewritten deep (JSON, and ULIDs inside longer strings), as a fork remaps. Ids the bundle does not own are kept.
+  - **What is kept as recorded.** Recording times, `seq`, membership, principals.
+  - **Profile.** The requested profile, else the bundle's when it exists here, else the default.
+  - **Safety.** `checked_guardrails = null` on every operation, and `executable = false` on every outbox row.
+  - **Rebuild.** Projections are refolded (`replace_with_fold`) and the subject index rewritten (`reindex_story`).
+  - **Idempotency.** Keyed per deployment, with the archive's SHA-256 in the hash.
+  - **JSON nulls.** A JSONB `None` binds as SQL NULL; JSON `null` broke `ck_stories_scenario_snapshot`. This is a Rule 1 fix inside the story.
+  **Issue:** #250
+
+### #251 — import safety gates, 2026-11-03
+
+- **Decision (not built):**
+  - **What is missing.** #251's gates need #250's job pipeline and its `IMPORT_GATES` slot, which the synchronous slice does not have (#705). The gates are applying the erasure ledger, the guardrail check, profile attachment under impact rules and parking pending effects.
+  - **What the slice covers.** Two cheap guarantees: no imported operation counts as guardrail-checked, and no imported outbox row is dispatchable.
+  - **Status.** #251 is left open with a comment; no `Closes`.
+  **Issue:** #251

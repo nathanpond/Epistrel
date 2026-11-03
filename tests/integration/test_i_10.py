@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
@@ -316,3 +317,274 @@ async def test_library_create_and_failed_genesis(
         await count(engine, f"SELECT count(*) FROM {table}")  # noqa: S608
         for table in ("stories", "characters", "operations", "events")
     ] == totals
+
+
+# -- M7: story export (#249) ----------------------------------------------------------------------
+
+
+@pytest.mark.part("M7", "FR-STORE-7; FR-ADMIN-4")
+async def test_i_10__m7_export_contents(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """A story with three turns is exported (202, then the job): the
+    archive's first member is ``manifest.json`` (format ``1.0.0``, the source story, the
+    revision, each file's SHA-256 matching), every line is canonical JSON, every committed
+    operation and event of the story is present, and no member is a projection, an index, a
+    job, an idempotency result or the audit log. Two exports of one revision are identical but
+    for the manifest's ``exported_at``/``exported_by``. Downloads before the archive is
+    written are 409 ``export_not_ready``."""
+    import hashlib
+
+    from sqlalchemy import text
+
+    from epistrel.core import bundles
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        for turn in range(3):
+            await play_turn(engine, story, f"Line {turn}.", principal="p-export")
+        started = await client.post(f"/admin/stories/{story}/export", headers=WRITE)
+        assert started.status_code == 202, started.text
+        job = started.json()["job_id"]
+        assert started.headers["Location"].endswith(job)
+        early = await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)
+        assert early.status_code == 409, early.text
+        assert early.json()["error"]["code"] == "export_not_ready"
+        await bundles.run_export(engine, job, tmp_path)
+        shown = await client.get(f"/admin/stories/exports/{job}", headers=READ)
+        assert shown.json()["status"] == "ready", shown.text
+        got = await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)
+        assert got.status_code == 200
+        assert got.headers["content-type"] == "application/gzip"
+        members = bundles.read_archive(got.content)
+        assert members[0][0] == "manifest.json"
+        manifest = json.loads(members[0][1])
+        assert (manifest["format_version"], manifest["source_story_id"]) == ("1.0.0", story)
+        by_path = dict(members[1:])
+        for entry in manifest["files"]:
+            assert hashlib.sha256(by_path[entry["path"]]).hexdigest() == entry["sha256"]
+        events = [json.loads(line) for line in by_path["events.jsonl"].splitlines()]
+        stored = await rows(engine, "SELECT id FROM events WHERE story_id = :s", s=story)
+        assert {e["id"] for e in events} == {str(r.id) for r in stored}
+        assert [e["seq"] for e in events] == sorted(e["seq"] for e in events)
+        names = set(by_path)
+        for never in ("jobs", "idempotency_keys", "audit_log", "subject_references", "story_heads"):
+            assert f"records/{never}.jsonl" not in names
+        again = await client.post(f"/admin/stories/{story}/export", headers=WRITE)
+        second = again.json()["job_id"]
+        await bundles.run_export(engine, second, tmp_path)
+        other = bundles.read_archive(
+            (await client.get(f"/admin/stories/exports/{second}/bundle", headers=READ)).content
+        )
+        assert [m for m in other[1:]] == members[1:]
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+
+@pytest.mark.part("M7", "FR-STORE-7")
+def test_bundle_secret_scan() -> None:
+    """#249 (NFR-SEC-3): a member holding a configured secret, raw, in base64 or in hex, is
+    found; a clean archive passes."""
+    from epistrel.core.bundles import scan
+
+    secret = "canary-secret-value-123"
+    for form in (
+        secret.encode(),
+        base64.b64encode(secret.encode()),
+        secret.encode().hex().encode(),
+    ):
+        assert scan([("a.jsonl", b"x" + form + b"y")], [secret]) == "a.jsonl"
+    assert scan([("a.jsonl", b"nothing here")], [secret]) is None
+
+
+@pytest.mark.part("M7", "FR-STORE-7")
+def test_bundle_tables_coverage() -> None:
+    """Every table with a ``story_id`` column is classified for a bundle."""
+    from epistrel.core.bundles import classify, story_tables
+
+    assert [t.name for t in story_tables() if classify(t.name) is None] == []
+
+
+# -- M7: story import (#250) ----------------------------------------------------------------------
+
+
+def _tar(members: list[tuple[str, bytes]], *, kind: bytes = b"0") -> bytes:
+    """A gzip-compressed tar of ``members`` (``kind``: the tar member type of each)."""
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, data in members:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.type = kind
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+async def _exported(client: Any, engine: AsyncEngine, story: str, tmp_path: Any) -> bytes:
+    from epistrel.core import bundles
+
+    started = await client.post(f"/admin/stories/{story}/export", headers=WRITE)
+    assert started.status_code == 202, started.text
+    job = started.json()["job_id"]
+    await bundles.run_export(engine, job, tmp_path)
+    got = await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)
+    assert got.status_code == 200, got.text
+    return bytes(got.content)
+
+
+def _import(client: Any, data: bytes, headers: dict[str, str] | None = None) -> Any:
+    return client.post(
+        "/admin/stories/import",
+        content=data,
+        headers={**WRITE, "Content-Type": "application/gzip", **(headers or {})},
+    )
+
+
+@pytest.mark.part("M7", "FR-STORE-7; FR-ADMIN-4")
+async def test_i_10__m7_import_round_trip(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """A story with three turns is exported and imported (201): the new story has a new id,
+    the same number of operations, events and characters, no id of the source, the original
+    recording times, and the source's transcript; the source is untouched. Two imports of one
+    bundle give two independent stories; repeating a request with the same ``Idempotency-Key``
+    returns the first. A turn on the import commits."""
+    from sqlalchemy import text
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        for turn in range(3):
+            await play_turn(engine, story, f"Line {turn}.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        before = await _rows_left(engine, story)
+
+        first = await _import(client, data, {"Idempotency-Key": "01JB0000000000000000000IMP"})
+        assert first.status_code == 201, first.text
+        imported = first.json()["story_id"]
+        assert imported != story
+        assert first.json()["source_story_id"] == story
+        again = await _import(client, data, {"Idempotency-Key": "01JB0000000000000000000IMP"})
+        assert again.status_code == 201
+        assert again.json()["story_id"] == imported
+        assert again.headers.get("Idempotent-Replay") == "true"
+        second = await _import(client, data)
+        assert second.status_code == 201, second.text
+        assert second.json()["story_id"] not in (story, imported)
+
+        for table in ("operations", "events", "characters"):
+            sql = f"SELECT count(*) FROM {table} WHERE story_id = :s"  # noqa: S608
+            assert await count(engine, sql, s=imported) == before[table], table
+        source_ids = {
+            str(r.id)
+            for r in await rows(engine, "SELECT id FROM events WHERE story_id = :s", s=story)
+        }
+        new_ids = {
+            str(r.id)
+            for r in await rows(engine, "SELECT id FROM events WHERE story_id = :s", s=imported)
+        }
+        assert not source_ids & new_ids
+        times = await rows(
+            engine,
+            "SELECT tx_time FROM events WHERE story_id = :s ORDER BY seq",
+            s=story,
+        )
+        imported_times = await rows(
+            engine,
+            "SELECT tx_time FROM events WHERE story_id = :s ORDER BY seq",
+            s=imported,
+        )
+        assert [r.tx_time for r in times] == [r.tx_time for r in imported_times]
+        dumped = await rows(
+            engine,
+            "SELECT payload::text AS p FROM events WHERE story_id = :s",
+            s=imported,
+        )
+        assert not any(story in r.p for r in dumped)
+        source = await client.get(f"/stories/{story}/history", headers=READ)
+        target = await client.get(f"/stories/{imported}/history", headers=READ)
+        assert source.status_code == target.status_code == 200, target.text
+
+        def texts(body: dict[str, Any]) -> list[Any]:
+            return [(i["turn"], i["kind"], i["text"]) for i in body["items"]]
+
+        assert texts(target.json()) == texts(source.json())
+        assert len(texts(source.json())) >= 3
+        assert await _rows_left(engine, story) == before
+        await play_turn(engine, imported, "One more.", principal="p-import")
+        assert await _rows_left(engine, story) == before
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_import_bad_bundles(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """Bad bundles are refused and leave no story: a checksum mismatch, a member outside the
+    archive (a climbing path, a symlink), an unreadable archive, a manifest missing its format,
+    a member not in the manifest and a line that is not a JSON object are ``corrupt_bundle``; a
+    newer major format is ``unsupported_format_version``; a highly compressed member past the
+    per-entry limit is ``bundle_too_large``, caught while decompressing."""
+    import hashlib
+
+    from sqlalchemy import text
+
+    from epistrel.core import bundles
+    from epistrel.core.bundles import importing
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        members = bundles.read_archive(await _exported(client, engine, story, tmp_path))
+        manifest = json.loads(members[0][1])
+
+        def rebuilt(changed: dict[str, Any], body: list[tuple[str, bytes]]) -> bytes:
+            return _tar([("manifest.json", json.dumps({**manifest, **changed}).encode()), *body])
+
+        tampered = [(n, d + b"\n" if n == "events.jsonl" else d) for n, d in members[1:]]
+        bad_line = [(n, b"[1]\n" if n == "events.jsonl" else d) for n, d in members[1:]]
+        files = [
+            {**f, "sha256": hashlib.sha256(b"[1]\n").hexdigest()}
+            if f["path"] == "events.jsonl"
+            else f
+            for f in manifest["files"]
+        ]
+        cases: list[tuple[bytes, str, str | None]] = [
+            (rebuilt({}, tampered), "corrupt_bundle", "checksum_mismatch"),
+            (
+                rebuilt({}, [*members[1:], ("../evil", b"x")]),
+                "corrupt_bundle",
+                "entry_outside_archive",
+            ),
+            (
+                _tar([("manifest.json", members[0][1])], kind=b"2"),
+                "corrupt_bundle",
+                "entry_outside_archive",
+            ),
+            (b"not a gzip stream", "corrupt_bundle", "unreadable_archive"),
+            (rebuilt({"format_version": None}, members[1:]), "corrupt_bundle", "manifest_invalid"),
+            (
+                rebuilt({}, [*members[1:], ("extra.jsonl", b"")]),
+                "corrupt_bundle",
+                "unexpected_entry",
+            ),
+            (rebuilt({"files": files}, bad_line), "corrupt_bundle", "schema_violation"),
+            (rebuilt({"format_version": "2.0.0"}, members[1:]), "unsupported_format_version", None),
+        ]
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        for data, code, reason in cases:
+            refused = await _import(client, data)
+            assert refused.json()["error"]["code"] == code, (reason, refused.text)
+            if reason is not None:
+                assert refused.json()["error"]["details"]["reason"] == reason, refused.text
+        bomb = _tar([("manifest.json", b"\0" * (importing.MAX_ENTRY_BYTES + 1))])
+        assert len(bomb) < 1_000_000
+        too_large = await _import(client, bomb)
+        assert too_large.status_code == 413, too_large.text
+        assert too_large.json()["error"]["details"]["limit"] == "bundle_max_entry_bytes"
+        assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))

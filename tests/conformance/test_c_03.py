@@ -1786,6 +1786,31 @@ def _steps() -> list[Step]:
                 e.prune_story(CTX, ids["story"], PruneRequest(ignore_warnings=True))
             ),
         ),
+        # #249: an export queued (202); its state; its bundle before the job ran (409).
+        Step(
+            "export_story",
+            lambda ids: Rest("POST", f"/admin{s}/export"),
+            lambda e, ids: _export_started(e.export_story(CTX, ids["story"])),
+            _keep("export", "job_id"),
+            status=lambda body: 202,
+        ),
+        Step(
+            "export_status",
+            lambda ids: Rest("GET", "/admin/stories/exports/{export}"),
+            lambda e, ids: _dumped(e.export_status(CTX, ids["export"])),
+        ),
+        Step(
+            "open_export_bundle",
+            lambda ids: Rest("GET", "/admin/stories/exports/{export}/bundle"),
+            lambda e, ids: _bundle(e.open_export_bundle(CTX, ids["export"])),
+        ),
+        # #250: a minimal bundle (a story with no history) imported as a new story (201).
+        Step(
+            "import_story",
+            lambda ids: Rest("POST", "/admin/stories/import", content=IMPORT_BUNDLE),
+            lambda e, ids: _imported(e),
+            status=lambda body: 201,
+        ),
         Step(
             "list_prune_runs",
             lambda ids: Rest("GET", f"{s}/prune-runs"),
@@ -3752,6 +3777,52 @@ async def _coverage_gap(engine: Engine, ids: Ids) -> None:
             text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
             {"s": ids["story"]},
         )
+
+
+async def _bundle(call: Awaitable[Any]) -> dict[str, Any]:
+    """A bundle download (never ready in this replay: both surfaces refuse it alike)."""
+    found = await call
+    return {"filename": found.filename, "sha256": found.sha256}
+
+
+def _import_bundle() -> bytes:
+    """A minimal valid bundle: a manifest and a story with no history (#250)."""
+    import hashlib
+    import io
+    import tarfile
+
+    story = json.dumps({"id": "01JB00000000000000000STORY", "name": "Imported"}).encode()
+    manifest = json.dumps(
+        {
+            "format_version": "1.0.0",
+            "source_story_id": "01JB00000000000000000STORY",
+            "exported_revision": 0,
+            "files": [{"path": "records/story.json", "sha256": hashlib.sha256(story).hexdigest()}],
+        }
+    ).encode()
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, data in (("manifest.json", manifest), ("records/story.json", story)):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+IMPORT_BUNDLE = _import_bundle()
+
+
+async def _imported(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.bundles import ImportedBody
+    from epistrel.core.bundles.importing import ImportRequest
+
+    return dump(ImportedBody.of(await engine.import_story(CTX, IMPORT_BUNDLE, ImportRequest())))
+
+
+async def _export_started(call: Awaitable[Any]) -> dict[str, Any]:
+    from epistrel.api.routes.admin.bundles import ExportStartedBody
+
+    return dump(ExportStartedBody.of(await call))
 
 
 async def _pruned(call: Awaitable[Any]) -> dict[str, Any]:

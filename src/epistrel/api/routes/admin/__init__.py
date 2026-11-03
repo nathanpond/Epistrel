@@ -14,6 +14,7 @@ from fastapi import APIRouter
 from epistrel.api.routes import certifications
 from epistrel.api.routes.admin import (
     beliefs,
+    bundles,
     erasure,
     feedback_export,
     model_config,
@@ -31,6 +32,7 @@ from epistrel.api.routes.admin import (
 ADMIN_PREFIX = "/admin"
 
 router = APIRouter(prefix=ADMIN_PREFIX, tags=["admin"])
+router.include_router(bundles.router)  # #249: before stories (its literal `exports` paths)
 router.include_router(stories.router)
 router.include_router(mutation.router)
 router.include_router(beliefs.router)

@@ -310,6 +310,7 @@ ORDER: dict[str, str] = {
         "WHERE r.id = t.session_id), t.created_at, t.key"
     ),
     "directives": f"{_STORY_RANK}, t.created_at, t.kind, t.disposition",
+    "bundle_jobs": f"{_STORY_RANK}, t.created_at, t.kind, t.status",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

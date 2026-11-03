@@ -126,6 +126,11 @@ async def _amend(engine: AsyncEngine, story_id: str) -> None:
             ),
             {"d": new_ulid(), "s": story_id},
         )
+        # #249: an export of the story's (planted: its job never ran).
+        await conn.execute(
+            text("INSERT INTO bundle_jobs (id, story_id, requested_by) VALUES (:b, :s, 'p-op')"),
+            {"b": new_ulid(), "s": story_id},
+        )
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:

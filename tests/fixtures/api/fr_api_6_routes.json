@@ -1034,6 +1034,26 @@
       "method": "GET",
       "path": "/stories/{story_id}/prune-runs",
       "why": "FR-STORE-32: prune history (#248)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/export",
+      "why": "FR-STORE-7/FR-ADMIN-4: story export (#249)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/exports/{job_id}",
+      "why": "FR-STORE-7/FR-ADMIN-4: story export (#249)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/exports/{job_id}/bundle",
+      "why": "FR-STORE-7/FR-ADMIN-4: story export (#249)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/import",
+      "why": "FR-STORE-7/FR-ADMIN-4: story import (#250)"
     }
   ],
   "outside": [

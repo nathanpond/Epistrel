@@ -168,6 +168,8 @@ class Settings(BaseSettings):
     # (exit 78). The image sets /var/lib/epistrel/erasure-ledger (compose: the
     # ``erasure-ledger`` volume, separate from ``pgdata`` and ``media``).
     erasure_ledger_dir: Path = Path("var/erasure-ledger")
+    # Story bundles (FR-STORE-7; #249): where export archives are written (staged, then renamed).
+    bundle_dir: Path = Path("var/bundles")
 
     @property
     def embedding_adapter_kind(self) -> Literal["openai", "stub"]:

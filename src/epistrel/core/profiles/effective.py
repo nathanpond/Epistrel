@@ -61,6 +61,8 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -521,6 +523,9 @@ async def effective_configuration(
         CACHE.put(story_id, key, settings)
     strongest = tiers.strongest_of(row.deployment_settings)
     settings = tiers.resolved(settings, strongest)
+    held = DERIVING.get()
+    if held is not None and story_id in held:
+        settings = held[story_id]  # #228: a backfill derives under its target configuration
     return StoryProfile(
         story_id=story_id,
         profile_id=profile_id,
@@ -541,6 +546,28 @@ async def effective_configuration(
 
 story_profile = effective_configuration
 """#109's name for ``effective_configuration``."""
+
+
+DERIVING: ContextVar[Mapping[str, ProfileSettings] | None] = ContextVar(
+    "epistrel_deriving_settings", default=None
+)
+"""#228 (FR-PROF-9): the settings a backfill's reconciliation derives under, by story: the
+held target configuration's. Inside ``deriving`` every reader of the story's effective
+configuration (the clock's gate and time basis, the live writers) sees them, so the
+reconciliation writes through the live writers as the target configuration would; the stored
+configuration is unchanged until the completion applies it."""
+
+
+@contextmanager
+def deriving(story_id: str, settings: ProfileSettings) -> Iterator[None]:
+    """Read ``story_id``'s effective configuration as ``settings`` inside the block."""
+    held = dict(DERIVING.get() or {})
+    held[story_id] = settings
+    token = DERIVING.set(held)
+    try:
+        yield
+    finally:
+        DERIVING.reset(token)
 
 
 @dataclass(frozen=True, slots=True)
@@ -907,6 +934,7 @@ async def read_guarantees(db: AsyncEngine, story_id: str) -> guarantees.Guarante
 __all__ = [
     "CACHE",
     "CACHE_MAX",
+    "DERIVING",
     "INVALID_MAX",
     "SETTING_PATHS",
     "AssignableProfile",
@@ -924,6 +952,7 @@ __all__ = [
     "check_document",
     "check_patch",
     "configure_cache",
+    "deriving",
     "digest",
     "effective_configuration",
     "first_refusal",

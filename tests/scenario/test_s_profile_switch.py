@@ -83,7 +83,7 @@ async def test_s_profile_switch(stub_settings: Settings, engine: AsyncEngine) ->
         standard, _ = await _copy(client, STANDARD_PRESET_ID, "Switch Standard")
         story, ids = await new_story(client, "Ada", "Bobby", "Cal")
         actor = ids["Ada"]
-        await lls.long_lite_story(engine, story, actor, 40)
+        await lls.long_lite_story(engine, story, actor, 40, lines=CLOCKED)
         assert lib.models.stub is not None
         lls.script(lib.models.stub)
         backfill_job.bind(lib.models)
@@ -111,6 +111,27 @@ async def test_s_profile_switch(stub_settings: Settings, engine: AsyncEngine) ->
             "paused"
         )
         await run_backfill(engine, story)
+        # #709 (FR-CLOCK-6,7): the gained clock is re-derived turn by turn: turn 3's combined
+        # render paces one minute, turn 4's player-invited skip ("two hours") advances 120, and
+        # the played Lite turn (21) paces one.
+        derived = await rows(
+            engine,
+            "SELECT c.narrative_turn AS turn, c.delta, c.estimate_meta ->> 'derived' AS how "
+            "FROM state_changes c JOIN state_definitions d ON d.id = c.state_id "
+            "WHERE c.story_id = :s AND d.name = 'world_clock' AND c.source = 'backfill' "
+            "AND c.membership = 'active' ORDER BY c.narrative_turn",
+            s=story,
+        )
+        assert [(int(r.turn), int(r.delta), r.how) for r in derived] == [
+            (3, 1, "pacing"),
+            (4, 120, "declared_skip"),
+            (21, 1, "pacing"),
+        ]
+        finished = await _ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        report = finished["report"]
+        assert (report["clock_minutes"], report["skipped_skips"]) == (122, 0)
+        clock = await _ok(await client.get(f"/stories/{story}/clock", headers=READ))
+        assert clock["offset"] >= 122
         on_full = await _play(client, story, actor)
         assert on_full["profile"] == {"id": full, "version": 1}
 
@@ -168,6 +189,16 @@ async def test_s_profile_switch(stub_settings: Settings, engine: AsyncEngine) ->
         assert final["profile"]["id"] == full
 
 
+CLOCKED = {
+    3: ("We walk to the diner together, slowly.", "The diner is warm and smells of pie."),
+    4: ("Let's wait two hours for the rain.", "Two hours pass as they talk."),
+}
+"""#709: two turns whose clock the backfill re-derives (a paced render, a player-invited
+skip)."""
+MEETING_SAID = "Jenni, what about your meeting?"
+MEETING_REPLY = "Jenni checks her watch: the meeting is at 5 pm."
+
+
 @pytest.mark.part("M7", "FR-PROF-6,7,8,9,12,18; FR-LITE-6; FR-CONC-14,15,16")
 async def test_s_profile_switch__round_trip(stub_settings: Settings, engine: AsyncEngine) -> None:
     """#709 (#232's S-PROFILE-SWITCH, the round trip): a 200-turn Lite era with pins and
@@ -181,6 +212,7 @@ async def test_s_profile_switch__round_trip(stub_settings: Settings, engine: Asy
     import json
 
     from epistrel.core.propositions import store
+    from epistrel.core.propositions.vocabulary import SCHEDULED
     from epistrel.core.seeds.profiles import LITE_PRESET_ID
     from epistrel.orchestrator.models.registry import EXTRACTION_BACKSTOP
     from tests import clock_support as ck
@@ -208,24 +240,26 @@ async def test_s_profile_switch__round_trip(stub_settings: Settings, engine: Asy
         await ck.anchor_at(engine, story, 11 * 60)
         async with engine.begin() as conn:
             await store.add_entity(conn, story, "event", "the meeting")
-        await lls.long_lite_story(engine, story, actor, 400)  # 200 turns
+        await lls.long_lite_story(
+            engine, story, actor, 400, lines={5: (MEETING_SAID, MEETING_REPLY)}
+        )  # 200 turns
         await set_pins(engine, story, "The diner's neon sign hums.")
         await set_instructions(engine, story, "Keep replies short.")
         stub = lib.models.stub
         assert stub is not None
         lls.script(stub)
         stub.when(
-            "Line 5.",
+            MEETING_REPLY,
             json.dumps(
                 {
                     "claims": [
                         {
-                            "beat": 0,
-                            "span": "Line 5",
+                            "beat": 1,
+                            "span": "the meeting is at 5 pm",
                             "subject": "Jenni",
                             "predicate": "scheduled",
                             "object": "the meeting",
-                            "time": None,
+                            "time": "5 pm",
                             "polarity": "affirmed",
                             "confidence": 0.95,
                         }
@@ -264,13 +298,47 @@ async def test_s_profile_switch__round_trip(stub_settings: Settings, engine: Asy
         assert on_full["profile"]["id"] == full
         meetings = await rows(
             engine,
-            "SELECT s.status, f.subject_id FROM scheduled_events s JOIN facts f "
+            "SELECT s.status, f.subject_id, s.planned_offset_minutes AS planned "
+            "FROM scheduled_events s JOIN facts f "
             "ON f.proposition_id = s.proposition_id WHERE s.story_id = :s",
             s=story,
         )
-        assert {(m.status, str(m.subject_id)) for m in meetings} == {("pending", ids["Jenni"])}
+        # #709: "at 5 pm" placed through the reconciled clock's anchor (11:00 at turn 5, the
+        # turns before it pace nothing): planned at 17:00, six hours on.
+        assert {(m.status, str(m.subject_id), int(m.planned)) for m in meetings} == {
+            ("pending", ids["Jenni"], 6 * 60)
+        }
+        # #709: her beliefs are per-character: she observed the narrated meeting.
+        held = await rows(
+            engine,
+            "SELECT b.holder_character_id AS holder FROM beliefs b JOIN propositions p "
+            "ON p.id = b.proposition_id WHERE b.story_id = :s AND b.membership = 'active' "
+            "AND p.predicate_id = :p",
+            s=story,
+            p=SCHEDULED,
+        )
+        assert ids["Jenni"] in {str(h.holder) for h in held}
+        # #709: the clock is the fold of the advances: the played Lite turns' recorded pacing
+        # kept, every other turn's re-derived (source backfill), Full's turn its own.
+        folded = await rows(
+            engine,
+            "SELECT c.delta, c.source::text AS source FROM state_changes c "
+            "JOIN state_definitions d ON d.id = c.state_id "
+            "WHERE c.story_id = :s AND d.name = 'world_clock' AND c.membership = 'active'",
+            s=story,
+        )
         clock = await _ok(await client.get(f"/stories/{story}/clock", headers=READ))
-        assert clock["offset"] >= before  # the Lite era's pacing, kept; Full's turn adds its own
+        assert clock["offset"] == sum(int(f.delta) for f in folded)
+        assert clock["offset"] >= before
+        # Owner decision 2 (#228): the Lite era ran the clock at ``prompt_only``, so its turns
+        # keep what they recorded and nothing is re-derived on top.
+        derived = sum(int(f.delta) for f in folded if f.source == "backfill")
+        assert derived == 0
+        assert derived == int(
+            (await _ok(await client.get(f"/stories/{story}/backfill", headers=READ)))["report"][
+                "clock_minutes"
+            ]
+        )
 
         stub.reset()
         down = await _ok(

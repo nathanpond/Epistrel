@@ -47805,6 +47805,7 @@
           "source": {
             "enum": [
               "author",
+              "backfill",
               "consumer",
               "declared_skip",
               "estimate",

@@ -423,7 +423,7 @@ class StateChangeSource(StrEnum):
     """Where a change came from (FR-STATE-4): a narrative ``turn``, the ``author``, the
     ``consumer`` API, a ``rule``; the world clock's advances (``pacing``, ``declared_skip``,
     ``estimate``, ``player``, #193); an ``external`` provider; a late ``settlement``
-    (FR-EXT-21); or a genesis ``seed`` at position 0 (#202). Postgres enum
+    (FR-EXT-21); a genesis ``seed`` at position 0 (#202); or a ``backfill`` (#228). Postgres enum
     ``state_change_source``."""
 
     TURN = "turn"
@@ -437,6 +437,8 @@ class StateChangeSource(StrEnum):
     EXTERNAL = "external"
     SETTLEMENT = "settlement"
     SEED = "seed"
+    BACKFILL = "backfill"
+    """#228, #709: a backfill's re-derived clock advance (FR-PROF-9; migration 0129)."""
 
 
 class StateContingency(StrEnum):

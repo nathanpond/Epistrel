@@ -145,9 +145,10 @@ CLOCK_SOURCES: frozenset[StateChangeSource] = frozenset(
         StateChangeSource.AUTHOR,
         StateChangeSource.CONSUMER,
         StateChangeSource.EXTERNAL,
+        StateChangeSource.BACKFILL,
     }
 )
-"""The sources a world clock advance may have (FR-CLOCK-12)."""
+"""The sources a world clock advance may have (FR-CLOCK-12; #228: a backfill's)."""
 
 CLOCK_INTERPRETIVE_MEMBERS: tuple[str, ...] = (
     "mode",

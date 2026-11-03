@@ -210,7 +210,8 @@ async def _extract_turn(
             continue
         # A narrated change ("turned thirty-five on his birthday") is read as one (``changed``);
         # its time expression is the clock's to place (#199), never a reason to drop the claim.
-        sketch = replace(extraction_sketch(claim, span), time_text=None)
+        full = extraction_sketch(claim, span)
+        sketch = replace(full, time_text=None)
         result = normalize(
             sketch,
             message.speaker or NARRATOR,
@@ -222,7 +223,10 @@ async def _extract_turn(
         if isinstance(result, Proposition):
             message.propositions.append(
                 reconcile.ReadProposition(
-                    proposition=result.model_dump(mode="json"), changed=bool(claim.time)
+                    proposition=result.model_dump(mode="json"),
+                    changed=bool(claim.time),
+                    # #709: placed at reconciliation, against the reconciled clock.
+                    time_text=full.time_text,
                 )
             )
 
@@ -448,14 +452,132 @@ async def _restart_if_moved(ctx: JobContext, row: Any) -> bool:
     return True
 
 
+async def _paced_turns(conn: AsyncConnection, story_id: str, op: str, turns: list[int]) -> set[int]:
+    """#709 (owner decision 2): the turns among ``turns`` whose clock advances are already
+    recorded (a Lite era at ``prompt_only``): they keep them, and nothing more is derived."""
+    from epistrel.core.tables import state_changes, state_definitions
+
+    c, d = state_changes.c, state_definitions.c
+    clock_id = select(d.id).where(d.story_id == story_id, d.name == "world_clock")
+    found = await conn.execute(
+        select(c.narrative_turn).where(
+            c.story_id == story_id,
+            c.state_id.in_(clock_id.scalar_subquery()),
+            c.narrative_turn.in_(turns),
+            c.operation_id != op,
+            c.membership == Membership.ACTIVE.value,
+        )
+    )
+    return {int(r.narrative_turn) for r in found}
+
+
+async def _clock_steps(
+    ctx: JobContext,
+    row: Any,
+    turns: list[reconcile.ReadTurn],
+    settings: ProfileSettings,
+) -> None:
+    """#709 (FR-PROF-9, FR-CLOCK-6,7): each turn's clock advance when the backfill gains the
+    clock, planned before the reconciliation's transaction and in narrative order: #194's pacing
+    over the Lite turn's combined render (#203), or a narrated skip in its place (its stated
+    minutes, else one ``time_estimation`` call given the reconciled clock's time of day, #201),
+    authorized as #199 authorizes one (a refused skip is reported, the turn paces). A turn that
+    already holds recorded advances keeps them (``_paced_turns``)."""
+    from epistrel.core.enums import ClockMode
+    from epistrel.core.world_clock import skips
+    from epistrel.core.world_clock.pacing import pacing_increment
+    from epistrel.core.world_clock.timing import minute_of_day
+    from epistrel.orchestrator.structured import clocking
+    from epistrel.orchestrator.structured import time_estimation as estimation
+
+    if "clock" not in set(row.capabilities) or not turns:
+        return
+    story_id, op = str(row.story_id), str(row.operation_id)
+    async with ctx.db.connect() as conn:
+        tx = await conn.begin()
+        try:
+            # The clock as the reconciliation left it: the operation's dormant rows read as
+            # active, then rolled back.
+            with effective.deriving(story_id, settings), pause.holding(str(row.id)):
+                await flip_membership(conn, [op], Membership.ACTIVE, story_id=story_id)
+                clock = await clocking.read_clock(conn, story_id)
+                kept = await _paced_turns(conn, story_id, op, [t.turn for t in turns])
+        finally:
+            await tx.rollback()
+        ids = [m.event_id for t in turns for m in t.messages]
+        texts = {
+            str(r.message_id): str(r.text)
+            for r in await conn.execute(
+                select(transcript_messages.c.message_id, transcript_messages.c.text).where(
+                    transcript_messages.c.story_id == story_id,
+                    transcript_messages.c.message_id.in_(ids),
+                )
+            )
+        }
+    if clock is None or clock.external or clock.mode is not ClockMode.PACED:
+        return
+    running = int(clock.start)
+    window: list[str] = []
+    models = bound()
+    for turn in sorted(turns, key=lambda t: t.turn):
+        say = " ".join(texts.get(m.event_id, "") for m in turn.messages if m.kind == "say")
+        reply = " ".join(texts.get(m.event_id, "") for m in turn.messages if m.kind != "say")
+        if turn.turn in kept:
+            window += [say, reply]
+            continue
+        lines = [clocking._Line("say", say), clocking._Line("narration", reply)]
+        step = reconcile.ClockStep(
+            minutes=pacing_increment(lines, clock.table, mode=clock.mode), derived="pacing"
+        )
+        if skips.narrates_elapsing(reply):
+            minutes = skips.stated_minutes(reply)
+            derived, meta = "declared_skip", None
+            if minutes is None and models is not None:
+                mine = skips.activities(reply)
+                found = await estimation.estimate(
+                    models,
+                    narrated_text=reply,
+                    activity_context=" ".join(t for t in window if skips.activities(t) & mine),
+                    clock_minute=minute_of_day(clock.anchor, running),
+                    day_minutes=clock.clockwork.day_minutes,
+                    budget=TurnBudget(),
+                )
+                if found is not None:
+                    minutes, derived = found.minutes, "estimate"
+                    meta = {"confidence": getattr(found, "confidence", None)}
+            if minutes is not None and minutes > 0:
+                classified = skips.classify_skip(skips.Skip(text=reply), say, ())
+                verdict = skips.authorize(
+                    classified,
+                    minutes=minutes,
+                    cap=clock.max_unprompted,
+                    established=skips.established(window),
+                )
+                if isinstance(verdict, skips.Refused):
+                    step = step.model_copy(update={"refused": verdict.reason})
+                else:
+                    step = reconcile.ClockStep(
+                        minutes=minutes,
+                        derived=derived,
+                        reason=f"backfill: a narrated skip ({derived})",
+                        meta=meta,
+                    )
+        turn.clock = step
+        running += step.minutes
+        window += [say, reply]
+
+
 async def _reconcile(ctx: JobContext, row: Any, chunk: Any) -> None:
     story_id = str(row.story_id)
     extracted = reconcile.Extracted.model_validate(chunk.extraction or {})
-    async with ctx.db.begin() as conn:
+    async with ctx.db.connect() as conn:
         settings = await _target_settings(conn, row)
+    await _clock_steps(ctx, row, extracted.turns, settings)
+    async with ctx.db.begin() as conn:
         registry = await load_registry(conn, story_id)
         op = str(row.operation_id)
-        with pause.holding(str(row.id)):
+        # #709: the live writers read the target configuration (the clock's gate among them).
+        with pause.holding(str(row.id)), effective.deriving(story_id, settings):
             await flip_membership(conn, [op], Membership.ACTIVE, story_id=story_id)
             tally = await reconcile.reconcile_turns(
                 conn,

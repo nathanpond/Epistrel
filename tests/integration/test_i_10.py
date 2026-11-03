@@ -2047,7 +2047,7 @@ async def test_i_10__m7_erasure_on_import__catalog(
     from tests.respond_support import respond_client
 
     async with respond_client(es.erasure_settings(pg_url), engine) as (client, _):
-        story, june, mother = await _cast_june(client, f"{CARD_LABEL}-import")
+        story, _june, mother = await _cast_june(client, f"{CARD_LABEL}-import")
         assert _card(await _report(engine, story), mother)["name"] == "June Harrow"
         data = await _exported(client, engine, story, tmp_path)
         source_names = {
@@ -2256,7 +2256,8 @@ async def test_i_10__m7_profile_on_import(
         assert (row.status, str(row.engine_profile_id)) == ("active", FULL_PRESET_ID)
         assert (
             await count(
-                engine, "SELECT count(*) FROM story_backfills WHERE story_id = :s",
+                engine,
+                "SELECT count(*) FROM story_backfills WHERE story_id = :s",
                 s=forward.story_id,
             )
             == 0
@@ -2279,3 +2280,261 @@ async def test_i_10__m7_profile_on_import(
                 ),
                 {"s": backfilled.story_id},
             )
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M7", "FR-STORE-7; FR-EXT-22")
+async def test_i_10__m7_external_effects(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#251's outbox gate, the slices #721 names. The bundle holds three outbox rows of one
+    write-capable provider: one ``intended`` (its turn ``awaiting_outcome``, a staged turn
+    mid-flight, with a ``held`` sword reservation on a State that expires holds after 30
+    minutes), one ``unknown`` and one ``confirmed`` (its outcome recorded).
+
+    After the import, with the dispatcher, ``outbox_recovery`` and the staged-turn recovery
+    sweep each run three times: the provider is never called; both non-terminal rows are
+    parked ``imported_unsettled``, listed with their source ids; the confirmed row is kept as
+    recorded with its outcome; the source's rows are unchanged; the staged turn is closed as a
+    fork closes it (``completed``, the fork's closure narrated) and not resumed; the held
+    reservation's ``reservation_expiry`` timer is re-armed 30 minutes after the import, and
+    releases it when it fires. ``resolve {abandoned}`` on a parked row clears its listing
+    without a call; ``compensate`` on the other writes the compensating effect (owner decision
+    5); ``resolve`` on the confirmed row (not listed ``imported_unsettled``) is 404
+    ``no_listing``."""
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from epistrel.core import clock
+    from epistrel.core.enums import StateContingency
+    from epistrel.core.turns.staged import FORK_CLOSURE
+    from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
+    from epistrel.orchestrator.jobs.handlers import reservations
+    from epistrel.orchestrator.structured import staged as staged_turns
+    from tests import late_settlement_support as ls
+    from tests import provider_support as ps
+    from tests import staged_support as sp
+    from tests.respond_support import respond_client
+
+    async with respond_client(auth_settings_stub(pg_url), engine) as (client, epistrel):
+        story, cal, bank, fake = await sp.sync_story(client, engine, epistrel)
+        await ls.swords(engine, story, reservation_expiry_minutes=30)
+        pending, staged_op = await ls.intent(
+            engine, story, bank, cal, [ls.Side(cal, 1, StateContingency.RESERVATION)]
+        )
+        await ls.set_stage(engine, staged_op.operation_id, "awaiting_outcome")
+        lost, _ = await ls.intent(engine, story, bank, cal, [])
+        await ls.set_stage(engine, staged_op.operation_id, "completed")
+        done, _ = await ls.intent(engine, story, bank, cal, [])
+        await ls.answer(engine, epistrel, done)
+        await ls.set_stage(engine, staged_op.operation_id, "awaiting_outcome")
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE external_effect_outbox SET status = 'unknown' WHERE id = :o"),
+                {"o": lost},
+            )
+        await ps.drop_outbox_jobs(engine, story)
+        calls_before = len(fake.writes)
+        source_rows = await rows(
+            engine,
+            "SELECT id, status, executable FROM external_effect_outbox WHERE story_id = :s "
+            "ORDER BY id",
+            s=story,
+        )
+        data = await _exported(client, engine, story, tmp_path)
+        imported_at = clock.now()
+        made = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert made.ready, made.status
+        imported = made.story_id
+        for _ in range(3):
+            await dispatcher.recover(engine)
+            for row in await rows(
+                engine, "SELECT id FROM external_effect_outbox WHERE story_id = :s", s=imported
+            ):
+                await dispatcher.dispatch(
+                    engine, str(row.id), registry=epistrel.in_process_providers
+                )
+            await staged_turns.resume_stalled(engine, registry=epistrel.in_process_providers)
+        assert len(fake.writes) == calls_before
+
+        parked = await rows(
+            engine,
+            "SELECT o.id, o.status, o.executable, m.detail FROM external_effect_outbox o "
+            "JOIN reconciliation_marks m ON m.outbox_id = o.id AND m.reason = 'imported_unsettled' "
+            "WHERE o.story_id = :s ORDER BY o.id",
+            s=imported,
+        )
+        assert {(r.status, r.executable) for r in parked} == {("imported_unsettled", False)}
+        by_source = {r.detail["source_outbox_id"]: str(r.id) for r in parked}
+        assert set(by_source) == {pending, lost}
+        assert all(r.detail["source_story_id"] == story for r in parked)
+        listed = await client.get(
+            f"/stories/{imported}/reconciliation",
+            params={"viewpoint": "omniscient"},
+            headers=READ,
+        )
+        assert listed.status_code == 200, listed.text
+        assert {(e["outbox_id"], e["reason"]) for e in listed.json()["listings"]} >= {
+            (by_source[pending], "imported_unsettled"),
+            (by_source[lost], "imported_unsettled"),
+        }
+        (kept,) = await rows(
+            engine,
+            "SELECT o.id, o.status, o.executable, count(x.id) AS outcomes "
+            "FROM external_effect_outbox o LEFT JOIN outbox_outcomes x ON x.outbox_id = o.id "
+            "WHERE o.story_id = :s AND o.id <> ALL(:p) GROUP BY o.id",
+            s=imported,
+            p=list(by_source.values()),
+        )
+        assert (kept.status, kept.outcomes) == ("confirmed", 1)
+        assert (
+            await rows(
+                engine,
+                "SELECT id, status, executable FROM external_effect_outbox WHERE story_id = :s "
+                "ORDER BY id",
+                s=story,
+            )
+            == source_rows
+        )
+
+        (closed,) = await rows(
+            engine,
+            "SELECT operation_id, turn_stage FROM operations WHERE story_id = :s "
+            "AND kind = 'turn' AND narrative_turn = :t",
+            s=imported,
+            t=staged_op.narrative_turn,
+        )
+        assert closed.turn_stage == "completed"
+        narrated = await rows(
+            engine,
+            "SELECT payload->>'text' AS said FROM events WHERE operation_id = :o "
+            "AND type = 'beat_narration'",
+            o=closed.operation_id,
+        )
+        assert FORK_CLOSURE in {r.said for r in narrated}
+
+        (hold,) = await rows(
+            engine,
+            "SELECT id, status FROM state_changes WHERE story_id = :s AND status = 'held'",
+            s=imported,
+        )
+        (timer,) = await rows(
+            engine,
+            "SELECT due_at FROM timers WHERE kind = :k AND target = :t",
+            k=reservations.RESERVATION_EXPIRY,
+            t=str(hold.id),
+        )
+        after = timer.due_at - imported_at
+        assert timedelta(minutes=30) <= after < timedelta(minutes=31), after
+        assert await reservations.expire(engine, str(hold.id)) == reservations.RELEASED
+        (released,) = await rows(
+            engine, "SELECT status FROM state_changes WHERE id = :i", i=hold.id
+        )
+        assert released.status == "released"
+
+        resolved = await client.post(
+            f"/stories/{imported}/reconciliation/{by_source[pending]}/resolve",
+            json={"resolution": "abandoned"},
+            headers=WRITE,
+        )
+        assert resolved.status_code == 200, resolved.text
+        cal_here = next(
+            str(r.id)
+            for r in await rows(
+                engine,
+                "SELECT id FROM characters WHERE story_id = :s AND name = 'Cal'",
+                s=imported,
+            )
+        )
+        refund = await client.post(
+            f"/stories/{imported}/reconciliation/{by_source[lost]}/compensate",
+            json={
+                "effect": {"state": "gold", "scope_key": cal_here, "delta": 500, "reason": "refund"}
+            },
+            headers=WRITE,
+        )
+        assert refund.status_code == 201, refund.text
+        assert refund.json()["compensates"] == by_source[lost]
+        (written,) = await rows(
+            engine,
+            "SELECT status, compensates FROM external_effect_outbox WHERE id = :o",
+            o=refund.json()["outbox_id"],
+        )
+        assert (written.status, str(written.compensates)) == ("intended", by_source[lost])
+        refused = await client.post(
+            f"/stories/{imported}/reconciliation/{kept.id}/resolve",
+            json={"resolution": "abandoned"},
+            headers=WRITE,
+        )
+        assert refused.status_code == 404, refused.text
+        assert refused.json()["error"]["details"]["reason"] == "no_listing"
+        assert len(fake.writes) == calls_before
+        await ps.drop_outbox_jobs(engine, imported)
+
+
+def _renamed(data: bytes, old: str, new: str) -> bytes:
+    """``data`` (a bundle) with every ``old`` in its members replaced by ``new``, its manifest's
+    checksums recomputed."""
+    import hashlib
+
+    members = bundles_read(data)
+    body = [(n, d.replace(old.encode(), new.encode())) for n, d in members[1:]]
+    manifest = json.loads(members[0][1].replace(old.encode(), new.encode()))
+    sums = {n: hashlib.sha256(d).hexdigest() for n, d in body}
+    manifest["files"] = [
+        {**f, "sha256": sums.get(f["path"], f["sha256"])} for f in manifest["files"]
+    ]
+    return _tar([("manifest.json", json.dumps(manifest).encode()), *body])
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M7", "FR-STORE-7; FR-EXT-19")
+async def test_i_10__m7_unregistered_provider(
+    pg_url: str, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251 (FR-EXT-19): a bundle naming a provider this deployment has not registered imports
+    (a warning, never a refusal), with a ``provider_unregistered`` entry in its report's
+    ``warnings[]``, and its next turn is refused 422 ``provider_unregistered`` naming it before
+    anything is recorded. Complement: the same bundle with its provider registered imports with
+    no such warning."""
+    from tests import provider_support as ps
+    from tests import staged_support as sp
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import respond_client
+
+    async with respond_client(auth_settings_stub(pg_url), engine) as (client, epistrel):
+        story, _cal, bank, _ = await sp.sync_story(client, engine, epistrel)
+        data = await _exported(client, engine, story, tmp_path)
+        registered = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert registered.ready, registered.status
+        assert registered.status is not None
+        assert not [
+            w
+            for w in registered.status["report"]["warnings"]
+            if w["code"] == "provider_unregistered"
+        ]
+        stranger = ps.unique_name("nowhere")
+        renamed = _renamed(data, bank, stranger)
+        made = await _import(client, engine, renamed, metadata={"ignore_warnings": True})
+        assert made.ready, made.status
+        assert made.status is not None
+        assert {"code": "provider_unregistered", "provider": stranger} in made.status["report"][
+            "warnings"
+        ]
+        operations = await _operations(engine, made.story_id)
+        cal_here = next(
+            str(r.id)
+            for r in await rows(
+                engine,
+                "SELECT id FROM characters WHERE story_id = :s AND name = 'Cal'",
+                s=made.story_id,
+            )
+        )
+        turn = await client.post(
+            f"/stories/{made.story_id}/respond",
+            json=respond_body(cal_here, "Hello."),
+            headers=WRITE,
+        )
+        assert turn.status_code == 422, turn.text
+        assert turn.json()["error"]["code"] == "provider_unregistered", turn.text
+        assert stranger in turn.json()["error"]["details"]["providers"]
+        assert await _operations(engine, made.story_id) == operations

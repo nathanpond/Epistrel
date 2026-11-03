@@ -80313,7 +80313,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `provider_unbound`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `provider_unbound`, `provider_unregistered`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -88028,7 +88028,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `provider_unbound`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `nothing_to_regenerate`, `provider_unbound`, `provider_unregistered`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -88813,7 +88813,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `provider_unbound`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `provider_unbound`, `provider_unregistered`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {

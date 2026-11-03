@@ -167,7 +167,7 @@ async def test_s_audit_view__omniscient_only(pg_url: str, engine: AsyncEngine) -
         assert missing.json()["error"]["code"] == "checkpoint_not_found"
 
 
-@pytest.mark.part("M7", "FR-STORE-23,26")
+@pytest.mark.part("M7", "FR-STORE-23")
 async def test_s_audit_view__beliefs(engine: AsyncEngine) -> None:
     """#222 AC1, the beliefs section (FR-STORE-26: only if created at or before the boundary).
     Ann comes to believe Cal is in the garden (turn 2) and that Bobby is in the kitchen (turn 3),

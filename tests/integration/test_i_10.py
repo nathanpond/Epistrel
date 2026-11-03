@@ -1509,7 +1509,7 @@ async def _until_terminal(db: AsyncEngine, bundle_id: str, timeout_s: float = 60
 
 
 @pytest.mark.integration
-@pytest.mark.part("M7", "FR-STORE-7; NFR-REL-1")
+@pytest.mark.part("M7", "FR-STORE-7")
 async def test_i_10__m7_crash_resume(pg_url: str, tmp_path: Any) -> None:
     """#250: a worker killed mid-import (``SIGKILL`` at a crash point) is recovered by the
     job's lease: the reclaimed attempt deletes the partial story's rows, recreates the story
@@ -1765,7 +1765,7 @@ async def test_i_10__m7_importing__running(
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
-@pytest.mark.part("M7", "FR-STORE-7; FR-MEDIA-2")
+@pytest.mark.part("M7", "FR-STORE-7")
 async def test_i_10__m7_refusal_leaves_nothing(
     settings: Settings, engine: AsyncEngine, tmp_path: Any
 ) -> None:
@@ -1974,7 +1974,7 @@ async def _import_with(client: Any, engine: AsyncEngine, data: bytes, **meta: An
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
-@pytest.mark.part("M7", "FR-ADMIN-7,9; FR-STORE-7")
+@pytest.mark.part("M7", "FR-ADMIN-9; FR-STORE-7")
 async def test_i_10__m7_erasure_on_import(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
     """#251's erasure gate, the slices #721 names.
 
@@ -2033,7 +2033,7 @@ async def test_i_10__m7_erasure_on_import(pg_url: str, engine: AsyncEngine, tmp_
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
-@pytest.mark.part("M7", "FR-ADMIN-7,9; FR-STORE-7")
+@pytest.mark.part("M7", "FR-ADMIN-9; FR-STORE-7")
 async def test_i_10__m7_erasure_on_import__catalog(
     pg_url: str, engine: AsyncEngine, tmp_path: Any
 ) -> None:
@@ -2200,7 +2200,7 @@ async def test_i_10__m7_inactive_reactivation(pg_url: str, tmp_path: Any) -> Non
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
-@pytest.mark.part("M7", "FR-PROF-7,8; FR-STORE-7")
+@pytest.mark.part("M7", "FR-STORE-7")
 async def test_i_10__m7_profile_on_import(
     settings: Settings, engine: AsyncEngine, tmp_path: Any
 ) -> None:
@@ -2283,7 +2283,7 @@ async def test_i_10__m7_profile_on_import(
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
-@pytest.mark.part("M7", "FR-STORE-7; FR-EXT-22")
+@pytest.mark.part("M7", "FR-STORE-7")
 async def test_i_10__m7_external_effects(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
     """#251's outbox gate, the slices #721 names. The bundle holds three outbox rows of one
     write-capable provider: one ``intended`` (its turn ``awaiting_outcome``, a staged turn
@@ -2487,7 +2487,7 @@ def _renamed(data: bytes, old: str, new: str) -> bytes:
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
-@pytest.mark.part("M7", "FR-STORE-7; FR-EXT-19")
+@pytest.mark.part("M7", "FR-STORE-7")
 async def test_i_10__m7_unregistered_provider(
     pg_url: str, engine: AsyncEngine, tmp_path: Any
 ) -> None:

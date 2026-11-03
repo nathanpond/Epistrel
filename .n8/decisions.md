@@ -12132,3 +12132,6 @@ Scope: the four `bug, confirmed` issues `/n8-verify M7 --auto` filed at 2e8bced 
   **Issue:** #721
 - **Decision:** not built: #250's streaming COPY in 5,000-row batches. It is a Claude's Discretion line, not an AC, and #720's verify comment says it does not block. The import still inserts in one transaction under the frozen memory limits. #720 is closed by this PR with that item named as not built.
   **Issue:** #720
+- **Decision:** the new tests' part markers name only requirement ids that docs/04 §15 already maps to their scenario (I-10: FR-STORE-7, FR-ADMIN-9; S-AUDIT-VIEW: FR-STORE-23), not the extra ids the plans listed (NFR-REL-1, FR-MEDIA-2, FR-ADMIN-7, FR-PROF-7,8, FR-EXT-19,22, FR-STORE-26). Found when CI's `check-traceability` failed.
+  **Why:** the §15 table is the design doc's traceability matrix. Adding rows there is a docs change outside these bug fixes, and the behaviour is asserted either way.
+  **Issue:** #721, #722, #723

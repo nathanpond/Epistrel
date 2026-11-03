@@ -130,6 +130,8 @@ async def test_s_audit_view__omniscient_only(pg_url: str, engine: AsyncEngine) -
         assert (body["view"], body["erasure_markers"]) == ("as_recorded", [])
         assert body["boundary_tx"]
         assert body["items"]
+        # #222: the derived sections as they stood at the boundary.
+        assert set(body["derived"]) == {"facts", "beliefs", "memories", "states"}
         unknown = await client.get(
             f"/stories/{story}/history",
             params={"view": "sideways", "viewpoint": "omniscient"},

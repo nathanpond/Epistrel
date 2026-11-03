@@ -109,6 +109,12 @@ async def test_an_unfinished_staged_turn_keeps_its_slot_until_resumed(
                 await sp.buy(client, story, cal)
         op = await sp.staged_op(engine, story)
         assert (op.status, op.turn_stage) == ("committed", "awaiting_outcome")
+        # #222 (FR-STORE-23): a staged turn under way is no checkpoint yet.
+        from epistrel.core.errors import CheckpointIncomplete
+        from epistrel.core.views import Checkpoint, as_originally_recorded, boundary_tx
+
+        with pytest.raises(CheckpointIncomplete):
+            await as_originally_recorded(engine, story, Checkpoint(int(op.narrative_turn)))
         # The lease lapses (the process that ran the turn is gone).
         await execute_in_tx(
             engine,
@@ -138,6 +144,17 @@ async def test_an_unfinished_staged_turn_keeps_its_slot_until_resumed(
         done = await sp.staged_op(engine, story)
         assert (done.status, done.turn_stage) == ("committed", "completed")
         assert await sp.stage_names(engine, story) == ["intent", "claim", "outcome", "completion"]
+        # #222: its boundary is the completion's commit, after the intent's.
+        (committed,) = await rows(
+            engine,
+            "SELECT committed_at FROM operations WHERE operation_id = :o",
+            o=op.operation_id,
+        )
+        async with engine.connect() as conn:
+            at = await boundary_tx(conn, story, Checkpoint(int(done.narrative_turn)))
+        (completion,) = [e for e in done.stage_log if e.get("stage") == staged.COMPLETION]
+        assert at.isoformat() == completion["at"]
+        assert at > committed.committed_at
         texts = await rows(
             engine,
             "SELECT payload->>'text' AS text FROM events WHERE operation_id = :o "
@@ -212,6 +229,13 @@ async def test_a_discard_abandons_the_staged_turn(
         op = await sp.staged_op(engine, story)
         assert op.turn_stage == "abandoned"
         assert await sp.stage_names(engine, story) == ["intent", "claim"]
+        # #222: an abandoned staged turn is a checkpoint at its last logged stage (the claim).
+        from epistrel.core.views import Checkpoint, boundary_tx
+
+        async with engine.connect() as conn:
+            at = await boundary_tx(conn, story, Checkpoint(int(op.narrative_turn)), variant=None)
+        (claim,) = [e for e in op.stage_log if e.get("stage") == staged.CLAIM]
+        assert at.isoformat() == claim["at"]
         holder = await _holder(engine, story)
         assert holder == [None]
         view = await client.get(f"/operations/{op.operation_id}", headers=READ)

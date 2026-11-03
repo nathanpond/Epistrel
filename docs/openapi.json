@@ -15152,6 +15152,24 @@
             ],
             "title": "Boundary Tx"
           },
+          "derived": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Derived"
+          },
           "erasure_markers": {
             "anyOf": [
               {

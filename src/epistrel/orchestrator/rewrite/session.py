@@ -66,6 +66,7 @@ from epistrel.orchestrator.rewrite import apply as rewrite_apply
 from epistrel.orchestrator.rewrite import parse as parsing
 from epistrel.orchestrator.rewrite import revalidate
 from epistrel.orchestrator.rewrite.api import (
+    AmendmentSessionRequest,
     AnswerRequest,
     Applied,
     ApplyRequest,
@@ -81,6 +82,7 @@ from epistrel.orchestrator.rewrite.api import (
     ThresholdMode,
 )
 from epistrel.orchestrator.rewrite.dispose import ENGINE, dispose
+from epistrel.orchestrator.rewrite.parse import question_key
 from epistrel.orchestrator.rewrite.plan import PLANNERS, Plan
 
 LITE_REWRITES = "lite_rewrites"
@@ -153,6 +155,9 @@ async def view(conn: AsyncConnection, row: Any) -> RewriteSession:
         preview_mode=row.preview,
         pipeline=row.pipeline,
         principal=str(row.principal),
+        target_amendment_id=None
+        if row.target_amendment_id is None
+        else str(row.target_amendment_id),
         base_revision=None if row.base_revision is None else int(row.base_revision),
         preview=None if preview is None else Preview.model_validate(preview),
         questions=[_question_view(q) for q in await _questions(conn, str(row.id))],
@@ -785,6 +790,82 @@ async def open_merge(
     return await _apply_directly(db, models, story_id, written, principal=principal)
 
 
+# -- undo and redo (#238) -----------------------------------------------------------------------
+
+
+async def open_amendment_session(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    amendment_id: str,
+    request: AmendmentSessionRequest,
+    *,
+    kind: str,
+    principal: str,
+) -> RewriteWrite:
+    """An undo or redo of an amendment (#238, FR-REWRITE-10) as a rewrite session of that kind
+    (``target_amendment_id`` the amendment): its changes are the inverse of the amendment's
+    active parts (undo) or its original parts (redo), planned, disposed and applied like any
+    rewrite's (see ``rewrite.undo``). The Engine has run the prechecks; the checks here, in
+    order: the open-session limit, the amendment's status (``undo.check_undo`` /
+    ``check_redo``), then the planner dispatch (a Lite story 409 ``module_off``)."""
+    from epistrel.core import pause
+    from epistrel.orchestrator.rewrite import undo
+
+    if kind not in ("undo", "redo"):
+        raise ValueError(f"not an amendment session: {kind}")
+    mode, threshold = request.mode()
+    async with db.begin() as conn:
+        settings = await read_section(conn, RewriteSettings)
+        locked = await _story(conn, story_id, lock=True)
+        await pause.refuse(conn, story_id, locked.status)
+        await _limit(conn, story_id, settings)
+        if kind == "undo":
+            await undo.check_undo(conn, story_id, amendment_id)
+        else:
+            await undo.check_redo(conn, story_id, amendment_id)
+        pipeline = await pipeline_of(conn, story_id)
+        _planner_of(pipeline)
+        stored_source = {kind: {"amendment_id": amendment_id}}
+        sourced = await _sourced(conn, story_id, stored_source)
+        assert sourced is not None  # noqa: S101 - an undo or redo is sourced
+        parsed, plan, revision = await _plan_sourced(
+            conn, story_id, pipeline, sourced, settings, stored_source, mode, threshold
+        )
+        session_id = new_ulid()
+        stored = _stored_plan(RewriteParseResult(), {}, [], parsed, plan)
+        stored.update(stored_source)
+        await conn.execute(
+            insert(rewrite_sessions).values(
+                id=session_id,
+                story_id=story_id,
+                kind=kind,
+                instruction=None,
+                target_amendment_id=amendment_id,
+                principal=principal,
+                resolution_mode=mode,
+                threshold_severity=threshold,
+                preview=request.preview,
+                state="awaiting_answers",
+                pipeline=pipeline,
+                base_revision=revision,
+                plan=stored,
+                plan_hash=plan.plan_hash,
+                plan_read_set=plan.read_set,
+                expires_at=await _expires(conn, settings),
+            )
+        )
+        await _write_questions(conn, story_id, session_id, parsed.questions)
+        await conn.execute(
+            update(rewrite_sessions)
+            .where(rewrite_sessions.c.id == session_id)
+            .values(state=await _state_of(conn, session_id))
+        )
+        await _index(conn, session_id)
+        written = await _answer(conn, story_id, session_id)
+    return await _apply_directly(db, models, story_id, written, principal=principal)
+
+
 # -- answers ---------------------------------------------------------------------------------------
 
 
@@ -818,6 +899,39 @@ async def _superseded(conn: AsyncConnection, session_id: str, question_id: str, 
 def free_texts(request: AnswerRequest) -> list[str]:
     """The free-text answers (gated by the Engine before ``answer``)."""
     return [a.text for a in request.answers if a.text is not None]
+
+
+async def _store_answers(
+    conn: AsyncConnection, chosen: Sequence[tuple[Any, Any, dict[str, Any] | None]], principal: str
+) -> Any:
+    now = await conn.scalar(select(func.transaction_timestamp()))
+    for item, question, option in chosen:
+        await conn.execute(
+            update(rewrite_questions)
+            .where(rewrite_questions.c.id == question.id)
+            .values(
+                answer_option_id=None if option is None else str(option["id"]),
+                answer_text=item.text,
+                accepted_recommendation=item.accept_recommended
+                or (option is not None and str(option["id"]) == question.recommended_option_id),
+                answered_by=principal,
+                answered_at=now,
+            )
+        )
+    return now
+
+
+async def _record_answers(
+    db: AsyncEngine,
+    story_id: str,
+    session_id: str,
+    chosen: Sequence[tuple[Any, Any, dict[str, Any] | None]],
+    principal: str,
+) -> None:
+    async with db.begin() as conn:
+        row = await _row(conn, story_id, session_id, lock=True)
+        _open(row)
+        await _store_answers(conn, chosen, principal)
 
 
 async def answer(
@@ -858,6 +972,10 @@ async def answer(
         texts = free_texts(request)
         if texts:
             await _guard(conn, story_id, texts)
+        cancelling = any(
+            option is not None and dict(option.get("effect") or {}).get("action") == "cancel"
+            for _, _, option in chosen
+        )
         plan = dict(row.plan or {})
         bindings: dict[str, dict[str, Any]] = dict(plan.get("bindings") or {})
         answers: list[str] = list(plan.get("answers") or [])
@@ -880,6 +998,10 @@ async def answer(
             await _registry(conn, story_id),
             margin=settings.rewrite_ambiguity_margin,
         )
+    if cancelling:
+        # #238: a dependent amendment's ``cancel`` cancels the whole undo session.
+        await _record_answers(db, story_id, session_id, chosen, principal)
+        return await cancel(db, story_id, session_id, principal=principal)
     result = RewriteParseResult.model_validate(plan.get("parse") or {})
     gated: list[dict[str, Any]] = list(plan.get("gated") or [])
     if reparse:
@@ -895,37 +1017,43 @@ async def answer(
     async with db.begin() as conn:
         row = await _row(conn, story_id, session_id, lock=True)
         _open(row)
-        now = await conn.scalar(select(func.transaction_timestamp()))
-        for item, question, option in chosen:
-            await conn.execute(
-                update(rewrite_questions)
-                .where(rewrite_questions.c.id == question.id)
-                .values(
-                    answer_option_id=None if option is None else str(option["id"]),
-                    answer_text=item.text,
-                    accepted_recommendation=item.accept_recommended
-                    or (option is not None and str(option["id"]) == question.recommended_option_id),
-                    answered_by=principal,
-                    answered_at=now,
-                )
+        now = await _store_answers(conn, chosen, principal)
+        computed: Plan | None
+        sourced = await _sourced(conn, story_id, plan)
+        if sourced is not None:
+            # A merge, undo or redo re-plans from its source, keeping it (#225, #238).
+            parsed, computed, revision = await _plan_sourced(
+                conn,
+                story_id,
+                pipeline,
+                sourced,
+                settings,
+                plan,
+                str(row.resolution_mode),
+                row.threshold_severity,
             )
-        parsed, computed, revision = await _compute(
-            conn,
-            story_id,
-            pipeline,
-            result,
-            bindings,
-            settings,
-            gated=gated,
-            mode=str(row.resolution_mode),
-            threshold=row.threshold_severity,
-        )
+        else:
+            parsed, computed, revision = await _compute(
+                conn,
+                story_id,
+                pipeline,
+                result,
+                bindings,
+                settings,
+                gated=gated,
+                mode=str(row.resolution_mode),
+                threshold=row.threshold_severity,
+            )
+        stored = _stored_plan(result, bindings, answers, parsed, computed, gated)
+        for source in SOURCES:
+            if plan.get(source) is not None:
+                stored[source] = plan[source]
         await _write_questions(conn, story_id, session_id, parsed.questions)
         await conn.execute(
             update(rewrite_sessions)
             .where(rewrite_sessions.c.id == session_id)
             .values(
-                plan=_stored_plan(result, bindings, answers, parsed, computed, gated),
+                plan=stored,
                 plan_hash=None if computed is None else computed.plan_hash,
                 plan_read_set=None if computed is None else computed.read_set,
                 base_revision=revision,
@@ -946,8 +1074,9 @@ async def _changes(conn: AsyncConnection, story_id: str, row: Any) -> list[Any]:
     """The session's normalized changes, again (the stored parse and bindings; deterministic)."""
     settings = await read_section(conn, RewriteSettings)
     plan = dict(row.plan or {})
-    if plan.get("merge") is not None:
-        return list(merge_parsed(list(plan["merge"]["entity_ids"])).changes)
+    sourced = await _sourced(conn, story_id, plan)
+    if sourced is not None:
+        return list(sourced.changes)
     story = await parsing.load_story(
         conn, story_id, await _registry(conn, story_id), margin=settings.rewrite_ambiguity_margin
     )
@@ -987,6 +1116,102 @@ async def _all_questions(conn: AsyncConnection, session_id: str) -> list[Any]:
     )
 
 
+UNDO_DEPTH = 3
+"""How many levels of dependent amendments an undo's blast radius follows."""
+SOURCES = ("merge", "undo", "redo")
+"""Sessions whose changes come from the engine, not a parse: an identity merge (#225), an undo
+and a redo (#238); the stored plan names the source."""
+
+
+async def _sourced(
+    conn: AsyncConnection, story_id: str, stored: Mapping[str, Any]
+) -> parsing.Parsed | None:
+    """A sourced session's changes, again (deterministic); ``None`` for a parsed one."""
+    from epistrel.orchestrator.rewrite import undo
+
+    if stored.get("merge") is not None:
+        return merge_parsed(list(stored["merge"]["entity_ids"]))
+    if stored.get("undo") is not None:
+        return await undo.undo_parsed(conn, story_id, str(stored["undo"]["amendment_id"]))
+    if stored.get("redo") is not None:
+        return await undo.redo_parsed(conn, story_id, str(stored["redo"]["amendment_id"]))
+    return None
+
+
+async def _plan_sourced(
+    conn: AsyncConnection,
+    story_id: str,
+    pipeline: str,
+    parsed: parsing.Parsed,
+    settings: RewriteSettings,
+    stored: Mapping[str, Any],
+    mode: str,
+    threshold: str | None,
+) -> tuple[parsing.Parsed, Plan, int]:
+    """Plan a sourced session's changes and dispose of its conflicts by the mode (an undo's
+    conflicts take its options, its dependent amendments ``dependent`` questions)."""
+    import dataclasses
+
+    from epistrel.orchestrator.rewrite import undo
+
+    story = await parsing.load_story(
+        conn, story_id, await _registry(conn, story_id), margin=settings.rewrite_ambiguity_margin
+    )
+    revision = int((await _story(conn, story_id)).timeline_revision)
+    plan = await _planner_of(pipeline).plan(conn, story, parsed, base_revision=revision)
+    if stored.get("undo") is not None:
+        target = str(stored["undo"]["amendment_id"])
+        # A dependent amendment is recommended for cascade-undo, so the undo's blast radius
+        # takes in what depends on it too (#238), to ``UNDO_DEPTH`` levels.
+        undone = {target}
+        for _ in range(UNDO_DEPTH):
+            relying = await undo.relying_amendments(conn, plan.irreducible, undone)
+            if not relying:
+                break
+            for amendment_id in sorted(relying):
+                parsed.changes.extend(
+                    (await undo.undo_parsed(conn, story_id, amendment_id)).changes
+                )
+            undone |= relying
+            plan = await _planner_of(pipeline).plan(conn, story, parsed, base_revision=revision)
+        mine = {target}
+        plan.irreducible = [
+            c for c in undo.undo_options(plan.irreducible) if not await _own_part(conn, c, mine)
+        ]
+        plan.cascaded = [c for c in plan.cascaded if not await _own_part(conn, c, mine)]
+        plan.incidental = [c for c in plan.incidental if not await _own_part(conn, c, mine)]
+    asked = dispose(plan.irreducible, mode, threshold).questions
+    if stored.get("undo") is not None:
+        dependent = {
+            question_key("conflict", c["conflict_id"])
+            for c in plan.irreducible
+            if c["record"]["table"] == "amendment_parts"
+        }
+        asked = tuple(
+            dataclasses.replace(q, kind="dependent") if q.key in dependent else q for q in asked
+        )
+    parsed.questions.extend(asked)
+    return parsed, plan, revision
+
+
+async def _own_part(conn: AsyncConnection, entry: Mapping[str, Any], undone: set[str]) -> bool:
+    """Whether a planned entry is one of the undone amendment's own parts, or a part no longer
+    active (neither is a dependent)."""
+    from epistrel.core.tables import amendment_parts
+
+    record = entry["record"]
+    if record["table"] != "amendment_parts":
+        return False
+    row = (
+        await conn.execute(
+            select(amendment_parts.c.amendment_id, amendment_parts.c.status).where(
+                amendment_parts.c.id == record["id"]
+            )
+        )
+    ).one_or_none()
+    return row is None or str(row.amendment_id) in undone or str(row.status) != "active"
+
+
 async def _recompute(
     conn: AsyncConnection, story_id: str, row: Any, settings: RewriteSettings
 ) -> tuple[parsing.Parsed, Plan | None, int, dict[str, Any]]:
@@ -998,19 +1223,11 @@ async def _recompute(
     gated: list[dict[str, Any]] = list(stored.get("gated") or [])
     mode, threshold = str(row.resolution_mode), row.threshold_severity
     plan: Plan | None
-    if stored.get("merge") is not None:
-        parsed = merge_parsed(list(stored["merge"]["entity_ids"]))
-        story = await parsing.load_story(
-            conn,
-            story_id,
-            await _registry(conn, story_id),
-            margin=settings.rewrite_ambiguity_margin,
+    sourced = await _sourced(conn, story_id, stored)
+    if sourced is not None:
+        parsed, plan, revision = await _plan_sourced(
+            conn, story_id, str(row.pipeline), sourced, settings, stored, mode, threshold
         )
-        revision = int((await _story(conn, story_id)).timeline_revision)
-        plan = await _planner_of(str(row.pipeline)).plan(
-            conn, story, parsed, base_revision=revision
-        )
-        parsed.questions.extend(dispose(plan.irreducible, mode, threshold).questions)
     else:
         parsed, plan, revision = await _compute(
             conn,
@@ -1024,8 +1241,9 @@ async def _recompute(
             threshold=threshold,
         )
     again = _stored_plan(result, bindings, list(stored.get("answers") or []), parsed, plan, gated)
-    if stored.get("merge") is not None:
-        again["merge"] = stored["merge"]
+    for source in SOURCES:
+        if stored.get(source) is not None:
+            again[source] = stored[source]
     return parsed, plan, revision, again
 
 

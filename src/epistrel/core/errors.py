@@ -1609,6 +1609,37 @@ class AmendmentAlreadyReverted(EpistrelError):
     http_status = 409
 
 
+class AmendmentNotFound(EpistrelError):
+    """No such amendment in the story (#238): 404. ``details``: ``amendment_id``."""
+
+    code = "amendment_not_found"
+    http_status = 404
+
+
+class AmendmentNotReverted(EpistrelError):
+    """A redo of an amendment that is still active (#238): 409. ``details``:
+    ``amendment_id``."""
+
+    code = "amendment_not_reverted"
+    http_status = 409
+
+
+class AmendmentAlreadyRedone(EpistrelError):
+    """A redo while an active amendment already redoes it (#238): 409. ``details``:
+    ``amendment_id``, ``redo_id``."""
+
+    code = "amendment_already_redone"
+    http_status = 409
+
+
+class UseRedo(EpistrelError):
+    """An undo of an ``undo`` amendment (#238): 422; redo the amendment it undid instead.
+    ``details``: ``amendment_id``, ``undoes``."""
+
+    code = "use_redo"
+    http_status = 422
+
+
 class CertificationNotFound(EpistrelError):
     """No certification record has this id (#233)."""
 

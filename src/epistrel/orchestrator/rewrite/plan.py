@@ -414,7 +414,13 @@ class StructuredPlanner:
             if found is not None and found.text is not None:
                 entry["excerpt"] = _excerpt(found.text)
             reason = None
-            if dependent.edge_type in TEXT_EDGES and found is not None:
+            if table == "amendment_parts":
+                if found is None:
+                    continue  # a reverted part depends on nothing any more
+                # FR-REWRITE-11 (#238): a later amendment relying on what changes is asked
+                # about whatever its edge type (``cascade_undo`` recommended).
+                reason = "dependent_amendment"
+            elif dependent.edge_type in TEXT_EDGES and found is not None:
                 reason = self._irreducible(found, old_forms)
             elif dependent.edge_type is DependencyEdgeType.CAUSES and table == "events":
                 # #225: a decision whose beat committed effects is never regenerated; a player's

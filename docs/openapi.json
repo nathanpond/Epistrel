@@ -277,6 +277,273 @@
         "title": "AffectedStory",
         "type": "object"
       },
+      "AmendmentDetail": {
+        "additionalProperties": false,
+        "description": "``GET /stories/{id}/amendments/{aid}``: the summary, the part rows, what its parts were\nrecorded as relying on (``relies_on``) and the #220 dependents of its parts and the facts\nthey wrote (``dependents``, depth 1; ``truncated`` when the search's cap cut it).",
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "dependents": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Dependents",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "parts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "parts_count": {
+            "title": "Parts Count",
+            "type": "integer"
+          },
+          "redoes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redoes"
+          },
+          "relies_on": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Relies On",
+            "type": "array"
+          },
+          "reverted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverted By"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "tx_time": {
+            "format": "date-time",
+            "title": "Tx Time",
+            "type": "string"
+          },
+          "undoes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undoes"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "author",
+          "tx_time",
+          "parts_count"
+        ],
+        "title": "AmendmentDetail",
+        "type": "object"
+      },
+      "AmendmentPage": {
+        "additionalProperties": false,
+        "description": "``GET /stories/{id}/amendments``: newest first; ``next_cursor`` pages on.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AmendmentSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AmendmentPage",
+        "type": "object"
+      },
+      "AmendmentSessionRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/amendments/{aid}/undo`` and ``…/redo`` (#238): the modes, as a\nrewrite's.",
+        "examples": [
+          {
+            "preview": "preview_first",
+            "resolution_mode": "best_effort"
+          }
+        ],
+        "properties": {
+          "preview": {
+            "default": "preview_first",
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview",
+            "type": "string"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "default": "synchronous",
+            "title": "Resolution Mode"
+          }
+        },
+        "title": "AmendmentSessionRequest",
+        "type": "object"
+      },
+      "AmendmentSummary": {
+        "additionalProperties": false,
+        "description": "An amendment in a list (#238).",
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "parts_count": {
+            "title": "Parts Count",
+            "type": "integer"
+          },
+          "redoes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redoes"
+          },
+          "reverted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverted By"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tx_time": {
+            "format": "date-time",
+            "title": "Tx Time",
+            "type": "string"
+          },
+          "undoes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Undoes"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "author",
+          "tx_time",
+          "parts_count"
+        ],
+        "title": "AmendmentSummary",
+        "type": "object"
+      },
       "AnalysisQueuedBody": {
         "description": "The analysis handed to a worker (202): its job and the request's operation (each\nproposal it writes names it).",
         "properties": {
@@ -33624,6 +33891,17 @@
             "title": "Story Id",
             "type": "string"
           },
+          "target_amendment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Amendment Id"
+          },
           "updated_at": {
             "format": "date-time",
             "title": "Updated At",
@@ -33811,6 +34089,17 @@
           "story_id": {
             "title": "Story Id",
             "type": "string"
+          },
+          "target_amendment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Amendment Id"
           },
           "timeline_revision": {
             "title": "Timeline Revision",
@@ -68255,6 +68544,783 @@
           }
         ],
         "summary": "Read a story",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/amendments": {
+      "get": {
+        "description": "The story's amendments (FR-REWRITE-9), newest `tx_time` first: kind, status, author, parts count, `reverted_by`, `undoes`, `redoes` and the rewrite session that recorded it. `status` filters (`active` or `reverted`); `cursor` is the previous page's `next_cursor`. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `amendment_not_found` for an unknown amendment or another story's.",
+        "operationId": "list_amendments",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "active",
+                    "reverted"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AmendmentPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a story's amendments",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/amendments/{amendment_id}": {
+      "get": {
+        "description": "One amendment with its `parts` (every part row by ordinal), `relies_on` (the dependency edges its parts were recorded with, FR-REWRITE-11) and `dependents` (the records and later amendments that depend on its parts or the facts they wrote, one level deep). An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `amendment_not_found` for an unknown amendment or another story's.",
+        "operationId": "get_amendment",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The amendment's id.",
+            "in": "path",
+            "name": "amendment_id",
+            "required": true,
+            "schema": {
+              "description": "The amendment's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Amendment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AmendmentDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `amendment_not_found`, `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an amendment",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/amendments/{amendment_id}/redo": {
+      "post": {
+        "description": "Redo is another checked operation (FR-REWRITE-10): a rewrite session of kind `redo` re-planning the reverted amendment's original parts against the story as it is now. Applied, it records a `redo` amendment; the original stays `reverted`. 409 `amendment_not_reverted` for an active amendment, `amendment_already_redone` when an active amendment already redoes it. The answer is the rewrite session (201), answered and applied through `/stories/{id}/rewrites/{rid}`, revalidated at its final commit like any rewrite. 409 `story_paused`, `rewrite_session_limit`, `revision_conflict` for a stale `X-Epistrel-Expected-Revision`, `module_off` (`module: lite_rewrites`) for a Lite story. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `amendment_not_found` for an unknown amendment or another story's.",
+        "operationId": "redo_amendment",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The amendment's id.",
+            "in": "path",
+            "name": "amendment_id",
+            "required": true,
+            "schema": {
+              "description": "The amendment's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Amendment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendmentSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSessionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `amendment_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `amendment_already_redone`, `amendment_not_reverted`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `rewrite_stale`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Redo a reverted amendment as a checked rewrite",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/amendments/{amendment_id}/undo": {
+      "post": {
+        "description": "Undo is a new, checked amendment (FR-REWRITE-10): a rewrite session of kind `undo` whose changes take back the amendment's parts and whose blast radius is planned against the restored canon. A later amendment relying on it is asked about (`cascade_undo`, recommended, or `cancel`, which cancels the undo); a record that would contradict the restored canon is repaired. Applied, it records an `undo` amendment and the undone one is `reverted`, never deleted. 409 `amendment_already_reverted`; 422 `use_redo` for an `undo` amendment. The answer is the rewrite session (201), answered and applied through `/stories/{id}/rewrites/{rid}`, revalidated at its final commit like any rewrite. 409 `story_paused`, `rewrite_session_limit`, `revision_conflict` for a stale `X-Epistrel-Expected-Revision`, `module_off` (`module: lite_rewrites`) for a Lite story. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `amendment_not_found` for an unknown amendment or another story's.",
+        "operationId": "undo_amendment",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The amendment's id.",
+            "in": "path",
+            "name": "amendment_id",
+            "required": true,
+            "schema": {
+              "description": "The amendment's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Amendment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AmendmentSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSessionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `amendment_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `amendment_already_reverted`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `rewrite_stale`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `use_redo`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Undo an amendment as a checked rewrite",
         "tags": [
           "stories"
         ]

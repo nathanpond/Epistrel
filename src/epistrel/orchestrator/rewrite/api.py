@@ -169,6 +169,8 @@ class RewriteSession(BaseModel):
     preview_mode: PreviewMode
     pipeline: Literal["structured", "lite"]
     principal: str
+    target_amendment_id: str | None = None
+    """An ``undo`` or ``redo`` session's amendment (#238)."""
     base_revision: int | None = None
     preview: Preview | None = None
     questions: list[RewriteQuestion] = Field(default_factory=list)
@@ -239,6 +241,26 @@ class MergeRequest(BaseModel):
         return str(self.resolution_mode), None
 
 
+class AmendmentSessionRequest(BaseModel):
+    """``POST /stories/{id}/amendments/{aid}/undo`` and ``…/redo`` (#238): the modes, as a
+    rewrite's."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [{"resolution_mode": "best_effort", "preview": "preview_first"}]
+        },
+    )
+
+    resolution_mode: ResolutionMode = "synchronous"
+    preview: PreviewMode = "preview_first"
+
+    def mode(self) -> tuple[str, str | None]:
+        if isinstance(self.resolution_mode, ThresholdMode):
+            return "threshold", self.resolution_mode.threshold
+        return str(self.resolution_mode), None
+
+
 class ApplyRequest(BaseModel):
     """``POST /stories/{id}/rewrites/{rid}/apply``: the revision the preview was computed
     against (required; it must be the story's current one)."""
@@ -276,6 +298,7 @@ class RewriteWrite:
 __all__ = [
     "ANSWER_TEXT_MAX",
     "INSTRUCTION_MAX",
+    "AmendmentSessionRequest",
     "AnswerItem",
     "AnswerRequest",
     "Applied",

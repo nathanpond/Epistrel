@@ -12,6 +12,7 @@ from fastapi import APIRouter
 
 from epistrel.api.routes import (
     admin,
+    amendments,
     backfill,
     catalog_characters,
     catalog_scenarios,
@@ -77,6 +78,7 @@ router.include_router(backfill.router)
 router.include_router(rewrites.router)
 router.include_router(entities.router)
 router.include_router(directives.router)
+router.include_router(amendments.router)
 router.include_router(story_rating.router)
 router.include_router(clock.router)
 router.include_router(scheduled_events.router)

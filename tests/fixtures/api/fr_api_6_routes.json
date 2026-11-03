@@ -996,6 +996,26 @@
       "why": "FR-PROP-7: identity merge"
     },
     {
+      "method": "GET",
+      "path": "/stories/{story_id}/amendments",
+      "why": "FR-REWRITE-9,10: a story's amendments (#238)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/amendments/{amendment_id}",
+      "why": "FR-REWRITE-9,10: one amendment, its parts and edges (#238)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/amendments/{amendment_id}/undo",
+      "why": "FR-REWRITE-9,10: undo an amendment as a checked rewrite (#238)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/amendments/{amendment_id}/redo",
+      "why": "FR-REWRITE-9,10: redo a reverted amendment as a checked rewrite (#238)"
+    },
+    {
       "method": "POST",
       "path": "/stories/{story_id}/directives",
       "why": "FR-DIRECT-1: an author's directive (#226)"

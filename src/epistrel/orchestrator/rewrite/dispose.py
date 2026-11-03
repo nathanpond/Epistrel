@@ -31,6 +31,7 @@ ACTION_LABELS = {
     "drop": "Remove it",
     "keep": "Keep it as it is",
     "cascade_undo": "Undo the amendment it depends on",
+    "cancel": "Cancel the undo",
 }
 RANK = {"low": 0, "high": 1}
 

@@ -302,6 +302,14 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, (SELECT a.tx_time FROM amendments a WHERE a.id = t.amendment_id), "  # noqa: S608
         "t.ordinal, t.status"
     ),
+    # Rewrite sessions and their questions (#223), directives (#226): by when they were made,
+    # then their natural keys.
+    "rewrite_sessions": f"{_STORY_RANK}, t.created_at, t.kind, t.state",
+    "rewrite_questions": (
+        f"{_STORY_RANK}, (SELECT r.created_at FROM rewrite_sessions r "  # noqa: S608
+        "WHERE r.id = t.session_id), t.created_at, t.key"
+    ),
+    "directives": f"{_STORY_RANK}, t.created_at, t.kind, t.disposition",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

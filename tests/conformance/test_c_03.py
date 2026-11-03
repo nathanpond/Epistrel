@@ -261,6 +261,7 @@ from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplaceme
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.rewrite.api import (
+    AmendmentSessionRequest,
     AnswerRequest,
     ApplyRequest,
     MergeRequest,
@@ -1607,6 +1608,64 @@ def _steps() -> list[Step]:
                     viewpoint="omniscient",
                 )
             ),
+            _keep("amendment", "amendment_id"),
+        ),
+        # #238: the amendment read, undone and redone as checked rewrites.
+        Step(
+            "list_amendments",
+            lambda ids: Rest("GET", "/stories/{fork}/amendments", params=OMNISCIENT_QUERY),
+            lambda e, ids: _dumped(e.list_amendments(CTX, ids["fork"], viewpoint="omniscient")),
+        ),
+        Step(
+            "get_amendment",
+            lambda ids: Rest(
+                "GET", "/stories/{fork}/amendments/{amendment}", params=OMNISCIENT_QUERY
+            ),
+            lambda e, ids: _dumped(
+                e.get_amendment(CTX, ids["fork"], ids["amendment"], viewpoint="omniscient")
+            ),
+        ),
+        Step(
+            "undo_amendment",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/amendments/{amendment}/undo",
+                {"resolution_mode": "best_effort", "preview": "apply_directly"},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.undo_amendment(
+                    CTX,
+                    ids["fork"],
+                    ids["amendment"],
+                    AmendmentSessionRequest(
+                        resolution_mode="best_effort", preview="apply_directly"
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            status=lambda body: 201,
+        ),
+        Step(
+            "redo_amendment",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/amendments/{amendment}/redo",
+                {"resolution_mode": "best_effort", "preview": "apply_directly"},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.redo_amendment(
+                    CTX,
+                    ids["fork"],
+                    ids["amendment"],
+                    AmendmentSessionRequest(
+                        resolution_mode="best_effort", preview="apply_directly"
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            status=lambda body: 201,
         ),
         # #225: two of the fork's entities merged (best_effort, applied in the call).
         Step(

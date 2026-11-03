@@ -11239,3 +11239,20 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - U-09 is unchanged: the base-mismatch 409 is asserted in S-STALE-PREVIEW and I-13.
   - S-ERASURE-BOUNDARY M7 does not cover the ADR-154 common-word candidate case (`candidates_remaining`): abandonment is decided by subject id, and #123's redaction of session texts is already registered.
   **Issue:** #237
+
+### #238 — undo and redo as checked rewrites, 2026-11-02
+
+- **Decision:** undo and redo are rewrite sessions with an engine source, beside `merge` (`session.SOURCES`). The stored plan names `{"undo": {amendment_id}}` or `{"redo": …}`, and every re-plan (answer, stale re-plan, revalidation) rebuilds the changes from it.
+  - An undo's changes are the inverse of A's active proposition and State parts, flagged `undo`: they write no part, and the apply reverts A through #221's `revert_amendment` into one `undo` amendment.
+  - A redo's changes are A's original parts as new drafts, recorded as a `redo` amendment.
+  - **Rule 1 fix:** an answer to a merge session used to re-plan from the (empty) parse and drop the merge. Answers now re-plan sourced sessions from their source.
+  **Issue:** #238
+- **Decision:** dependent amendments.
+  - A later amendment part found as a dependent is always an irreducible `dependent_amendment` conflict, whatever its edge type. Before, only `presupposes` was; B's `amendment_edges` are `causes`. Reverted parts are skipped.
+  - In an undo the conflict is a `dependent` question with options `cascade_undo` (recommended) and `cancel`. Choosing `cancel` cancels the whole session.
+  - The plan's `rewrite` option for B (B's contradicted parts rewritten into the undo) was not built: no part-level `rewrite_record` exists for amendment parts.
+  - Contradicted records in an undo offer `rewrite | drop`, never `keep`.
+  - Because B is recommended for cascade-undo, the undo's radius takes in B's own dependents (up to 3 levels): Marcus's memory derived from B's graduation is regenerated.
+  **Issue:** #238
+- **Decision:** not built: a separate undo-staleness test (an undo session runs the same #237 revalidation as any session); the list's `amendment_id` in report `resolutions[]`; indexes on `undoes`/`redoes`. `determinism.ORDER` gains `rewrite_sessions`, `rewrite_questions` and `directives`: S-ERASURE-BOUNDARY's resurrection replay compares every story table. This is a Rule 1 fix for #223/#226.
+  **Issue:** #238

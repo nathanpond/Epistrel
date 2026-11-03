@@ -55,6 +55,7 @@ from epistrel.core import control as control_ops
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
 from epistrel.core import story_settings as settings_store
+from epistrel.core.amendments import read as amendment_reads
 from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -342,6 +343,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "cancel_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
     "apply_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
     "merge_entities": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    # Undo and redo (#238): checked rewrite sessions of their kind.
+    "undo_amendment": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    "redo_amendment": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
     # Directives (#226): story-scoped; one routed to a rewrite answers 202.
     "apply_directive": ResultCodec.of(
         author_directives.DirectiveResult,
@@ -6346,6 +6350,113 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def list_amendments(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        status: str | None = None,
+        cursor: str | None = None,
+        limit: int = amendment_reads.LIST_DEFAULT,
+    ) -> amendment_reads.AmendmentPage:
+        """The story's amendments, newest first, optionally by ``status`` (#238); an
+        omniscient read over the shared tables on any pipeline."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        async with self.db.connect() as conn:
+            return await amendment_reads.list_amendments(
+                conn, story_id, status=status, cursor=cursor, limit=limit
+            )
+
+    async def get_amendment(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        *,
+        viewpoint: str | None = None,
+    ) -> amendment_reads.AmendmentDetail:
+        """One amendment with its parts, what it relies on and its dependents (#238); 404
+        ``amendment_not_found``; an omniscient read."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        async with self.db.connect() as conn:
+            return await amendment_reads.get_amendment(conn, story_id, amendment_id)
+
+    async def undo_amendment(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        request: rewrite_api.AmendmentSessionRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Undo an amendment as a checked rewrite (#238, FR-REWRITE-10): a session of kind
+        ``undo`` planned against the restored canon. 404 ``amendment_not_found``; 409
+        ``amendment_already_reverted``, ``story_paused``, ``rewrite_session_limit``,
+        ``module_off`` (a Lite story); 422 ``use_redo``; otherwise as ``open_rewrite``."""
+        return await self._amendment_session(
+            ctx, story_id, amendment_id, request, kind="undo", viewpoint=viewpoint
+        )
+
+    async def redo_amendment(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        request: rewrite_api.AmendmentSessionRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Redo a reverted amendment as a checked rewrite (#238): a session of kind ``redo``
+        re-planning its original parts. 409 ``amendment_not_reverted``,
+        ``amendment_already_redone``; otherwise as ``undo_amendment``."""
+        return await self._amendment_session(
+            ctx, story_id, amendment_id, request, kind="redo", viewpoint=viewpoint
+        )
+
+    async def _amendment_session(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        request: rewrite_api.AmendmentSessionRequest,
+        *,
+        kind: str,
+        viewpoint: str | None,
+    ) -> rewrite_api.RewriteWrite:
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            await rewrite_session.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            return await rewrite_session.open_amendment_session(
+                self.db,
+                self.models,
+                story_id,
+                amendment_id,
+                request,
+                kind=kind,
+                principal=principal,
+            )
+
+        return await self._keyed(
+            ctx,
+            f"{kind}_amendment",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "amendment_id": amendment_id, "body": _body(request)},
         )
 
     async def apply_rewrite(

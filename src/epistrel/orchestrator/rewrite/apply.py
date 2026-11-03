@@ -87,6 +87,10 @@ class Prepared:
     """#225: firsthand beliefs that follow the change: ``(belief_id, the change's preview)``."""
     resolutions: list[dict[str, Any]] = field(default_factory=list)
     notifications: list[dict[str, Any]] = field(default_factory=list)
+    kind: str = "rewrite"
+    """The amendment kind the apply records (#238: ``undo``, ``redo``)."""
+    undoes: str | None = None
+    redoes: str | None = None
 
 
 def _excerpt(text: str | None) -> str | None:
@@ -236,9 +240,20 @@ async def prepare(
     preview = dict(plan.get("preview") or {})
     radius = dict(preview.get("blast_radius") or {})
     prepared = Prepared()
+    if plan.get("undo") is not None:
+        # #238: an undo reverts its amendment (the inverse parts are #221's), so its changes
+        # write no part of their own.
+        prepared.kind = "undo"
+        prepared.undoes = str(plan["undo"]["amendment_id"])
+        prepared.undo.append(prepared.undoes)
+    elif plan.get("redo") is not None:
+        prepared.kind = "redo"
+        prepared.redoes = str(plan["redo"]["amendment_id"])
     seen: set[tuple[str, str]] = set()
     by_key = {c.key: c for c in changes}
     for change in changes:
+        if change.summary.get("undo"):
+            continue
         if change.draft is None:
             prepared.pending.append(change.summary)
             continue
@@ -900,10 +915,12 @@ async def apply(
             made = await record_amendment(
                 conn,
                 op,
-                kind=AmendmentKind.REWRITE,
+                kind=AmendmentKind(prepared.kind),
                 parts=parts,
                 session_id=session_id,
                 payload={"parts": len(parts), "session_id": session_id},
+                undoes=prepared.undoes,
+                redoes=prepared.redoes,
             )
             for target in prepared.undo:
                 await revert_amendment(conn, op, target, by_amendment_id=made.amendment_id)

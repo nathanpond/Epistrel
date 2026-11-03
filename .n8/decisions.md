@@ -11680,3 +11680,16 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #713
 - **Decision:** the merge-then-undo property runs as five seeded random cases on Postgres (`test_s_entity_identity__m7_merge_undo`), not as Hypothesis examples. This is the pattern of `test_clock_monotonic__postgres`: each example is a whole story, and Hypothesis's shrinking cannot run across the async database fixtures.
   **Issue:** #713
+
+### #712 — the directed resolution commits in one transaction
+
+- **Decision:** a `directed_resolution` session's apply is staged on the directed regeneration's turn, and does not commit in an operation of its own.
+  - **The mechanism.** `rewrite.apply.apply` gains `run`, which commits an operation with the apply staged on it. `session.apply_session`, `_apply_directly` and `open_directed` pass it through. The Engine's `_held_run` plays the regeneration with `directed.HELD` set. The structured pipeline's per-attempt `stage` stages the amendment first, before the turn's own steps, so a rebase restart stages it again.
+  - **What it guarantees.** The regenerated variant and the amendment, with its audit events and the #237 revalidation check, commit in one transaction, or neither does.
+  - **On failure.** A failure leaves the session `awaiting_approval` (`_failed`). An induced fault after the parts is 503 `rewrite_apply_failed`, with nothing written.
+  - **Removed.** `directed.compensate` (the compensating `undo`) and `_play_directed`/`_apply_directed` are gone.
+  - **Where the amendment is recorded.** It is recorded under the turn's operation, and the session's `operation_id` names that turn.
+  **Issue:** #712
+- **Decision (deviation from the AC's wording):** the variant is rendered when the session is applied. It is not rendered when the session opens and then held across the question round (`held_render`). The read-set revalidation therefore needs nothing new: the turn's own revalidation runs at its commit, and the plan's #237 check runs in the same transaction.
+  **Why:** the defect was the non-atomic pair of commits, and a render held across an HTTP round trip would need a stored-render commit path the structured pipeline does not have. The author still sees the plan and answers before anything commits.
+  **Issue:** #712

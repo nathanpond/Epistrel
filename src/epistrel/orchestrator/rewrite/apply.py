@@ -988,6 +988,13 @@ class Applied:
     timeline_revision: int
 
 
+Stage = Callable[[Operation], None]
+"""#712: stages an apply on an operation another path commits (``apply``'s ``run``)."""
+Run = Callable[[Stage], Awaitable[tuple[str, int]]]
+"""#712: commits an operation with the apply staged on it and answers its operation id and
+the timeline revision it committed at (a directed regeneration's turn)."""
+
+
 async def apply(
     db: AsyncEngine,
     story_id: str,
@@ -997,17 +1004,17 @@ async def apply(
     principal: str,
     audit: Sequence[tuple[str, Mapping[str, Any]]],
     check: Callable[[AsyncConnection], Awaitable[None]] | None = None,
+    run: Run | None = None,
 ) -> Applied:
     """The one atomic apply (see the module docstring). ``check`` runs first in the commit,
-    under the story row lock (#237's revalidation); raising rolls the apply back whole."""
+    under the story row lock (#237's revalidation); raising rolls the apply back whole.
+
+    ``run`` (#712): when given, the apply is staged on an operation ``run`` commits (a directed
+    regeneration's turn: the regenerated variant and its ``directed_resolution`` amendment
+    commit in one transaction, or neither does) instead of an operation of its own."""
     found: dict[str, Any] = {}
-    async with Operation(
-        db,
-        story_id=story_id,
-        kind=OperationKind.REWRITE_SESSION,
-        principal=principal,
-        bumps_revision=True,
-    ) as op:
+
+    def stage(op: Operation) -> None:
         for type_, payload in audit:
             op.append(type_, dict(payload))
         op.append(
@@ -1055,13 +1062,26 @@ async def apply(
             found["applied"] = applied
 
         op.add_commit_step(step)
-        await op.commit()
+
+    if run is None:
+        async with Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.REWRITE_SESSION,
+            principal=principal,
+            bumps_revision=True,
+        ) as op:
+            stage(op)
+            await op.commit()
+        operation_id, revision = op.operation_id, int(op.timeline_revision or 0)
+    else:
+        operation_id, revision = await run(stage)
     report = {
         "resolutions": prepared.resolutions,
         "applied": {**found["applied"], "beliefs": found["beliefs"]},
         "notifications": [*prepared.notifications, *found.get("belief_notes", [])],
     }
-    return Applied(found["amendment_id"], op.operation_id, report, int(op.timeline_revision or 0))
+    return Applied(found["amendment_id"], operation_id, report, revision)
 
 
 async def close_audit(

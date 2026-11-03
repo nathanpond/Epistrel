@@ -238,6 +238,7 @@ from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.rewrite import api as rewrite_api
+from epistrel.orchestrator.rewrite import apply as rewrite_apply
 from epistrel.orchestrator.rewrite import session as rewrite_session
 from epistrel.orchestrator.rewrite import support_check  # registers its membership hook
 from epistrel.orchestrator.structured import pipeline as structured_turn
@@ -3042,11 +3043,11 @@ class Engine:
             finally:
                 lite.LITE_NUDGE.reset(token)
         prepared = await directed.prepare(self.db, self.models, story_id, request.directive.text)
-        amendment_id: str | None = None
         if prepared.conflicting:
             overrides = request.model_dump(
                 mode="json", exclude={"directive", "resolution_mode", "preview"}, exclude_none=True
             )
+            held: dict[str, Any] = {}
             written = await rewrite_session.open_directed(
                 self.db,
                 self.models,
@@ -3055,6 +3056,7 @@ class Engine:
                 resolution_mode=request.resolution_mode,
                 preview=request.preview,
                 principal=principal,
+                run=self._held_run(ctx, story_id, request, principal, prepared, held),
             )
             if written.apply is None:
                 async with self.db.connect() as conn:
@@ -3065,38 +3067,50 @@ class Engine:
                     timeline_revision=written.timeline_revision,
                     warnings=list(prepared.warnings),
                 )
-            amendment_id = written.apply.amendment_id
-        return await self._play_directed(
-            ctx, story_id, request, principal, prepared, amendment_id=amendment_id
-        )
+            await directed.record(self.db, story_id, prepared, principal=principal)
+            found: RegenerateResult = held["result"]
+            return found
+        replay = request.model_copy(update={"directive": None})
+        with directed.directing(prepared):
+            result = await self._regenerate(ctx, story_id, replay, principal)
+        await directed.record(self.db, story_id, prepared, principal=principal)
+        return result
 
-    async def _play_directed(
+    def _held_run(
         self,
         ctx: RequestContext,
         story_id: str,
         request: RegenerateRequest,
         principal: str,
         prepared: directed.Directed,
-        *,
-        amendment_id: str | None,
-    ) -> RegenerateResult:
-        """Play the directed regeneration; when its amendment already committed and the
-        regeneration fails, the amendment is reverted (``directed.compensate``) and the call
-        is 503 ``rewrite_apply_failed``: the two stand or fall together."""
+        held: dict[str, Any],
+    ) -> rewrite_apply.Run:
+        """#712: the commit of a ``directed_resolution`` session's apply: the directed
+        regeneration, played with the amendment staged on its turn (``directed.HELD``), so the
+        regenerated variant and the amendment commit in one transaction or neither does.
+        ``held`` receives the regeneration's result."""
         replay = request.model_copy(update={"directive": None})
-        try:
-            with directed.directing(prepared):
-                result = await self._regenerate(ctx, story_id, replay, principal)
-        except Exception as failed:
-            if amendment_id is None:
-                raise
-            await directed.compensate(self.db, story_id, amendment_id, principal=principal)
-            raise RewriteApplyFailed(
-                "the directed regeneration failed; its amendment was reverted",
-                {"retryable": True, "amendment_id": amendment_id},
-            ) from failed
-        await directed.record(self.db, story_id, prepared, principal=principal)
-        return result
+
+        async def run(stage: rewrite_apply.Stage) -> tuple[str, int]:
+            def staging(op: Any) -> None:
+                held["operation_id"] = op.operation_id
+                stage(op)
+
+            token = directed.HELD.set(staging)
+            try:
+                with directed.directing(prepared):
+                    result = await self._regenerate(ctx, story_id, replay, principal)
+            finally:
+                directed.HELD.reset(token)
+            if "operation_id" not in held:  # pragma: no cover - a structured regenerate stages
+                raise RewriteApplyFailed(
+                    "the directed regeneration did not carry its amendment",
+                    {"retryable": True},
+                )
+            held["result"] = result
+            return str(held["operation_id"]), int(result.timeline_revision)
+
+        return run
 
     async def correct(
         self,
@@ -6769,31 +6783,6 @@ class Engine:
             material={"story_id": story_id, "amendment_id": amendment_id, "body": _body(request)},
         )
 
-    async def _apply_directed(
-        self,
-        ctx: RequestContext,
-        story_id: str,
-        session_id: str,
-        written: rewrite_api.RewriteWrite,
-        principal: str,
-    ) -> None:
-        """#241: after a ``directed_resolution`` session's amendment applied, play the directed
-        regeneration it held (reverting the amendment if the regeneration fails)."""
-        assert written.apply is not None  # noqa: S101 - the caller checked
-        async with self.db.connect() as conn:
-            stored = await rewrite_session.stored_plan(conn, story_id, session_id)
-        document = dict(stored.get("directed") or {})
-        prepared = directed.Directed.of(document)
-        replay = RegenerateRequest.model_validate(document.get("regenerate") or {})
-        await self._play_directed(
-            ctx,
-            story_id,
-            replay,
-            principal,
-            prepared,
-            amendment_id=written.apply.amendment_id,
-        )
-
     async def apply_rewrite(
         self,
         ctx: RequestContext,
@@ -6817,12 +6806,28 @@ class Engine:
         inspection.omniscient_read(ctx.viewpoint)
 
         async def run(ctx_: RequestContext) -> rewrite_api.RewriteWrite:
+            async with self.db.connect() as conn:
+                stored = await rewrite_session.stored_plan(conn, story_id, session_id)
+            document = stored.get("directed")
+            commit = None
+            prepared = None
+            if document is not None:
+                # #241, #712: the directed regeneration the session held is played with the
+                # amendment staged on its turn: one transaction.
+                prepared = directed.Directed.of(dict(document))
+                replay = RegenerateRequest.model_validate(document.get("regenerate") or {})
+                commit = self._held_run(ctx_, story_id, replay, principal, prepared, {})
             written = await rewrite_session.apply_session(
-                self.db, self.models, story_id, session_id, request, principal=principal
+                self.db,
+                self.models,
+                story_id,
+                session_id,
+                request,
+                principal=principal,
+                run=commit,
             )
-            if written.session.kind == "directed_resolution" and written.apply is not None:
-                # #241: the amendment committed; the directed regeneration plays now.
-                await self._apply_directed(ctx_, story_id, session_id, written, principal)
+            if prepared is not None and written.apply is not None:
+                await directed.record(self.db, story_id, prepared, principal=principal)
             return written
 
         return await self._keyed(

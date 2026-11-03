@@ -81,6 +81,17 @@ def _regenerate(client: Any, story: str, **fields: Any) -> Any:
     return client.post(f"/stories/{story}/regenerate", json=fields, headers=WRITE)
 
 
+async def _committed_turns(engine: AsyncEngine, story: str) -> int:
+    """#712: the story's committed turn operations (a rolled-back regeneration adds none)."""
+    (found,) = await rows(
+        engine,
+        "SELECT count(*) AS n FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND status = 'committed'",
+        s=story,
+    )
+    return int(found.n)
+
+
 def _prompts(stub: Any) -> str:
     return "\n".join(m.content for c in stub.calls if c.purpose == "generation" for m in c.messages)
 
@@ -152,6 +163,7 @@ async def test_s_direct_george__bobby(
     engine: AsyncEngine,
     drained_embedding_jobs: None,
     reconciled: list[Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
@@ -212,6 +224,30 @@ async def test_s_direct_george__bobby(
         assert cancelled.status_code == 200, cancelled.text
         assert await rs.revision(engine, story) == revision
         assert await _knockers(engine, story, ids) == before
+
+        # #712: one transaction. A fault after the amendment's parts are written rolls back the
+        # regenerated variant with them: no amendment, no variant, the revision unmoved.
+        from epistrel.orchestrator.rewrite import apply as rewrite_apply
+
+        stub.reset()
+        stub.when("", _parsed("Bobby"), purpose="directive_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        variants = await _committed_turns(engine, story)
+        monkeypatch.setattr(rewrite_apply, "FAIL_AFTER_PARTS", True)
+        failed = await _regenerate(
+            client,
+            story,
+            directive={"text": BOBBY},
+            resolution_mode="best_effort",
+            preview="apply_directly",
+        )
+        monkeypatch.setattr(rewrite_apply, "FAIL_AFTER_PARTS", False)
+        assert failed.status_code == 503, failed.text
+        assert failed.json()["error"]["code"] == "rewrite_apply_failed"
+        assert await rs.count(engine, "amendments", story) == 0
+        assert await rs.revision(engine, story) == revision
+        assert await _knockers(engine, story, ids) == before
+        assert await _committed_turns(engine, story) == variants
 
         # best_effort + apply_directly: the amendment and the regenerated variant together.
         stub.reset()

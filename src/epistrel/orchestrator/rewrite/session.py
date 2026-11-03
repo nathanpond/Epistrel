@@ -667,6 +667,7 @@ async def _apply_directly(
     written: RewriteWrite,
     *,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     """``apply_directly``: the call that leaves nothing pending applies (FR-REWRITE-4)."""
     session = written.session
@@ -679,6 +680,7 @@ async def _apply_directly(
         session.id,
         ApplyRequest(base_revision=session.base_revision),
         principal=principal,
+        run=run,
     )
 
 
@@ -916,6 +918,7 @@ async def open_directed(
     resolution_mode: Any,
     preview: str,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     """#241 (FR-COMMIT-12): an author-directed binding that conflicts with recorded history
     proceeds as an amendment: a ``directed_resolution`` session (``instruction``: the
@@ -970,7 +973,7 @@ async def open_directed(
         )
         await _index(conn, session_id)
         written = await _answer(conn, story_id, session_id)
-    return await _apply_directly(db, models, story_id, written, principal=principal)
+    return await _apply_directly(db, models, story_id, written, principal=principal, run=run)
 
 
 # -- answers ---------------------------------------------------------------------------------------
@@ -1588,6 +1591,7 @@ async def apply_session(
     request: ApplyRequest,
     *,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     """Apply the session's plan as one amendment (#224; see ``rewrite.apply``). The checks, in
     order: 404; an ended session 409 ``rewrite_session_closed``, one being applied 409
@@ -1603,11 +1607,17 @@ async def apply_session(
     recomputed (``_restale``) and, under ``apply_directly`` with nothing left to answer, applied
     again up to ``rewrite_stale_retries`` times, else 409 ``rewrite_stale`` with the new
     preview; an erasure touching the plan abandons the session (409
-    ``erased_subject_referenced``)."""
+    ``erased_subject_referenced``).
+
+    ``run`` (#712): a ``directed_resolution`` session's apply is staged on its directed
+    regeneration's turn, which ``run`` plays and commits: the variant and the amendment commit
+    in one transaction, or neither does."""
     retries = 0
     while True:
         try:
-            return await _apply_once(db, models, story_id, session_id, request, principal=principal)
+            return await _apply_once(
+                db, models, story_id, session_id, request, principal=principal, run=run
+            )
         except revalidate.Revalidated as signal:
             outcome = signal.outcome
             if isinstance(outcome, revalidate.Abandon):
@@ -1635,6 +1645,7 @@ async def _apply_once(
     request: ApplyRequest,
     *,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     from epistrel.core import pause
 
@@ -1715,6 +1726,7 @@ async def _apply_once(
             principal=principal,
             audit=rewrite_apply.audit_events(session_id, asked),
             check=_revalidation(story_id, row, settings),
+            run=run,
         )
     except revalidate.Revalidated:
         raise

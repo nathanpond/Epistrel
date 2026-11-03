@@ -51,6 +51,7 @@ from epistrel.core import clock
 from epistrel.core.bundles.import_job import ImportContext, ImportRefused, register_gate
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import active_operation
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -279,7 +280,7 @@ async def check_guardrails(ctx: ImportContext) -> None:
                 operations.c.story_id == ctx.story_id,
                 operations.c.kind == OperationKind.TURN.value,
                 operations.c.status == OperationStatus.COMMITTED.value,
-                operations.c.membership == Membership.ACTIVE.value,
+                active_operation(operations),
             )
             .values(checked_guardrails=stamp_of(ctx.rating_id, version, found))
         )

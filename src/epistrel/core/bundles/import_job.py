@@ -106,7 +106,21 @@ class ImportMetadata(BaseModel):
     """The import request's ``metadata`` part (#250): who will own the story, its name, the
     rating and the profile to attach, and #251's impact choices."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        frozen=True,
+        json_schema_extra={
+            "examples": [
+                {
+                    "name": "The Lighthouse (restored)",
+                    "content_rating_id": "teen",
+                    "engine_profile_id": "standard",
+                    "upgrade_mode": "backfill",
+                    "ignore_warnings": False,
+                }
+            ]
+        },
+    )
 
     owner: StrictStr | None = Field(default=None, min_length=1, max_length=255)
     name: StrictStr | None = Field(default=None, min_length=1, max_length=200)

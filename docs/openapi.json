@@ -17193,6 +17193,100 @@
         "title": "ImportJob",
         "type": "object"
       },
+      "ImportMetadata": {
+        "additionalProperties": false,
+        "description": "The import request's ``metadata`` part (#250): who will own the story, its name, the\nrating and the profile to attach, and #251's impact choices.",
+        "examples": [
+          {
+            "content_rating_id": "teen",
+            "engine_profile_id": "standard",
+            "ignore_warnings": false,
+            "name": "The Lighthouse (restored)",
+            "upgrade_mode": "backfill"
+          }
+        ],
+        "properties": {
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content Rating Id"
+          },
+          "engine_profile_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Engine Profile Id"
+          },
+          "ignore_warnings": {
+            "default": false,
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 255,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Upgrade Mode"
+          }
+        },
+        "title": "ImportMetadata",
+        "type": "object"
+      },
       "ImportStartedBody": {
         "description": "An accepted import (#250): its job, the new story (``importing`` until the job ends)\nand its status.",
         "properties": {
@@ -59262,14 +59356,15 @@
                 }
               },
               "schema": {
+                "additionalProperties": false,
                 "properties": {
                   "file": {
+                    "description": "The bytes, as the part's own `Content-Type` declares them (or `application/octet-stream`).",
                     "format": "binary",
                     "type": "string"
                   },
                   "metadata": {
-                    "description": "The `ImportMetadata` JSON document.",
-                    "type": "string"
+                    "$ref": "#/components/schemas/ImportMetadata"
                   }
                 },
                 "required": [

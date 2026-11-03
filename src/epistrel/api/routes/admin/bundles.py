@@ -203,27 +203,6 @@ IMPORT_DESCRIPTION = (
             "description": "#251: the impact report warns; nothing was created.",
         }
     },
-    openapi_extra={
-        "requestBody": {
-            "required": True,
-            "content": {
-                "multipart/form-data": {
-                    "schema": {
-                        "type": "object",
-                        "required": ["metadata", "file"],
-                        "properties": {
-                            "metadata": {
-                                "type": "string",
-                                "description": "The `ImportMetadata` JSON document.",
-                            },
-                            "file": {"type": "string", "format": "binary"},
-                        },
-                    },
-                    "encoding": {"metadata": {"contentType": "application/json"}},
-                }
-            },
-        }
-    },
 )
 async def import_story(
     request: Request, response: Response, ctx: ContextDep, engine: EngineDep

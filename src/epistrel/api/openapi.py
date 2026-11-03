@@ -57,6 +57,7 @@ from epistrel.api.deps import (
 from epistrel.api.responses import STORY_PATH_PARAMETER
 from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
+from epistrel.core.bundles.import_job import ImportMetadata
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
@@ -1116,16 +1117,34 @@ DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
 takes a blank story or one from a scenario, #119)."""
 
-MULTIPART_BODIES = {"upload_media": "MediaUpload"}
+MULTIPART_BODIES = {"upload_media": "MediaUpload", "import_story": "ImportMetadata"}
 """Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
 part (the component named here, as JSON) followed by a binary ``file`` part and, for a video,
-an optional binary ``poster_file`` part (#107)."""
+an optional binary ``poster_file`` part (#107). ``import_story``'s ``file`` is the bundle
+archive (#250) and it takes no poster."""
 
 RAW_BODIES = frozenset({"put_upload_part"})
 """Operations whose handler streams a raw ``application/octet-stream`` body itself (#107)."""
 
 
-def _multipart_body(component: str) -> dict[str, Any]:
+def _multipart_body(component: str, *, poster: bool) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "metadata": {"$ref": REF.format(model=component)},
+        "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The bytes, as the part's own `Content-Type` "
+            "declares them (or `application/octet-stream`).",
+        },
+    }
+    if poster:
+        properties[POSTER_FILE_FIELD] = {
+            "type": "string",
+            "format": "binary",
+            "description": "A video only, after `file`: its poster image "
+            "(stored with the video's rating, owner and subjects), instead of "
+            "`poster` or a frame ffmpeg extracts.",
+        }
     return {
         "required": True,
         "content": {
@@ -1133,22 +1152,7 @@ def _multipart_body(component: str) -> dict[str, Any]:
                 "schema": {
                     "type": "object",
                     "required": ["metadata", "file"],
-                    "properties": {
-                        "metadata": {"$ref": REF.format(model=component)},
-                        "file": {
-                            "type": "string",
-                            "format": "binary",
-                            "description": "The bytes, as the part's own `Content-Type` "
-                            "declares them (or `application/octet-stream`).",
-                        },
-                        POSTER_FILE_FIELD: {
-                            "type": "string",
-                            "format": "binary",
-                            "description": "A video only, after `file`: its poster image "
-                            "(stored with the video's rating, owner and subjects), instead of "
-                            "`poster` or a frame ffmpeg extracts.",
-                        },
-                    },
+                    "properties": properties,
                     "additionalProperties": False,
                 },
                 "encoding": {"metadata": {"contentType": "application/json"}},
@@ -1342,6 +1346,7 @@ def _extra_components() -> dict[str, Any]:
             (StorySpec, "validation"),
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
+            (ImportMetadata, "validation"),
             (CertificationRecord, "validation"),
         ],
         ref_template=REF,
@@ -1401,7 +1406,9 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
             "content": {"application/json": {"schema": body_schema}},
         }
     if operation_id in MULTIPART_BODIES:
-        operation["requestBody"] = _multipart_body(MULTIPART_BODIES[operation_id])
+        operation["requestBody"] = _multipart_body(
+            MULTIPART_BODIES[operation_id], poster=operation_id == "upload_media"
+        )
     if operation_id in RAW_BODIES:
         operation["requestBody"] = {
             "required": True,

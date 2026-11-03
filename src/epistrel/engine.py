@@ -5629,11 +5629,16 @@ class Engine:
         the story gate never sees) is answered only while the story is not blocked: 503
         ``erasure_pending`` otherwise, as every read of it is (#369). A deployment-scoped
         result (``record``, its index record) a pending catalog-scope erasure reaches is 503
-        too (#346). The reapply purges the result, so a later replay answers the reference."""
+        too (#346). The reapply purges the result, so a later replay answers the reference.
+        A story still ``importing`` does not refuse the replay (#250): the stored result is
+        ``import_story``'s own 202, ids only, and its retry is answered as the original was."""
         body = stored.body
         story_id = body.get("story_id") if isinstance(body, Mapping) else None
         if isinstance(story_id, str):
-            await self._erasure_gate(story_id)
+            from epistrel.core import importing as story_importing
+
+            with story_importing.passing(story_id):
+                await self._erasure_gate(story_id)
         if record is not None and (block := await self._catalog_block()) is not None:
             block.check_records([record])
 

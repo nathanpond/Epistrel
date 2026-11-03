@@ -11607,3 +11607,21 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Decision:** `[tool.epistrel.gates] current_milestone` stays `6`. It is not bumped to `7` at this PR.
   **Why:** with `7`, `check-traceability` fails on 28 planned-but-absent M7 parts. Examples: S-PRUNE's FR-CONC-15/FR-EXT-21/FR-STORE-1, S-RETENTION, S-REWIND, C-09, X-01, and I-10's FR-ADMIN-9/FR-RATE-7/FR-STORE-30. These belong to the stories this run built in part (#228, #250) or not at all (#251, #235, and the not-built slices filed as #698–#705). Bumping would turn CI red on work the run did not finish. M7 is **partially executed**, and the bump belongs to the run that completes it.
   **Issue:** #228, #250, #251, #235
+
+## /n8-exec M7 (retry 1: verify fixes) — 2026-11-03
+
+Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues `/n8-verify M7 --auto` filed or moved into M7 (#696–#704, #707–#714), then the open stories.
+
+- **Decision:** the local gate per issue is the touched tests plus every static CI check (ruff, format, mypy, the generated-docs checks, the milestone gates, import contracts, OpenAPI). The full suite runs in CI on the PR (13 shards); a local full run takes over two hours on this host (M6 memory).
+  **Why:** same practice as the M6 fix passes; CI is the full-suite gate before the merge.
+  **Issue:** all below
+
+### #714 — Lite time-skip replay, regenerate and budget degradation
+
+- **Decision:** a Lite skip left unestimated because `try_optional` refused the `time_estimation` call carries `budget_refused`; the respond's `degradation` and the stored turn report list `time_estimate_skipped` (cause `budget`). An estimate below the confidence floor stays a plain `unestimated` refusal with no degradation step (the planner names only the budget case).
+  **Issue:** #714
+- **Decision:** the Lite guarantee row is a second model-dependent row for the `time_estimation` purpose, `lite_time_estimation` (needs `pipeline = lite` and `clock = prompt_only`), rather than widening the structured row's needs. The structured row's note now points to it. `test_c_14__m6`'s complement removes every row for the purpose.
+  **Why:** the two forms differ (no repair, no due-event stop under Lite), and the table states a row's needs as one conjunction.
+  **Issue:** #714
+- **Decision:** "replay" is tested as the projection refold (`projections.fold.rebuild`), the story's replay from its event log; the test spies that no `time_estimation` call is made and the clock reads the same.
+  **Issue:** #714

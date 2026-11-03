@@ -74,6 +74,9 @@ class LiteSkip:
     initiated_by: str = ""
     refused: str | None = None
     estimated: bool = False
+    budget_refused: bool = False
+    """#714: no ``time_estimation`` call was left in the turn's budget (the respond's
+    ``degradation`` lists ``time_estimate_skipped``, NFR-PERF-7)."""
 
     def report(self) -> dict[str, Any]:
         if self.refused is not None:
@@ -89,6 +92,9 @@ class LiteSkip:
 
 
 UNESTIMATED = "unestimated"
+TIME_ESTIMATE_SKIPPED = "time_estimate_skipped"
+"""#714 (NFR-PERF-7): the degradation step of a Lite turn whose narrated skip went unestimated
+because the turn's budget had no ``time_estimation`` call left."""
 
 
 async def plan_skip(
@@ -121,7 +127,8 @@ async def plan_skip(
     minutes, source, estimated = stated, StateChangeSource.DECLARED_SKIP, False
     if minutes is None:
         found = None
-        if budget.try_optional(estimation.TIME_ESTIMATION_KIND, 1):
+        allowed = budget.try_optional(estimation.TIME_ESTIMATION_KIND, 1)
+        if allowed:
             mine = skips.activities(reply)
             found = await estimation.estimate(
                 models,
@@ -132,7 +139,7 @@ async def plan_skip(
                 budget=budget,
             )
         if found is None:
-            return LiteSkip(refused=UNESTIMATED)
+            return LiteSkip(refused=UNESTIMATED, budget_refused=not allowed)
         minutes, source, estimated = found.minutes, StateChangeSource.ESTIMATE, True
     verdict = skips.authorize(
         classified, minutes=minutes, cap=clock.max_unprompted, established=skips.established(window)
@@ -197,6 +204,7 @@ async def pace(
 __all__ = [
     "PACING_REASON",
     "SKIP_REASON",
+    "TIME_ESTIMATE_SKIPPED",
     "LiteContext",
     "LiteSkip",
     "pace",

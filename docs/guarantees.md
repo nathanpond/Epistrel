@@ -49,6 +49,7 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | NFR-QUAL-10 | `verification` at `extraction` or above | `extraction_backstop` |
 | salience | `salience` | model-dependent | NFR-QUAL-4 | `commitment`; `commitment.salience = rules_and_model` | `salience_detection` |
 | time estimation | `time_estimation` | model-dependent | NFR-QUAL-9 | `clock` at `on` | `time_estimation` |
+| Lite time estimation | `lite_time_estimation` | model-dependent | NFR-QUAL-9 | `pipeline` at `lite`; `clock` at `prompt_only` | `time_estimation` |
 | entailment fallback | `entailment_fallback` | model-dependent | NFR-QUAL-2 | `verification` at `entailment` | `entailment` |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | unmeasured | `partitions`; `testimony` at `model` | `belief_adjudication` |
 | repair rendering | `repair_rendering` | model-dependent | NFR-QUAL-14 | `verification` at `declared` or above; `repair` | `regeneration` |
@@ -79,7 +80,8 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `generation`: Includes a regeneration after an output policy's violation (FR-GUARD).
 - `claim_extraction`: Complete detection is a measured rate, reported per layer and per `extraction_mode` (E-10). Under `gated`, the default, it runs only on the beats a detector flagged, and a shadow sample records what gating missed (FR-OBS-4).
 - `salience`: At `commitment.salience = rules`, salience is detected by rules only.
-- `time_estimation`: Under `lite` no time skip is estimated: the prompt-only clock advances by pacing only.
+- `time_estimation`: Under `lite`, see `lite_time_estimation`.
+- `lite_time_estimation`: With the prompt-only clock, a narrated skip with no stated amount is estimated by at most one call per turn (FR-LITE-7) and bounded by FR-CLOCK-8's rules; a refused or unestimated skip is not applied (Lite has no repair) and the clock moves by pacing only. Due events never stop a Lite skip (FR-CLOCK-9 is structured-only).
 - `belief_adjudication`: At `testimony = defaulted`, every acceptance follows the deterministic default of trust, priors and consistency, and no model is called.
 - `paraphrase_detection`: No purpose of its own is defined: the viewpoint checks of the render's claims (verification, could-have-known) catch what detection finds, and NFR-QUAL-1's zero-leak evals (Q-04's asymmetry, the private-thought suite) measure what reaches the output.
 - `rolling_summary`: NFR-QUAL-3 measures consolidation's reflections, not the rolling summary.
@@ -130,6 +132,7 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | not provided |
 | salience | `salience` | model-dependent | not provided |
 | time estimation | `time_estimation` | model-dependent | not provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | not provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
 | repair rendering | `repair_rendering` | model-dependent | not provided |
@@ -179,6 +182,7 @@ Profile `00000000000000000000PRF003`, version 1 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | not provided |
 | time estimation | `time_estimation` | model-dependent | provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | not provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |
@@ -224,6 +228,7 @@ Profile `00000000000000000000PRF002`, version 4 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | provided |
 | time estimation | `time_estimation` | model-dependent | provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |
@@ -267,6 +272,7 @@ Profile `00000000000000000000PRF004`, version 1 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | provided |
 | time estimation | `time_estimation` | model-dependent | provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |

@@ -147,6 +147,7 @@ from epistrel.observability.metrics import count_degradation
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.context import (
+    TIME_ESTIMATE_SKIPPED,
     LiteContext,
     LiteSkip,
     pace,
@@ -770,6 +771,13 @@ async def _play(
         )
         if skipped[0] is not None:
             report["clock"] = skipped[0].report()  # #632
+            if skipped[0].budget_refused:
+                # #714 (NFR-PERF-7): no estimation call was left; the skip went unapplied.
+                report["degradation"] = [*report["degradation"], TIME_ESTIMATE_SKIPPED]
+                report["degradation_details"] = [
+                    *report["degradation_details"],
+                    {"step": TIME_ESTIMATE_SKIPPED, "cause": "budget"},
+                ]
         if regenerating is not None:
             # The variant this regenerate replaced (#126): the feedback aggregates count a
             # regeneration of that variant's message from it. A turn written over a rewound
@@ -836,6 +844,13 @@ async def _play(
                 conn, story_id, committed.narrative_turn, committed.turn_variant
             ),
         }
+        if skipped[0] is not None and skipped[0].budget_refused:
+            # #714 (NFR-PERF-7): the narrated skip went unestimated for want of a call.
+            fields["degradation"] = [*fields.get("degradation", []), TIME_ESTIMATE_SKIPPED]
+            fields["degradation_details"] = [
+                *fields.get("degradation_details", []),
+                DegradationStep(step=TIME_ESTIMATE_SKIPPED, cause="budget"),
+            ]
         if await summary_rebuild.rebuilding(conn, story_id):
             # #232: the summary is rebuilt after a downgrade; the reply read what exists so far.
             fields["degradation"] = [*fields.get("degradation", []), summary_rebuild.REBUILDING]

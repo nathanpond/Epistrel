@@ -69,8 +69,9 @@ def test_c_14__m6(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "| `e09` |" in readme
     assert LIVE_RUN in readme
 
-    # Complement: without the row, the table cannot be published and the suite's row is gone.
-    without = [r for r in GUARANTEES if r.id != ROW]
+    # Complement: without the row (and #714's Lite row for the same purpose), the table cannot
+    # be published and the suite's row is gone.
+    without = [r for r in GUARANTEES if ROW not in r.purposes]
     assert f"{ROW}: a delivered model purpose with no model-dependent row" in tool.problems(without)
     monkeypatch.setattr(evals_check, "GUARANTEE", {r.id: r for r in without})
     monkeypatch.setattr(evals_check, "GUARANTEES", tuple(without))

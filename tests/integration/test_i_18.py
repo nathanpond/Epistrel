@@ -1416,3 +1416,73 @@ async def test_i_18__m7_skips(stub_settings: Settings, engine: AsyncEngine) -> N
         await turn("Wait for her.", "Twenty minutes later she arrives.")
         assert _estimations(stub) == 0
         assert (await sources())[-1][0] in ("declared_skip", "pacing")
+
+
+@pytest.mark.part("M7", "FR-CLOCK-7,8; FR-LITE-5,7")
+async def test_i_18__m7_skip_replay(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#714 (#632's replay and regenerate clauses, NFR-PERF-7): (a) a refold of the story's
+    projections (the replay) reproduces an estimated Lite skip's advance with no
+    ``time_estimation`` call; (b) regenerating the turn with a reply that narrates no skip
+    recomputes the advance from the new reply (pacing only, the skip's advance gone from the
+    turn); (c) with no estimation call left in the turn's budget the skip is not applied and
+    the respond's ``degradation`` lists ``time_estimate_skipped`` (cause ``budget``), as the
+    stored turn report does."""
+    from epistrel.core.projections.fold import rebuild
+    from epistrel.orchestrator.lite.context import TIME_ESTIMATE_SKIPPED
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, overrides=LITE_FORMS)
+        await clock_support.anchor_at(engine, story, 19 * 60 + 10)
+        actor = ids[PLAYER]
+        stub.when("", "Sure, I love that film.", purpose="generation")
+        quiet = await played(client, story, body(actor, "Shall we put on a movie?"))
+        start = quiet["clock"]["after"]["offset"]
+        stub.reset()
+        stub.when("", MOVIE, purpose="generation")
+        stub.when("", _estimate(90), purpose="time_estimation")
+        watched = await played(client, story, body(actor, "Let's watch it."))
+        assert _estimations(stub) == 1
+        assert watched["clock"]["after"]["offset"] == start + 90
+
+        # (a) Replay: the fold reproduces the advance; no estimator is called.
+        stub.reset()
+        clock_before = _ok(await client.get(f"/stories/{story}/clock", headers=READ))
+        await rebuild(engine, story)
+        assert _estimations(stub) == 0
+        assert _ok(await client.get(f"/stories/{story}/clock", headers=READ)) == clock_before
+
+        # (b) Regenerate with a reply narrating no skip: pacing only, recomputed.
+        stub.reset()
+        stub.when("", "They talk about the film instead.", purpose="generation")
+        again = _ok(await client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE))
+        assert _estimations(stub) == 0
+        paced = again["clock"]["after"]["offset"] - start
+        assert 0 <= paced < 90
+
+        # (c) No call left: unapplied, and the degradation says so.
+        from epistrel.orchestrator.budget import TIME_ESTIMATION, TurnBudget
+
+        real = TurnBudget.try_optional
+
+        def no_estimate(self: TurnBudget, kind: str, cost: int) -> bool:
+            return False if kind == TIME_ESTIMATION else real(self, kind, cost)
+
+        monkeypatch.setattr(TurnBudget, "try_optional", no_estimate)
+        stub.reset()
+        stub.when("", MOVIE, purpose="generation")
+        starved = await played(client, story, body(actor, "Put it back on."))
+        assert _estimations(stub) == 0
+        assert TIME_ESTIMATE_SKIPPED in starved["degradation"]
+        assert {"step": TIME_ESTIMATE_SKIPPED, "cause": "budget"} in starved["degradation_details"]
+        assert starved["clock"]["after"]["offset"] - again["clock"]["after"]["offset"] < 90
+        (report,) = await rows(
+            engine,
+            "SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "ORDER BY narrative_turn DESC, turn_variant DESC LIMIT 1",
+            s=story,
+        )
+        assert TIME_ESTIMATE_SKIPPED in report.turn_report["degradation"]
+        assert report.turn_report["clock"]["skips_refused"] == [{"reason": "unestimated"}]

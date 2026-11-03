@@ -309,8 +309,19 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "NFR-QUAL-9",
         on="clock",
         purposes=("time_estimation",),
-        note="Under `lite` no time skip is estimated: the prompt-only clock advances by "
-        "pacing only.",
+        note="Under `lite`, see `lite_time_estimation`.",
+    ),
+    _row(
+        "lite_time_estimation",
+        "Lite time estimation",
+        M,
+        "NFR-QUAL-9",
+        needs=(Needs("pipeline", "lite", only=True), Needs("clock", "prompt_only", only=True)),
+        purposes=("time_estimation",),
+        note="With the prompt-only clock, a narrated skip with no stated amount is estimated by "
+        "at most one call per turn (FR-LITE-7) and bounded by FR-CLOCK-8's rules; a refused or "
+        "unestimated skip is not applied (Lite has no repair) and the clock moves by pacing "
+        "only. Due events never stop a Lite skip (FR-CLOCK-9 is structured-only).",
     ),
     _row(
         "entailment_fallback",

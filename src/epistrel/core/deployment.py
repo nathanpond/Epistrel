@@ -182,6 +182,7 @@ class SettingsPatch(BaseModel):
     rewrite_stale_retries: StrictInt | None = None
     directive_steer_ttl_minutes: StrictInt | None = None
     lite_author_facts_max: StrictInt | None = None
+    bundle_export_ttl_hours: StrictInt | None = None
     certification_canary_enabled: StrictBool | None = None
     certification_canary_interval_s: StrictInt | None = None
     certification_canary_sample_size: StrictInt | None = None

@@ -286,7 +286,7 @@ async def import_story(
         name = (
             "events"
             if path == "events.jsonl"
-            else path.removeprefix("records/").removesuffix(".jsonl")
+            else path.removeprefix("records/").removeprefix("catalog/").removesuffix(".jsonl")
         )
         table = metadata.tables.get(name)
         if table is None or name in NEVER or name in REBUILD:

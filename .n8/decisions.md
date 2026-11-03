@@ -11803,3 +11803,35 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   - **The X-01 M7 part** (`test_x_01__m7_prune`, soak, `EPISTREL_SOAK_PRUNE_CYCLES`, default 400, weekly) checks linear active turns and storage under a one-day policy. It reuses X-01's fit and bound.
   - **The never-suggests check** is `test_s_prune__never_suggests`: 50 dormant chains and a ten-year-old tail.
   **Issue:** #703
+
+### #704 — story export follow-ups
+
+- **Decision (contents):**
+  - **Catalog.** `CATALOG = {character_snapshots}` is written to `catalog/<table>.jsonl`, and the importer strips `catalog/` as it strips `records/`.
+  - **Media.** The assets the story's rows name (ULIDs in `characters.images`, `character_snapshots.content` and `stories.scenario_snapshot`), with their posters, become `media.jsonl` lines and `media/<sha256>` members. A missing blob fails the export: `export_failed`, `media_missing`, no file.
+  - **Manifest.** It gains `config_revision`, `content_rating {id, name, version_id, version}`, `engine_profile {id, name, version, settings}` and `counts.media`. The profile's fingerprint is not included: it needs the runtime facts of a live configuration.
+  - **Order.** Members follow the planned order.
+  - **Columns.** `COLUMNS_NOT_EXPORTED` drops `memories.embedding`, `embedding_model_version` and the generated `search`.
+  **Issue:** #704
+- **Decision (schema):** `core/bundles/format.py` builds the line schemas: `StoryBundleManifest`, `StoryBundleEvent`, `StoryBundleMedia` and `StoryBundleRecord_<table>` from table metadata. `_extra_components` adds them to the OpenAPI components.
+  - **Validation.** `validate_line` uses a small checker for the subset of JSON Schema these schemas use, instead of adding `jsonschema`, which is not a dependency.
+  - **Payloads.** The export validates every event payload against #45's registry (`payload_invalid`). Full line validation is asserted in the tests, and #705's import will enforce it.
+  **Why:** a new runtime dependency is a plan change. The subset covers every keyword the schemas emit.
+  **Issue:** #704
+- **Decision (erasure race):** the snapshot reads the ledger entries that touch the story: story scope, and catalog scope for a subject in its `subject_references`. After the snapshot (pause point `bundles.export.after_snapshot`), a changed set raises `ErasedMeanwhile`, and the export restarts up to `EXPORT_ATTEMPTS = 3`, counted on `attempts`. After that it fails `export_failed`, `erasure_race`.
+  **Issue:** #704
+- **Decision (lifecycle):**
+  - **TTL.** `RetentionSettings.bundle_export_ttl_hours` (default 24, 1 to 720, in `SettingsPatch`) sets `expires_at`.
+  - **Expiry.** `retention_sweep` calls `expire_bundles`, which deletes the file and marks the export `expired`.
+  - **Erasure.** A `story_exports` erasure target expires a story's stored exports with error `erased` and deletes the files. A catalog-scope erasure has no story and expires none.
+  - **Boundary.** The `IN_SCOPE` item is added, and OPERATIONS.md follows.
+  - **Story delete.** It calls `delete_story_bundles` before its table deletes.
+  **Issue:** #704
+- **Decision (secrets):**
+  - **What the scan covers.** The service credentials, the config key, every `EPISTREL_PROVIDER_SECRET_*` value (the provider credentials' only store) and the decrypted stored model API keys.
+  - **When the model keys are read.** The Engine reads them at each run (`Engine._model_secrets`, passed as the handler's `source`). Blobs are read through `Engine._blob_bytes`.
+  **Issue:** #704
+- **Decision (tests):** `tests/bundle_support.py` provides `build_rich_story` (a truncated tail and a character image), smaller than the planned I-10 fixture; #705 extends it for import.
+  - **I-10 M7.** `export_rich` (`FR-STORE-7; FR-ADMIN-4`), `export_erasure_race` (`FR-ADMIN-9`), `export_lifecycle` (`FR-STORE-30`) and `export_snapshot` (20 concurrent turns).
+  - **C-09 M7.** `test_c_09__m7_bundle`.
+  **Issue:** #704

@@ -19,6 +19,7 @@ from epistrel.core.epistemic.roles import DEFAULT_ROLE
 from epistrel.core.errors import StoryArchived, StoryBusy
 from epistrel.core.events import Operation
 from epistrel.core.stories import STORY_TABLES, StorySpec
+from tests.conftest import REPO_ROOT
 from tests.event_support import STORY_SETUP_KIND, play_turn, rows
 from tests.story_support import READ, WRITE, count, create, rest, story_body
 
@@ -588,3 +589,237 @@ async def test_i_10__m7_import_bad_bundles(
         assert await count(engine, "SELECT count(*) FROM stories") == stories_before
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+
+# -- M7: export follow-ups (#704) -----------------------------------------------------------------
+
+
+async def _export(client: Any, engine: AsyncEngine, story: str, tmp_path: Any) -> str:
+    from epistrel.core import bundles
+    from tests import bundle_support as bs
+
+    started = await client.post(f"/admin/stories/{story}/export", headers=WRITE)
+    assert started.status_code == 202, started.text
+    job = str(started.json()["job_id"])
+    await bundles.run_export(engine, job, tmp_path, blobs=bs.read_blob)
+    return job
+
+
+@pytest.mark.part("M7", "FR-STORE-7; FR-ADMIN-4")
+async def test_i_10__m7_export_rich(settings: Settings, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#704: the rich story's archive: members in the format's order (the manifest, the story,
+    ``media.jsonl``, ``catalog/``, operations, events, the other records, ``media/<sha256>``);
+    the manifest's ``content_rating`` and ``engine_profile`` blocks and ``counts.media``; the
+    character's image as one ``media.jsonl`` line and its bytes; every line of every member
+    valid against the bundle JSON Schema published in ``docs/openapi.json``; the discarded
+    tail's operations present with their membership. Complement: no memory line carries an
+    ``embedding``, and a missing blob fails the export ``media_missing`` with no file."""
+    from epistrel.core import bundles
+    from epistrel.core.bundles.format import bundle_schemas, validate_line
+    from tests import bundle_support as bs
+
+    async with rest(settings, engine) as client:
+        rich = await bs.build_rich_story(client, engine)
+        job = await _export(client, engine, rich.story_id, tmp_path)
+        got = await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)
+        assert got.status_code == 200, got.text
+        opened = bs.open_bundle(got.content)
+        names = list(opened.members)
+        assert names[:3] == [
+            "records/story.json",
+            "media.jsonl",
+            "catalog/character_snapshots.jsonl",
+        ]
+        assert names.index("records/operations.jsonl") < names.index("events.jsonl")
+        assert names[-1] == f"media/{bs.IMAGE_SHA}"
+        assert opened.members[f"media/{bs.IMAGE_SHA}"] == bs.IMAGE
+        (media,) = opened.lines("media.jsonl")
+        assert (media["id"], media["sha256"]) == (rich.media_id, bs.IMAGE_SHA)
+        manifest = opened.manifest
+        assert manifest["counts"]["media"] == 1
+        assert manifest["content_rating"]["id"]
+        assert manifest["engine_profile"]["version"] >= 1
+        validate_line("manifest.json", manifest)
+        for path in names:
+            if path.startswith("media/"):
+                continue
+            for line in opened.lines(path):
+                validate_line(path, line)
+        published = json.loads((REPO_ROOT / "docs" / "openapi.json").read_text())
+        assert set(bundle_schemas()) <= set(published["components"]["schemas"])
+        ops = {o["operation_id"]: o["membership"] for o in opened.lines("records/operations.jsonl")}
+        assert {ops[o] for o in rich.discarded} == {"discarded"}
+        for memory in opened.lines("records/memories.jsonl"):
+            assert "embedding" not in memory
+
+        bs.BLOBS.pop(bs.IMAGE_SHA)
+        try:
+            missing = await client.post(f"/admin/stories/{rich.story_id}/export", headers=WRITE)
+            failing = str(missing.json()["job_id"])
+            await bundles.run_export(engine, failing, tmp_path, blobs=bs.read_blob)
+            shown = (await client.get(f"/admin/stories/exports/{failing}", headers=READ)).json()
+            assert shown["status"] == "failed"
+            assert shown["error"]["reason"] == "media_missing"
+            assert not (tmp_path / f"{failing}.epistrel.tgz").exists()
+        finally:
+            bs.BLOBS[bs.IMAGE_SHA] = bs.IMAGE
+
+
+@pytest.mark.part("M7", "FR-ADMIN-9")
+async def test_i_10__m7_export_erasure_race(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#704: an erasure of the story lands while its export is held after the snapshot: the
+    export restarts and the finished archive carries the new ledger entry; ``attempts`` is 2.
+    Complement: an erasure in another story does not restart it."""
+    import asyncio
+
+    from sqlalchemy import text
+
+    from epistrel.core import bundles
+    from epistrel.core.ids import new_ulid
+    from epistrel.testing import pauses
+    from tests import bundle_support as bs
+
+    async def ledger(conn: AsyncConnection, story_ref: str) -> str:
+        entry = new_ulid()
+        await conn.execute(
+            text(
+                "INSERT INTO erasure_ledger (id, subject_kind, subject_id, scope, story_ref, "
+                "principal, counts) VALUES (:i, 'character', :sub, 'story', :s, 'p-op', "
+                "'{}'::jsonb)"
+            ),
+            {"i": entry, "sub": new_ulid(), "s": story_ref},
+        )
+        return entry
+
+    async with rest(settings, engine) as client:
+        rich = await bs.build_rich_story(client, engine)
+        other = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        for target, restarts in ((other, False), (rich.story_id, True)):
+            started = await client.post(f"/admin/stories/{rich.story_id}/export", headers=WRITE)
+            job = str(started.json()["job_id"])
+            with pauses.held(pauses.BUNDLE_EXPORT_AFTER_SNAPSHOT) as hold:
+                task = asyncio.ensure_future(
+                    bundles.run_export(engine, job, tmp_path, blobs=bs.read_blob)
+                )
+                await hold.arrived()
+                async with engine.begin() as conn:
+                    entry = await ledger(conn, target)
+            await task
+            shown = (await client.get(f"/admin/stories/exports/{job}", headers=READ)).json()
+            assert shown["status"] == "ready", shown
+            (attempts,) = await rows(
+                engine, "SELECT attempts FROM bundle_jobs WHERE id = :j", j=job
+            )
+            assert attempts.attempts == (2 if restarts else 1)
+            got = await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)
+            opened = bs.open_bundle(got.content)
+            carried = {e["id"] for e in opened.lines("records/erasure_ledger.jsonl")}
+            assert (entry in carried) is restarts
+
+
+@pytest.mark.part("M7", "FR-STORE-30")
+async def test_i_10__m7_export_lifecycle(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#704: an archive past ``bundle_export_ttl_hours`` is expired by the retention sweep
+    (410 ``export_expired``, the file gone); a story-scope erasure expires a stored archive
+    (error ``erased``, the file gone) and leaves another story's; deleting a story deletes its
+    exports and their files."""
+    from datetime import timedelta
+    from typing import cast
+
+    from epistrel.core import bundles, clock
+    from epistrel.core.erasure.erase import ERASURE_TARGETS
+    from tests import bundle_support as bs
+
+    async with rest(settings, engine) as client:
+        rich = await bs.build_rich_story(client, engine)
+        other = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        aged = await _export(client, engine, rich.story_id, tmp_path)
+        (path,) = await rows(engine, "SELECT path FROM bundle_jobs WHERE id = :j", j=aged)
+        assert await _exists(path.path)
+        assert await bundles.expire_bundles(engine, clock.now() + timedelta(hours=1)) == 0
+        assert await bundles.expire_bundles(engine, clock.now() + timedelta(hours=25)) >= 1
+        gone = await client.get(f"/admin/stories/exports/{aged}/bundle", headers=READ)
+        assert gone.status_code == 410, gone.text
+        assert not await _exists(path.path)
+
+        stored = await _export(client, engine, rich.story_id, tmp_path)
+        kept = await _export(client, engine, other, tmp_path)
+        (target,) = [t for t in ERASURE_TARGETS if t.name == "story_exports"]
+        async with engine.begin() as conn:
+            assert (
+                await target.erase(
+                    conn, story_id=rich.story_id, redactor=cast(Any, None), write=True
+                )
+                == 1
+            )
+        shown = (await client.get(f"/admin/stories/exports/{stored}", headers=READ)).json()
+        assert (shown["status"], shown["error"]) == ("expired", {"code": "erased"})
+        assert (await client.get(f"/admin/stories/exports/{kept}", headers=READ)).json()[
+            "status"
+        ] == "ready"
+
+        (kept_path,) = await rows(engine, "SELECT path FROM bundle_jobs WHERE id = :j", j=kept)
+        deleted = await client.delete(f"/stories/{other}", headers=WRITE)
+        assert deleted.status_code in (200, 204), deleted.text
+        assert await count(engine, "SELECT count(*) FROM bundle_jobs WHERE id = :j", j=kept) == 0
+        assert not await _exists(kept_path.path)
+
+
+@pytest.mark.part("M7", "FR-STORE-7; FR-ADMIN-4")
+async def test_i_10__m7_export_snapshot(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#704 (FR-CONC-10): an export runs while 20 turns commit on the story: the archive is the
+    story at exactly its ``exported_revision``, never a mix: every committed operation at or
+    below the revision is in it with all its events, and none above it."""
+    import asyncio
+
+    from epistrel.core import bundles
+    from tests import bundle_support as bs
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "First.", principal="p-export")
+        started = await client.post(f"/admin/stories/{story}/export", headers=WRITE)
+        job = str(started.json()["job_id"])
+
+        async def turns() -> None:
+            for n in range(20):
+                await play_turn(engine, story, f"Busy {n}.", principal="p-export")
+
+        await asyncio.gather(turns(), bundles.run_export(engine, job, tmp_path))
+        got = await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)
+        opened = bs.open_bundle(got.content)
+        revision = opened.manifest["exported_revision"]
+        exported = {o["operation_id"] for o in opened.lines("records/operations.jsonl")}
+        stored = await rows(
+            engine,
+            "SELECT operation_id, timeline_revision FROM operations WHERE story_id = :s "
+            "AND status = 'committed'",
+            s=story,
+        )
+        at_or_below = {
+            str(r.operation_id)
+            for r in stored
+            if r.timeline_revision is not None and r.timeline_revision <= revision
+        }
+        above = {
+            str(r.operation_id)
+            for r in stored
+            if r.timeline_revision is not None and r.timeline_revision > revision
+        }
+        assert at_or_below <= exported
+        assert not (above & exported)
+        events = {e["operation_id"] for e in opened.lines("events.jsonl")}
+        assert events <= exported
+
+
+async def _exists(path: str) -> bool:
+    import asyncio
+    import os
+
+    return await asyncio.to_thread(os.path.exists, path)

@@ -82,7 +82,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import clock, offboarding
+from epistrel.core import bundles, clock, offboarding
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import EventCategory, OperationStatus
 from epistrel.core.erasure.index import drop_many
@@ -333,6 +333,8 @@ async def sweep_retention(db: AsyncEngine, now: datetime | None = None) -> dict[
         "extraction_shadow": await _chunked(
             db, extraction_shadow, _expired_shadow_samples(moment, settings), audit=False
         ),
+        # #704: story exports past ``bundle_export_ttl_hours``: the file deleted, ``expired``.
+        "bundle_exports": await bundles.expire_bundles(db, moment),
     }
 
 

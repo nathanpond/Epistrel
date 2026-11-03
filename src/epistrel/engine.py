@@ -15,6 +15,7 @@ import functools
 import hashlib
 import inspect
 import logging
+import os
 import time
 import types
 import typing
@@ -828,13 +829,23 @@ class Engine:
         prune_policy_job.bind(core_prune.run_policy)  # #248
         story_export_job.configure(  # #249
             directory=self.settings.bundle_dir,
-            secrets=tuple(
-                s.get_secret_value()
-                for s in (
-                    *self.settings.service_credentials,
-                    *([self.settings.config_key] if self.settings.config_key else []),
-                )
+            secrets=(
+                *(
+                    s.get_secret_value()
+                    for s in (
+                        *self.settings.service_credentials,
+                        *([self.settings.config_key] if self.settings.config_key else []),
+                    )
+                ),
+                # #704: provider credentials (``{secret.<NAME>}``'s environment).
+                *(
+                    v
+                    for k, v in os.environ.items()
+                    if k.startswith("EPISTREL_PROVIDER_SECRET_") and v
+                ),
             ),
+            source=self._model_secrets,
+            blobs=self._blob_bytes,
         )
         backfill_job.configure(
             concurrency=self.settings.backfill_concurrency,
@@ -3088,6 +3099,37 @@ class Engine:
             result = await self._regenerate(ctx, story_id, replay, principal)
         await directed.record(self.db, story_id, prepared, principal=principal)
         return result
+
+    async def _model_secrets(self, db: AsyncEngine) -> tuple[str, ...]:
+        """#704: the stored model API keys, decrypted (the export's secret scan)."""
+        from epistrel.core.tables import model_config
+
+        found: list[str] = []
+        async with db.connect() as conn:
+            rows = await conn.execute(
+                select(model_config.c.purpose, model_config.c.api_key_ciphertext).where(
+                    model_config.c.api_key_ciphertext.is_not(None)
+                )
+            )
+            for row in rows:
+                try:
+                    found.append(
+                        self.models.keybox.decrypt(
+                            str(row.api_key_ciphertext), purpose=str(row.purpose)
+                        ).get_secret_value()
+                    )
+                except Exception:  # an undecryptable key is not scannable: skip it
+                    logger.debug("export secret scan skipped an undecryptable key")
+                    continue
+        return tuple(found)
+
+    def _blob_bytes(self, sha256: str) -> bytes:
+        """#704: a media blob's bytes, for an export's ``media/<sha256>`` member."""
+        handle = self.media.open(sha256)
+        try:
+            return handle.read()
+        finally:
+            handle.close()
 
     def _held_run(
         self,

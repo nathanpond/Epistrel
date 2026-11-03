@@ -1337,6 +1337,10 @@ def _extra_components() -> dict[str, Any]:
         ref_template=REF,
     )
     components: dict[str, Any] = schema.get("$defs", {})
+    from epistrel.core.bundles.format import bundle_schemas
+
+    # #704 (FR-STORE-7): the story bundle's line schemas.
+    components.update(bundle_schemas())
     return components
 
 

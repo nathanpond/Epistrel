@@ -96,6 +96,7 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata
 - message feedback and its history
 - feedback exports not yet downloaded (the subject is redacted in their cases)
+- story exports not yet expired (a story-scope erasure expires and deletes them)
 - story snapshots (scenario, characters, persona) and deferred genesis items
 - the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)
 - the subject-reference index

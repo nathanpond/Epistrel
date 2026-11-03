@@ -21,8 +21,33 @@ every member is scanned for the deployment's secrets (service credentials and th
 raw, base64 and hex): a hit fails the job (``secret_detected``) and leaves no file.
 
 Projections, indexes, vectors, deployment-level records, in-flight work and secrets are never in
-a bundle. Media, catalog snapshots outside the story's own tables, expiry and the erasure target
-are not built yet (#704).
+a bundle.
+
+#704 completes the format:
+
+- **Catalog and media.** The catalog snapshots the story holds (``CATALOG``:
+  ``character_snapshots``) go to ``catalog/<table>.jsonl``; every media asset the story's rows
+  reference (``characters.images``, the snapshots, ``stories.scenario_snapshot``: the ids
+  #105's ``MEDIA_REFERENCE_SOURCES`` names for a story, a video's poster with it) is one
+  ``media.jsonl`` line and one ``media/<sha256>`` member (``blobs`` reads the bytes; a missing
+  blob fails the export ``media_missing``).
+- **Manifest.** It gains ``config_revision``, ``content_rating {id, name, version_id,
+  version}`` and ``engine_profile {id, name, version, settings}``, and ``counts.media``.
+- **Order.** ``manifest.json``, ``records/story.json``, ``media.jsonl``, ``catalog/*``,
+  ``records/operations.jsonl``, ``events.jsonl``, the other ``records/*``, then
+  ``media/<sha256>`` by checksum.
+- **Validation.** Every event payload is validated against #45's registry
+  (``payload_invalid``); every line validates against the bundle JSON Schema
+  (``bundle_schemas``, published in the OpenAPI components).
+- **Erasure race.** An erasure ledger entry for the story (or catalog-scope, for a subject
+  the story references) committed while the export ran discards the output and restarts it, at
+  most ``EXPORT_ATTEMPTS`` times (``export_failed``, ``erasure_race``).
+- **Lifecycle.** An archive expires after ``bundle_export_ttl_hours``; ``expire_bundles``
+  (``retention_sweep``) deletes the file and sets ``expired``; a story-scope erasure expires the
+  story's stored archives (``StoryExportsTarget``, error ``erased``); deleting a story deletes
+  its exports and files (``delete_story_bundles``).
+- **Secrets.** The scan covers the model API keys and provider credentials the Engine passes,
+  besides the service credentials and the config key.
 """
 
 from __future__ import annotations
@@ -32,8 +57,9 @@ import base64
 import hashlib
 import io
 import json
+import re
 import tarfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -51,6 +77,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.schema import metadata
 from epistrel.core.tables import bundle_jobs, events, operations, stories
 from epistrel.observability.logging import get_logger
+from epistrel.testing import pauses
 
 log = get_logger(__name__)
 
@@ -99,6 +126,8 @@ NEVER: frozenset[str] = frozenset(
         "bundle_jobs",
     }
 )
+CATALOG: frozenset[str] = frozenset({"character_snapshots"})
+"""#704: the catalog snapshots a story holds, written to ``catalog/<table>.jsonl``."""
 SPECIAL: frozenset[str] = frozenset({"stories", "operations", "events"})
 """Written by the export itself (``records/story.json``, ``records/operations.jsonl``,
 ``events.jsonl``)."""
@@ -127,8 +156,27 @@ def exported_tables() -> list[Table]:
     return [
         t
         for t in story_tables()
-        if t.name not in REBUILD and t.name not in NEVER and t.name not in SPECIAL
+        if t.name not in REBUILD
+        and t.name not in NEVER
+        and t.name not in SPECIAL
+        and t.name not in CATALOG
     ]
+
+
+def catalog_tables() -> list[Table]:
+    """#704: the ``CATALOG`` tables written to ``catalog/``, by name."""
+    return [t for t in story_tables() if t.name in CATALOG]
+
+
+COLUMNS_NOT_EXPORTED: dict[str, frozenset[str]] = {
+    "memories": frozenset({"embedding", "embedding_model_version", "search"}),
+}
+"""#704: vectors and generated columns never travel (an import re-embeds and regenerates)."""
+
+
+def _exportable(table: Table, row: Any) -> dict[str, Any]:
+    dropped = COLUMNS_NOT_EXPORTED.get(table.name, frozenset())
+    return {k: v for k, v in dict(row._mapping).items() if k not in dropped}
 
 
 class ExportJob(BaseModel):
@@ -191,11 +239,11 @@ def canonical(record: Any) -> bytes:
     ).encode()
 
 
-def _lines(rows: Iterable[Any]) -> tuple[bytes, int]:
+def _lines(rows: Iterable[Any], table: Table | None = None) -> tuple[bytes, int]:
     body = bytearray()
     count = 0
     for row in rows:
-        body += canonical(dict(row._mapping))
+        body += canonical(_exportable(table, row) if table is not None else dict(row._mapping))
         count += 1
     return bytes(body), count
 
@@ -236,39 +284,184 @@ def archive(members: Sequence[tuple[str, bytes]]) -> bytes:
 # -- the export -----------------------------------------------------------------------------------
 
 
-async def _snapshot(
-    conn: AsyncConnection, story_id: str
-) -> tuple[int, list[tuple[str, bytes]], dict[str, int]]:
+ULID_TEXT = re.compile(r"\b[0-9A-HJKMNP-TV-Z]{26}\b")
+
+
+def _ulids(value: Any) -> set[str]:
+    """Every ULID-shaped string inside a JSON value."""
+    found: set[str] = set()
+    if isinstance(value, str):
+        found.update(ULID_TEXT.findall(value))
+    elif isinstance(value, dict):
+        for item in value.values():
+            found |= _ulids(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            found |= _ulids(item)
+    return found
+
+
+@dataclass
+class _Snapshot:
+    revision: int
+    story: bytes
+    media_lines: list[dict[str, Any]]
+    catalog: list[tuple[str, bytes]]
+    operations: bytes
+    events: bytes
+    records: list[tuple[str, bytes]]
+    counts: dict[str, int]
+    extra: dict[str, Any]
+    erasures: frozenset[str]
+
+    def members(self) -> list[tuple[str, bytes]]:
+        media = b"".join(canonical(line) for line in self.media_lines)
+        return [
+            ("records/story.json", self.story),
+            ("media.jsonl", media),
+            *self.catalog,
+            ("records/operations.jsonl", self.operations),
+            ("events.jsonl", self.events),
+            *self.records,
+        ]
+
+
+MEDIA_FIELDS = (
+    "id",
+    "checksum",
+    "kind",
+    "mime_type",
+    "size",
+    "width",
+    "height",
+    "duration_ms",
+    "alt_text",
+    "caption",
+    "generation_metadata",
+    "source",
+    "depicted_subjects",
+    "content_rating_version_id",
+    "poster_media_id",
+)
+
+
+async def _media(conn: AsyncConnection, story_row: Any, story_id: str) -> list[dict[str, Any]]:
+    """#704: the media assets the story's rows reference (its characters' images, its catalog
+    snapshots, its scenario snapshot) and their posters, as ``media.jsonl`` lines."""
+    from epistrel.core.tables import characters, media_assets
+
+    wanted = _ulids(story_row.scenario_snapshot)
+    for (images,) in await conn.execute(
+        select(characters.c.images).where(characters.c.story_id == story_id)
+    ):
+        wanted |= _ulids(images)
+    snapshots = metadata.tables.get("character_snapshots")
+    if snapshots is not None:
+        for (content,) in await conn.execute(
+            select(snapshots.c.content).where(snapshots.c.story_id == story_id)
+        ):
+            wanted |= _ulids(content)
+    if not wanted:
+        return []
+    m = media_assets.c
+    rows = list(await conn.execute(select(media_assets).where(m.id.in_(sorted(wanted)))))
+    posters = {str(r.poster_media_id) for r in rows if r.poster_media_id is not None}
+    known = {str(r.id) for r in rows}
+    if posters - known:
+        rows += list(
+            await conn.execute(select(media_assets).where(m.id.in_(sorted(posters - known))))
+        )
+    lines = []
+    for row in sorted(rows, key=lambda r: str(r.id)):
+        mapping = dict(row._mapping)
+        line = {f: mapping.get(f) for f in MEDIA_FIELDS}
+        line["sha256"] = line.pop("checksum")
+        lines.append(line)
+    return lines
+
+
+async def _story_erasures(conn: AsyncConnection, story_id: str) -> frozenset[str]:
+    """#704: the erasure ledger entries that touch the story: its own (story scope) and the
+    catalog-scope ones for a subject it references."""
+    ledger = metadata.tables.get("erasure_ledger")
+    if ledger is None:
+        return frozenset()
+    found = {
+        str(i)
+        for (i,) in await conn.execute(select(ledger.c.id).where(ledger.c.story_ref == story_id))
+    }
+    references = metadata.tables.get("subject_references")
+    if references is not None and "subject_id" in ledger.c:
+        found |= {
+            str(i)
+            for (i,) in await conn.execute(
+                select(ledger.c.id).where(
+                    ledger.c.story_ref.is_(None),
+                    ledger.c.subject_id.in_(
+                        select(references.c.subject_id).where(references.c.story_id == story_id)
+                    ),
+                )
+            )
+        }
+    return frozenset(found)
+
+
+def _validated_events(rows: Iterable[Any]) -> tuple[bytes, int]:
+    """#704: ``events.jsonl``, each payload validated against #45's registry
+    (``PayloadInvalid`` names the first that fails)."""
+    from epistrel.core.events.registry import validate
+
+    body = bytearray()
+    count = 0
+    for row in rows:
+        mapping = dict(row._mapping)
+        try:
+            validate(str(mapping["type"]), dict(mapping["payload"] or {}))
+        except Exception as exc:  # any validation error fails the export with the event's id
+            raise PayloadInvalid(str(mapping["id"])) from exc
+        body += canonical(mapping)
+        count += 1
+    return bytes(body), count
+
+
+async def _snapshot(conn: AsyncConnection, story_id: str) -> _Snapshot:
     story = (await conn.execute(select(stories).where(stories.c.id == story_id))).one_or_none()
     if story is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
     revision = int(story.timeline_revision)
-    members: list[tuple[str, bytes]] = [("records/story.json", canonical(dict(story._mapping)))]
     counts: dict[str, int] = {}
+    erasures = await _story_erasures(conn, story_id)
     o = operations.c
     committed = o.status != OperationStatus.IN_FLIGHT.value
-    data, counts["operations"] = _lines(
+    ops, counts["operations"] = _lines(
         await conn.execute(
             select(operations).where(o.story_id == story_id, committed).order_by(o.operation_id)
         )
     )
-    members.append(("records/operations.jsonl", data))
     kept = select(o.operation_id).where(o.story_id == story_id, committed)
-    data, counts["events"] = _lines(
+    found_events, counts["events"] = _validated_events(
         await conn.execute(
             select(events)
             .where(events.c.story_id == story_id, events.c.operation_id.in_(kept))
             .order_by(events.c.seq)
         )
     )
-    members.append(("events.jsonl", data))
+    catalog: list[tuple[str, bytes]] = []
+    for table in catalog_tables():
+        order = [c for c in table.primary_key.columns] or list(table.c)[:1]
+        data, counts[table.name] = _lines(
+            await conn.execute(select(table).where(table.c.story_id == story_id).order_by(*order)),
+            table,
+        )
+        catalog.append((f"catalog/{table.name}.jsonl", data))
+    records: list[tuple[str, bytes]] = []
     for table in exported_tables():
         key = table.c.story_id
         order = [c for c in table.primary_key.columns] or list(table.c)[:1]
         data, counts[table.name] = _lines(
-            await conn.execute(select(table).where(key == story_id).order_by(*order))
+            await conn.execute(select(table).where(key == story_id).order_by(*order)), table
         )
-        members.append((f"records/{table.name}.jsonl", data))
+        records.append((f"records/{table.name}.jsonl", data))
     ledger = metadata.tables.get("erasure_ledger")
     if ledger is not None:
         data, counts["erasure_ledger"] = _lines(
@@ -276,8 +469,81 @@ async def _snapshot(
                 select(ledger).where(ledger.c.story_ref == story_id).order_by(ledger.c.id)
             )
         )
-        members.append(("records/erasure_ledger.jsonl", data))
-    return revision, members, counts
+        records.append(("records/erasure_ledger.jsonl", data))
+    media_lines = await _media(conn, story, story_id)
+    counts["media"] = len(media_lines)
+    return _Snapshot(
+        revision=revision,
+        story=canonical(dict(story._mapping)),
+        media_lines=media_lines,
+        catalog=catalog,
+        operations=ops,
+        events=found_events,
+        records=records,
+        counts=counts,
+        extra=await _manifest_extra(conn, story),
+        erasures=erasures,
+    )
+
+
+async def _manifest_extra(conn: AsyncConnection, story: Any) -> dict[str, Any]:
+    """#704: the manifest's ``config_revision``, ``content_rating`` and ``engine_profile``."""
+    from epistrel.core.tables import (
+        content_rating_versions,
+        content_ratings,
+        engine_profile_versions,
+        engine_profiles,
+    )
+
+    rating = (
+        await conn.execute(
+            select(
+                content_ratings.c.id,
+                content_ratings.c.name,
+                content_rating_versions.c.version_id,
+                content_rating_versions.c.version,
+            )
+            .join(
+                content_rating_versions,
+                content_rating_versions.c.version_id == content_ratings.c.current_version_id,
+            )
+            .where(content_ratings.c.id == story.content_rating_id)
+        )
+    ).one_or_none()
+    profile = None
+    if story.engine_profile_id is not None:
+        runs_on = story.engine_profile_version_pin
+        p, v = engine_profiles.c, engine_profile_versions.c
+        if runs_on is None:
+            runs_on = await conn.scalar(
+                select(p.current_version).where(p.id == story.engine_profile_id)
+            )
+        found = (
+            await conn.execute(
+                select(p.id, p.name, v.version, v.settings)
+                .join(engine_profile_versions, v.profile_id == p.id)
+                .where(p.id == story.engine_profile_id, v.version == runs_on)
+            )
+        ).one_or_none()
+        if found is not None:
+            profile = {
+                "id": str(found.id),
+                "name": str(found.name),
+                "version": int(found.version),
+                "settings": dict(found.settings or {}),
+            }
+    return {
+        "config_revision": int(getattr(story, "config_revision", 0) or 0),
+        "content_rating": None
+        if rating is None
+        else {
+            "id": str(rating.id),
+            "name": str(rating.name),
+            "version_id": str(rating.version_id),
+            "version": int(rating.version),
+        },
+        "engine_profile": profile,
+    }
 
 
 async def _head(conn: AsyncConnection) -> str:
@@ -294,8 +560,10 @@ def manifest(
     schema_version: str,
     exported_by: str,
     exported_at: datetime,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
+        **(extra or {}),
         "format_version": FORMAT_VERSION,
         "schema_version": schema_version,
         "source_story_id": story_id,
@@ -307,7 +575,7 @@ def manifest(
                 "path": name,
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "size": len(data),
-                "records": data.count(b"\n"),
+                "records": None if name.startswith("media/") else data.count(b"\n"),
             }
             for name, data in members
         ],
@@ -315,29 +583,77 @@ def manifest(
     }
 
 
+BlobReader = Callable[[str], bytes]
+"""#704: reads a media blob's bytes by checksum (``FileNotFoundError`` when missing)."""
+
+
 async def build(
-    db: AsyncEngine, story_id: str, *, exported_by: str, secrets: Sequence[str] = ()
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    exported_by: str,
+    secrets: Sequence[str] = (),
+    blobs: BlobReader | None = None,
 ) -> tuple[bytes, dict[str, Any]]:
     """The archive of ``story_id`` at its current revision, and its manifest (one
-    ``REPEATABLE READ`` snapshot); 404 for an unknown story."""
+    ``REPEATABLE READ`` snapshot); 404 for an unknown story. An erasure that touches the story
+    while it runs raises ``ErasedMeanwhile`` (the caller restarts)."""
     async with db.connect() as conn, conn.begin():
         await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
-        revision, members, counts = await _snapshot(conn, story_id)
+        snap = await _snapshot(conn, story_id)
         schema_version = await _head(conn)
+    await pauses.pause(AFTER_SNAPSHOT)
+    members = snap.members()
+    for line in snap.media_lines:
+        if blobs is None:
+            raise MediaMissing(str(line["id"]))
+        try:
+            data = await asyncio.to_thread(blobs, str(line["sha256"]))
+        except FileNotFoundError:
+            raise MediaMissing(str(line["id"])) from None
+        members.append((f"media/{line['sha256']}", data))
+    by_name = dict(members)
+    media = sorted(n for n in by_name if n.startswith("media/"))
+    ordered_members = [(n, d) for n, d in members if not n.startswith("media/")] + [
+        (n, by_name[n]) for n in media
+    ]
+    async with db.connect() as conn:
+        if await _story_erasures(conn, story_id) != snap.erasures:
+            raise ErasedMeanwhile(story_id)
     found = manifest(
         story_id,
-        revision,
-        members,
-        counts,
+        snap.revision,
+        ordered_members,
+        snap.counts,
         schema_version=schema_version,
         exported_by=exported_by,
         exported_at=clock.now(),
+        extra=snap.extra,
     )
-    ordered = [("manifest.json", canonical(found)), *members]
+    ordered = [("manifest.json", canonical(found)), *ordered_members]
+    await pauses.pause(BEFORE_SCAN)
     leaked = scan(ordered, secrets)
     if leaked is not None:
         raise SecretDetected(leaked)
     return archive(ordered), found
+
+
+AFTER_SNAPSHOT = pauses.BUNDLE_EXPORT_AFTER_SNAPSHOT
+BEFORE_SCAN = pauses.BUNDLE_EXPORT_BEFORE_SCAN
+EXPORT_ATTEMPTS = 3
+"""#704: an export restarted by an erasure race this many times fails ``export_failed``."""
+
+
+class ErasedMeanwhile(Exception):
+    """An erasure touching the story committed while it was exported (the export restarts)."""
+
+
+class MediaMissing(Exception):
+    """A referenced media asset's blob is missing (the export fails ``media_missing``)."""
+
+
+class PayloadInvalid(Exception):
+    """An event's payload fails its registry model (the export fails ``payload_invalid``)."""
 
 
 class SecretDetected(Exception):
@@ -363,7 +679,12 @@ async def start(conn: AsyncConnection, story_id: str, *, principal: str) -> str:
 
 
 async def run_export(
-    db: AsyncEngine, job_id: str, directory: Path, *, secrets: Sequence[str] = ()
+    db: AsyncEngine,
+    job_id: str,
+    directory: Path,
+    *,
+    secrets: Sequence[str] = (),
+    blobs: BlobReader | None = None,
 ) -> dict[str, Any]:
     """The ``story_export`` job (see the module docstring); counts only."""
     async with db.begin() as conn:
@@ -378,9 +699,20 @@ async def run_export(
             .values(status="running", attempts=bundle_jobs.c.attempts + 1)
         )
     try:
-        data, found = await build(
-            db, str(row.story_id), exported_by=str(row.requested_by), secrets=secrets
+        data, found = await _build_retrying(db, job_id, row, secrets=secrets, blobs=blobs)
+    except ErasedMeanwhile:
+        await _fail(db, job_id, {"code": "export_failed", "reason": "erasure_race"})
+        return {"failed": 1}
+    except MediaMissing as exc:
+        await _fail(
+            db, job_id, {"code": "export_failed", "reason": "media_missing", "media_id": str(exc)}
         )
+        return {"failed": 1}
+    except PayloadInvalid as exc:
+        await _fail(
+            db, job_id, {"code": "export_failed", "reason": "payload_invalid", "event_id": str(exc)}
+        )
+        return {"failed": 1}
     except SecretDetected as exc:
         await _fail(db, job_id, {"code": "secret_detected", "member": exc.member})
         log.warning("story export refused: secret detected", job_id=job_id)
@@ -403,11 +735,135 @@ async def run_export(
                 sha256=digest,
                 manifest=found,
                 finished_at=clock.now(),
-                expires_at=clock.now() + TTL,
+                expires_at=clock.now() + await _ttl(db),
             )
         )
     log.info("story exported", job_id=job_id, size=len(data))
     return {"ready": 1, "size": len(data)}
+
+
+async def _ttl(db: AsyncEngine) -> timedelta:
+    """#704: ``bundle_export_ttl_hours``, the deployment's setting."""
+    from epistrel.core.config_changes import read_section
+    from epistrel.core.settings_schema import RetentionSettings
+
+    return timedelta(hours=(await read_section(db, RetentionSettings)).bundle_export_ttl_hours)
+
+
+async def _build_retrying(
+    db: AsyncEngine,
+    job_id: str,
+    row: Any,
+    *,
+    secrets: Sequence[str],
+    blobs: BlobReader | None,
+) -> tuple[bytes, dict[str, Any]]:
+    """``build``, restarted after an erasure race (#704) while attempts remain; each restart
+    is counted on the job's ``attempts``."""
+    attempt = 1
+    while True:
+        try:
+            return await build(
+                db,
+                str(row.story_id),
+                exported_by=str(row.requested_by),
+                secrets=secrets,
+                blobs=blobs,
+            )
+        except ErasedMeanwhile:
+            if attempt >= EXPORT_ATTEMPTS:
+                raise
+            attempt += 1
+            async with db.begin() as conn:
+                await conn.execute(
+                    update(bundle_jobs)
+                    .where(bundle_jobs.c.id == job_id)
+                    .values(attempts=bundle_jobs.c.attempts + 1)
+                )
+            log.info("story export restarted: an erasure landed", job_id=job_id)
+
+
+async def expire_bundles(db: AsyncEngine, now: datetime | None = None) -> int:
+    """#704: every ready export past its ``expires_at``: the file deleted, ``expired``; how
+    many (``retention_sweep``)."""
+    moment = now or clock.now()
+    async with db.begin() as conn:
+        rows = list(
+            await conn.execute(
+                select(bundle_jobs.c.id, bundle_jobs.c.path)
+                .where(bundle_jobs.c.status == "ready", bundle_jobs.c.expires_at <= moment)
+                .with_for_update(skip_locked=True)
+            )
+        )
+        for row in rows:
+            _unlink(row.path)
+        if rows:
+            await conn.execute(
+                update(bundle_jobs)
+                .where(bundle_jobs.c.id.in_([r.id for r in rows]))
+                .values(status="expired")
+            )
+    return len(rows)
+
+
+async def delete_story_bundles(conn: AsyncConnection, story_id: str) -> int:
+    """#704: a story's exports and their files, deleted with the story."""
+    rows = list(
+        await conn.execute(
+            select(bundle_jobs.c.id, bundle_jobs.c.path).where(bundle_jobs.c.story_id == story_id)
+        )
+    )
+    for row in rows:
+        _unlink(row.path)
+    if rows:
+        await conn.execute(bundle_jobs.delete().where(bundle_jobs.c.story_id == story_id))
+    return len(rows)
+
+
+def _unlink(path: Any) -> None:
+    if path:
+        Path(str(path)).unlink(missing_ok=True)
+
+
+class StoryExportsTarget:
+    """#704 (FR-ADMIN-8): the stored exports an erasure reaches. A story-scope erasure expires
+    that story's stored, unexpired exports (file deleted, error ``erased``); a dry run counts
+    them. A delivered archive is outside the boundary."""
+
+    name = "story_exports"
+
+    async def erase(
+        self, conn: AsyncConnection, *, story_id: str | None, redactor: Any, write: bool
+    ) -> int:
+        if story_id is None:
+            return 0
+        rows = list(
+            await conn.execute(
+                select(bundle_jobs.c.id, bundle_jobs.c.path).where(
+                    bundle_jobs.c.story_id == story_id,
+                    bundle_jobs.c.status.in_(["queued", "running", "ready"]),
+                )
+            )
+        )
+        if write:
+            for row in rows:
+                _unlink(row.path)
+            if rows:
+                await conn.execute(
+                    update(bundle_jobs)
+                    .where(bundle_jobs.c.id.in_([r.id for r in rows]))
+                    .values(status="expired", error={"code": "erased"})
+                )
+        return len(rows)
+
+
+def _register() -> None:
+    from epistrel.core.erasure.erase import register_target
+
+    register_target(StoryExportsTarget())
+
+
+_register()
 
 
 def _write(directory: Path, final: Path, data: bytes) -> None:
@@ -480,20 +936,31 @@ def read_archive(data: bytes) -> list[tuple[str, bytes]]:
 
 
 __all__ = [
+    "AFTER_SNAPSHOT",
+    "BEFORE_SCAN",
+    "CATALOG",
+    "EXPORT_ATTEMPTS",
     "EXPORT_KIND",
     "FORMAT_VERSION",
     "NEVER",
     "REBUILD",
     "SPECIAL",
     "Bundle",
+    "ErasedMeanwhile",
     "ExportJob",
     "ExportStarted",
+    "MediaMissing",
+    "PayloadInvalid",
     "SecretDetected",
+    "StoryExportsTarget",
     "archive",
     "build",
     "bundle",
     "canonical",
+    "catalog_tables",
     "classify",
+    "delete_story_bundles",
+    "expire_bundles",
     "exported_tables",
     "manifest",
     "read_archive",

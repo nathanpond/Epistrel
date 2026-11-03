@@ -271,3 +271,59 @@ async def test_c_09__exports(pg_url: str, caplog: pytest.LogCaptureFixture) -> N
     (ciphertext,) = [r.api_key_ciphertext for r in stored]
     assert keybox.decrypt(ciphertext, purpose="generation").get_secret_value() == api_key
     assert caplog.records, "nothing was logged, so the log search proves nothing"
+
+
+@pytest.mark.part("M7", "NFR-SEC-3; FR-STORE-7")
+async def test_c_09__m7_bundle(pg_url: str, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#704 (C-09 M7): with canaries configured as a stored model API key, a provider
+    credential (``EPISTREL_PROVIDER_SECRET_<NAME>``), a service credential and the config key,
+    a story's export scans for every one of them and its archive holds none, raw, in base64 or
+    in hex. Positive control: a story whose name holds the canary fails its export
+    ``secret_detected`` and leaves no file."""
+    import base64
+    import gzip
+
+    from epistrel.core import bundles
+
+    api_key = f"sk-canary-{secrets.token_hex(12)}"
+    provider = f"pv-canary-{secrets.token_hex(12)}"
+    credential = f"cred-canary-{secrets.token_hex(12)}"
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("EPISTREL_PROVIDER_SECRET_CANARY", provider)
+    async with scratch_feedback(
+        pg_url, config_key=SecretStr(key), service_credentials=[CREDENTIAL_A, credential]
+    ) as (client, lib, db):
+        await put_key(client, "generation", api_key)
+        played = await played_story(client)
+        scanned = (
+            *(s.get_secret_value() for s in lib.settings.service_credentials),
+            key,
+            provider,
+            *await lib._model_secrets(db),
+        )
+        assert {api_key, provider, credential, key} <= set(scanned)
+        operator = {**bearer(), "X-Epistrel-Principal": "p-operator"}
+        started = await client.post(f"/admin/stories/{played.story_id}/export", headers=operator)
+        assert started.status_code == 202, started.text
+        job = str(started.json()["job_id"])
+        assert (await bundles.run_export(db, job, tmp_path, secrets=scanned)) == {
+            "ready": 1,
+            "size": (tmp_path / f"{job}.epistrel.tgz").stat().st_size,
+        }
+        archive = gzip.decompress((tmp_path / f"{job}.epistrel.tgz").read_bytes())
+        for canary in (api_key, provider, credential, key):
+            raw = canary.encode()
+            for form in (raw, base64.b64encode(raw), raw.hex().encode()):
+                assert form not in archive, canary
+
+        async with db.begin() as conn:
+            await conn.execute(
+                text("UPDATE stories SET name = :n WHERE id = :s"),
+                {"n": f"The {api_key} story", "s": played.story_id},
+            )
+        again = await client.post(f"/admin/stories/{played.story_id}/export", headers=operator)
+        leaked = str(again.json()["job_id"])
+        assert (await bundles.run_export(db, leaked, tmp_path, secrets=scanned)) == {"failed": 1}
+        shown = (await client.get(f"/admin/stories/exports/{leaked}", headers=bearer())).json()
+        assert shown["error"]["code"] == "secret_detected"
+        assert not (tmp_path / f"{leaked}.epistrel.tgz").exists()

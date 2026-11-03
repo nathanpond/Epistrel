@@ -1654,6 +1654,10 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
     await drop_many(
         conn, idempotency_keys.name, [idempotency_id(k.scope, k.scope_id, k.key) for k in keys]
     )
+    from epistrel.core.bundles import delete_story_bundles
+
+    # #704: the story's exports and their archive files go with it.
+    removed["bundle_exports"] = await delete_story_bundles(conn, story_id)
     for table in STORY_TABLES:
         result = await conn.execute(delete(table).where(table.c.story_id == story_id))
         removed[table.name] = result.rowcount

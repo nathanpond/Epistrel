@@ -38756,6 +38756,13 @@
             "title": "Audit Retention Days",
             "type": "integer"
           },
+          "bundle_export_ttl_hours": {
+            "default": 24,
+            "maximum": 720.0,
+            "minimum": 1.0,
+            "title": "Bundle Export Ttl Hours",
+            "type": "integer"
+          },
           "cascade_threshold": {
             "default": 5,
             "maximum": 1000.0,
@@ -40124,6 +40131,17 @@
               }
             ],
             "title": "Audit Retention Days"
+          },
+          "bundle_export_ttl_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Export Ttl Hours"
           },
           "cascade_threshold": {
             "anyOf": [
@@ -43752,6 +43770,5088 @@
           "variant_chains"
         ],
         "title": "StoryBody",
+        "type": "object"
+      },
+      "StoryBundleEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "authority": {
+            "enum": [
+              "authoritative",
+              "non_authoritative"
+            ],
+            "type": "string"
+          },
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "category": {
+            "enum": [
+              "amendment",
+              "audit",
+              "control",
+              "derived",
+              "input",
+              "narrative_state"
+            ],
+            "type": "string"
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload": {},
+          "principal": {
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "consumer",
+              "engine",
+              "player",
+              "system"
+            ],
+            "type": "string"
+          },
+          "redacted_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "valid_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_time_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "authority",
+          "beat",
+          "category",
+          "character_id",
+          "id",
+          "narrative_turn",
+          "operation_id",
+          "payload",
+          "principal",
+          "provenance",
+          "redacted_at",
+          "seq",
+          "slot_k",
+          "step",
+          "story_id",
+          "turn_variant",
+          "tx_time",
+          "type",
+          "valid_time",
+          "valid_time_minutes"
+        ],
+        "title": "StoryBundleEvent",
+        "type": "object"
+      },
+      "StoryBundleManifest": {
+        "additionalProperties": false,
+        "properties": {
+          "config_revision": {
+            "type": "integer"
+          },
+          "content_rating": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "engine_profile": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "exported_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "exported_by": {
+            "type": "string"
+          },
+          "exported_revision": {
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "sha256",
+                "size",
+                "records"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "format_version": {
+            "pattern": "^\\d+\\.\\d+\\.\\d+$",
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "source_story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "schema_version",
+          "source_story_id",
+          "exported_revision",
+          "exported_at",
+          "exported_by",
+          "files",
+          "counts"
+        ],
+        "title": "StoryBundleManifest",
+        "type": "object"
+      },
+      "StoryBundleMedia": {
+        "additionalProperties": false,
+        "properties": {
+          "alt_text": {},
+          "caption": {},
+          "content_rating_version_id": {},
+          "depicted_subjects": {},
+          "duration_ms": {},
+          "generation_metadata": {},
+          "height": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {},
+          "mime_type": {},
+          "poster_media_id": {},
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "size": {},
+          "source": {},
+          "width": {}
+        },
+        "required": [
+          "alt_text",
+          "caption",
+          "content_rating_version_id",
+          "depicted_subjects",
+          "duration_ms",
+          "generation_metadata",
+          "height",
+          "id",
+          "kind",
+          "mime_type",
+          "poster_media_id",
+          "sha256",
+          "size",
+          "source",
+          "width"
+        ],
+        "title": "StoryBundleMedia",
+        "type": "object"
+      },
+      "StoryBundleRecord_amendment_parts": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amendment_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "patch_after": {},
+          "patch_before": {},
+          "position_bound": {},
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "qualifiers": {},
+          "record_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "record_table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "strategy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "superseded_fact_ids": {
+            "type": "array"
+          },
+          "timing_uncertain": {
+            "type": "boolean"
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_spec": {},
+          "valid_to_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "written_fact_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "written_state_change_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "amendment_id",
+          "id",
+          "kind",
+          "ordinal",
+          "patch_after",
+          "patch_before",
+          "position_bound",
+          "predicate_id",
+          "proposition_id",
+          "qualifiers",
+          "record_id",
+          "record_table",
+          "scope_key",
+          "state_id",
+          "status",
+          "story_id",
+          "strategy",
+          "subject_id",
+          "superseded_fact_ids",
+          "timing_uncertain",
+          "tx_from",
+          "tx_to",
+          "valid_from_minutes",
+          "valid_spec",
+          "valid_to_minutes",
+          "written_fact_id",
+          "written_state_change_id"
+        ],
+        "title": "StoryBundleRecord_amendment_parts",
+        "type": "object"
+      },
+      "StoryBundleRecord_amendments": {
+        "additionalProperties": false,
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "authority": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload": {},
+          "rationale_record_ids": {},
+          "redoes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reverted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "tx_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "undoes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "author",
+          "authority",
+          "created_at",
+          "id",
+          "kind",
+          "operation_id",
+          "payload",
+          "rationale_record_ids",
+          "redoes",
+          "reverted_by",
+          "session_id",
+          "status",
+          "story_id",
+          "tx_time",
+          "undoes"
+        ],
+        "title": "StoryBundleRecord_amendments",
+        "type": "object"
+      },
+      "StoryBundleRecord_belief_transitions": {
+        "additionalProperties": false,
+        "properties": {
+          "accessibility": {
+            "type": "string"
+          },
+          "antecedent_kind": {
+            "enum": [
+              "record",
+              "render_step",
+              "resolution",
+              "staged_beat"
+            ],
+            "type": "string"
+          },
+          "antecedent_ref": {},
+          "belief_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "confidence_level": {
+            "enum": [
+              "believed",
+              "known",
+              "suspected",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "confidence_scalar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "holder_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "author",
+              "author_fiat",
+              "correction",
+              "discovery",
+              "forgetting",
+              "inference",
+              "observation",
+              "resolution",
+              "revision",
+              "testimony"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position_beat": {
+            "type": "integer"
+          },
+          "position_slot_k": {
+            "type": "integer"
+          },
+          "position_step": {
+            "type": "integer"
+          },
+          "position_turn": {
+            "type": "integer"
+          },
+          "position_variant": {
+            "type": "integer"
+          },
+          "prior": {},
+          "prior_belief_ids": {
+            "type": "array"
+          },
+          "source_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "corrected",
+              "decayed",
+              "held"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "accessibility",
+          "antecedent_kind",
+          "antecedent_ref",
+          "belief_id",
+          "confidence_level",
+          "confidence_scalar",
+          "holder_character_id",
+          "id",
+          "kind",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "outcome",
+          "position_beat",
+          "position_slot_k",
+          "position_step",
+          "position_turn",
+          "position_variant",
+          "prior",
+          "prior_belief_ids",
+          "source_character_id",
+          "source_event_ids",
+          "state",
+          "story_id",
+          "turn_variant",
+          "tx_from",
+          "tx_to",
+          "valid_at"
+        ],
+        "title": "StoryBundleRecord_belief_transitions",
+        "type": "object"
+      },
+      "StoryBundleRecord_beliefs": {
+        "additionalProperties": false,
+        "properties": {
+          "accessibility": {
+            "type": "string"
+          },
+          "attributed_confidence_level": {
+            "enum": [
+              "believed",
+              "known",
+              "suspected",
+              "unknown",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attributed_confidence_scalar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attributed_held_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attributed_held_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attributed_holder_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "confidence_level": {
+            "enum": [
+              "believed",
+              "known",
+              "suspected",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "confidence_scalar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrected_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "type": "integer"
+          },
+          "disclosure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "held_from_beat": {
+            "type": "integer"
+          },
+          "held_from_slot_k": {
+            "type": "integer"
+          },
+          "held_from_step": {
+            "type": "integer"
+          },
+          "held_from_turn": {
+            "type": "integer"
+          },
+          "held_from_variant": {
+            "type": "integer"
+          },
+          "held_to_beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "holder_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "inner_belief_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "attributed",
+              "first_order",
+              "nested",
+              "speech_act"
+            ],
+            "type": "string"
+          },
+          "lineage_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "perceived_intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "polarity": {
+            "type": "string"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "resolution_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "speaker_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "staged_ref": {},
+          "state": {
+            "enum": [
+              "corrected",
+              "decayed",
+              "held"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utterance_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_span": {},
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "visibility": {}
+        },
+        "required": [
+          "accessibility",
+          "attributed_confidence_level",
+          "attributed_confidence_scalar",
+          "attributed_held_from",
+          "attributed_held_to",
+          "attributed_holder_id",
+          "beat",
+          "confidence_level",
+          "confidence_scalar",
+          "corrected_by",
+          "depth",
+          "disclosure",
+          "held_from_beat",
+          "held_from_slot_k",
+          "held_from_step",
+          "held_from_turn",
+          "held_from_variant",
+          "held_to_beat",
+          "held_to_slot_k",
+          "held_to_step",
+          "held_to_turn",
+          "held_to_variant",
+          "holder_character_id",
+          "id",
+          "inner_belief_id",
+          "kind",
+          "lineage_id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "perceived_intent",
+          "polarity",
+          "proposition_id",
+          "provenance",
+          "resolution_operation_id",
+          "source_event_ids",
+          "speaker_character_id",
+          "staged_ref",
+          "state",
+          "step",
+          "story_id",
+          "turn_variant",
+          "tx_from",
+          "tx_to",
+          "utterance_id",
+          "valid_from",
+          "valid_span",
+          "valid_to",
+          "visibility"
+        ],
+        "title": "StoryBundleRecord_beliefs",
+        "type": "object"
+      },
+      "StoryBundleRecord_capability_coverage": {
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from_turn": {
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "to_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "capability",
+          "created_at",
+          "from_turn",
+          "id",
+          "level",
+          "operation_id",
+          "source",
+          "story_id",
+          "to_turn"
+        ],
+        "title": "StoryBundleRecord_capability_coverage",
+        "type": "object"
+      },
+      "StoryBundleRecord_certification_runs": {
+        "additionalProperties": false,
+        "properties": {
+          "certification_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checks_certification_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimate": {},
+          "fingerprint": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "job_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "profile_version": {
+            "type": "integer"
+          },
+          "reference": {
+            "type": "boolean"
+          },
+          "report": {},
+          "requested_by": {
+            "type": "string"
+          },
+          "sample": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "seeds": {
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suites": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "certification_id",
+          "checks_certification_id",
+          "created_at",
+          "error",
+          "estimate",
+          "fingerprint",
+          "finished_at",
+          "id",
+          "job_id",
+          "kind",
+          "outcome",
+          "profile_id",
+          "profile_version",
+          "reference",
+          "report",
+          "requested_by",
+          "sample",
+          "seeds",
+          "started_at",
+          "status",
+          "story_id",
+          "suites"
+        ],
+        "title": "StoryBundleRecord_certification_runs",
+        "type": "object"
+      },
+      "StoryBundleRecord_character_snapshots": {
+        "additionalProperties": false,
+        "properties": {
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "content": {},
+          "content_rating_version_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source_catalog_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character_id",
+          "content",
+          "content_rating_version_id",
+          "published_at",
+          "source_catalog_id",
+          "story_id",
+          "version"
+        ],
+        "title": "StoryBundleRecord_character_snapshots",
+        "type": "object"
+      },
+      "StoryBundleRecord_characters": {
+        "additionalProperties": false,
+        "properties": {
+          "age_recorded_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "definition": {
+            "type": "string"
+          },
+          "deflection_style": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "images": {},
+          "is_player": {
+            "type": "boolean"
+          },
+          "languages": {
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "modeled_beat": {
+            "type": "integer"
+          },
+          "modeled_slot_k": {
+            "type": "integer"
+          },
+          "modeled_step": {
+            "type": "integer"
+          },
+          "modeled_turn": {
+            "type": "integer"
+          },
+          "modeled_variant": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "participation_fixed": {
+            "type": "boolean"
+          },
+          "participation_role": {
+            "type": "string"
+          },
+          "persona_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "persona_snapshot": {},
+          "promoted_to": {},
+          "role_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "safe_fallback_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_catalog_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_catalog_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "true_age": {
+            "type": "integer"
+          },
+          "true_age_source": {
+            "type": "string"
+          },
+          "weight": {
+            "enum": [
+              "major",
+              "minor"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "age_recorded_at",
+          "created_at",
+          "definition",
+          "deflection_style",
+          "id",
+          "images",
+          "is_player",
+          "languages",
+          "modeled_beat",
+          "modeled_slot_k",
+          "modeled_step",
+          "modeled_turn",
+          "modeled_variant",
+          "name",
+          "ordinal",
+          "participation_fixed",
+          "participation_role",
+          "persona_id",
+          "persona_snapshot",
+          "promoted_to",
+          "role_id",
+          "safe_fallback_text",
+          "source_catalog_id",
+          "source_catalog_version",
+          "story_id",
+          "true_age",
+          "true_age_source",
+          "weight"
+        ],
+        "title": "StoryBundleRecord_characters",
+        "type": "object"
+      },
+      "StoryBundleRecord_client_events": {
+        "additionalProperties": false,
+        "properties": {
+          "client_event_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload_hash": {
+            "type": "string"
+          },
+          "result": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_event_id",
+          "created_at",
+          "operation_id",
+          "payload_hash",
+          "result",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_client_events",
+        "type": "object"
+      },
+      "StoryBundleRecord_closed_sets": {
+        "additionalProperties": false,
+        "properties": {
+          "asserted_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "key": {},
+          "key_set": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "members": {},
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "valid_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "asserted_by",
+          "created_at",
+          "id",
+          "key",
+          "key_set",
+          "members",
+          "predicate_id",
+          "story_id",
+          "valid_from",
+          "valid_to"
+        ],
+        "title": "StoryBundleRecord_closed_sets",
+        "type": "object"
+      },
+      "StoryBundleRecord_dependency_edges": {
+        "additionalProperties": false,
+        "properties": {
+          "acquisition_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dependent_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "dependent_table": {
+            "type": "string"
+          },
+          "edge_type": {
+            "enum": [
+              "asserts",
+              "causes",
+              "derives",
+              "mentions",
+              "presupposes"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "position_beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "target_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "target_kind": {
+            "enum": [
+              "amendment_part",
+              "entity",
+              "fact",
+              "proposition",
+              "state"
+            ],
+            "type": "string"
+          },
+          "target_predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "acquisition_kind",
+          "created_at",
+          "dependent_id",
+          "dependent_table",
+          "edge_type",
+          "id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "position_beat",
+          "position_slot_k",
+          "position_step",
+          "position_turn",
+          "position_variant",
+          "source_event_ids",
+          "story_id",
+          "target_id",
+          "target_kind",
+          "target_predicate_id",
+          "target_subject_id",
+          "turn_variant"
+        ],
+        "title": "StoryBundleRecord_dependency_edges",
+        "type": "object"
+      },
+      "StoryBundleRecord_directives": {
+        "additionalProperties": false,
+        "properties": {
+          "changes": {},
+          "classified_by": {
+            "type": "string"
+          },
+          "consumed_by_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "disposition": {
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "rewrite_session_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "temporal_scope": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "changes",
+          "classified_by",
+          "consumed_by_operation_id",
+          "created_at",
+          "disposition",
+          "id",
+          "kind",
+          "operation_id",
+          "principal",
+          "rewrite_session_id",
+          "story_id",
+          "temporal_scope",
+          "text"
+        ],
+        "title": "StoryBundleRecord_directives",
+        "type": "object"
+      },
+      "StoryBundleRecord_divergences": {
+        "additionalProperties": false,
+        "properties": {
+          "asserted_proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "attribution_objective_relation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "believed_belief_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "believed_proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "position_beat": {
+            "type": "integer"
+          },
+          "position_slot_k": {
+            "type": "integer"
+          },
+          "position_step": {
+            "type": "integer"
+          },
+          "position_turn": {
+            "type": "integer"
+          },
+          "position_variant": {
+            "type": "integer"
+          },
+          "revealed_by_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "speaker_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "utterance_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asserted_proposition_id",
+          "attribution_objective_relation",
+          "believed_belief_id",
+          "believed_proposition_id",
+          "created_at",
+          "id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "position_beat",
+          "position_slot_k",
+          "position_step",
+          "position_turn",
+          "position_variant",
+          "revealed_by_event_id",
+          "source_event_ids",
+          "speaker_character_id",
+          "story_id",
+          "turn_variant",
+          "utterance_id"
+        ],
+        "title": "StoryBundleRecord_divergences",
+        "type": "object"
+      },
+      "StoryBundleRecord_entities": {
+        "additionalProperties": false,
+        "properties": {
+          "canonical_name": {
+            "type": "string"
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "descriptors": {},
+          "gender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "merged_into": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_name",
+          "character_id",
+          "created_at",
+          "created_by_operation_id",
+          "descriptors",
+          "gender",
+          "id",
+          "kind",
+          "merged_into",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_entities",
+        "type": "object"
+      },
+      "StoryBundleRecord_entity_aliases": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias",
+          "created_at",
+          "entity_id",
+          "id",
+          "source",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_entity_aliases",
+        "type": "object"
+      },
+      "StoryBundleRecord_erasure_ledger": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "applied_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "copied_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counts": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "ledger_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ledger_hash_prev": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scan_term_hashes": {
+            "type": "array"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "story_ref": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "applied_at",
+          "applied_note",
+          "at",
+          "copied_from",
+          "counts",
+          "id",
+          "ledger_hash",
+          "ledger_hash_prev",
+          "operation_id",
+          "principal",
+          "scan_term_hashes",
+          "scope",
+          "story_ref",
+          "subject_id",
+          "subject_kind"
+        ],
+        "title": "StoryBundleRecord_erasure_ledger",
+        "type": "object"
+      },
+      "StoryBundleRecord_exposures": {
+        "additionalProperties": false,
+        "properties": {
+          "fidelity": {
+            "enum": [
+              "full",
+              "partial"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "inferred": {
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "content",
+              "envelope"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "position_beat": {
+            "type": "integer"
+          },
+          "position_slot_k": {
+            "type": "integer"
+          },
+          "position_step": {
+            "type": "integer"
+          },
+          "position_turn": {
+            "type": "integer"
+          },
+          "position_variant": {
+            "type": "integer"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "resolution_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by_transition": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "resolved",
+              "unresolved"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "witness_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fidelity",
+          "id",
+          "inferred",
+          "kind",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "position_beat",
+          "position_slot_k",
+          "position_step",
+          "position_turn",
+          "position_variant",
+          "proposition_id",
+          "resolution_operation_id",
+          "resolved_by_transition",
+          "source_character_id",
+          "source_event_id",
+          "source_event_ids",
+          "state",
+          "story_id",
+          "turn_variant",
+          "witness_character_id"
+        ],
+        "title": "StoryBundleRecord_exposures",
+        "type": "object"
+      },
+      "StoryBundleRecord_external_effect_outbox": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "beat": {
+            "type": "integer"
+          },
+          "claim_lease_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "compensates": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "effect": {},
+          "erased_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "executable": {
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "outcome_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_name": {
+            "type": "string"
+          },
+          "scope_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sent_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "attempts",
+          "beat",
+          "claim_lease_until",
+          "claimed_at",
+          "compensates",
+          "created_at",
+          "effect",
+          "erased_at",
+          "executable",
+          "id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "outcome_event_id",
+          "provider_name",
+          "scope_key",
+          "sent_at",
+          "slot_k",
+          "source_event_ids",
+          "status",
+          "step",
+          "story_id",
+          "turn_variant",
+          "value_name"
+        ],
+        "title": "StoryBundleRecord_external_effect_outbox",
+        "type": "object"
+      },
+      "StoryBundleRecord_facts": {
+        "additionalProperties": false,
+        "properties": {
+          "amendment_part_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchored_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_locked": {
+            "type": "boolean"
+          },
+          "authority": {
+            "enum": [
+              "author",
+              "engine",
+              "external"
+            ],
+            "type": "string"
+          },
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "closed_set_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit_state": {
+            "enum": [
+              "committed",
+              "introduced",
+              "pending",
+              "revised"
+            ],
+            "type": "string"
+          },
+          "committed_at_position": {},
+          "holder": {
+            "enum": [
+              "canon"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "lineage_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provenance": {
+            "enum": [
+              "author",
+              "backfill",
+              "director",
+              "external",
+              "in_world",
+              "player",
+              "render",
+              "resolution",
+              "seed",
+              "system_consolidated"
+            ],
+            "type": "string"
+          },
+          "resolution_level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "superseded_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "type": "array"
+          },
+          "thunk_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_from_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_span": {},
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_to_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "visibility": {}
+        },
+        "required": [
+          "amendment_part_id",
+          "anchored_to",
+          "author_locked",
+          "authority",
+          "beat",
+          "closed_set_id",
+          "commit_state",
+          "committed_at_position",
+          "holder",
+          "id",
+          "lineage_id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "predicate_id",
+          "proposition_id",
+          "provenance",
+          "resolution_level",
+          "slot_k",
+          "source_event_ids",
+          "step",
+          "story_id",
+          "subject_id",
+          "superseded_by",
+          "supersedes",
+          "thunk_id",
+          "turn_variant",
+          "tx_from",
+          "tx_to",
+          "valid_from",
+          "valid_from_inner",
+          "valid_span",
+          "valid_to",
+          "valid_to_inner",
+          "visibility"
+        ],
+        "title": "StoryBundleRecord_facts",
+        "type": "object"
+      },
+      "StoryBundleRecord_feedback_history": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "rated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rating": {
+            "type": "integer"
+          },
+          "redacted_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "tags": {
+            "type": "array"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "message_id",
+          "principal",
+          "rated_at",
+          "rating",
+          "redacted_at",
+          "replaced_at",
+          "story_id",
+          "tags",
+          "text",
+          "turn",
+          "variant"
+        ],
+        "title": "StoryBundleRecord_feedback_history",
+        "type": "object"
+      },
+      "StoryBundleRecord_genesis_deferred": {
+        "additionalProperties": false,
+        "properties": {
+          "capability_needed": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "field_class": {
+            "type": "string"
+          },
+          "field_ref": {
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "location": {},
+          "materialized_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "materialized_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability_needed",
+          "created_at",
+          "field_class",
+          "field_ref",
+          "id",
+          "location",
+          "materialized_at",
+          "materialized_operation_id",
+          "operation_id",
+          "payload",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_genesis_deferred",
+        "type": "object"
+      },
+      "StoryBundleRecord_memories": {
+        "additionalProperties": false,
+        "properties": {
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "covered_by": {
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fidelity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "holder_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "implication_count": {
+            "type": "integer"
+          },
+          "importance": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "importance_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "inputs_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "episodic",
+              "reflection",
+              "semantic"
+            ],
+            "type": "string"
+          },
+          "last_accessed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "modality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "participants": {
+            "type": "array"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "pinned_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposition_ids": {
+            "type": "array"
+          },
+          "provenance": {
+            "enum": [
+              "author",
+              "backfill",
+              "director",
+              "external",
+              "in_world",
+              "player",
+              "render",
+              "resolution",
+              "seed",
+              "system_consolidated"
+            ],
+            "type": "string"
+          },
+          "quarantine_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quarantined_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quarantined_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retrieval_tier": {
+            "enum": [
+              "hot",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "author",
+              "backfill",
+              "engine",
+              "external",
+              "in_world"
+            ],
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "visibility": {}
+        },
+        "required": [
+          "beat",
+          "channel",
+          "character_id",
+          "covered_by",
+          "created_at",
+          "event_type",
+          "fidelity",
+          "holder_character_id",
+          "id",
+          "implication_count",
+          "importance",
+          "importance_at",
+          "inputs_hash",
+          "kind",
+          "last_accessed_at",
+          "level",
+          "membership",
+          "membership_tx",
+          "modality",
+          "model",
+          "model_version",
+          "narrative_turn",
+          "operation_id",
+          "participants",
+          "pinned",
+          "pinned_by",
+          "prompt_hash",
+          "proposition_ids",
+          "provenance",
+          "quarantine_reason",
+          "quarantined_at",
+          "quarantined_by",
+          "retired_at",
+          "retired_reason",
+          "retired_turn",
+          "retrieval_tier",
+          "source_event_ids",
+          "step",
+          "story_id",
+          "text",
+          "trust_tier",
+          "turn_variant",
+          "visibility"
+        ],
+        "title": "StoryBundleRecord_memories",
+        "type": "object"
+      },
+      "StoryBundleRecord_message_feedback": {
+        "additionalProperties": false,
+        "properties": {
+          "config_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "message_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "models": {},
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "profile_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pruned_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quality_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "type": "integer"
+          },
+          "rating_version_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redacted_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "tags": {
+            "type": "array"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "variant": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config_fingerprint",
+          "created_at",
+          "id",
+          "message_id",
+          "models",
+          "operation_id",
+          "principal",
+          "profile_version",
+          "pruned_at",
+          "quality_status",
+          "rating",
+          "rating_version_id",
+          "redacted_at",
+          "story_id",
+          "tags",
+          "text",
+          "turn",
+          "updated_at",
+          "variant"
+        ],
+        "title": "StoryBundleRecord_message_feedback",
+        "type": "object"
+      },
+      "StoryBundleRecord_operations": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {},
+          "base_revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "checked_guardrails": {},
+          "committed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_revisions": {},
+          "error": {},
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "backfill",
+              "consolidation",
+              "control",
+              "genesis",
+              "import",
+              "inter_turn",
+              "maintenance",
+              "rewrite_session",
+              "turn"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "parent_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "read_set": {},
+          "slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_window": {},
+          "stage_log": {},
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "abandoned",
+              "committed",
+              "failed",
+              "in_flight",
+              "queued"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeline_revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "turn_report": {},
+          "turn_stage": {
+            "enum": [
+              "abandoned",
+              "awaiting_outcome",
+              "completed",
+              "intent_committed",
+              "outcome_recorded",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "viewpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "attempts",
+          "base_revision",
+          "checked_guardrails",
+          "committed_at",
+          "config_revisions",
+          "error",
+          "error_code",
+          "idempotency_key",
+          "kind",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "origin",
+          "parent_variant",
+          "principal",
+          "read_set",
+          "slot_k",
+          "source_window",
+          "stage_log",
+          "started_at",
+          "status",
+          "story_id",
+          "timeline_revision",
+          "turn_report",
+          "turn_stage",
+          "turn_variant",
+          "viewpoint"
+        ],
+        "title": "StoryBundleRecord_operations",
+        "type": "object"
+      },
+      "StoryBundleRecord_outbox_outcomes": {
+        "additionalProperties": false,
+        "properties": {
+          "effect_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "outbox_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {},
+          "raw_hash": {
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "received_via": {
+            "type": "string"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "effect_id",
+          "id",
+          "kind",
+          "outbox_id",
+          "payload",
+          "raw_hash",
+          "received_at",
+          "received_via",
+          "settled",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_outbox_outcomes",
+        "type": "object"
+      },
+      "StoryBundleRecord_policies": {
+        "additionalProperties": false,
+        "properties": {
+          "age_condition": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "applies_to": {
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {},
+          "scope": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "age_condition",
+          "applies_to",
+          "created_at",
+          "created_by",
+          "effect",
+          "id",
+          "idempotency_key",
+          "kind",
+          "message",
+          "name",
+          "retired_at",
+          "retired_by",
+          "rule",
+          "scope",
+          "scope_id",
+          "story_id",
+          "updated_at",
+          "updated_by",
+          "version"
+        ],
+        "title": "StoryBundleRecord_policies",
+        "type": "object"
+      },
+      "StoryBundleRecord_predicate_proposals": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision": {},
+          "filed_by": {
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "object_entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposed": {},
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_at",
+          "decided_at",
+          "decided_by",
+          "decision",
+          "filed_by",
+          "id",
+          "kind",
+          "object_entity_id",
+          "predicate_id",
+          "proposed",
+          "status",
+          "story_id",
+          "subject_entity_id"
+        ],
+        "title": "StoryBundleRecord_predicate_proposals",
+        "type": "object"
+      },
+      "StoryBundleRecord_predicates": {
+        "additionalProperties": false,
+        "properties": {
+          "cardinality": {
+            "type": "string"
+          },
+          "containment_of": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "docs": {
+            "type": "string"
+          },
+          "exclusions": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "implications": {},
+          "inverse_of": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key_qualifiers": {
+            "type": "array"
+          },
+          "layer": {
+            "type": "string"
+          },
+          "max_cardinality": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "object_type": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "projection": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "qualifiers": {},
+          "set_object": {
+            "type": "boolean"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_type": {
+            "type": "string"
+          },
+          "symmetric": {
+            "type": "boolean"
+          },
+          "temporal_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardinality",
+          "containment_of",
+          "created_at",
+          "docs",
+          "exclusions",
+          "id",
+          "implications",
+          "inverse_of",
+          "key_qualifiers",
+          "layer",
+          "max_cardinality",
+          "name",
+          "object_type",
+          "owner",
+          "projection",
+          "qualifiers",
+          "set_object",
+          "story_id",
+          "subject_type",
+          "symmetric",
+          "temporal_kind"
+        ],
+        "title": "StoryBundleRecord_predicates",
+        "type": "object"
+      },
+      "StoryBundleRecord_promissory_ledger": {
+        "additionalProperties": false,
+        "properties": {
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "discharged_by_operation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discharged_mode": {
+            "enum": [
+              "dependence",
+              "minimal",
+              "render",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "salient_reference"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "thunk_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "beat",
+          "discharged_by_operation",
+          "discharged_mode",
+          "id",
+          "kind",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "proposition_id",
+          "source_event_ids",
+          "step",
+          "story_id",
+          "thunk_id",
+          "turn_variant"
+        ],
+        "title": "StoryBundleRecord_promissory_ledger",
+        "type": "object"
+      },
+      "StoryBundleRecord_propositions": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_exact": {
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "instant_granularity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "literal": {},
+          "object_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "object_set": {},
+          "polarity": {
+            "type": "string"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "qualifiers": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "to_exact": {
+            "type": "boolean"
+          },
+          "valid_from_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_from_outer": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_span": {},
+          "valid_to_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_to_outer": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_at",
+          "event_id",
+          "from_exact",
+          "id",
+          "instant_granularity",
+          "literal",
+          "object_id",
+          "object_set",
+          "polarity",
+          "predicate_id",
+          "qualifiers",
+          "story_id",
+          "subject_id",
+          "to_exact",
+          "valid_from_inner",
+          "valid_from_outer",
+          "valid_span",
+          "valid_to_inner",
+          "valid_to_outer"
+        ],
+        "title": "StoryBundleRecord_propositions",
+        "type": "object"
+      },
+      "StoryBundleRecord_reconciliation_marks": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "outbox_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail",
+          "id",
+          "outbox_id",
+          "reason",
+          "request_id",
+          "resolved_by",
+          "since",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_reconciliation_marks",
+        "type": "object"
+      },
+      "StoryBundleRecord_scheduled_events": {
+        "additionalProperties": false,
+        "properties": {
+          "amendment_part_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "beat": {
+            "type": "integer"
+          },
+          "grace_minutes": {
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "participants": {
+            "type": "array"
+          },
+          "place_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planned_anchor": {},
+          "planned_offset_minutes": {
+            "type": "integer"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "refinement_pause_anchor_rev": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shared_owners": {
+            "type": "array"
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "completed",
+              "due",
+              "missed",
+              "pending",
+              "possibly_due",
+              "surfaced"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "stopped_clock_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "amendment_part_id",
+          "beat",
+          "grace_minutes",
+          "id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "operation_id",
+          "owner",
+          "participants",
+          "place_id",
+          "planned_anchor",
+          "planned_offset_minutes",
+          "proposition_id",
+          "refinement_pause_anchor_rev",
+          "shared_owners",
+          "slot_k",
+          "source_event_ids",
+          "status",
+          "step",
+          "stopped_clock_at",
+          "story_id",
+          "turn_variant"
+        ],
+        "title": "StoryBundleRecord_scheduled_events",
+        "type": "object"
+      },
+      "StoryBundleRecord_state_changes": {
+        "additionalProperties": false,
+        "properties": {
+          "amendment_part_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "beat": {
+            "type": "integer"
+          },
+          "contingency": {
+            "enum": [
+              "conditional",
+              "reservation",
+              "unconditional"
+            ],
+            "type": "string"
+          },
+          "delta": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimate_meta": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "delta",
+              "set",
+              "transfer_in",
+              "transfer_out"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "new_value": {},
+          "old_value": {},
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "paused_for_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prerequisite_effect_ids": {
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scope_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settles_change_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "author",
+              "consumer",
+              "declared_skip",
+              "estimate",
+              "external",
+              "pacing",
+              "player",
+              "rule",
+              "seed",
+              "settlement",
+              "turn"
+            ],
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "committed",
+              "converted",
+              "dropped",
+              "held",
+              "pending",
+              "released"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "stopped_by_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_time_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "amendment_part_id",
+          "beat",
+          "contingency",
+          "delta",
+          "estimate_meta",
+          "id",
+          "kind",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "new_value",
+          "old_value",
+          "operation_id",
+          "paused_for_event_id",
+          "prerequisite_effect_ids",
+          "reason",
+          "scope_key",
+          "settles_change_id",
+          "slot_k",
+          "source",
+          "source_event_ids",
+          "state_id",
+          "status",
+          "step",
+          "stopped_by_event_id",
+          "story_id",
+          "turn_variant",
+          "tx_from",
+          "valid_time_minutes",
+          "value"
+        ],
+        "title": "StoryBundleRecord_state_changes",
+        "type": "object"
+      },
+      "StoryBundleRecord_state_definitions": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "type": "array"
+          },
+          "anchor": {},
+          "authorization": {},
+          "bands": {},
+          "calendar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "constraints": {},
+          "created_by": {
+            "enum": [
+              "author",
+              "consumer",
+              "genesis",
+              "proposal"
+            ],
+            "type": "string"
+          },
+          "elapsed_tolerance_factor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_value_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grace_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "initial_value": {},
+          "max_unprompted_skip_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "external",
+              "manual",
+              "paced",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "external",
+              "story"
+            ],
+            "type": "string"
+          },
+          "pacing_table": {},
+          "provider_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reservation_expiry_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rules": {},
+          "scope": {
+            "enum": [
+              "character",
+              "story"
+            ],
+            "type": "string"
+          },
+          "silent": {
+            "type": "boolean"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "stop_at_due_events": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "time_awareness": {
+            "enum": [
+              "approximate",
+              "exact",
+              "none",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_statement_tolerance_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "transfer": {},
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "enum": [
+              "boolean",
+              "clock",
+              "enum",
+              "number",
+              "text"
+            ],
+            "type": "string"
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "visibility": {
+            "enum": [
+              "hidden",
+              "player_visible"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "aliases",
+          "anchor",
+          "authorization",
+          "bands",
+          "calendar",
+          "constraints",
+          "created_by",
+          "elapsed_tolerance_factor",
+          "entity_id",
+          "external_value_name",
+          "grace_minutes",
+          "id",
+          "initial_value",
+          "max_unprompted_skip_minutes",
+          "membership",
+          "membership_tx",
+          "mode",
+          "name",
+          "narrative_turn",
+          "operation_id",
+          "owner",
+          "pacing_table",
+          "provider_id",
+          "reservation_expiry_minutes",
+          "rules",
+          "scope",
+          "silent",
+          "source_event_ids",
+          "stop_at_due_events",
+          "story_id",
+          "time_awareness",
+          "time_statement_tolerance_minutes",
+          "transfer",
+          "turn_variant",
+          "type",
+          "unit",
+          "visibility"
+        ],
+        "title": "StoryBundleRecord_state_definitions",
+        "type": "object"
+      },
+      "StoryBundleRecord_state_proposals": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "definition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "approved",
+              "dismissed",
+              "proposed"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "suggested_entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggested_scope": {
+            "enum": [
+              "character",
+              "story"
+            ],
+            "type": "string"
+          },
+          "suggested_type": {
+            "enum": [
+              "boolean",
+              "clock",
+              "enum",
+              "number",
+              "text"
+            ],
+            "type": "string"
+          },
+          "suggested_unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_at",
+          "created_by_operation_id",
+          "decided_at",
+          "decided_by",
+          "definition_id",
+          "evidence",
+          "id",
+          "name",
+          "status",
+          "story_id",
+          "suggested_entity_id",
+          "suggested_scope",
+          "suggested_type",
+          "suggested_unit"
+        ],
+        "title": "StoryBundleRecord_state_proposals",
+        "type": "object"
+      },
+      "StoryBundleRecord_stories": {
+        "additionalProperties": false,
+        "properties": {
+          "archived_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chain_unchecked": {
+            "type": "boolean"
+          },
+          "changes_pruned_through_revision": {
+            "type": "integer"
+          },
+          "config_revision": {
+            "type": "integer"
+          },
+          "content_rating_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "embedding_model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_profile_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "engine_profile_version_pin": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hot_counts": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "in_flight_lease_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_flight_turn": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_control_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_control_revision": {
+            "type": "integer"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_turn_index": {
+            "type": "integer"
+          },
+          "owner_principal": {
+            "type": "string"
+          },
+          "paused_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy_erasure_revision": {
+            "type": "integer"
+          },
+          "predicate_rules": {},
+          "scenario_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scenario_snapshot": {},
+          "scenario_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "settings": {},
+          "status": {
+            "type": "string"
+          },
+          "status_before_block": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_epoch": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_minute_zero": {
+            "type": "integer"
+          },
+          "summary_epoch": {
+            "type": "integer"
+          },
+          "summary_inclusion": {},
+          "timeline_revision": {
+            "type": "integer"
+          },
+          "turn_concurrency": {
+            "type": "string"
+          },
+          "turn_queue_max": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "archived_at",
+          "chain_unchecked",
+          "changes_pruned_through_revision",
+          "config_revision",
+          "content_rating_id",
+          "created_at",
+          "embedding_model_version",
+          "engine_profile_id",
+          "engine_profile_version_pin",
+          "hot_counts",
+          "id",
+          "in_flight_lease_until",
+          "in_flight_turn",
+          "last_control_operation_id",
+          "last_control_revision",
+          "name",
+          "next_turn_index",
+          "owner_principal",
+          "paused_by",
+          "policy_erasure_revision",
+          "predicate_rules",
+          "scenario_id",
+          "scenario_snapshot",
+          "scenario_version",
+          "settings",
+          "status",
+          "status_before_block",
+          "story_epoch",
+          "story_minute_zero",
+          "summary_epoch",
+          "summary_inclusion",
+          "timeline_revision",
+          "turn_concurrency",
+          "turn_queue_max"
+        ],
+        "title": "StoryBundleRecord_stories",
+        "type": "object"
+      },
+      "StoryBundleRecord_story_profile_overrides": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "type": "integer"
+          },
+          "settings": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "settings",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_story_profile_overrides",
+        "type": "object"
+      },
+      "StoryBundleRecord_story_provider_bindings": {
+        "additionalProperties": false,
+        "properties": {
+          "bound_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "external_ids": {},
+          "provider_name": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bound_at",
+          "external_ids",
+          "provider_name",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_story_provider_bindings",
+        "type": "object"
+      },
+      "StoryBundleRecord_thunks": {
+        "additionalProperties": false,
+        "properties": {
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "introduced_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "object_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "open_slot": {
+            "enum": [
+              "literal",
+              "object",
+              "subject"
+            ],
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_sketch": {},
+          "resolution_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_fact_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "salient": {
+            "type": "boolean"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "expired",
+              "open",
+              "resolved"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_time": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "beat",
+          "id",
+          "introduced_event_id",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "object_id",
+          "open_slot",
+          "operation_id",
+          "predicate_id",
+          "proposition_sketch",
+          "resolution_operation_id",
+          "resolved_fact_id",
+          "salient",
+          "source_event_ids",
+          "state",
+          "step",
+          "story_id",
+          "subject_id",
+          "turn_variant",
+          "valid_time"
+        ],
+        "title": "StoryBundleRecord_thunks",
+        "type": "object"
+      },
+      "StoryBundleRecord_utterances": {
+        "additionalProperties": false,
+        "properties": {
+          "attribution_objective_relation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "belief_relation": {
+            "type": "string"
+          },
+          "classification": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objective_relation": {
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_ids": {
+            "type": "array"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "speaker_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "attribution_objective_relation",
+          "belief_relation",
+          "classification",
+          "created_at",
+          "event_id",
+          "id",
+          "intent",
+          "membership",
+          "membership_tx",
+          "narrative_turn",
+          "objective_relation",
+          "operation_id",
+          "proposition_ids",
+          "source_event_ids",
+          "speaker_character_id",
+          "step",
+          "story_id",
+          "turn_variant"
+        ],
+        "title": "StoryBundleRecord_utterances",
         "type": "object"
       },
       "StoryCertificationRunBody": {
@@ -48305,7 +53405,7 @@
     }
   },
   "info": {
-    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story exports not yet expired (a story-scope erasure expires and deletes them)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
     "title": "Epistrel Engine",
     "version": "m6"
   },
@@ -48635,6 +53735,7 @@
                       {
                         "enum": [
                           "audit_retention_days",
+                          "bundle_export_ttl_hours",
                           "cascade_threshold",
                           "certification_canary_enabled",
                           "certification_canary_interval_s",
@@ -49860,7 +54961,7 @@
     },
     "/admin/erasure/boundary": {
       "get": {
-        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story exports not yet expired (a story-scope erasure expires and deletes them)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
         "operationId": "erasure_boundary",
         "responses": {
           "200": {

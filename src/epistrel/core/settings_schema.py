@@ -626,6 +626,9 @@ class RetentionSettings(BaseModel):
     extraction_shadow_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
+    bundle_export_ttl_hours: Annotated[StrictInt, PROSPECTIVE] = Field(default=24, ge=1, le=720)
+    """#704 (FR-STORE-7): how long a story export's archive is kept; ``retention_sweep`` then
+    deletes the file and sets the export ``expired``."""
 
 
 class WorkerHealthSettings(BaseModel):

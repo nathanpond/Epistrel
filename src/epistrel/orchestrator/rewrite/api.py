@@ -43,9 +43,38 @@ ResolutionMode = Literal["synchronous", "best_effort"] | ThresholdMode
 PreviewMode = Literal["preview_first", "apply_directly"]
 
 
+LINE_TEXT_MAX = 8_000
+
+
+class LineEdit(BaseModel):
+    """#700 (FR-LITE-8, FR-REWRITE-12): a direct correction of one line: the message's
+    ``event_id``, or its ``turn`` (and ``beat`` when the turn has several messages), and its
+    ``new_text``. Planned with no model call."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event_id: str | None = Field(default=None, min_length=26, max_length=26)
+    turn: StrictInt | None = Field(default=None, ge=1)
+    beat: StrictInt | None = Field(default=None, ge=0)
+    new_text: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=LINE_TEXT_MAX),
+        BeforeValidator(trim_as_sent(LINE_TEXT_MAX)),
+    ]
+
+    @model_validator(mode="after")
+    def _target(self) -> LineEdit:
+        if (self.event_id is None) == (self.turn is None):
+            raise ValueError("a line edit names its line by event_id or by turn, not both")
+        if self.beat is not None and self.turn is None:
+            raise ValueError("beat goes with turn")
+        return self
+
+
 class RewriteRequest(BaseModel):
-    """``POST /stories/{id}/rewrites``: an instruction about the story's past, how conflicts
-    resolve (``synchronous`` by default) and whether to preview first (the default)."""
+    """``POST /stories/{id}/rewrites``: an instruction about the story's past (or, #700, a
+    direct ``line_edit``: exactly one of the two), how conflicts resolve (``synchronous`` by
+    default) and whether to preview first (the default)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -60,9 +89,16 @@ class RewriteRequest(BaseModel):
         },
     )
 
-    instruction: Instruction
+    instruction: Instruction | None = None
+    line_edit: LineEdit | None = None
     resolution_mode: ResolutionMode = "synchronous"
     preview: PreviewMode = "preview_first"
+
+    @model_validator(mode="after")
+    def _one(self) -> RewriteRequest:
+        if (self.instruction is None) == (self.line_edit is None):
+            raise ValueError("a rewrite takes an instruction or a line_edit, exactly one")
+        return self
 
     def mode(self) -> tuple[str, str | None]:
         """The stored ``(resolution_mode, threshold_severity)``."""
@@ -165,6 +201,13 @@ class Preview(BaseModel):
     notifications: list[dict[str, Any]] = Field(default_factory=list)
     timing_uncertain: list[dict[str, Any]] = Field(default_factory=list)
     suggested_ports: list[dict[str, Any]] = Field(default_factory=list)
+    reach: dict[str, Any] | None = Field(
+        default=None,
+        exclude_if=lambda r: r is None,
+        description="#700 (FR-LITE-8): a Lite rewrite's reach: `method` (`model_searched`), "
+        "the turns `searched` (`from_turn`, `to_turn`) and whether the call cap or a failed "
+        "call left lines `truncated` (the session then previews first).",
+    )
 
 
 class RewriteSession(BaseModel):

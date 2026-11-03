@@ -1452,6 +1452,31 @@ class RewriteNoop(EpistrelError):
     http_status = 422
 
 
+class LineNotEditable(EpistrelError):
+    """A line edit names an event that is not a message of the story's transcript (a State
+    change, an ingested non-text event; #700): 422, ``details.event_kind``. Nothing is
+    written."""
+
+    code = "line_not_editable"
+    http_status = 422
+
+
+class BeatRequired(EpistrelError):
+    """A line edit names a turn with several messages and no ``beat`` (#700): 422,
+    ``details.beats`` (``[{beat, event_id, speaker_kind}]``). Nothing is written."""
+
+    code = "beat_required"
+    http_status = 422
+
+
+class RewriteReachFailed(EpistrelError):
+    """A Lite rewrite's reach pass searched no part of the transcript (every chunk's call failed
+    after #53's retries; #700): 503, ``details.retryable``. No session is written."""
+
+    code = "rewrite_reach_failed"
+    http_status = 503
+
+
 class RewriteSessionNotFound(EpistrelError):
     """No rewrite session has this id in this story (#223): 404."""
 

@@ -231,8 +231,19 @@ async def view(conn: AsyncConnection, row: Any) -> Backfill:
         started_at=row.started_at,
         finished_at=row.finished_at,
         error=row.error,
-        report=dict(row.report or {}),
+        report=_report(row.report),
     )
+
+
+def _report(stored: Any) -> dict[str, Any]:
+    """The report a read gets: a materialization's card, never its entries (#698: they are
+    omniscient; ``GET /operations/{id}?viewpoint=omniscient`` has them)."""
+    from epistrel.core.genesis.deferred import card
+
+    found = dict(stored or {})
+    if isinstance(found.get("materialization"), dict):
+        found["materialization"] = card(found["materialization"])
+    return found
 
 
 async def latest_row(conn: AsyncConnection, story_id: str) -> Any:

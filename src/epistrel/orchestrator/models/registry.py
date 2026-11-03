@@ -27,6 +27,7 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic.json_schema import SkipJsonSchema
 
 
 class ContentCategory(StrEnum):
@@ -1108,6 +1109,9 @@ class RewriteRef(BaseModel):
     turn: int | None = Field(default=None, ge=1)
     beat: int | None = Field(default=None, ge=0)
     quote: str | None = Field(default=None, max_length=2_000)
+    event_id: SkipJsonSchema[str | None] = Field(default=None, exclude_if=lambda v: v is None)
+    """#700: a line edit's own message (never in the model's schema: an author's direct
+    target, resolved before the plan)."""
 
 
 class RewriteChange(BaseModel):

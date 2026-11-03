@@ -1057,13 +1057,80 @@ async def kept_author_facts(conn: AsyncConnection, story_id: str, before_turn: i
     return lite_notes((), kept)
 
 
-def lite_notes(steers: Sequence[tuple[str, str]], facts: Sequence[str]) -> str:
-    """#244: the Lite prompt's author blocks, as author notes."""
+CORRECTIONS_MAX = 50
+"""#700: at most the 50 most recent active corrections in the "Author corrections" block."""
+
+
+async def author_corrections(conn: AsyncConnection, story_id: str) -> list[str]:
+    """#700 (FR-LITE-8): the "Author corrections" block's lines, oldest first: each active
+    ``lite_note`` part's text, and (under Lite, after a downgrade) each active structured
+    rewrite's instruction ("Author correction: ..."), whose record parts already apply through
+    the overlay. Position-less: they survive truncation like any amendment (FR-STORE-21)."""
+    from epistrel.core.tables import amendment_parts, amendments, rewrite_sessions
+
+    a, p, r = amendments.c, amendment_parts.c, rewrite_sessions.c
+    notes = await conn.execute(
+        select(a.tx_time, p.patch_after)
+        .select_from(amendment_parts.join(amendments, a.id == p.amendment_id))
+        .where(
+            p.story_id == story_id,
+            p.kind == "lite_note",
+            p.status == "active",
+            a.status == "active",
+        )
+    )
+    found: list[tuple[Any, str]] = [(t, str((after or {}).get("text") or "")) for t, after in notes]
+    structured = await conn.execute(
+        select(a.tx_time, r.instruction)
+        .select_from(amendments.join(rewrite_sessions, r.id == a.session_id))
+        .where(
+            a.story_id == story_id,
+            a.status == "active",
+            a.kind == "rewrite",
+            r.pipeline == "structured",
+            r.instruction.is_not(None),
+        )
+    )
+    found.extend((t, "Author correction: " + str(text)) for t, text in structured)
+    found = sorted((f for f in found if f[1]), key=lambda f: f[0])[-CORRECTIONS_MAX:]
+    return [text for _, text in found]
+
+
+async def lite_note_parts(conn: AsyncConnection, story_id: str) -> list[tuple[str, str]]:
+    """#700: the story's active ``lite_note`` parts, oldest first: ``(part_id, text)`` (an
+    upgrade converts each like a lasting author fact)."""
+    from epistrel.core.tables import amendment_parts, amendments
+
+    a, p = amendments.c, amendment_parts.c
+    found = await conn.execute(
+        select(p.id, p.patch_after)
+        .select_from(amendment_parts.join(amendments, a.id == p.amendment_id))
+        .where(
+            p.story_id == story_id,
+            p.kind == "lite_note",
+            p.status == "active",
+            a.status == "active",
+        )
+        .order_by(p.tx_from, p.id)
+    )
+    return [(str(i), str((after or {}).get("text") or "")) for i, after in found]
+
+
+def lite_notes(
+    steers: Sequence[tuple[str, str]], facts: Sequence[str], corrections: Sequence[str] = ()
+) -> str:
+    """#244: the Lite prompt's author blocks, as author notes (#700: "Author corrections"
+    right after the facts)."""
     blocks: list[str] = []
     if facts:
         blocks.append(
             "Author facts (true from where each was set; a later fact wins over an earlier "
             "one):\n" + "\n".join(f"- {f}" for f in facts)
+        )
+    if corrections:
+        blocks.append(
+            "Author corrections (the story's history as the author corrected it):\n"
+            + "\n".join(f"- {c}" for c in corrections)
         )
     if steers:
         blocks.append("Author direction (this turn only): " + " ".join(text for _, text in steers))
@@ -1083,11 +1150,13 @@ __all__ = [
     "DirectiveRequest",
     "DirectiveResult",
     "apply_directive",
+    "author_corrections",
     "author_facts",
     "consume_steers",
     "kept_author_facts",
     "lite_fact_count",
     "lite_facts",
+    "lite_note_parts",
     "lite_notes",
     "precheck",
     "queued_steers",

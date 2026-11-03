@@ -229,7 +229,7 @@ async def _discarded(engine: AsyncEngine, story: str) -> int:
     )
 
 
-@pytest.mark.part("M7", "FR-STORE-30,32")
+@pytest.mark.part("M7", "FR-STORE-30,32; FR-CONC-15")
 async def test_s_prune__policy(stub_settings: Settings, engine: AsyncEngine) -> None:
     async with respond_client(stub_settings, engine) as (client, _):
         opted = await _aged_tail(client, engine, 10)
@@ -286,7 +286,7 @@ async def test_s_prune__policy(stub_settings: Settings, engine: AsyncEngine) -> 
         assert "prune_policy" in index.indexdef
 
 
-@pytest.mark.part("M7", "FR-STORE-18,19,28,32; FR-FB-2")
+@pytest.mark.part("M7", "FR-STORE-1,18,19,28,32; FR-FB-2")
 async def test_s_prune__follow_ups(
     stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -605,3 +605,57 @@ async def test_s_prune__never_suggests(stub_settings: Settings, engine: AsyncEng
 async def _execute_sql(engine: AsyncEngine, sql: str, **params: Any) -> None:
     async with engine.begin() as conn:
         await conn.execute(text(sql), params)
+
+
+@pytest.mark.part("M7", "FR-STORE-1,32; FR-EXT-21")
+async def test_s_prune__outcomes_kept(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """S-PRUNE (FR-EXT-21): a truncated tail whose turn requested an external effect that was
+    confirmed (its outbox row, the outcome record's home) is pruned: the tail's events and
+    transcript are gone, the outbox row stays (with its status) and its operation stays as the
+    ``pruned`` marker the row points at."""
+    from epistrel.core.ids import new_ulid
+
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, actor = await _story(client, engine)
+        for _ in range(3):
+            found = await respond(client, story, respond_body(actor, FIRST))
+            assert found.status_code == 200, found.text
+        (third,) = await rows(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "AND narrative_turn = 3",
+            s=story,
+        )
+        outbox = new_ulid()
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO external_effect_outbox (id, story_id, provider_name, value_name, "
+                    "effect, status, operation_id, narrative_turn, turn_variant, membership, "
+                    "membership_tx) SELECT :i, :s, 'bank', 'gold', "
+                    '\'{"kind": "change", "state": "gold", "delta": -5}\'::jsonb, '
+                    "'confirmed', o.operation_id, o.narrative_turn, o.turn_variant, "
+                    "o.membership, o.membership_tx FROM operations o WHERE o.operation_id = :o"
+                ),
+                {"i": outbox, "s": story, "o": str(third.operation_id)},
+            )
+        await _ok(
+            await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+        )
+        await _ok(await _prune(client, story, ignore_warnings=True))
+        tail = await scalar(
+            engine,
+            "SELECT count(*) FROM transcript_messages WHERE story_id = :s AND narrative_turn > 1",
+            s=story,
+        )
+        assert tail == 0
+        (row,) = await rows(
+            engine, "SELECT status FROM external_effect_outbox WHERE id = :i", i=outbox
+        )
+        assert row.status == "confirmed"
+        marker = await scalar(
+            engine,
+            "SELECT membership::text FROM operations WHERE operation_id = :o",
+            o=str(third.operation_id),
+        )
+        assert marker == "pruned"

@@ -60,3 +60,60 @@ async def test_s_derived_views__m4(
     copied = {r.text for r in await cs.outputs(engine, forked.story_id)}
     assert copied == {"Bobby kept busy early on."}
     assert "Bobby kept busy early on." in await _view(engine, forked.story_id, CHECKPOINT)
+
+
+async def _recorded_ops(engine: AsyncEngine, story: str, through: int) -> set[str]:
+    """The operations whose events the as-originally-recorded view at ``through`` holds."""
+    from epistrel.core.views import Checkpoint, as_originally_recorded
+
+    view = await as_originally_recorded(engine, story, Checkpoint(through))
+    return {e.operation_id for e in view.events}
+
+
+@pytest.mark.part("M7", "FR-STORE-23,26")
+async def test_s_derived_views__m7(
+    engine: AsyncEngine, pg_url: str, drained_embedding_jobs: None
+) -> None:
+    """S-DERIVED-VIEWS M7: ten turns; after turn 10 a reflection is computed from turns 1-8 and
+    another from turns 5-9. The first is in the corrected history through 8 (FR-STORE-26), and
+    neither is in the as-originally-recorded view at 8: no event of either consolidation is
+    there (they were recorded after turn 8's boundary), while every turn through 8 is."""
+    from tests.event_support import rows
+
+    models = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    models.bind(engine)
+    w = await cs.story(engine, cs.dials(window_memories=1_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(engine, story, 10, actor=bobby, name="Bobby", does=True)
+    models.stub.script(
+        "consolidation",
+        [
+            cs.answer(reflections=[("Bobby kept busy early on.", "observation", [0, 7])]),
+            cs.answer(reflections=[("Bobby kept busy later.", "observation", [0, 4])]),
+        ],
+    )
+    await consolidate_window(engine, story, Window(1, CHECKPOINT), models=models)
+    await consolidate_window(engine, story, Window(5, CHECKPOINT + 1), explicit=True, models=models)
+    assert "Bobby kept busy early on." in await _view(engine, story, CHECKPOINT)
+    consolidations = {
+        str(r.operation_id)
+        for r in await rows(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'consolidation'",
+            s=story,
+        )
+    }
+    assert len(consolidations) >= 2
+    recorded = await _recorded_ops(engine, story, CHECKPOINT)
+    assert not consolidations & recorded
+    turns = {
+        str(r.operation_id)
+        for r in await rows(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "AND narrative_turn <= :n",
+            s=story,
+            n=CHECKPOINT,
+        )
+    }
+    assert turns <= recorded

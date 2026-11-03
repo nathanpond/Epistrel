@@ -1283,7 +1283,7 @@ async def _no_gate(groups: Any) -> None:
     return None
 
 
-@pytest.mark.part("M7", "FR-ADMIN-9")
+@pytest.mark.part("M7", "FR-ADMIN-9; FR-STORE-23")
 async def test_s_erasure_boundary__m7_rewrite(
     erasure_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
@@ -1292,7 +1292,9 @@ async def test_s_erasure_boundary__m7_rewrite(
     from the first and Bobby from the second. The first session's plan does not reference
     Marcus: it applies. The second's references Bobby: the apply is 409
     ``erased_subject_referenced`` (withholding the subject id), the session ``abandoned``, no
-    amendment written, and its stored instruction no longer names Bobby (#123's redaction)."""
+    amendment written, and its stored instruction no longer names Bobby (#123's redaction).
+    The erased story's as-originally-recorded view shows the erasure's marker (its id and
+    time only, FR-STORE-23)."""
     from tests import rewrite_support as rs
 
     async with respond_client(erasure_settings, engine) as (client, epistrel):
@@ -1327,3 +1329,13 @@ async def test_s_erasure_boundary__m7_rewrite(
         assert row.state == "abandoned"
         assert not e.naming(row.instruction, ["Bobby"])
         assert await rs.count(engine, "amendments", erased.story_id) == 0
+        recorded = await client.get(
+            f"/stories/{erased.story_id}/history",
+            params={"view": "as_recorded", "viewpoint": "omniscient"},
+            headers=e.WRITE,
+        )
+        assert recorded.status_code == 200, recorded.text
+        markers = recorded.json()["erasure_markers"]
+        assert markers
+        assert all(set(m) <= {"erasure_id", "at", "type", "from_turn", "to_turn"} for m in markers)
+        assert erased.ed.bobby not in json.dumps(markers)

@@ -876,3 +876,88 @@ async def engine_reset_coverage(engine: AsyncEngine, story: str) -> None:
             ),
             {"s": story},
         )
+
+
+@pytest.mark.part("M7", "FR-LITE-6,8; FR-PROF-9")
+async def test_i_19__m7_lite_corrections(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#700: a Lite rewrite whose correction states a world change ("Bobby is forty.") applies
+    with a ``lite_note`` part. Switched to Full, the backfill parses the note like a lasting
+    author fact (``directive_parse``) and writes it as an author-tier fact; its report counts
+    it among ``author_facts.converted``, keyed ``note:<part id>``."""
+    import json
+
+    forty = "Bobby is forty."
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, _, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        stub = lib.models.stub
+        assert stub is not None
+        stub.when(
+            "",
+            json.dumps(
+                {
+                    "changes": [
+                        {
+                            "kind": "proposition",
+                            "subject": "Bobby",
+                            "predicate": "age",
+                            "literal": 40,
+                        }
+                    ]
+                }
+            ),
+            purpose="rewrite_parse",
+        )
+        stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
+        opened = await ok(
+            await client.post(
+                f"/stories/{story}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": forty, "preview": "apply_directly"},
+                headers=WRITE,
+            ),
+            201,
+        )
+        assert opened["state"] == "applied", opened
+        (note,) = await rows(
+            engine,
+            "SELECT id, patch_after->>'text' AS body FROM amendment_parts "
+            "WHERE story_id = :s AND kind = 'lite_note'",
+            s=story,
+        )
+        assert note.body == f"Author correction: {forty}"
+        stub.when(
+            forty,
+            json.dumps(
+                {
+                    "classification": "durable",
+                    "temporal_scope": "now",
+                    "changes": [
+                        {
+                            "kind": "proposition",
+                            "subject": "Bobby",
+                            "predicate": "age",
+                            "literal": 40,
+                        }
+                    ],
+                }
+            ),
+            purpose="directive_parse",
+        )
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        (report,) = await rows(
+            engine, "SELECT report FROM story_backfills WHERE id = :b", b=done["id"]
+        )
+        summary = report.report["author_facts"]
+        assert f"note:{note.id}" in summary["ids"]
+        authored = await rows(
+            engine,
+            "SELECT pr.literal FROM facts f JOIN propositions pr ON pr.id = f.proposition_id "
+            "WHERE f.story_id = :s AND f.authority = 'author' AND f.membership = 'active'",
+            s=story,
+        )
+        assert [a.literal["value"] for a in authored] == [40]

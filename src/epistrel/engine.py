@@ -2859,8 +2859,15 @@ class Engine:
         principal = self.require_principal(ctx)
         digest = hashlib.sha256(data).hexdigest()
 
+        async def embed(conn: AsyncConnection, story_id: str) -> None:
+            # #705: the imported story's active memories get vectors in the background;
+            # retrieval is lexical-only until then.
+            await reembed_job.schedule(conn, reembed_job.EMBED, story_id)
+
         async def run(_: RequestContext) -> bundle_import.Imported:
-            return await bundle_import.import_story(self.db, data, request, principal=principal)
+            return await bundle_import.import_story(
+                self.db, data, request, principal=principal, blobs=self._blob_put, after=embed
+            )
 
         return await self._keyed(
             ctx,
@@ -3122,6 +3129,15 @@ class Engine:
                     logger.debug("export secret scan skipped an undecryptable key")
                     continue
         return tuple(found)
+
+    def _blob_put(self, sha256: str, data: bytes) -> None:
+        """#705: an imported media blob written under its (verified) checksum: staged, then
+        moved into place (kept when the store has it already)."""
+        staged = self.media.staging_path(new_ulid())
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(data)
+        if not self.media.put(staged, sha256):
+            staged.unlink(missing_ok=True)
 
     def _blob_bytes(self, sha256: str) -> bytes:
         """#704: a media blob's bytes, for an export's ``media/<sha256>`` member."""
@@ -6544,7 +6560,11 @@ class Engine:
                 ctx,
                 story_id,
                 EntryPoint.REWRITE,
-                [GateText("body.instruction", request.instruction)],
+                [
+                    GateText("body.instruction", request.instruction or "")
+                    if request.line_edit is None
+                    else GateText("body.line_edit.new_text", request.line_edit.new_text)
+                ],
             )
             await rewrite_session.require_planner(self.db, story_id)
             return await rewrite_session.open_session(

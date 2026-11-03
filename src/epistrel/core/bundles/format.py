@@ -11,7 +11,9 @@ OpenAPI document's ``components.schemas``.
   from the table's columns: a ULID ``char(26)`` is a string of that pattern, a timestamp a
   ``date-time`` string, ``jsonb`` unconstrained, a number or a boolean as such, every nullable
   column ``[T, null]``, and no other property (``additionalProperties: false``); the columns a
-  bundle never carries (``COLUMNS_NOT_EXPORTED``) are left out.
+  bundle never carries (``COLUMNS_NOT_EXPORTED``) are left out. A column is required when the
+  row could not be written without it (``NOT NULL`` with no default); an export writes them
+  all.
 
 ````validate_line`` checks one decoded line against its schema (tests and #250's import), with a
 small checker for the subset of JSON Schema these schemas use (no new dependency).
@@ -88,9 +90,15 @@ def record_schema(table: Table) -> dict[str, Any]:
     columns = [c for c in table.c if c.name not in dropped and c.computed is None]
     return {
         "title": RECORD.format(table=table.name),
+        "description": f"One line of a story bundle's `records/{table.name}.jsonl` (or "
+        f"`catalog/{table.name}.jsonl`): a `{table.name}` row as exported (FR-STORE-7).",
         "type": "object",
         "properties": {c.name: _column_schema(c) for c in columns},
-        "required": sorted(c.name for c in columns),
+        "required": sorted(
+            c.name
+            for c in columns
+            if not c.nullable and c.server_default is None and c.default is None
+        ),
         "additionalProperties": False,
     }
 
@@ -99,6 +107,9 @@ def _manifest_schema() -> dict[str, Any]:
     nullable_object: dict[str, Any] = {"type": ["object", "null"]}
     return {
         "title": MANIFEST,
+        "description": "A story bundle's `manifest.json`: its format version, the source story "
+        "and revision, the content rating and engine profile, every member with its SHA-256, and "
+        "the counts (FR-STORE-7).",
         "type": "object",
         "properties": {
             "format_version": {"type": "string", "pattern": r"^\d+\.\d+\.\d+$"},
@@ -146,6 +157,8 @@ def _media_schema() -> dict[str, Any]:
     properties["sha256"] = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
     return {
         "title": MEDIA,
+        "description": "One line of a story bundle's `media.jsonl`: a media asset the story's "
+        "rows name, its bytes the member `media/<sha256>` (FR-STORE-7).",
         "type": "object",
         "properties": properties,
         "required": sorted(properties),
@@ -157,7 +170,12 @@ def bundle_schemas() -> dict[str, dict[str, Any]]:
     """Every bundle line schema by component name (see the module docstring)."""
     found: dict[str, dict[str, Any]] = {
         MANIFEST: _manifest_schema(),
-        EVENT: {**record_schema(metadata.tables["events"]), "title": EVENT},
+        EVENT: {
+            **record_schema(metadata.tables["events"]),
+            "title": EVENT,
+            "description": "One line of a story bundle's `events.jsonl`: an event as recorded, "
+            "its payload valid for its type (FR-STORE-7).",
+        },
         MEDIA: _media_schema(),
     }
     tables = [

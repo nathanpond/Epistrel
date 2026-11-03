@@ -134,7 +134,7 @@ async def _previous(
     f = facts.c
     return (
         await conn.execute(
-            select(f.id, f.proposition_id, f.narrative_turn, f.source_event_ids)
+            select(f.id, f.proposition_id, f.narrative_turn, f.source_event_ids, f.provenance)
             .where(
                 f.story_id == story_id,
                 f.operation_id == op_id,
@@ -167,10 +167,12 @@ def statement(
     event_id: str | None,
     speaker: str | None,
     fact_id: str | None = None,
+    source: str = "transcript",
 ) -> dict[str, Any]:
     """One statement of a conflict (``statement_id = <event_id>:<start>-<end>``; extraction keeps
     no span here, so ``0-0``). No text: the listing quotes the transcript (an erasure's
-    redaction holds)."""
+    redaction holds). ``source``: ``transcript``, or ``seed`` for a materialized genesis seed
+    (#698: the backfill's earliest statement, at turn 0)."""
     return {
         "statement_id": f"{event_id}:0-0",
         "event_id": event_id,
@@ -179,7 +181,7 @@ def statement(
         "beat": beat,
         "position": turn,
         "speaker": speaker,
-        "source": "transcript",
+        "source": source,
         "value": value_of(proposition),
         "proposition": proposition.model_dump(mode="json"),
         "fact_id": fact_id,
@@ -206,6 +208,7 @@ async def _earlier(
         event_id=event_id,
         speaker=None if speaker is None else str(speaker),
         fact_id=str(earlier.id),
+        source="seed" if str(getattr(earlier, "provenance", "")) == "seed" else "transcript",
     )
 
 

@@ -11840,3 +11840,99 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
 - **Decision (S-PROFILE-SWITCH round trip, partial):** `test_s_profile_switch__round_trip` covers 200 Lite turns with the prompt-only clock, pins and custom instructions, the upgrade with backfill (the meeting becomes Jenni's canon scheduled event; the clock keeps the Lite era's pacing fold), and the return to Lite (data dormant, pins and instructions back in the prompt).
   **Not built:** (a) resolving "at 17:00" to a scheduled time: the extraction time grammar has no clock times, so the meeting's planned time stays unset; (b) per-character beliefs after the backfill: the backfill writes facts, not beliefs. Both need a grammar or a pipeline change beyond this fix. #709 stays open for them.
   **Issue:** #709
+- **Decision (deferred clock and States, #698):** `core.genesis.deferred` now materializes the `states` and `clock` items too (`MATERIALIZED_HERE` gains them).
+  - **When.** Only once the configuration that runs them applies: the States writer refuses a story with States off. Under `forward_only` they materialize with the rest. Under `backfill`, the start materializes `BACKFILL_START` (structured, episodic, partitions), and the completion's `apply_held` runs `on_configuration` under a control operation of its own for the clock and States.
+  - **Clock.** The scenario's settings go through the clock definition's `PATCH /clock` members (`states.update_definition`); the anchor is the clock's first `clock_anchor` fact at position 0 (`commit_anchor`, from the new `starting_state.anchor_statement`). A member the story changed from its default, or an anchor it already has, is `kept_existing` (a new `MaterializedOutcome`). The settings `PATCH /clock` cannot change (grace, tolerances) are not written.
+  - **States.** `write_states`, minus any State whose name the story already declares (`kept_existing`).
+  - **A second pass.** The cast's definition prose is not re-read once the structured items were materialized (it would duplicate background facts).
+  - **Not undone.** A cancelled backfill cannot undo a clock setting written at its completion; it is written only after completion, so this does not arise.
+  **Issue:** #698
+- **Decision (materialization report, #698):** the report is `{counts, by_outcome, conflicts, entries}`, with the #149 `MaterializedEntry` per item (outcomes, a merge loser's winner, loser and rule). It is kept on the operation that wrote it (`turn_report.materialization`).
+  - `GET /operations/{id}` returns it in full to an omniscient read and as its card (`counts`, `by_outcome`, `conflicts`) to any other.
+  - `GET /stories/{id}/backfill` always shows the card: the route has no viewpoint, and the entries name private seeds.
+  **Issue:** #698
+- **Decision (backfill statement source, #698, Rule 1):** a conflict statement from a materialized seed now reads `source: seed` (it read `transcript`, with no quote).
+  **Issue:** #698
+- **Decision (#229 queue fold, #698):** a new version of a profile folds into each queued, unclaimed upgrade backfill toward it (`store._fold_queued`).
+  - Its capabilities become what the latest version adds to the story's pinned configuration, with the story's overrides.
+  - When nothing is left, the backfill is superseded and the pin cleared.
+  - A claimed (running) backfill is left alone.
+  **Issue:** #698
+- **Decision (Rule 1, #698):** `profiles.story._write_assignment` called `deferred.on_configuration` and `summary_rebuild.on_configuration` twice (a merge duplicate); now once. `_write_overrides` now calls `deferred.on_configuration`: an override that turns a capability on materializes its deferred content, as an assignment does.
+  **Issue:** #698
+- **Decision (tests, #698):** I-27 M7 gains `clock_states`, `brother` (each #230 policy) and `checkpoints` (the corrected canon at checkpoint 5 holds the seeds, the as-recorded one does not, no re-verification, and the next turn's claim is contradicted by the seed). C-16 M7 gains `queued_decrease`.
+  **Issue:** #698
+- **Decision (line edit, #700):** `POST /stories/{id}/rewrites` takes `line_edit {event_id | turn (+ beat), new_text}`. It is exclusive with `instruction`; both or neither is the standard 422.
+  - **Gate.** The input gate checks `new_text` only.
+  - **Plan.** `lite.line_edit_change` resolves the message and plans one record change through the planner. `RewriteRef.event_id` is kept out of the model's schema with `SkipJsonSchema`. There is no parse, reach or output-gate call, and the apply makes none either (zero calls, asserted).
+  - **Preview.** The change carries `old_text`.
+  - **Errors.** 422 `line_not_editable {event_kind}`, 422 `beat_required {beats}`, 409 `record_inactive` (with `dormant_variant`), and 422 `rewrite_noop`.
+  - **Both pipelines.** It works on structured stories too.
+  - **Redo.** A redo of a line-edit amendment re-plans through #238's redo path; it was not changed.
+  **Issue:** #700
+- **Decision (`lite_note`, #700):** migration 0128 adds `lite_note` to `amendment_parts.kind` and its CHECK (`patch_after = {text}` only). `LiteNotePartDraft` is the draft.
+  - **When.** A Lite session records `plan.lite_note = "Author correction: " + instruction` when the parse gave changes Lite cannot hold (`lite_no_canon`): the world-change signal, since `lite_rewrite_parse` is not built.
+  - **Undo.** An undo reverts the note with its amendment; there is no inverse part.
+  - **Prompt.** `directives.author_corrections` builds the Lite prompt's "Author corrections" block, after "Author facts". It lists the active notes plus, after a downgrade, each active structured rewrite's instruction, oldest first, at most 50.
+  - **Upgrade.** The backfill parses each active note like a lasting author fact (keyed `note:<part id>`) and writes it as an author-tier fact at position 0. That is #699's writer, not proposition parts on the original amendment, which is a deviation.
+  **Issue:** #700
+- **Decision (chunked reach, #700):** `lite.reach` now works as follows.
+  - **Summary first.** One call over the active summary segments; hits flag their turn ranges.
+  - **Transcript.** Then the transcript in chunks of `CHUNK_LINES = 60`, flagged ranges first and the rest newest first, within `MAX_CALLS = 24` (summary and re-check calls included).
+  - **Duplicates.** Duplicate hits merge: `conflicts` beats `mentions`, a fix beats none.
+  - **Re-check.** One call over the fixes, marked with a "Re-check" prefix. A `conflicts` hit quoting a fixed text means that fix is not clean (`recheck_failed`, listed, never applied).
+  - **Preview.** `preview.reach {method: model_searched, searched {from_turn, to_turn}, truncated}`. A truncated search forces `preview_first`. When no chunk succeeds the answer is 503 `rewrite_reach_failed {retryable}`.
+  - **Empty story.** A story with no line makes no reach call (`test_rewrite_lite_interim` updated).
+  - **Constants.** The caps are module constants, not deployment settings.
+  **Issue:** #700
+- **Decision (summary rebuild, #700):** `core.summary.stale_segments` derives the stale segments at read time. A segment is stale when a record amendment part on one of its turns' transcript lines postdates it. There is no `rebuild_requested_at` column, so a projection rebuild still equals the table.
+  - **Scheduling.** The apply schedules the summary job when it writes event record parts or reverts.
+  - **Rebuild.** The job rebuilds each stale segment first, from the corrected transcript, one level up: the unique index is (turns, level, variant), so the same level cannot hold two. The rebuilt segment names the old one's operation among its sources.
+  - **Superseding.** `included_segments` and the projection's `settle` now hold a named source at any level (the merged-segment rule), so the old one is superseded.
+  - **Degradation.** Until then a Lite reply reports `summary_rebuilding` with cause `corrected_lines`.
+  **Issue:** #700
+- **Decision (not built, #700):** these parts stay open on #700.
+  - The separate `lite_rewrite_parse` purpose (`rewrite_parse` serves) and its clarification shape.
+  - The rating gate on fix texts (#56's output gate runs).
+  - The Lite revalidation read set (#237).
+  - The post-undo reach over lines committed after the amendment.
+  - Parallel reach calls.
+  - The deployment settings for the reach caps.
+  - The six-mode `plan_hash` test.
+  - The C-20, R-07 and C-14 M7 complements.
+  **Issue:** #700
+- **Decision (import validation, #705):** the synchronous import now applies these checks.
+  - **Schemas.** Every line is checked against #704's line schemas (`format.validate_line`), and every event payload against #45's registry. A failure is `corrupt_bundle`, `schema_violation`, with `entry`, `line` and `field`.
+  - **Manifest.** The manifest is checked against its schema (`manifest_invalid`).
+  - **Order.** Members must follow the export's canonical order (`member_order`).
+  - **Newer MINOR.** A newer MINOR of format 1 imports. Unknown fields are dropped and unknown members ignored, both listed in the answer's `warnings` (`unknown_fields`, `unknown_member`).
+  **Issue:** #705
+- **Decision (import contents, #705):** the import writes these.
+  - **Operation.** One committed `import` operation with `turn_report.imported_from {source_story_id, exported_revision, format_version, bundle_sha256}`.
+  - **Story.** The story's `timeline_revision` is `exported_revision + 1` and its `embedding_model_version` is null. The Engine's `after` hook queues the `embed` job in the transaction.
+  - **Media.** Each `media.jsonl` line becomes a new `live` asset of the import's owner. Its id is in the remap, so the story's rows name the new asset. Its bytes are checked against the line's SHA-256 and written through the Engine's media store (`Engine._blob_put`: staged, then `put`) before the transaction. On a refusal the blob stays, content-addressed and unreferenced, for #105's sweep.
+  - **Answer.** `ImportedBody` gains `operation_id` and `warnings`. The I-10 round trip counts the extra operation.
+  **Issue:** #705
+- **Decision (not built, #705, #250, #251):** these stay open on their issues.
+  - The `story_import` background job and `bundle_jobs` rows, `GET /admin/stories/imports/{job_id}`, staging, and lease recovery.
+  - The `importing` status and its 409 gate.
+  - The multipart request with `rating_required`.
+  - `FORMAT_MIGRATIONS` (no older format exists yet).
+  - The `bundle_max_*` deployment settings (module constants serve).
+  - #251's `IMPORT_GATES`: the erasure ledger, the guardrail check, profile attachment, and parking effects.
+
+  The status, the job and the gates change the import's API contract (202 plus a job, against today's 201). Under Rule 4 they are architectural; they need their own pass and are left for `/n8-replan`.
+  **Issue:** #705, #250, #251
+- **Decision (milestone gate):** `pyproject.toml` sets `current_milestone = 7`. Every M7 part docs/04 §15 plans now exists, and `check-parts` and `check-traceability` pass. `--write` adds the new parts' requirement entries to §15.
+  - **C-02.** `test_c_02__m7_bundles`: export and import served under `/admin`.
+  - **C-12.** `test_c_12__m7_as_recorded`.
+  - **C-16.** `per_preset` gains FR-PROF-3: it asserts the four presets.
+  - **I-04.** `test_i_04__m7_as_recorded` (FR-STORE-20,23).
+  - **TIME.** `test_time__m7_views` (FR-STORE-22,23).
+  - **I-10.** `test_i_10__m7_import_unchecked` (FR-RATE-7): an imported tail is held for the reactivation check.
+  - **S-PRUNE.** `outcomes_kept` (FR-EXT-21, FR-STORE-1). `follow_ups` gains FR-STORE-1 (its post-pruning replay) and `policy` gains FR-CONC-15 (a policy change deletes nothing).
+  - **S-RETENTION.** `test_s_retention__m7`.
+  - **S-REWIND, S-DERIVED-VIEWS, S-ORIGINAL-AT-SLOT.** The as-recorded and derived-record clauses, with reflections computed after the checkpoint.
+  - **S-ERASURE-BOUNDARY.** The M7 rewrite test asserts the as-recorded view's erasure markers (FR-STORE-23).
+  - **Renames.** The #700 tests are renamed into S-LITE-REWRITE (`test_s_lite_rewrite__*`) so they map to a docs/04 test ID.
+  **Issue:** milestone gate (#222, #247, #249, #250)

@@ -3791,13 +3791,31 @@ def _import_bundle() -> bytes:
     import io
     import tarfile
 
-    story = json.dumps({"id": "01JB00000000000000000STORY", "name": "Imported"}).encode()
+    story = json.dumps(
+        {
+            "id": "01JB000000000000000000STRY",
+            "name": "Imported",
+            "owner_principal": "p-source",
+            "engine_profile_id": "00000000000000000000PRF001",
+        }
+    ).encode()
     manifest = json.dumps(
         {
             "format_version": "1.0.0",
-            "source_story_id": "01JB00000000000000000STORY",
+            "schema_version": "0000",
+            "source_story_id": "01JB000000000000000000STRY",
             "exported_revision": 0,
-            "files": [{"path": "records/story.json", "sha256": hashlib.sha256(story).hexdigest()}],
+            "exported_at": "2026-11-03T00:00:00+00:00",
+            "exported_by": "p-source",
+            "files": [
+                {
+                    "path": "records/story.json",
+                    "sha256": hashlib.sha256(story).hexdigest(),
+                    "size": len(story),
+                    "records": 1,
+                }
+            ],
+            "counts": {},
         }
     ).encode()
     buffer = io.BytesIO()

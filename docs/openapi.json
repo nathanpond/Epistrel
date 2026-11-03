@@ -17069,6 +17069,18 @@
             ],
             "title": "Idempotency Key"
           },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#705: the story's `import` operation (its `turn_report.imported_from`: the source story, the exported revision, the format version and the bundle's SHA-256).",
+            "title": "Operation Id"
+          },
           "source_story_id": {
             "title": "Source Story Id",
             "type": "string"
@@ -17076,6 +17088,15 @@
           "story_id": {
             "title": "Story Id",
             "type": "string"
+          },
+          "warnings": {
+            "description": "#705: what a bundle of a newer format MINOR carried that this deployment ignored (`unknown_member`, `unknown_fields`), or `media_not_imported`.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -17941,6 +17962,60 @@
         "title": "LikesDislikesPatch",
         "type": "object"
       },
+      "LineEdit": {
+        "additionalProperties": false,
+        "description": "#700 (FR-LITE-8, FR-REWRITE-12): a direct correction of one line: the message's\n``event_id``, or its ``turn`` (and ``beat`` when the turn has several messages), and its\n``new_text``. Planned with no model call.",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "minLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "new_text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "New Text",
+            "type": "string"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn"
+          }
+        },
+        "required": [
+          "new_text"
+        ],
+        "title": "LineEdit",
+        "type": "object"
+      },
       "ListedMemory": {
         "description": "A memory as the omniscient list reads it (#531): ``MemoryView`` and, on a consolidation\noutput, its ``consolidation`` provenance (``None`` on every other memory).",
         "properties": {
@@ -18373,7 +18448,8 @@
                 "seed_audience_unfilled",
                 "state",
                 "clock",
-                "event"
+                "event",
+                "kept_existing"
               ],
               "type": "string"
             },
@@ -21112,6 +21188,19 @@
                 "type": "null"
               }
             ]
+          },
+          "materialization": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#698 (FR-PROF-18): the deferred genesis content the operation materialized (a backfill's operation, or a configuration change's control operation): to a read naming `omniscient`, the full report (`counts` by capability, `by_outcome`, `conflicts`, and `entries`: each item's `field_ref`, `location` and `outcomes`, a merge loser's `winner`, `loser` and `rule`); to any other read, its card (`counts`, `by_outcome`, `conflicts`). Absent for any other operation.",
+            "title": "Materialization"
           },
           "narrative_turn": {
             "anyOf": [
@@ -34882,7 +34971,7 @@
       },
       "RewriteRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/rewrites``: an instruction about the story's past, how conflicts\nresolve (``synchronous`` by default) and whether to preview first (the default).",
+        "description": "``POST /stories/{id}/rewrites``: an instruction about the story's past (or, #700, a\ndirect ``line_edit``: exactly one of the two), how conflicts resolve (``synchronous`` by\ndefault) and whether to preview first (the default).",
         "examples": [
           {
             "instruction": "Bobby actually went to UCLA.",
@@ -34892,10 +34981,27 @@
         ],
         "properties": {
           "instruction": {
-            "maxLength": 4000,
-            "minLength": 1,
-            "title": "Instruction",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "line_edit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LineEdit"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "preview": {
             "default": "preview_first",
@@ -34923,9 +35029,6 @@
             "title": "Resolution Mode"
           }
         },
-        "required": [
-          "instruction"
-        ],
         "title": "RewriteRequest",
         "type": "object"
       },
@@ -43774,6 +43877,7 @@
       },
       "StoryBundleEvent": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `events.jsonl`: an event as recorded, its payload valid for its type (FR-STORE-7).",
         "properties": {
           "authority": {
             "enum": [
@@ -43888,31 +43992,21 @@
         },
         "required": [
           "authority",
-          "beat",
           "category",
-          "character_id",
           "id",
-          "narrative_turn",
           "operation_id",
           "payload",
           "principal",
           "provenance",
-          "redacted_at",
           "seq",
-          "slot_k",
-          "step",
-          "story_id",
-          "turn_variant",
-          "tx_time",
-          "type",
-          "valid_time",
-          "valid_time_minutes"
+          "type"
         ],
         "title": "StoryBundleEvent",
         "type": "object"
       },
       "StoryBundleManifest": {
         "additionalProperties": false,
+        "description": "A story bundle's `manifest.json`: its format version, the source story and revision, the content rating and engine profile, every member with its SHA-256, and the counts (FR-STORE-7).",
         "properties": {
           "config_revision": {
             "type": "integer"
@@ -44003,6 +44097,7 @@
       },
       "StoryBundleMedia": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `media.jsonl`: a media asset the story's rows name, its bytes the member `media/<sha256>` (FR-STORE-7).",
         "properties": {
           "alt_text": {},
           "caption": {},
@@ -44048,6 +44143,7 @@
       },
       "StoryBundleRecord_amendment_parts": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/amendment_parts.jsonl` (or `catalog/amendment_parts.jsonl`): a `amendment_parts` row as exported (FR-STORE-7).",
         "properties": {
           "action": {
             "type": [
@@ -44179,40 +44275,18 @@
           }
         },
         "required": [
-          "action",
           "amendment_id",
           "id",
           "kind",
           "ordinal",
-          "patch_after",
-          "patch_before",
-          "position_bound",
-          "predicate_id",
-          "proposition_id",
-          "qualifiers",
-          "record_id",
-          "record_table",
-          "scope_key",
-          "state_id",
-          "status",
-          "story_id",
-          "strategy",
-          "subject_id",
-          "superseded_fact_ids",
-          "timing_uncertain",
-          "tx_from",
-          "tx_to",
-          "valid_from_minutes",
-          "valid_spec",
-          "valid_to_minutes",
-          "written_fact_id",
-          "written_state_change_id"
+          "story_id"
         ],
         "title": "StoryBundleRecord_amendment_parts",
         "type": "object"
       },
       "StoryBundleRecord_amendments": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/amendments.jsonl` (or `catalog/amendments.jsonl`): a `amendments` row as exported (FR-STORE-7).",
         "properties": {
           "author": {
             "type": "string"
@@ -44276,26 +44350,17 @@
         },
         "required": [
           "author",
-          "authority",
-          "created_at",
           "id",
           "kind",
           "operation_id",
-          "payload",
-          "rationale_record_ids",
-          "redoes",
-          "reverted_by",
-          "session_id",
-          "status",
-          "story_id",
-          "tx_time",
-          "undoes"
+          "story_id"
         ],
         "title": "StoryBundleRecord_amendments",
         "type": "object"
       },
       "StoryBundleRecord_belief_transitions": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/belief_transitions.jsonl` (or `catalog/belief_transitions.jsonl`): a `belief_transitions` row as exported (FR-STORE-7).",
         "properties": {
           "accessibility": {
             "type": "string"
@@ -44448,41 +44513,25 @@
           }
         },
         "required": [
-          "accessibility",
           "antecedent_kind",
           "antecedent_ref",
           "belief_id",
           "confidence_level",
-          "confidence_scalar",
           "holder_character_id",
           "id",
           "kind",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "outcome",
-          "position_beat",
-          "position_slot_k",
-          "position_step",
           "position_turn",
-          "position_variant",
-          "prior",
-          "prior_belief_ids",
-          "source_character_id",
-          "source_event_ids",
-          "state",
           "story_id",
-          "turn_variant",
-          "tx_from",
-          "tx_to",
-          "valid_at"
+          "tx_from"
         ],
         "title": "StoryBundleRecord_belief_transitions",
         "type": "object"
       },
       "StoryBundleRecord_beliefs": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/beliefs.jsonl` (or `catalog/beliefs.jsonl`): a `beliefs` row as exported (FR-STORE-7).",
         "properties": {
           "accessibility": {
             "type": "string"
@@ -44747,55 +44796,19 @@
           "visibility": {}
         },
         "required": [
-          "accessibility",
-          "attributed_confidence_level",
-          "attributed_confidence_scalar",
-          "attributed_held_from",
-          "attributed_held_to",
-          "attributed_holder_id",
-          "beat",
           "confidence_level",
-          "confidence_scalar",
-          "corrected_by",
-          "depth",
-          "disclosure",
-          "held_from_beat",
-          "held_from_slot_k",
-          "held_from_step",
           "held_from_turn",
-          "held_from_variant",
-          "held_to_beat",
-          "held_to_slot_k",
-          "held_to_step",
-          "held_to_turn",
-          "held_to_variant",
           "holder_character_id",
           "id",
-          "inner_belief_id",
-          "kind",
           "lineage_id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "perceived_intent",
           "polarity",
           "proposition_id",
           "provenance",
-          "resolution_operation_id",
-          "source_event_ids",
-          "speaker_character_id",
-          "staged_ref",
-          "state",
-          "step",
           "story_id",
-          "turn_variant",
           "tx_from",
-          "tx_to",
-          "utterance_id",
-          "valid_from",
           "valid_span",
-          "valid_to",
           "visibility"
         ],
         "title": "StoryBundleRecord_beliefs",
@@ -44803,6 +44816,7 @@
       },
       "StoryBundleRecord_capability_coverage": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/capability_coverage.jsonl` (or `catalog/capability_coverage.jsonl`): a `capability_coverage` row as exported (FR-STORE-7).",
         "properties": {
           "capability": {
             "type": "string"
@@ -44847,20 +44861,17 @@
         },
         "required": [
           "capability",
-          "created_at",
           "from_turn",
           "id",
-          "level",
-          "operation_id",
           "source",
-          "story_id",
-          "to_turn"
+          "story_id"
         ],
         "title": "StoryBundleRecord_capability_coverage",
         "type": "object"
       },
       "StoryBundleRecord_certification_runs": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/certification_runs.jsonl` (or `catalog/certification_runs.jsonl`): a `certification_runs` row as exported (FR-STORE-7).",
         "properties": {
           "certification_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -44962,27 +44973,12 @@
           }
         },
         "required": [
-          "certification_id",
-          "checks_certification_id",
-          "created_at",
-          "error",
-          "estimate",
           "fingerprint",
-          "finished_at",
           "id",
-          "job_id",
-          "kind",
-          "outcome",
           "profile_id",
           "profile_version",
-          "reference",
-          "report",
           "requested_by",
-          "sample",
           "seeds",
-          "started_at",
-          "status",
-          "story_id",
           "suites"
         ],
         "title": "StoryBundleRecord_certification_runs",
@@ -44990,6 +44986,7 @@
       },
       "StoryBundleRecord_character_snapshots": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/character_snapshots.jsonl` (or `catalog/character_snapshots.jsonl`): a `character_snapshots` row as exported (FR-STORE-7).",
         "properties": {
           "character_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -45022,7 +45019,6 @@
         "required": [
           "character_id",
           "content",
-          "content_rating_version_id",
           "published_at",
           "source_catalog_id",
           "story_id",
@@ -45033,6 +45029,7 @@
       },
       "StoryBundleRecord_characters": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/characters.jsonl` (or `catalog/characters.jsonl`): a `characters` row as exported (FR-STORE-7).",
         "properties": {
           "age_recorded_at": {
             "format": "date-time",
@@ -45148,40 +45145,19 @@
           }
         },
         "required": [
-          "age_recorded_at",
-          "created_at",
           "definition",
-          "deflection_style",
           "id",
-          "images",
-          "is_player",
-          "languages",
-          "modeled_beat",
-          "modeled_slot_k",
-          "modeled_step",
-          "modeled_turn",
-          "modeled_variant",
           "name",
           "ordinal",
-          "participation_fixed",
-          "participation_role",
-          "persona_id",
-          "persona_snapshot",
-          "promoted_to",
-          "role_id",
-          "safe_fallback_text",
-          "source_catalog_id",
-          "source_catalog_version",
           "story_id",
-          "true_age",
-          "true_age_source",
-          "weight"
+          "true_age"
         ],
         "title": "StoryBundleRecord_characters",
         "type": "object"
       },
       "StoryBundleRecord_client_events": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/client_events.jsonl` (or `catalog/client_events.jsonl`): a `client_events` row as exported (FR-STORE-7).",
         "properties": {
           "client_event_id": {
             "type": "string"
@@ -45205,7 +45181,6 @@
         },
         "required": [
           "client_event_id",
-          "created_at",
           "operation_id",
           "payload_hash",
           "result",
@@ -45216,6 +45191,7 @@
       },
       "StoryBundleRecord_closed_sets": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/closed_sets.jsonl` (or `catalog/closed_sets.jsonl`): a `closed_sets` row as exported (FR-STORE-7).",
         "properties": {
           "asserted_by": {
             "type": "string"
@@ -45259,21 +45235,18 @@
         },
         "required": [
           "asserted_by",
-          "created_at",
           "id",
           "key",
-          "key_set",
           "members",
           "predicate_id",
-          "story_id",
-          "valid_from",
-          "valid_to"
+          "story_id"
         ],
         "title": "StoryBundleRecord_closed_sets",
         "type": "object"
       },
       "StoryBundleRecord_dependency_edges": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/dependency_edges.jsonl` (or `catalog/dependency_edges.jsonl`): a `dependency_edges` row as exported (FR-STORE-7).",
         "properties": {
           "acquisition_kind": {
             "type": [
@@ -45403,34 +45376,22 @@
           }
         },
         "required": [
-          "acquisition_kind",
-          "created_at",
           "dependent_id",
           "dependent_table",
           "edge_type",
           "id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "position_beat",
-          "position_slot_k",
-          "position_step",
-          "position_turn",
-          "position_variant",
-          "source_event_ids",
           "story_id",
           "target_id",
-          "target_kind",
-          "target_predicate_id",
-          "target_subject_id",
-          "turn_variant"
+          "target_kind"
         ],
         "title": "StoryBundleRecord_dependency_edges",
         "type": "object"
       },
       "StoryBundleRecord_directives": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/directives.jsonl` (or `catalog/directives.jsonl`): a `directives` row as exported (FR-STORE-7).",
         "properties": {
           "changes": {},
           "classified_by": {
@@ -45486,18 +45447,12 @@
           }
         },
         "required": [
-          "changes",
           "classified_by",
-          "consumed_by_operation_id",
-          "created_at",
           "disposition",
           "id",
           "kind",
-          "operation_id",
           "principal",
-          "rewrite_session_id",
           "story_id",
-          "temporal_scope",
           "text"
         ],
         "title": "StoryBundleRecord_directives",
@@ -45505,6 +45460,7 @@
       },
       "StoryBundleRecord_divergences": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/divergences.jsonl` (or `catalog/divergences.jsonl`): a `divergences` row as exported (FR-STORE-7).",
         "properties": {
           "asserted_proposition_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -45608,25 +45564,12 @@
         },
         "required": [
           "asserted_proposition_id",
-          "attribution_objective_relation",
-          "believed_belief_id",
-          "believed_proposition_id",
-          "created_at",
           "id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "position_beat",
-          "position_slot_k",
-          "position_step",
           "position_turn",
-          "position_variant",
-          "revealed_by_event_id",
-          "source_event_ids",
           "speaker_character_id",
           "story_id",
-          "turn_variant",
           "utterance_id"
         ],
         "title": "StoryBundleRecord_divergences",
@@ -45634,6 +45577,7 @@
       },
       "StoryBundleRecord_entities": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/entities.jsonl` (or `catalog/entities.jsonl`): a `entities` row as exported (FR-STORE-7).",
         "properties": {
           "canonical_name": {
             "type": "string"
@@ -45683,14 +45627,8 @@
         },
         "required": [
           "canonical_name",
-          "character_id",
-          "created_at",
-          "created_by_operation_id",
-          "descriptors",
-          "gender",
           "id",
           "kind",
-          "merged_into",
           "story_id"
         ],
         "title": "StoryBundleRecord_entities",
@@ -45698,6 +45636,7 @@
       },
       "StoryBundleRecord_entity_aliases": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/entity_aliases.jsonl` (or `catalog/entity_aliases.jsonl`): a `entity_aliases` row as exported (FR-STORE-7).",
         "properties": {
           "alias": {
             "type": "string"
@@ -45724,10 +45663,8 @@
         },
         "required": [
           "alias",
-          "created_at",
           "entity_id",
           "id",
-          "source",
           "story_id"
         ],
         "title": "StoryBundleRecord_entity_aliases",
@@ -45735,6 +45672,7 @@
       },
       "StoryBundleRecord_erasure_ledger": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/erasure_ledger.jsonl` (or `catalog/erasure_ledger.jsonl`): a `erasure_ledger` row as exported (FR-STORE-7).",
         "properties": {
           "applied_at": {
             "format": "date-time",
@@ -45807,19 +45745,10 @@
           }
         },
         "required": [
-          "applied_at",
-          "applied_note",
-          "at",
-          "copied_from",
           "counts",
           "id",
-          "ledger_hash",
-          "ledger_hash_prev",
-          "operation_id",
           "principal",
-          "scan_term_hashes",
           "scope",
-          "story_ref",
           "subject_id",
           "subject_kind"
         ],
@@ -45828,6 +45757,7 @@
       },
       "StoryBundleRecord_exposures": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/exposures.jsonl` (or `catalog/exposures.jsonl`): a `exposures` row as exported (FR-STORE-7).",
         "properties": {
           "fidelity": {
             "enum": [
@@ -45945,26 +45875,13 @@
         "required": [
           "fidelity",
           "id",
-          "inferred",
           "kind",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "position_beat",
-          "position_slot_k",
-          "position_step",
           "position_turn",
-          "position_variant",
           "proposition_id",
-          "resolution_operation_id",
-          "resolved_by_transition",
-          "source_character_id",
           "source_event_id",
-          "source_event_ids",
-          "state",
           "story_id",
-          "turn_variant",
           "witness_character_id"
         ],
         "title": "StoryBundleRecord_exposures",
@@ -45972,6 +45889,7 @@
       },
       "StoryBundleRecord_external_effect_outbox": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/external_effect_outbox.jsonl` (or `catalog/external_effect_outbox.jsonl`): a `external_effect_outbox` row as exported (FR-STORE-7).",
         "properties": {
           "attempts": {
             "type": "integer"
@@ -46092,30 +46010,12 @@
           }
         },
         "required": [
-          "attempts",
-          "beat",
-          "claim_lease_until",
-          "claimed_at",
-          "compensates",
-          "created_at",
           "effect",
-          "erased_at",
-          "executable",
           "id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "outcome_event_id",
           "provider_name",
-          "scope_key",
-          "sent_at",
-          "slot_k",
-          "source_event_ids",
-          "status",
-          "step",
           "story_id",
-          "turn_variant",
           "value_name"
         ],
         "title": "StoryBundleRecord_external_effect_outbox",
@@ -46123,6 +46023,7 @@
       },
       "StoryBundleRecord_facts": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/facts.jsonl` (or `catalog/facts.jsonl`): a `facts` row as exported (FR-STORE-7).",
         "properties": {
           "amendment_part_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -46322,48 +46223,24 @@
           "visibility": {}
         },
         "required": [
-          "amendment_part_id",
-          "anchored_to",
-          "author_locked",
           "authority",
-          "beat",
-          "closed_set_id",
-          "commit_state",
-          "committed_at_position",
-          "holder",
           "id",
           "lineage_id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
           "predicate_id",
-          "proposition_id",
           "provenance",
-          "resolution_level",
-          "slot_k",
-          "source_event_ids",
-          "step",
           "story_id",
           "subject_id",
-          "superseded_by",
-          "supersedes",
-          "thunk_id",
-          "turn_variant",
           "tx_from",
-          "tx_to",
-          "valid_from",
-          "valid_from_inner",
-          "valid_span",
-          "valid_to",
-          "valid_to_inner",
-          "visibility"
+          "valid_span"
         ],
         "title": "StoryBundleRecord_facts",
         "type": "object"
       },
       "StoryBundleRecord_feedback_history": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/feedback_history.jsonl` (or `catalog/feedback_history.jsonl`): a `feedback_history` row as exported (FR-STORE-7).",
         "properties": {
           "id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -46424,11 +46301,8 @@
           "principal",
           "rated_at",
           "rating",
-          "redacted_at",
           "replaced_at",
           "story_id",
-          "tags",
-          "text",
           "turn",
           "variant"
         ],
@@ -46437,6 +46311,7 @@
       },
       "StoryBundleRecord_genesis_deferred": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/genesis_deferred.jsonl` (or `catalog/genesis_deferred.jsonl`): a `genesis_deferred` row as exported (FR-STORE-7).",
         "properties": {
           "capability_needed": {
             "type": "string"
@@ -46482,13 +46357,10 @@
         },
         "required": [
           "capability_needed",
-          "created_at",
           "field_class",
           "field_ref",
           "id",
           "location",
-          "materialized_at",
-          "materialized_operation_id",
           "operation_id",
           "payload",
           "story_id"
@@ -46498,6 +46370,7 @@
       },
       "StoryBundleRecord_memories": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/memories.jsonl` (or `catalog/memories.jsonl`): a `memories` row as exported (FR-STORE-7).",
         "properties": {
           "beat": {
             "type": [
@@ -46745,55 +46618,21 @@
           "visibility": {}
         },
         "required": [
-          "beat",
-          "channel",
-          "character_id",
-          "covered_by",
-          "created_at",
-          "event_type",
-          "fidelity",
-          "holder_character_id",
           "id",
-          "implication_count",
-          "importance",
-          "importance_at",
-          "inputs_hash",
           "kind",
-          "last_accessed_at",
-          "level",
-          "membership",
           "membership_tx",
-          "modality",
-          "model",
-          "model_version",
-          "narrative_turn",
           "operation_id",
-          "participants",
-          "pinned",
-          "pinned_by",
-          "prompt_hash",
-          "proposition_ids",
           "provenance",
-          "quarantine_reason",
-          "quarantined_at",
-          "quarantined_by",
-          "retired_at",
-          "retired_reason",
-          "retired_turn",
-          "retrieval_tier",
-          "source_event_ids",
-          "step",
           "story_id",
           "text",
-          "trust_tier",
-          "turn_variant",
-          "visibility"
+          "trust_tier"
         ],
         "title": "StoryBundleRecord_memories",
         "type": "object"
       },
       "StoryBundleRecord_message_feedback": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/message_feedback.jsonl` (or `catalog/message_feedback.jsonl`): a `message_feedback` row as exported (FR-STORE-7).",
         "properties": {
           "config_fingerprint": {
             "type": [
@@ -46882,22 +46721,13 @@
           }
         },
         "required": [
-          "config_fingerprint",
           "created_at",
           "id",
           "message_id",
-          "models",
           "operation_id",
           "principal",
-          "profile_version",
-          "pruned_at",
-          "quality_status",
           "rating",
-          "rating_version_id",
-          "redacted_at",
           "story_id",
-          "tags",
-          "text",
           "turn",
           "updated_at",
           "variant"
@@ -46907,6 +46737,7 @@
       },
       "StoryBundleRecord_operations": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/operations.jsonl` (or `catalog/operations.jsonl`): a `operations` row as exported (FR-STORE-7).",
         "properties": {
           "attempts": {},
           "base_revision": {
@@ -47055,40 +46886,16 @@
           }
         },
         "required": [
-          "attempts",
-          "base_revision",
-          "checked_guardrails",
-          "committed_at",
-          "config_revisions",
-          "error",
-          "error_code",
-          "idempotency_key",
           "kind",
-          "membership",
-          "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "origin",
-          "parent_variant",
-          "principal",
-          "read_set",
-          "slot_k",
-          "source_window",
-          "stage_log",
-          "started_at",
-          "status",
-          "story_id",
-          "timeline_revision",
-          "turn_report",
-          "turn_stage",
-          "turn_variant",
-          "viewpoint"
+          "principal"
         ],
         "title": "StoryBundleRecord_operations",
         "type": "object"
       },
       "StoryBundleRecord_outbox_outcomes": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/outbox_outcomes.jsonl` (or `catalog/outbox_outcomes.jsonl`): a `outbox_outcomes` row as exported (FR-STORE-7).",
         "properties": {
           "effect_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -47131,15 +46938,10 @@
           }
         },
         "required": [
-          "effect_id",
           "id",
           "kind",
-          "outbox_id",
-          "payload",
-          "raw_hash",
           "received_at",
           "received_via",
-          "settled",
           "story_id"
         ],
         "title": "StoryBundleRecord_outbox_outcomes",
@@ -47147,6 +46949,7 @@
       },
       "StoryBundleRecord_policies": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/policies.jsonl` (or `catalog/policies.jsonl`): a `policies` row as exported (FR-STORE-7).",
         "properties": {
           "age_condition": {
             "type": [
@@ -47227,31 +47030,22 @@
           }
         },
         "required": [
-          "age_condition",
           "applies_to",
-          "created_at",
           "created_by",
-          "effect",
           "id",
-          "idempotency_key",
           "kind",
           "message",
           "name",
-          "retired_at",
-          "retired_by",
           "rule",
           "scope",
-          "scope_id",
-          "story_id",
-          "updated_at",
-          "updated_by",
-          "version"
+          "updated_by"
         ],
         "title": "StoryBundleRecord_policies",
         "type": "object"
       },
       "StoryBundleRecord_predicate_proposals": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/predicate_proposals.jsonl` (or `catalog/predicate_proposals.jsonl`): a `predicate_proposals` row as exported (FR-STORE-7).",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -47309,25 +47103,18 @@
           }
         },
         "required": [
-          "created_at",
-          "decided_at",
-          "decided_by",
-          "decision",
           "filed_by",
           "id",
-          "kind",
-          "object_entity_id",
           "predicate_id",
           "proposed",
-          "status",
-          "story_id",
-          "subject_entity_id"
+          "story_id"
         ],
         "title": "StoryBundleRecord_predicate_proposals",
         "type": "object"
       },
       "StoryBundleRecord_predicates": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/predicates.jsonl` (or `catalog/predicates.jsonl`): a `predicates` row as exported (FR-STORE-7).",
         "properties": {
           "cardinality": {
             "type": "string"
@@ -47407,25 +47194,9 @@
         },
         "required": [
           "cardinality",
-          "containment_of",
-          "created_at",
-          "docs",
-          "exclusions",
           "id",
-          "implications",
-          "inverse_of",
-          "key_qualifiers",
           "layer",
-          "max_cardinality",
           "name",
-          "object_type",
-          "owner",
-          "projection",
-          "qualifiers",
-          "set_object",
-          "story_id",
-          "subject_type",
-          "symmetric",
           "temporal_kind"
         ],
         "title": "StoryBundleRecord_predicates",
@@ -47433,6 +47204,7 @@
       },
       "StoryBundleRecord_promissory_ledger": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/promissory_ledger.jsonl` (or `catalog/promissory_ledger.jsonl`): a `promissory_ledger` row as exported (FR-STORE-7).",
         "properties": {
           "beat": {
             "type": [
@@ -47524,27 +47296,17 @@
           }
         },
         "required": [
-          "beat",
-          "discharged_by_operation",
-          "discharged_mode",
           "id",
-          "kind",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
-          "proposition_id",
-          "source_event_ids",
-          "step",
-          "story_id",
-          "thunk_id",
-          "turn_variant"
+          "story_id"
         ],
         "title": "StoryBundleRecord_promissory_ledger",
         "type": "object"
       },
       "StoryBundleRecord_propositions": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/propositions.jsonl` (or `catalog/propositions.jsonl`): a `propositions` row as exported (FR-STORE-7).",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -47625,31 +47387,21 @@
           }
         },
         "required": [
-          "created_at",
-          "event_id",
           "from_exact",
           "id",
-          "instant_granularity",
-          "literal",
-          "object_id",
-          "object_set",
           "polarity",
           "predicate_id",
-          "qualifiers",
           "story_id",
           "subject_id",
           "to_exact",
-          "valid_from_inner",
-          "valid_from_outer",
-          "valid_span",
-          "valid_to_inner",
-          "valid_to_outer"
+          "valid_span"
         ],
         "title": "StoryBundleRecord_propositions",
         "type": "object"
       },
       "StoryBundleRecord_reconciliation_marks": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/reconciliation_marks.jsonl` (or `catalog/reconciliation_marks.jsonl`): a `reconciliation_marks` row as exported (FR-STORE-7).",
         "properties": {
           "detail": {},
           "id": {
@@ -47689,13 +47441,8 @@
           }
         },
         "required": [
-          "detail",
           "id",
-          "outbox_id",
           "reason",
-          "request_id",
-          "resolved_by",
-          "since",
           "story_id"
         ],
         "title": "StoryBundleRecord_reconciliation_marks",
@@ -47703,6 +47450,7 @@
       },
       "StoryBundleRecord_scheduled_events": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/scheduled_events.jsonl` (or `catalog/scheduled_events.jsonl`): a `scheduled_events` row as exported (FR-STORE-7).",
         "properties": {
           "amendment_part_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -47814,35 +47562,22 @@
           }
         },
         "required": [
-          "amendment_part_id",
-          "beat",
           "grace_minutes",
           "id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "operation_id",
           "owner",
-          "participants",
-          "place_id",
-          "planned_anchor",
           "planned_offset_minutes",
           "proposition_id",
-          "refinement_pause_anchor_rev",
-          "shared_owners",
-          "slot_k",
-          "source_event_ids",
           "status",
-          "step",
-          "stopped_clock_at",
-          "story_id",
-          "turn_variant"
+          "story_id"
         ],
         "title": "StoryBundleRecord_scheduled_events",
         "type": "object"
       },
       "StoryBundleRecord_state_changes": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/state_changes.jsonl` (or `catalog/state_changes.jsonl`): a `state_changes` row as exported (FR-STORE-7).",
         "properties": {
           "amendment_part_id": {
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
@@ -48004,42 +47739,22 @@
           "value": {}
         },
         "required": [
-          "amendment_part_id",
-          "beat",
-          "contingency",
-          "delta",
-          "estimate_meta",
           "id",
           "kind",
-          "membership",
           "membership_tx",
-          "narrative_turn",
-          "new_value",
-          "old_value",
           "operation_id",
-          "paused_for_event_id",
-          "prerequisite_effect_ids",
           "reason",
-          "scope_key",
-          "settles_change_id",
-          "slot_k",
           "source",
-          "source_event_ids",
           "state_id",
-          "status",
-          "step",
-          "stopped_by_event_id",
           "story_id",
-          "turn_variant",
-          "tx_from",
-          "valid_time_minutes",
-          "value"
+          "tx_from"
         ],
         "title": "StoryBundleRecord_state_changes",
         "type": "object"
       },
       "StoryBundleRecord_state_definitions": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/state_definitions.jsonl` (or `catalog/state_definitions.jsonl`): a `state_definitions` row as exported (FR-STORE-7).",
         "properties": {
           "aliases": {
             "type": "array"
@@ -48232,42 +47947,15 @@
           }
         },
         "required": [
-          "aliases",
-          "anchor",
-          "authorization",
-          "bands",
-          "calendar",
-          "constraints",
           "created_by",
-          "elapsed_tolerance_factor",
-          "entity_id",
-          "external_value_name",
-          "grace_minutes",
           "id",
-          "initial_value",
-          "max_unprompted_skip_minutes",
-          "membership",
           "membership_tx",
-          "mode",
           "name",
-          "narrative_turn",
           "operation_id",
           "owner",
-          "pacing_table",
-          "provider_id",
-          "reservation_expiry_minutes",
-          "rules",
           "scope",
-          "silent",
-          "source_event_ids",
-          "stop_at_due_events",
           "story_id",
-          "time_awareness",
-          "time_statement_tolerance_minutes",
-          "transfer",
-          "turn_variant",
           "type",
-          "unit",
           "visibility"
         ],
         "title": "StoryBundleRecord_state_definitions",
@@ -48275,6 +47963,7 @@
       },
       "StoryBundleRecord_state_proposals": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/state_proposals.jsonl` (or `catalog/state_proposals.jsonl`): a `state_proposals` row as exported (FR-STORE-7).",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -48356,26 +48045,19 @@
           }
         },
         "required": [
-          "created_at",
           "created_by_operation_id",
-          "decided_at",
-          "decided_by",
-          "definition_id",
-          "evidence",
           "id",
           "name",
-          "status",
           "story_id",
-          "suggested_entity_id",
           "suggested_scope",
-          "suggested_type",
-          "suggested_unit"
+          "suggested_type"
         ],
         "title": "StoryBundleRecord_state_proposals",
         "type": "object"
       },
       "StoryBundleRecord_stories": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/stories.jsonl` (or `catalog/stories.jsonl`): a `stories` row as exported (FR-STORE-7).",
         "properties": {
           "archived_at": {
             "format": "date-time",
@@ -48519,46 +48201,16 @@
           }
         },
         "required": [
-          "archived_at",
-          "chain_unchecked",
-          "changes_pruned_through_revision",
-          "config_revision",
-          "content_rating_id",
-          "created_at",
-          "embedding_model_version",
           "engine_profile_id",
-          "engine_profile_version_pin",
-          "hot_counts",
           "id",
-          "in_flight_lease_until",
-          "in_flight_turn",
-          "last_control_operation_id",
-          "last_control_revision",
-          "name",
-          "next_turn_index",
-          "owner_principal",
-          "paused_by",
-          "policy_erasure_revision",
-          "predicate_rules",
-          "scenario_id",
-          "scenario_snapshot",
-          "scenario_version",
-          "settings",
-          "status",
-          "status_before_block",
-          "story_epoch",
-          "story_minute_zero",
-          "summary_epoch",
-          "summary_inclusion",
-          "timeline_revision",
-          "turn_concurrency",
-          "turn_queue_max"
+          "owner_principal"
         ],
         "title": "StoryBundleRecord_stories",
         "type": "object"
       },
       "StoryBundleRecord_story_profile_overrides": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/story_profile_overrides.jsonl` (or `catalog/story_profile_overrides.jsonl`): a `story_profile_overrides` row as exported (FR-STORE-7).",
         "properties": {
           "revision": {
             "type": "integer"
@@ -48579,6 +48231,7 @@
       },
       "StoryBundleRecord_story_provider_bindings": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/story_provider_bindings.jsonl` (or `catalog/story_provider_bindings.jsonl`): a `story_provider_bindings` row as exported (FR-STORE-7).",
         "properties": {
           "bound_at": {
             "format": "date-time",
@@ -48594,7 +48247,6 @@
           }
         },
         "required": [
-          "bound_at",
           "external_ids",
           "provider_name",
           "story_id"
@@ -48604,6 +48256,7 @@
       },
       "StoryBundleRecord_thunks": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/thunks.jsonl` (or `catalog/thunks.jsonl`): a `thunks` row as exported (FR-STORE-7).",
         "properties": {
           "beat": {
             "type": [
@@ -48722,33 +48375,20 @@
           }
         },
         "required": [
-          "beat",
           "id",
-          "introduced_event_id",
-          "membership",
           "membership_tx",
-          "narrative_turn",
-          "object_id",
           "open_slot",
           "operation_id",
           "predicate_id",
           "proposition_sketch",
-          "resolution_operation_id",
-          "resolved_fact_id",
-          "salient",
-          "source_event_ids",
-          "state",
-          "step",
-          "story_id",
-          "subject_id",
-          "turn_variant",
-          "valid_time"
+          "story_id"
         ],
         "title": "StoryBundleRecord_thunks",
         "type": "object"
       },
       "StoryBundleRecord_utterances": {
         "additionalProperties": false,
+        "description": "One line of a story bundle's `records/utterances.jsonl` (or `catalog/utterances.jsonl`): a `utterances` row as exported (FR-STORE-7).",
         "properties": {
           "attribution_objective_relation": {
             "type": [
@@ -48832,24 +48472,13 @@
           }
         },
         "required": [
-          "attribution_objective_relation",
-          "belief_relation",
-          "classification",
-          "created_at",
           "event_id",
           "id",
-          "intent",
-          "membership",
           "membership_tx",
-          "narrative_turn",
           "objective_relation",
           "operation_id",
-          "proposition_ids",
-          "source_event_ids",
           "speaker_character_id",
-          "step",
-          "story_id",
-          "turn_variant"
+          "story_id"
         ],
         "title": "StoryBundleRecord_utterances",
         "type": "object"
@@ -53354,6 +52983,19 @@
           "plan_hash": {
             "title": "Plan Hash",
             "type": "string"
+          },
+          "reach": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#700 (FR-LITE-8): a Lite rewrite's reach: `method` (`model_searched`), the turns `searched` (`from_turn`, `to_turn`) and whether the call cap or a failed call left lines `truncated` (the session then previews first).",
+            "title": "Reach"
           },
           "refused_changes": {
             "items": {
@@ -59285,7 +58927,7 @@
     },
     "/admin/stories/import": {
       "post": {
-        "description": "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, checked against its manifest (format `1.x`, every member's SHA-256), every id it owns remapped, and written as a new story in one transaction, owned by `owner` (default: the caller) under `engine_profile_id` (default: its bundle profile when this deployment has it, else the default profile); projections and the subject index are rebuilt. 201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` (`details.reason`) or `unsupported_format_version`. A refusal writes nothing.",
+        "description": "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, checked against its manifest (format `1.x`, every member's SHA-256), every id it owns remapped, every line checked against its schema (`components.schemas` `StoryBundle*`) and every event payload against its type, the members in the export's order, and written as a new story in one transaction, owned by `owner` (default: the caller) under `engine_profile_id` (default: its bundle profile when this deployment has it, else the default profile); projections and the subject index are rebuilt, its media written as new assets of the owner, its revision the exported one plus one (an `import` operation records `imported_from`), and the embed job queued. 201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` (`details.reason`) or `unsupported_format_version`. A refusal writes nothing.",
         "operationId": "import_story",
         "parameters": [
           {
@@ -77194,7 +76836,7 @@
         ]
       },
       "get": {
-        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report. #230: `conflict_list` lists its conflicts with their statements (`statement_id`, `event_id`, `turn`, `position`, `speaker`, `source`, the quoted transcript `quote`, `value`), each open one with its `recommended` answer (the `last_mention` statement): the open ones by default, every one with `conflicts=all`; at most `limit` (50, at most 200). A backfill under `backfill_conflict_policy: ask` ends its pass `paused_for_conflicts` and the story stays paused (409 `story_paused`, `cause: backfill_conflicts`, `conflicts_open`) until they are resolved. 404 `backfill_not_found` when the story never had one.",
+        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report (#698: a `materialization` of deferred genesis content as its card, `counts`, `by_outcome` and `conflicts`; the entries are on its operation, to an omniscient read). #230: `conflict_list` lists its conflicts with their statements (`statement_id`, `event_id`, `turn`, `position`, `speaker`, `source`, the quoted transcript `quote`, `value`), each open one with its `recommended` answer (the `last_mention` statement): the open ones by default, every one with `conflicts=all`; at most `limit` (50, at most 200). A backfill under `backfill_conflict_policy: ask` ends its pass `paused_for_conflicts` and the story stays paused (409 `story_paused`, `cause: backfill_conflicts`, `conflicts_open`) until they are resolved. 404 `backfill_not_found` when the story never had one.",
         "operationId": "get_backfill",
         "parameters": [
           {
@@ -88956,7 +88598,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_inactive`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
           },
           "422": {
             "content": {
@@ -88966,7 +88608,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `beat_required`, `budget_below_safety_minimum`, `external_value_not_overridable`, `guardrail_violation`, `line_not_editable`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -88994,7 +88636,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`, `rewrite_reach_failed`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

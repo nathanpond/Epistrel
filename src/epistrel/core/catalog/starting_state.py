@@ -145,6 +145,28 @@ def _minutes(value: str) -> int:
 def anchor_document(anchor: ScenarioAnchor, clockwork: Clockwork) -> dict[str, Any] | None:
     """The starting anchor as the ``anchor`` setting stores it (``None``: nothing fixed), or 422
     (``field: anchor.<component>``, ``reason: anchor``)."""
+    statement = anchor_statement(anchor, clockwork)
+    if statement.empty:
+        return None
+    try:
+        refined = Anchor.unanchored(clockwork).refine(statement, 0, Position(0))
+    except (ValueError, IndexError, KeyError) as exc:
+        raise _invalid(
+            f"the anchor is not a time of the calendar: {exc}", "anchor", "anchor"
+        ) from None
+    if isinstance(refined, Contradiction):
+        raise _invalid(
+            f"the anchor contradicts itself ({refined.component})",
+            f"anchor.{refined.component}",
+            "anchor",
+        )
+    return refined.document()
+
+
+def anchor_statement(anchor: ScenarioAnchor, clockwork: Clockwork) -> Statement:
+    """The starting anchor as one statement of the absolute time (what ``anchor_document``
+    refines the unanchored clock with; #698: a later materialization commits it as the
+    clock's first anchor fact), or 422 for a band, a time or a weekday the calendar lacks."""
     time: tuple[tuple[int, int], ...] | None = None
     if anchor.band is not None:
         found = band_statement(anchor.band, clockwork)
@@ -168,24 +190,9 @@ def anchor_document(anchor: ScenarioAnchor, clockwork: Clockwork) -> dict[str, A
                 f"the calendar has no weekday {anchor.weekday!r}", "anchor.weekday", "anchor"
             )
         weekday = names.index(anchor.weekday.casefold())
-    statement = Statement(
+    return Statement(
         time=time, weekday=weekday, year=anchor.year, month=anchor.month, day=anchor.day
     )
-    if statement.empty:
-        return None
-    try:
-        refined = Anchor.unanchored(clockwork).refine(statement, 0, Position(0))
-    except (ValueError, IndexError, KeyError) as exc:
-        raise _invalid(
-            f"the anchor is not a time of the calendar: {exc}", "anchor", "anchor"
-        ) from None
-    if isinstance(refined, Contradiction):
-        raise _invalid(
-            f"the anchor contradicts itself ({refined.component})",
-            f"anchor.{refined.component}",
-            "anchor",
-        )
-    return refined.document()
 
 
 def clock_settings(clock: ScenarioClock | None) -> ClockSettings:
@@ -244,6 +251,7 @@ __all__ = [
     "GENESIS",
     "ROLE_PREFIX",
     "anchor_document",
+    "anchor_statement",
     "clock_settings",
     "definition_of",
     "derived_inputs",

@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.amendments.store import (
     AmendmentKind,
+    LiteNotePartDraft,
     PropositionPartDraft,
     RecordPartDraft,
     record_amendment,
@@ -95,6 +96,8 @@ class Prepared:
     rationale: list[dict[str, str]] = field(default_factory=list)
     """#241: the records a directed resolution's amendment rests on (its conflicting records,
     never the regenerated message)."""
+    notes: list[str] = field(default_factory=list)
+    """#700: a Lite rewrite's world note (one ``lite_note`` part)."""
 
 
 def _excerpt(text: str | None) -> str | None:
@@ -246,6 +249,8 @@ async def prepare(
     preview = dict(plan.get("preview") or {})
     radius = dict(preview.get("blast_radius") or {})
     prepared = Prepared()
+    if isinstance(plan.get("lite_note"), str):
+        prepared.notes.append(str(plan["lite_note"]))
     if plan.get("undo") is not None:
         # #238: an undo reverts its amendment (the inverse parts are #221's), so its changes
         # write no part of their own.
@@ -1032,6 +1037,7 @@ async def apply(
             for draft in created:
                 parts.insert(0, draft)
                 labels.insert(0, ("changes", {"created": True}))
+            parts.extend(LiteNotePartDraft(text) for text in prepared.notes)  # after labels
             made = await record_amendment(
                 conn,
                 op,
@@ -1045,6 +1051,14 @@ async def apply(
             )
             for target in prepared.undo:
                 await revert_amendment(conn, op, target, by_amendment_id=made.amendment_id)
+            if prepared.undo or any(
+                isinstance(d, RecordPartDraft) and d.table == "events" for d in parts
+            ):
+                # #700: a Lite summary segment over a corrected line is rebuilt (the job
+                # finds the stale segments; under structured the summary is off).
+                from epistrel.orchestrator.jobs.handlers import lite_summary
+
+                await lite_summary.schedule_in(conn, story_id)
             found["beliefs"] = await _cascade_beliefs(
                 conn, op, story_id, prepared.beliefs, made.written_fact_ids, made.event_id
             )

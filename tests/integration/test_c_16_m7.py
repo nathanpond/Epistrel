@@ -84,7 +84,7 @@ class NestedSuite(Suite):
         raise AssertionError("a not_applicable suite is never executed")
 
 
-@pytest.mark.part("M7", "FR-PROF-12; FR-VERIFY-15; NFR-QUAL-11")
+@pytest.mark.part("M7", "FR-PROF-3,12; FR-VERIFY-15; NFR-QUAL-11")
 async def test_c_16__m7_per_preset(
     stub_settings: Settings, engine: AsyncEngine, pg_url: str, tmp_path: Path
 ) -> None:
@@ -653,3 +653,75 @@ async def test_c_16__m7_decrease(scratch: Space) -> None:
         )
         (entry,) = up["impact"]["affected_stories"]
         assert entry[REDERIVATION]["range"] == {"from_turn": 3, "to_turn": 4}
+
+
+@pytest.mark.part("M7", "FR-PROF-7,8,18")
+async def test_c_16__m7_queued_decrease(scratch: Space) -> None:
+    """#698 (#229's queue): a data-producing edit queues two stories' backfills; the first one
+    is claimed (its story paused). A second edit, back to Lite's settings, folds into the queue:
+    the unclaimed backfill has nothing left to re-derive, so it is superseded and its story
+    unpinned (it follows the new version, active, no backfill); the claimed one runs on. A
+    second edit that keeps some of the first's capability (Full minus consolidation) narrows
+    a queued backfill's capabilities instead."""
+    async with respond_client(scratch.settings, scratch.db) as (client, lib):
+        profile, edit = await _profile(client)
+        lite = await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ))
+        (first, _), (second, _) = sorted(
+            [await _story(client, scratch.db, lib, profile, 8) for _ in range(2)]
+        )
+        confirmed = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=WRITE
+            )
+        )
+        assert [b["story_id"] for b in confirmed["backfills"]] == [first, second]
+        await run_backfill(scratch.db, first, steps=1)
+        assert await _status(scratch.db, first) == "paused"
+
+        down = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Trial", "settings": lite["settings"], "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        assert down["result"]["version"] == 3
+        found = {
+            str(r.story_id): (r.status, r.error)
+            for r in await rows(scratch.db, "SELECT story_id, status, error FROM story_backfills")
+        }
+        assert found[second] == ("cancelled", "superseded")
+        assert found[first][0] != "cancelled"
+        shown = await _effective(client, second)
+        assert (shown["profile"]["version"], shown["profile"]["pinned"]) == (3, False)
+        assert await _status(scratch.db, second) == "active"
+
+        # Narrowing: a third story queued by an edit to Full, then Full minus consolidation.
+        third, _ = await _story(client, scratch.db, lib, profile, 8)
+        again = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=WRITE
+            )
+        )
+        assert third in [b["story_id"] for b in again["backfills"]]
+        before = await scalar(
+            scratch.db,
+            "SELECT capabilities FROM story_backfills WHERE story_id = :s AND status = 'queued'",
+            s=third,
+        )
+        assert "consolidation" in before
+        narrowed = json.loads(json.dumps(edit["settings"]))
+        narrowed["memory"]["consolidation"]["enabled"] = False
+        await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Trial", "settings": narrowed, "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        after = await scalar(
+            scratch.db,
+            "SELECT capabilities FROM story_backfills WHERE story_id = :s AND status = 'queued'",
+            s=third,
+        )
+        assert sorted(after) == sorted(c for c in before if c != "consolidation")

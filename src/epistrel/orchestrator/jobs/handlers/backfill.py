@@ -362,10 +362,16 @@ async def _begin(ctx: JobContext, row: Any) -> JobOutput | None:
         # its earliest statements.
         materialization: dict[str, Any] | None = None
         settings = await _target_settings(conn, row)
-        if await deferred.pending(conn, story_id, settings):
+        if await deferred.pending(conn, story_id, settings, deferred.BACKFILL_START):
             materialization = await deferred.materialize_deferred(
-                conn, story_id, settings, operation_id, principal=str(row.requested_by)
+                conn,
+                story_id,
+                settings,
+                operation_id,
+                principal=str(row.requested_by),
+                only=deferred.BACKFILL_START,
             )
+            await deferred.record_report(conn, operation_id, materialization)  # #698
             await flip_membership(conn, [operation_id], Membership.DORMANT, story_id=story_id)
         report: dict[str, Any] = {
             **dict(row.report or {}),
@@ -480,6 +486,9 @@ async def _after_complete(conn: AsyncConnection, story_id: str) -> None:
 
 
 AUTHOR_FACT_PARSES = "author_fact_parses"
+NOTE_KEY = "note:"
+"""#700: a Lite world note's key among the parsed author facts (``note:<part id>``)."""
+NOTE_PREFIX = "Author correction: "
 """#699: the report key holding each Lite lasting author fact's ``directive_parse`` changes
 (``None``: kept as text), parsed after extraction (model calls outside any transaction)."""
 
@@ -511,6 +520,12 @@ async def _parse_author_facts(ctx: JobContext, row: Any) -> dict[str, Any]:
         return {}
     async with ctx.db.connect() as conn:
         facts = await directives.lite_facts(conn, story_id)
+        # #700: each active Lite world note ("Author correction: ...") converts the same way,
+        # at the story's start, keyed by its part.
+        facts += [
+            (f"{NOTE_KEY}{part_id}", 0, 0, text.removeprefix(NOTE_PREFIX))
+            for part_id, text in await directives.lite_note_parts(conn, story_id)
+        ]
         done = await _converted_before(conn, story_id)
         if not facts:
             return {}
@@ -563,6 +578,10 @@ async def _convert_author_facts(conn: AsyncConnection, row: Any) -> dict[str, An
         event_id: (turn, slot)
         for event_id, turn, slot, _ in await directives.lite_facts(conn, story_id)
     }
+    positions.update(
+        (f"{NOTE_KEY}{part_id}", (0, 0))
+        for part_id, _ in await directives.lite_note_parts(conn, story_id)
+    )
     converted: list[str] = []
     kept = 0
     for event_id, changes in parsed.items():

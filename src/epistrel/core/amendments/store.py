@@ -202,7 +202,16 @@ class StatePartDraft:
     valid_to_minutes: int | None = None
 
 
-PartDraft = PropositionPartDraft | RecordPartDraft | StatePartDraft
+@dataclass(frozen=True, slots=True)
+class LiteNotePartDraft:
+    """A Lite world note (#700, FR-LITE-8): ``"Author correction: <change>"``, rendered in the
+    Lite prompt's "Author corrections" block while its part is active. It touches no record,
+    proposition or State."""
+
+    text: str
+
+
+PartDraft = PropositionPartDraft | RecordPartDraft | StatePartDraft | LiteNotePartDraft
 
 
 @dataclass(frozen=True, slots=True)
@@ -906,7 +915,7 @@ def _mark_control(op: Any, parts: Sequence[Any]) -> None:
     ``timeline_changed`` (the Lite read set does not see overlays). A proposition-only
     amendment reaches them through ``proposition_changes`` (#133's fact hooks) instead."""
     if getattr(op, "bumps_revision", False) and any(
-        not isinstance(p, PropositionPartDraft) for p in parts
+        not isinstance(p, PropositionPartDraft | LiteNotePartDraft) for p in parts
     ):
         op.control_action = True
 
@@ -953,7 +962,9 @@ async def record_amendment(
     for ordinal, draft in enumerate(parts):
         part_id = new_ulid()
         # The part row first: a version written for it names it (deferred FK either way).
-        if isinstance(draft, PropositionPartDraft):
+        if isinstance(draft, LiteNotePartDraft):
+            values = {"kind": "lite_note", "patch_after": {"text": draft.text}}
+        elif isinstance(draft, PropositionPartDraft):
             values = await _apply_proposition(conn, op, story_id, ordinal, part_id, draft)
         elif isinstance(draft, StatePartDraft):
             values = await _apply_state(conn, op, story_id, ordinal, part_id, draft)
@@ -1080,6 +1091,8 @@ def inverse_parts(parts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     part's inverse restores the versions it superseded. Pure (#238's preview uses it)."""
     found: list[dict[str, Any]] = []
     for part in reversed(list(parts)):
+        if part["kind"] == "lite_note":
+            continue  # #700: a note is reverted with its amendment and writes no inverse
         if part["kind"] == "record":
             found.append(
                 {
@@ -1309,6 +1322,7 @@ __all__ = [
     "NOT_CORRECTABLE",
     "AmendmentKind",
     "Correctable",
+    "LiteNotePartDraft",
     "PropositionPartDraft",
     "RecordPartDraft",
     "RecordedAmendment",

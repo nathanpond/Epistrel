@@ -198,6 +198,16 @@ class OperationBody(BaseModel):
         "`language`, `phone`, `manner` or `sound`) and the scene's other characters "
         "`unperceived` (fidelity `none`).",
     )
+    materialization: dict[str, Any] | None = Field(
+        default=None,
+        exclude_if=lambda m: m is None,
+        description="#698 (FR-PROF-18): the deferred genesis content the operation "
+        "materialized (a backfill's operation, or a configuration change's control operation): "
+        "to a read naming `omniscient`, the full report (`counts` by capability, `by_outcome`, "
+        "`conflicts`, and `entries`: each item's `field_ref`, `location` and `outcomes`, a "
+        "merge loser's `winner`, `loser` and `rule`); to any other read, its card (`counts`, "
+        "`by_outcome`, `conflicts`). Absent for any other operation.",
+    )
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -238,6 +248,7 @@ class OperationBody(BaseModel):
             if view.eval_hooks is None
             else EvalHooksBody.model_validate(view.eval_hooks),
             staged=view.staged,
+            materialization=view.materialization,
             perception=view.perception,
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)

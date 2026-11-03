@@ -555,3 +555,67 @@ async def test_time__m7(engine: AsyncEngine) -> None:
     ids = {e.id for e in await corrected_history(engine, w.story_id)}
     assert replies[8] not in ids
     assert replies[3] in ids
+
+
+@pytest.mark.part("M7", "FR-STORE-22,23")
+async def test_time__m7_views(pg_url: str, engine: AsyncEngine) -> None:
+    """TIME M7 (a), (d): with no amendment, the corrected view through N and the
+    as-originally-recorded view at N hold the same narrative records (ids and texts); an
+    amendment of a reply before N makes them differ on that record only (the corrected view
+    folds it in, the as-recorded one keeps the original); a record committed after the checkpoint
+    (a later turn) never enters the as-recorded view at N; and a
+    truncation that leaves an amendment's rationale behind surfaces it (FR-STORE-22: the
+    support check asks), the amendment itself unchanged."""
+    from epistrel.core.amendments.store import PropositionPartDraft, RecordPartDraft
+    from epistrel.core.views import Checkpoint, as_originally_recorded, corrected_history
+    from epistrel.orchestrator.rewrite import support_check
+    from tests import amendment_support as am
+    from tests import canon_support as c
+    from tests.memory_support import use_structured
+
+    narrative = {"player_input", "message_rendered"}
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    replies = await am.play(engine, story, 6, start=1)
+
+    async def both() -> tuple[dict[str, Any], dict[str, Any]]:
+        corrected = {
+            e.id: e.payload.model_dump().get("text")
+            for e in await corrected_history(engine, story, through_turn=4)
+            if e.type in narrative
+        }
+        recorded = {
+            e.id: e.payload.model_dump().get("text")
+            for e in (await as_originally_recorded(engine, story, Checkpoint(4))).events
+            if e.type in narrative
+        }
+        return corrected, recorded
+
+    corrected, recorded = await both()
+    assert corrected == recorded
+    bobby = w.people["Bobby"]
+    await am.amend(
+        engine,
+        story,
+        [
+            RecordPartDraft("events", replies[2], "replace", {"text": "fixed 2"}),
+            PropositionPartDraft(c.at(bobby, w.places["garden"], None, None)),
+        ],
+        rationale=[{"table": "events", "id": replies[6]}],
+    )
+    corrected, recorded = await both()
+    assert corrected[replies[2]] == "fixed 2"
+    assert recorded[replies[2]] == "reply 2"
+    assert {k: v for k, v in corrected.items() if k != replies[2]} == {
+        k: v for k, v in recorded.items() if k != replies[2]
+    }
+    later = await am.play(engine, story, 1, start=7)
+    shown = {e.id for e in (await as_originally_recorded(engine, story, Checkpoint(4))).events}
+    assert not set(later.values()) & shown
+    amendments = await am.table_rows(engine, "amendments", story)
+    assert await truncate(engine, story, 4) is not None
+    async with engine.connect() as conn:
+        pending = await support_check.pending(conn, story)
+    assert pending is not None
+    assert await am.table_rows(engine, "amendments", story) == amendments

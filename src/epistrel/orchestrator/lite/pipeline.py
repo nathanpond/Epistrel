@@ -102,7 +102,7 @@ from typing import Any
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, summary_rebuild, turn_gate
+from epistrel.core import idempotency, pause, summary, summary_rebuild, turn_gate
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
@@ -851,12 +851,24 @@ async def _play(
                 *fields.get("degradation_details", []),
                 DegradationStep(step=TIME_ESTIMATE_SKIPPED, cause="budget"),
             ]
-        if await summary_rebuild.rebuilding(conn, story_id):
-            # #232: the summary is rebuilt after a downgrade; the reply read what exists so far.
+        rebuilding = await summary_rebuild.rebuilding(conn, story_id)
+        corrected = False
+        if not rebuilding:
+            if isinstance(conn, AsyncConnection):
+                corrected = bool(await summary.stale_segments(conn, story_id))
+            else:
+                async with conn.connect() as read:
+                    corrected = bool(await summary.stale_segments(read, story_id))
+        if rebuilding or corrected:
+            # #232: the summary is rebuilt after a downgrade; #700: segments over corrected
+            # lines are rebuilt. The reply read what exists so far.
             fields["degradation"] = [*fields.get("degradation", []), summary_rebuild.REBUILDING]
             fields["degradation_details"] = [
                 *fields.get("degradation_details", []),
-                DegradationStep(step=summary_rebuild.REBUILDING, cause="resummarize"),
+                DegradationStep(
+                    step=summary_rebuild.REBUILDING,
+                    cause="corrected_lines" if corrected else "resummarize",
+                ),
             ]
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
@@ -920,7 +932,8 @@ async def _with_author_notes(
     nudge = LITE_NUDGE.get()
     steers = [("", nudge)] if nudge else await author_directives.queued_steers(conn, story_id)
     steering[:] = [i for i, _ in steers if i]
-    notes = author_directives.lite_notes(steers, facts)
+    corrections = await author_directives.author_corrections(conn, story_id)  # #700
+    notes = author_directives.lite_notes(steers, facts, corrections)
     if not notes:
         return inputs
     joined = "\n\n".join(n for n in (inputs.director_notes, notes) if n)

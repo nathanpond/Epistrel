@@ -191,6 +191,8 @@ class _Pending:
     sources: tuple[SummarySource, ...]
     model: str | None
     prompt_hash: str | None
+    replaces: str | None = None
+    """#700: the stale segment this one rebuilds (it holds it once committed)."""
 
     def segment(self) -> Segment:
         return Segment(
@@ -424,8 +426,15 @@ async def _run_story(ctx: JobContext, story_id: str) -> JobOutput:
             await ctx.declare_input(conn, input_key(operations.name, segment.operation_id))
         names = await _story_names(conn, story_id)
         routes = await _routes(conn, story_id)
+        rebuilds: list[tuple[summary.Segment, list[Any]]] = []
+        for stale in state.stale[: summary.MAX_CALLS_PER_RUN]:
+            # #700: a segment over corrected lines, rebuilt from the corrected transcript.
+            rows = await transcript_rows(
+                conn, story_id, after_turn=stale.covers_from - 1, through_turn=stale.covers_to
+            )
+            rebuilds.append((stale, [transcript_line(row, names) for row in rows]))
         chunks: list[tuple[Chunk, list[Any]]] = []
-        for chunk in state.chunks[: summary.MAX_CALLS_PER_RUN]:
+        for chunk in state.chunks[: summary.MAX_CALLS_PER_RUN - len(rebuilds)]:
             for turn in chunk.turns:
                 await ctx.declare_input(conn, input_key(operations.name, turn.operation_id))
             rows = await transcript_rows(
@@ -444,8 +453,51 @@ async def _run_story(ctx: JobContext, story_id: str) -> JobOutput:
         cap=state.settings.max_tokens,
         routes=routes,
     )
-    await _summarise(run, chunks, state.segments)
+    segments = await _rebuild(run, rebuilds, state.segments)
+    await _summarise(run, chunks, segments)
     return _output(story_id, run, chunks)
+
+
+async def _rebuild(
+    run: _Run,
+    rebuilds: Sequence[tuple[summary.Segment, Sequence[Any]]],
+    segments: Sequence[summary.Segment],
+) -> list[summary.Segment]:
+    """#700: each stale segment compressed again over its turns as they now read, one level up
+    (a segment's turns, level and variant are unique), naming it among its sources as a merged
+    segment names its children; the included run with the rebuilt ones in their places."""
+    effective = list(segments)
+    for stale, lines in rebuilds:
+        index = next(n for n, s in enumerate(effective) if s.segment_id == stale.segment_id)
+        prior = effective[index - 1] if index > 0 else None
+        inputs = LiteSummaryInputs(
+            mode="compress",
+            messages=list(lines),
+            prior_segments=[prior.label] if prior is not None else [],
+            character_names=run.names,
+            covers=_covers(stale.covers_from, stale.covers_to),
+            target_tokens=summary.TARGET_TOKENS,
+        )
+        written: _Text | None = await _calling(run, _write(run, inputs))
+        if written is None:
+            break
+        made = _Pending(
+            operation_id=new_ulid(),
+            covers_from=stale.covers_from,
+            covers_to=stale.covers_to,
+            level=stale.level + 1,
+            text=written.text,
+            sources=(
+                *(_source(x) for x in stale.sources if stale.level == 0),
+                _source(stale.operation_id),
+            ),
+            model=written.model,
+            prompt_hash=written.prompt_hash,
+            replaces=stale.segment_id,
+        )
+        run.pending.append(made)
+        effective[index] = made.segment()
+    return effective
 
 
 def _output(story_id: str, run: _Run, chunks: Sequence[tuple[Chunk, Sequence[Any]]]) -> JobOutput:
@@ -513,15 +565,14 @@ def _not_written_yet(story_id: str, pending: Sequence[_Pending]) -> Any:
     async def step(conn: AsyncConnection) -> None:
         t = lite_summary_segments
         for made in pending:
-            taken = await conn.scalar(
-                select(t.c.segment_id).where(
-                    t.c.story_id == story_id,
-                    t.c.covers_from == made.covers_from,
-                    t.c.covers_to == made.covers_to,
-                    t.c.level == made.level,
-                    t.c.membership.in_((Membership.ACTIVE.value, Membership.SUPERSEDED.value)),
-                )
+            query = select(t.c.segment_id).where(
+                t.c.story_id == story_id,
+                t.c.covers_from == made.covers_from,
+                t.c.covers_to == made.covers_to,
+                t.c.level == made.level,
+                t.c.membership.in_((Membership.ACTIVE.value, Membership.SUPERSEDED.value)),
             )
+            taken = await conn.scalar(query)
             if taken is not None:
                 raise queue.StaleInputs((input_key(SUMMARY_TABLE, str(taken)),))
 

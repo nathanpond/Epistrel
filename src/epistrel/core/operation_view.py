@@ -172,6 +172,10 @@ class OperationView:
     """#607: a structured turn's ``turn_report.perception`` (its level, the beats routed, the
     qualifiers repaired and each beat's ``trace``), returned only to a read naming the
     ``omniscient`` viewpoint."""
+    materialization: dict[str, Any] | None = None
+    """#698: the deferred genesis content the operation materialized (a backfill's, or a
+    configuration change's control operation): the full report (its entries) to a read naming
+    the ``omniscient`` viewpoint, its ``card`` (the counts) to any other."""
 
 
 INGESTED = "ingested"
@@ -241,7 +245,18 @@ async def read_operation(
         eval_hooks=expanded_eval_hooks(row.turn_report) if _omniscient(viewpoint) else None,
         staged=row.turn_stage is not None,
         perception=_perception(row.turn_report) if _omniscient(viewpoint) else None,
+        materialization=_materialization(row.turn_report, viewpoint),
     )
+
+
+def _materialization(report: Any, viewpoint: str | None) -> dict[str, Any] | None:
+    """#698: an operation's materialization report, projected for ``viewpoint``."""
+    from epistrel.core.genesis.deferred import card
+
+    found = report.get("materialization") if isinstance(report, dict) else None
+    if not isinstance(found, dict):
+        return None
+    return dict(found) if _omniscient(viewpoint) else card(found)
 
 
 def _perception(report: Any) -> dict[str, Any] | None:

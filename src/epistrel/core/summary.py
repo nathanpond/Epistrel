@@ -46,6 +46,14 @@ Orchestrator's ``lite_summary`` job.
   REPEATABLE READ snapshot; the next scheduling stores it). With ``before_turn`` the stored run
   is used only when no candidate segment row covers ``before_turn`` or later: then the filter
   removes no row and the result is the same by construction; otherwise it is computed.
+- **Corrections** (``stale_segments``, #700). An included segment is **stale** when a record
+  amendment part (#221; a Lite rewrite's fix, a line edit, or an undo's inverse) on a transcript
+  line of its turns was written after the segment: its text summarises the line as it was. The
+  job rebuilds it over the same turns (the corrected transcript), one level up (turns, level and
+  variant are unique), naming the old segment's operation among its sources: from that commit
+  the old segment is held (``superseded``) like a merged segment's child, and until then it
+  stays in the prompt (a reply reports ``summary_rebuilding``). Derived from the parts at read
+  time: no marker column, so a projection rebuild equals the table.
 """
 
 from __future__ import annotations
@@ -61,7 +69,14 @@ from epistrel.core.config_changes import read_lite_defaults
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.settings_schema import StorySettings
-from epistrel.core.tables import lite_summary_segments, operations, stories, transcript_messages
+from epistrel.core.tables import (
+    amendment_parts,
+    events,
+    lite_summary_segments,
+    operations,
+    stories,
+    transcript_messages,
+)
 
 ROWS_PER_TURN = 2
 """A Lite turn's transcript rows: the input and the reply."""
@@ -195,8 +210,9 @@ async def included_segments(
         and all(memberships.get(x) == ACTIVE for x in s.sources)
     ]
     # Superseded is relative to the merged segments in scope: before a regenerated turn, a
-    # child whose parent covers that turn is the one the prompt uses.
-    held = {x for s in eligible if s.level > 0 for x in s.sources}
+    # child whose parent covers that turn is the one the prompt uses. A rebuilt segment (#700)
+    # holds the one it replaces the same way, at any level.
+    held = {x for s in eligible for x in s.sources}
     eligible = [s for s in eligible if s.operation_id not in held]
     included: list[Segment] = []
     covered = 0
@@ -354,6 +370,8 @@ class SummaryState:
     segments: tuple[Segment, ...]
     verbatim: int
     chunks: tuple[Chunk, ...] = field(default_factory=tuple)
+    stale: tuple[Segment, ...] = field(default_factory=tuple)
+    """#700: included segments a later correction made stale (rebuilt first)."""
 
     @property
     def covered(self) -> int:
@@ -369,7 +387,7 @@ class SummaryState:
 
     @property
     def needs_work(self) -> bool:
-        return self.settings.enabled and (bool(self.chunks) or self.over_cap)
+        return self.settings.enabled and (bool(self.chunks) or self.over_cap or bool(self.stale))
 
 
 async def summary_state(conn: AsyncConnection, story_id: str) -> SummaryState:
@@ -377,7 +395,54 @@ async def summary_state(conn: AsyncConnection, story_id: str) -> SummaryState:
     settings = await read_summary_settings(conn, story_id)
     segments = await included_segments(conn, story_id)
     verbatim, chunks = await _pending(conn, story_id, settings, covered_to(segments))
-    return SummaryState(settings, segments, verbatim, chunks)
+    stale = await stale_segments(conn, story_id, segments)
+    return SummaryState(settings, segments, verbatim, chunks, stale)
+
+
+async def stale_segments(
+    conn: AsyncConnection, story_id: str, segments: Sequence[Segment] | None = None
+) -> tuple[Segment, ...]:
+    """#700: the included segments (``segments``, else read) a record amendment part on one of
+    their turns' transcript lines postdates (see the module docstring's **Corrections**)."""
+    p, tm = amendment_parts.c, transcript_messages.c
+    corrected = [
+        (int(turn), at)
+        for turn, at in await conn.execute(
+            select(tm.narrative_turn, p.tx_from)
+            .select_from(amendment_parts.join(transcript_messages, tm.message_id == p.record_id))
+            .where(
+                p.story_id == story_id,
+                p.kind == "record",
+                p.record_table == "events",
+                tm.story_id == story_id,
+                tm.narrative_turn.is_not(None),
+            )
+        )
+    ]
+    if not corrected:
+        return ()
+    included = (
+        tuple(segments) if segments is not None else await read_included_segments(conn, story_id)
+    )
+    if not included:
+        return ()
+    written = {
+        str(i): at
+        for i, at in await conn.execute(
+            select(events.c.id, events.c.tx_time).where(
+                events.c.id.in_([s.segment_id for s in included])
+            )
+        )
+    }
+    return tuple(
+        s
+        for s in included
+        if s.segment_id in written
+        and any(
+            s.covers_from <= turn <= s.covers_to and at > written[s.segment_id]
+            for turn, at in corrected
+        )
+    )
 
 
 async def _pending(
@@ -441,7 +506,7 @@ async def needs_work(conn: AsyncConnection, story_id: str) -> bool:
     if found.over_cap(settings):
         return True
     _, chunks = await _pending(conn, story_id, settings, found.covered_to)
-    return bool(chunks)
+    return bool(chunks) or bool(await stale_segments(conn, story_id))
 
 
 def merge_pair(segments: Sequence[Segment]) -> int | None:
@@ -480,5 +545,6 @@ __all__ = [
     "needs_work",
     "read_included_segments",
     "read_summary_settings",
+    "stale_segments",
     "summary_state",
 ]

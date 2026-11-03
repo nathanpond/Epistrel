@@ -590,6 +590,29 @@ def _modeled(party: Party | None, entities: Mapping[str, EntityInfo]) -> bool:
     return info is not None and info.modeled
 
 
+def _described_modeled(party: Party, entities: Mapping[str, EntityInfo]) -> str | None:
+    """#481 (#613): the one modeled person a shorter description names ("the driver" after "the
+    delivery driver": its words a subset of the modeled one's name), as mention resolution
+    reads a description; ``None`` when none or several do."""
+    words = set(descriptors_of(party.phrase))
+    if not words:
+        return None
+    found = [
+        entity_id
+        for entity_id, info in entities.items()
+        if info.modeled and info.kind == "person" and words <= set(descriptors_of(info.name))
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+def _resolved(party: Party | None, entities: Mapping[str, EntityInfo]) -> Party | None:
+    """``party`` with its entity filled when a description names one modeled person."""
+    if party is None or party.entity_id is not None:
+        return party
+    found = _described_modeled(party, entities)
+    return party if found is None else replace(party, entity_id=found)
+
+
 def _name_of(party: Party, entities: Mapping[str, EntityInfo]) -> str:
     if party.entity_id is not None and party.entity_id in entities:
         return entities[party.entity_id].name
@@ -617,7 +640,7 @@ def candidates(
         for hit in interactions(
             beat.kind, beat.text, beat.mentions, actor=beat.actor, entities=entities
         ):
-            sides = (hit.subject, hit.object)
+            sides = (_resolved(hit.subject, entities), _resolved(hit.object, entities))
             for one, other in (sides, sides[::-1]):
                 if _modeled(one, entities) and _unmodeled_person(other, entities):
                     assert other is not None  # noqa: S101 - checked above

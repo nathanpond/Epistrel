@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.reconcile import Conflict, Ok, reconcile
 from epistrel.core.enums import OpenSlot
+from epistrel.core.membership import active_operation
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.tables import entities, entity_aliases, operations, thunks
@@ -140,13 +141,13 @@ async def _thunk(conn: AsyncConnection, story_id: str) -> lifecycle.Thunk | None
         select(func.max(operations.c.narrative_turn)).where(
             operations.c.story_id == story_id,
             operations.c.kind == "turn",
-            operations.c.membership == "active",
+            active_operation(operations),
         )
     )
     head_ops = select(operations.c.operation_id).where(
         operations.c.story_id == story_id,
         operations.c.narrative_turn == head,
-        operations.c.membership == "active",
+        active_operation(operations),
     )
     rows = await conn.execute(
         select(t.c.id)
@@ -231,7 +232,7 @@ async def head_variant(conn: AsyncConnection, story_id: str) -> dict[str, int]:
     row = (
         await conn.execute(
             select(o.narrative_turn, o.turn_variant)
-            .where(o.story_id == story_id, o.kind == "turn", o.membership == "active")
+            .where(o.story_id == story_id, o.kind == "turn", active_operation(operations))
             .order_by(o.narrative_turn.desc())
             .limit(1)
         )

@@ -1164,6 +1164,8 @@ def _canon_where(
     reading: Reading = "every",
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
+    subjects: Sequence[str] | None = None,
+    objects: Sequence[str] | None = None,
     member: str | None = None,
     overlapping: tuple[int | None, int | None] | None = None,
     include_closed: bool = False,
@@ -1191,7 +1193,9 @@ def _canon_where(
     visible = visible_clause(f, viewpoint)
     if visible is not None:
         where.append(visible)
-    if subject is not None:
+    if subjects is not None:
+        where.append(f.c.subject_id.in_(list(subjects)))
+    elif subject is not None:
         where.append(f.c.subject_id == subject)
     if predicate is not None:
         where.append(f.c.predicate_id == predicate)
@@ -1200,7 +1204,11 @@ def _canon_where(
         # ``object_set`` GIN index), joined to their facts by ``ix_facts_proposition``.
         where.append(propositions.c.story_id == story_id)
     if object is not None:
-        where.append(propositions.c.object_id == object)
+        where.append(
+            propositions.c.object_id.in_(list(objects))
+            if objects is not None
+            else propositions.c.object_id == object
+        )
     if member is not None:
         # The object is ``member``, or a set object holds it (#542).
         where.append(
@@ -1220,6 +1228,65 @@ def _canon_where(
         if lo is not None:
             where.append(or_(f.c.valid_to.is_(None), f.c.valid_to > lo))
     return where
+
+
+async def merged_with(conn: AsyncConnection, story_id: str, entity_id: str) -> tuple[str, ...]:
+    """#481 (FR-PROP-7): ``entity_id`` and every entity an author's merge made one with it: the
+    closure of the active ``same_as`` facts amendment parts wrote (a merge is an amendment;
+    undone, it is out). An identity a narrative claim states is a held proposition (#171), not a
+    merge, and joins nothing."""
+    from epistrel.core import turn_memo
+
+    key = ("merged_entities", story_id)
+    links = turn_memo.get(key)
+    if links is turn_memo.MISSING:
+        links = await _merge_links(conn, story_id)
+        turn_memo.put(key, links)
+    if not links:
+        return (entity_id,)
+    found = {entity_id}
+    frontier = [entity_id]
+    while frontier:
+        nxt = []
+        for one in frontier:
+            for other in links.get(one, ()):
+                if other not in found:
+                    found.add(other)
+                    nxt.append(other)
+        frontier = nxt
+    return (entity_id, *sorted(found - {entity_id}))
+
+
+async def _merge_links(conn: AsyncConnection, story_id: str) -> dict[str, set[str]]:
+    from epistrel.core.propositions.vocabulary import SAME_AS
+    from epistrel.core.tables import amendment_parts
+
+    p = amendment_parts.c
+    rows = list(
+        await conn.execute(
+            select(propositions.c.subject_id, propositions.c.object_id)
+            .select_from(
+                facts.join(propositions, propositions.c.id == facts.c.proposition_id).join(
+                    amendment_parts, p.id == facts.c.amendment_part_id
+                )
+            )
+            .where(
+                facts.c.story_id == story_id,
+                propositions.c.predicate_id == SAME_AS,
+                facts.c.superseded_by.is_(None),
+                facts.c.tx_to.is_(None),
+                active_only(facts),
+                p.status == "active",
+            )
+        )
+    )
+    links: dict[str, set[str]] = {}
+    for a, b in rows:
+        if a is None or b is None:
+            continue
+        links.setdefault(str(a), set()).add(str(b))
+        links.setdefault(str(b), set()).add(str(a))
+    return links
 
 
 async def canon(
@@ -1255,6 +1322,9 @@ async def canon(
     if not viewpoint_checked:
         await check_viewpoint(conn, story_id, viewpoint)
     f = _CANON
+    # #481 (FR-PROP-7): an entity the author merged reads as one with its merged ones.
+    subjects = await merged_with(conn, story_id, subject) if subject is not None else None
+    objects = await merged_with(conn, story_id, object) if object is not None else None
     where = _canon_where(
         f,
         story_id,
@@ -1270,6 +1340,8 @@ async def canon(
         written_in=written_in,
         member=member,
         overlapping=overlapping,
+        subjects=subjects if subjects is not None and len(subjects) > 1 else None,
+        objects=objects if objects is not None and len(objects) > 1 else None,
     )
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:

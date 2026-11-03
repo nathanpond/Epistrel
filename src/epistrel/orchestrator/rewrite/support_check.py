@@ -47,8 +47,8 @@ from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import timeline
-from epistrel.core.enums import Membership
 from epistrel.core.ids import new_ulid
+from epistrel.core.membership import active_only, active_operation, derived_entry
 from epistrel.core.tables import (
     amendment_parts,
     amendments,
@@ -149,17 +149,21 @@ async def _active(conn: AsyncConnection, story_id: str, table: str, record_id: s
     mine = t.c.id == record_id
     if "story_id" in t.c:
         mine = mine & (t.c.story_id == story_id)
-    if "membership" in t.c:
-        found = await conn.scalar(select(t.c.membership).where(mine))
-        return found is not None and str(found) == Membership.ACTIVE.value
+    try:
+        derived_entry(t)
+    except KeyError, ValueError, TypeError:
+        derived = False
+    else:
+        derived = True
+    if derived:
+        return await conn.scalar(select(t.c.id).where(mine, active_only(t))) is not None
     if "operation_id" in t.c:
-        op = await conn.scalar(select(t.c.operation_id).where(mine))
-        if op is None:
-            return False
-        membership = await conn.scalar(
-            select(operations.c.membership).where(operations.c.operation_id == op)
+        found = await conn.scalar(
+            select(t.c.id)
+            .select_from(t.join(operations, operations.c.operation_id == t.c.operation_id))
+            .where(mine, active_operation(operations))
         )
-        return str(membership) == Membership.ACTIVE.value
+        return found is not None
     return await conn.scalar(select(t.c.id).where(mine)) is not None
 
 
@@ -169,10 +173,12 @@ async def _current(conn: AsyncConnection, story_id: str, fact_id: str) -> bool:
 
     row = (
         await conn.execute(
-            select(facts.c.proposition_id, facts.c.membership).where(facts.c.id == fact_id)
+            select(facts.c.proposition_id).where(
+                facts.c.id == fact_id, facts.c.story_id == story_id, active_only(facts)
+            )
         )
     ).one_or_none()
-    if row is None or str(row.membership) != Membership.ACTIVE.value:
+    if row is None:
         return False
     _, current = await canon._load(conn, story_id, fact_id)
     return bool(current)
@@ -214,8 +220,12 @@ async def findings(conn: AsyncConnection, story_id: str) -> list[Finding]:
             for kind, target in relies:
                 kind = str(getattr(kind, "value", kind))
                 if kind == "fact":
-                    gone = await conn.scalar(select(facts.c.membership).where(facts.c.id == target))
-                    if gone is None or str(gone) != Membership.ACTIVE.value:
+                    held = await conn.scalar(
+                        select(facts.c.id).where(
+                            facts.c.id == target, facts.c.story_id == story_id, active_only(facts)
+                        )
+                    )
+                    if held is None:
                         excluded.append(("facts", str(target)))
                 elif kind == "amendment_part":
                     status = await conn.scalar(select(p.status).where(p.id == target))
@@ -302,7 +312,7 @@ async def ports(conn: AsyncConnection, story_id: str) -> list[Finding]:
                 if speaker is None
                 else events.c.character_id == speaker,
                 operations.c.narrative_turn == turn,
-                operations.c.membership == Membership.ACTIVE.value,
+                active_operation(operations),
                 events.c.id != part.record_id,
             )
             .order_by(events.c.seq)

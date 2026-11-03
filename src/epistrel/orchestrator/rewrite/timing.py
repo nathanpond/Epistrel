@@ -29,8 +29,7 @@ from epistrel.core.amendments.eligibility import (
     eligible,
     partial_period,
 )
-from epistrel.core.enums import Membership
-from epistrel.core.membership import Position
+from epistrel.core.membership import Position, active_operation
 from epistrel.core.tables import operations, stories
 
 INCLUDE = "include_if_possible"
@@ -137,7 +136,7 @@ async def with_variant(
         select(operations.c.turn_variant).where(
             operations.c.story_id == story_id,
             operations.c.narrative_turn == int(bound["turn"]),
-            operations.c.membership == Membership.ACTIVE.value,
+            active_operation(operations),
             operations.c.kind == "turn",
         )
     )

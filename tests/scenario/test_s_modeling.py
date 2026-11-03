@@ -64,7 +64,7 @@ COFFEE = "Jenni sips her coffee."
 AGAIN = "Thanks again, see you tomorrow!"
 MAILMAN = "Jenni waves to the mailman."
 WAVES_WREN = "Jenni waves to Wren again."
-WAVES_DRIVER = "Jenni waves to the delivery driver again."
+WAVES_DRIVER = "Jenni waves to the driver again."
 
 
 @pytest.fixture

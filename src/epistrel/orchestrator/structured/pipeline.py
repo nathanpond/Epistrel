@@ -309,7 +309,7 @@ from epistrel.core.turns.beats import (
     write_introductions,
     write_utterances,
 )
-from epistrel.core.verify import attribution
+from epistrel.core.verify import attribution, duplicates
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import (
@@ -6437,6 +6437,13 @@ async def play(
             operation=op,
             registry=registry,
         )
+        # #481: likely duplicates among the places and objects this turn created (a notice).
+        duplicate_candidates = await duplicates.find(
+            conn,
+            story_id,
+            list(dict.fromkeys(e.entity_id for r in requests for e in r.introduces)),
+            character_id=read.actor.id,
+        )
         # #198 (FR-CLOCK-19, FR-EPI-14): a new plan's belief citing its canon fact; a change's
         # reschedule and the speaker's new time.
         await schedule_commit.committed(
@@ -6763,6 +6770,11 @@ async def play(
                         "path": _close_path(checked.follow_up, closed.minimal_commits),
                     },
                     **(await _boundary_report(conn, story_id, regenerating, depended, checked)),
+                    **(
+                        {"duplicate_candidates": duplicate_candidates}
+                        if duplicate_candidates
+                        else {}
+                    ),
                 }
             if "epistemic" in fixed:
                 # #165: the turn's could-have-known checks (its resolutions' soft flags).
@@ -6783,6 +6795,7 @@ async def play(
                     else {}
                 ),
                 **({"identity_refused": identity_refused} if identity_refused else {}),
+                **({"duplicate_candidates": duplicate_candidates} if duplicate_candidates else {}),
             }
         fixed["commit"] = commit_report
         # FR-PROP-4: the auto predicates this turn's propositions used may now earn a

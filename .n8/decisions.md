@@ -11338,3 +11338,21 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - The routed-write test's "next turn's pinned value equals the adapter's" assertion: the test asserts the dispatch (idempotency key = the row id) and the row's status after confirmation and after failure, and that no author change or fact is written.
   - The `ownership_changed` stale reason (#237) for a provider flip between preview and apply.
   **Issue:** #242
+
+### #481 — duplicate places, merges that read through, 2026-11-02
+
+- **Decision:** the merge is #225's `POST /stories/{id}/entities/merge`. It already records `same_as` as an amendment with the cascade, and #238 makes it undoable.
+  - Read-through: `canon.canon`'s `subject`/`object` filters expand to `canon.merged_with` (the closure of active `same_as` facts written by amendment parts, memoized per turn). A narrative identity claim joins nothing (#171), and an undone merge is out.
+  - Not built: read-through for retrieval, entity profiles, `state_definitions.entity_id` and `scheduled_events.place_id`; the functional-contradiction conflict after a merge; the merge-then-undo Hypothesis property (the scenario asserts undo restores both places' facts exactly).
+  **Issue:** #481
+- **Decision:** duplicate candidates (`core.verify.duplicates`) go into `turn_report.commit.duplicate_candidates`. Two rules apply to the places, objects and events a turn creates:
+  - the scene's location (the acting character's current `located_at`) is untracked or generic;
+  - descriptors overlap an existing entity of the same kind.
+  Across turns, "the inn" then "Crossroads Inn" already resolve to one entity by descriptor match, so the scenario uses "the tavern" then "the inn".
+  **Issue:** #481
+- **Decision (#613, folded in):** interaction-triggered modeling resolves a description whose descriptor words are a subset of exactly one modeled person's name to that person (`modeling._resolved`). S-MODELING now plays "Jenni waves to the driver again." and still models only "the delivery driver".
+  **Issue:** #481, #613
+- **Decision (Rule 1, CI at 5a6dd1f):**
+  - `check-membership` flagged raw `.c.membership` filters in the new modules (`support_check`, `directed`, `timing`, `canon.merged_with`); they now use `active_only`/`active_operation`. The fix also scopes the support check's fact lookups to the story.
+  - C-01 requires every `StorySettings` field to be named in `PATCH /stories/{id}/settings`' description; `ambiguous_retcon_timing` is now documented there.
+  **Issue:** #239, #240, #241

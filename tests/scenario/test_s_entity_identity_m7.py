@@ -145,3 +145,70 @@ async def test_s_entity_identity__m7(
             assert alone.json()["error"]["details"]["reason"] == "too_few"
     finally:
         await ts.forget(engine)
+
+
+@pytest.mark.part("M7", "FR-PROP-7; FR-DIRECT-8")
+async def test_s_entity_identity__m7_places(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#481: "the tavern" and, a turn later, "the inn" share no word and are minted as two
+    places; the second turn's report names "the inn" a duplicate candidate (the scene's location
+    is untracked; a notice: nothing merged). The author merges them (``best_effort``, applied at
+    once): canon then reads one place, each name answering for the other's facts, and undoing
+    the merge restores the two places' facts exactly."""
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.propositions.vocabulary import LOCATED_AT
+    from tests.detection_support import claims_answer
+    from tests.integration.test_introduced_entities import extracted
+    from tests.structured_turn_support import structured_story, turn_report
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Wren", "Maren", "Ada")
+        stub = epistrel.models.stub
+        for who, text, place in (
+            ("Maren", "Maren steps into the tavern.", "the tavern"),
+            ("Ada", "Ada waits by the door of the inn.", "the inn"),
+        ):
+            stub.reset()
+            stub.script("generation", [render(beat("do", text))])
+            stub.script(
+                "extraction_backstop",
+                [claims_answer(extracted(text, who, "located_at", place))],
+            )
+            await played(
+                client, story, body(ids["Wren"], "And then?", render_character_ids=[ids[who]])
+            )
+        places = {
+            r.canonical_name: str(r.id)
+            for r in await rows(
+                engine,
+                "SELECT id, canonical_name FROM entities WHERE story_id = :s AND kind = 'place'",
+                s=story,
+            )
+        }
+        inn, tavern = places["the inn"], places["the tavern"]
+        notices = (await turn_report(engine, story))["commit"].get("duplicate_candidates", [])
+        # The scene's location is untracked (Wren's place is unknown): "the inn" may be it.
+        assert {(n["entity_id"], n["reason"]) for n in notices} >= {
+            (inn, "untracked_scene_location")
+        }
+
+        async def at(place: str) -> set[str]:
+            async with engine.connect() as conn:
+                found = await canon.canon(conn, story, predicate=LOCATED_AT, object=place)
+            return {f.proposition.subject_id for f in found if f.valid_to is None}
+
+        before = (await at(inn), await at(tavern))
+        assert before[0] != before[1]
+        merged = await _merge(client, story, [tavern, inn])
+        assert merged.status_code == 201, merged.text
+        amendment = merged.json()["apply"]["amendment_id"]
+        assert await at(inn) == await at(tavern) == before[0] | before[1]
+        undone = await client.post(
+            f"/stories/{story}/amendments/{amendment}/undo",
+            params=rs.OMNISCIENT,
+            json={"resolution_mode": "best_effort", "preview": "apply_directly"},
+            headers=WRITE,
+        )
+        assert undone.status_code == 201, undone.text
+        assert (await at(inn), await at(tavern)) == before

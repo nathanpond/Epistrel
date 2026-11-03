@@ -13,9 +13,14 @@ preview and final-commit revalidation (#223/#224/#237) as any rewrite.
   The apply writes no part for an ``undo`` change: it reverts A (#221 ``revert_amendment``).
 - **Dependent amendments** (FR-REWRITE-11): a later amendment B with a part relying on A's facts
   is a ``dependent_amendment`` conflict whose options are ``cascade_undo`` (recommended; B is
-  reverted by the same undo) or ``cancel`` (the whole undo session is cancelled). Contradicted
-  records are repaired (``rewrite`` or ``drop``): ``keep`` is not offered for a record that
-  contradicts the restored canon.
+  reverted by the same undo), ``rewrite`` (#711, ``rewrite_dependent``: B's contradicted parts
+  are rewritten into parts of the undo amendment and B stays active; a part that cannot be
+  rewritten falls back to ``cascade_undo``, with a ``rewrite_failed`` notification) or
+  ``cancel`` (the whole undo session is cancelled). Contradicted records are repaired
+  (``rewrite`` or ``drop``): ``keep`` is offered only for a record #140's check finds
+  consistent under the restored canon (``hypothetical.stays_consistent``: a fact or a belief
+  whose proposition is not contradicted); narrative and derived text, which states no
+  proposition the check could read, is never offered ``keep``.
 - **Redo** (``redo_parsed``): a session of kind ``redo`` re-plans A's original parts as new
   changes against the current story, like a new rewrite; its apply records a ``redo``
   amendment (``redoes = A``); A stays ``reverted``.
@@ -49,11 +54,15 @@ from epistrel.core.errors import (
 from epistrel.core.tables import amendments, state_definitions
 from epistrel.orchestrator.rewrite import parse as parsing
 
-UNDO_CONFLICT_OPTIONS = ("cascade_undo", "cancel")
-"""A dependent amendment's options in an undo session."""
+UNDO_CONFLICT_OPTIONS = ("cascade_undo", "rewrite", "cancel")
+"""A dependent amendment's options in an undo session (#711: ``rewrite`` rewrites its
+contradicted parts into the undo amendment, and the amendment stays active)."""
 UNDO_RECORD_OPTIONS = ("rewrite", "drop")
 """A contradicted record's options in an undo session (``keep`` would leave it contradicting
 the restored canon)."""
+UNDO_CONSISTENT_OPTIONS = ("rewrite", "drop", "keep")
+"""#711: a fact or belief #140's check finds consistent under the restored canon may also be
+kept."""
 
 
 async def check_undo(conn: AsyncConnection, story_id: str, amendment_id: str) -> Any:
@@ -247,7 +256,8 @@ async def relying_amendments(
 
 
 def undo_options(irreducible: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """An undo's conflicts with their options (see the module docstring)."""
+    """An undo's conflicts with their options (see the module docstring), before #140's
+    consistency check (``checked_undo_options``)."""
     found = []
     for conflict in irreducible:
         table = conflict["record"]["table"]
@@ -256,13 +266,129 @@ def undo_options(irreducible: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
     return found
 
 
+async def checked_undo_options(
+    conn: AsyncConnection,
+    story_id: str,
+    irreducible: Sequence[Mapping[str, Any]],
+    changes: Sequence[parsing.Normalized],
+) -> list[dict[str, Any]]:
+    """``undo_options``, with ``keep`` added for a fact or belief #140's check finds
+    consistent under the restored canon (#711)."""
+    from epistrel.orchestrator.rewrite import hypothetical
+
+    summaries = [c.summary for c in changes]
+    found = undo_options(irreducible)
+    for conflict in found:
+        table, record_id = conflict["record"]["table"], str(conflict["record"]["id"])
+        if table in ("facts", "beliefs") and await hypothetical.stays_consistent(
+            conn, story_id, table, record_id, summaries
+        ):
+            conflict["options"] = list(UNDO_CONSISTENT_OPTIONS)
+    return found
+
+
+async def rewrite_dependent(
+    conn: AsyncConnection,
+    part_id: str,
+    changes: Sequence[parsing.Normalized],
+) -> list[tuple[Any, dict[str, Any]]] | None:
+    """#711: the parts that rewrite dependent amendment part ``part_id`` to agree with the
+    restored canon, without reverting its amendment; ``None`` when it cannot be rewritten
+    deterministically (a record part's text goes through ``rewrite_record`` in the apply,
+    ``rewrite_text_of``).
+
+    A proposition part whose written fact names a value an undo change takes away (its
+    ``superseded_object_id``) is rewritten as a ``version`` of that fact with the restored value
+    (the change's ``object_id``) in its place."""
+    from epistrel.core.amendments.store import RecordPartDraft
+    from epistrel.core.tables import amendment_parts
+
+    row = (
+        await conn.execute(select(amendment_parts).where(amendment_parts.c.id == part_id))
+    ).one_or_none()
+    if row is None or str(row.kind) != "proposition" or row.written_fact_id is None:
+        return None
+    restored: dict[str, str | None] = {}
+    for c in changes:
+        taken = c.summary.get("superseded_object_id")
+        if not c.summary.get("undo") or not taken or c.summary.get("part_id") == part_id:
+            continue
+        # A value some undone part restores wins over one whose inverse restores nothing
+        # (the dependent's own inverse, planned for the cascade it may not take).
+        if restored.get(str(taken)) is None:
+            restored[str(taken)] = c.summary.get("object_id") or await _remaining(
+                conn, str(row.story_id), c.summary, str(taken)
+            )
+    fact = await _fact(conn, str(row.story_id), str(row.written_fact_id))
+    if fact is None:
+        return None
+    proposition = fact.proposition
+    update: dict[str, Any] = {}
+    for column in ("subject_id", "object_id"):
+        value = getattr(proposition, column)
+        if value is not None and str(value) in restored:
+            if restored[str(value)] is None:
+                return None
+            update[column] = str(restored[str(value)])
+    if not update:
+        return None
+    rewritten = proposition.model_copy(update=update)
+    return [
+        (
+            RecordPartDraft("facts", fact.id, "replace", {"proposition": rewritten}),
+            {"record": {"table": "facts", "id": fact.id}, "rewrites": part_id},
+        )
+    ]
+
+
+async def _remaining(
+    conn: AsyncConnection, story_id: str, change: Mapping[str, Any], taken: str
+) -> str | None:
+    """The value canon keeps on an undone part's key once the value it added (``taken``) is
+    gone, when exactly one other entity remains (an undone part that superseded nothing,
+    such as a second enrollment); ``None`` otherwise."""
+    from epistrel.core.canon import facts as canon
+
+    subject, predicate = change.get("subject_id"), change.get("predicate_id")
+    if not isinstance(subject, str) or not isinstance(predicate, str):
+        return None
+    current = await canon.canon(conn, story_id, subject=subject, predicate=predicate)
+    others = {
+        str(f.proposition.object_id)
+        for f in current
+        if f.proposition.object_id is not None and str(f.proposition.object_id) != taken
+    }
+    return next(iter(others)) if len(others) == 1 else None
+
+
+async def record_text_of(conn: AsyncConnection, part_id: str) -> tuple[str, str, str] | None:
+    """#711: a dependent record part's target and its text as the part wrote it
+    (``(table, record_id, text)``), for ``rewrite_record``; ``None`` for another part."""
+    from epistrel.core.tables import amendment_parts
+
+    row = (
+        await conn.execute(select(amendment_parts).where(amendment_parts.c.id == part_id))
+    ).one_or_none()
+    if row is None or str(row.kind) != "record":
+        return None
+    table = str(row.record_table)
+    text = dict(row.patch_after or {}).get("text")
+    if table not in ("events", "memories") or not isinstance(text, str) or not text.strip():
+        return None
+    return table, str(row.record_id), text
+
+
 __all__ = [
     "UNDO_CONFLICT_OPTIONS",
+    "UNDO_CONSISTENT_OPTIONS",
     "UNDO_RECORD_OPTIONS",
     "check_redo",
     "check_undo",
+    "checked_undo_options",
+    "record_text_of",
     "redo_parsed",
     "relying_amendments",
+    "rewrite_dependent",
     "undo_options",
     "undo_parsed",
 ]

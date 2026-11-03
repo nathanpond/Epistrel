@@ -219,7 +219,9 @@ def _answers(questions: Sequence[Any]) -> dict[str, tuple[str, bool, str | None]
     """Each conflict question's chosen action by its key: ``(action, auto, guidance)``."""
     chosen: dict[str, tuple[str, bool, str | None]] = {}
     for q in questions:
-        if q.kind != "conflict":
+        if q.kind not in ("conflict", "dependent"):
+            # #711: an undo's dependent-amendment question is a conflict question too; its
+            # answer was read as the recommendation before.
             continue
         options = {str(o["id"]): o for o in q.options or []}
         option = options.get(str(q.answer_option_id or q.recommended_option_id))
@@ -305,6 +307,11 @@ async def prepare(
                         prepared.notifications.append(
                             {"kind": "belief_now_false", "record": entry["record"]}
                         )
+                elif entry.get("action") == "keep" and record[0] == "events":
+                    # #707: a decision another premise still supports under the new canon.
+                    prepared.notifications.append(
+                        {"kind": "decision_kept", "record": entry["record"]}
+                    )
                 elif entry.get("action") in ("re_evaluate", "regenerate") and record[0] in (
                     "events",
                     "memories",
@@ -407,7 +414,22 @@ async def prepare(
         action, auto, guidance = chosen.get(key, (least_change(conflict), True, None))
         before = texts.get(record)
         after: str | None = None
-        if action == "rewrite":
+        if action == "rewrite" and record[0] == "amendment_parts":
+            # #711: B is rewritten into this undo's parts and stays active; what cannot be
+            # rewritten is cascade-undone, so B never stays contradicting restored canon.
+            rewrites = await _rewrite_dependent(
+                db, models, story_id, record[1], changes, olds, canon, guidance or ""
+            )
+            if rewrites is None:
+                action = "cascade_undo"
+                prepared.notifications.append(
+                    {"kind": "rewrite_failed", "record": conflict["record"]}
+                )
+            else:
+                for draft, label in rewrites:
+                    prepared.parts.append(("resolutions", draft, label))
+                after = "rewritten"
+        elif action == "rewrite":
             rewritten = (
                 None
                 if before is None
@@ -477,6 +499,43 @@ async def prepare(
     for entity in plan.get("preview", {}).get("new_entities") or []:
         prepared.notifications.append({"kind": "new_entity", "name": entity.get("name")})
     return prepared
+
+
+async def _rewrite_dependent(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    part_id: str,
+    changes: Sequence[Any],
+    olds: Mapping[str, tuple[str, ...]],
+    canon: Mapping[str, list[str]],
+    guidance: str,
+) -> list[tuple[Any, dict[str, Any]]] | None:
+    """#711: a dependent amendment part rewritten to agree with the restored canon: a
+    proposition part deterministically (``undo.rewrite_dependent``), a record part's text by
+    ``rewrite_record``; ``None`` when neither applies or the repair fails."""
+    from epistrel.orchestrator.rewrite import undo
+
+    async with db.connect() as conn:
+        found = await undo.rewrite_dependent(conn, part_id, changes)
+        if found is not None:
+            return found
+        target = await undo.record_text_of(conn, part_id)
+    if target is None:
+        return None
+    table, record_id, text = target
+    undone = [c for c in changes if c.summary.get("undo")]
+    old = tuple(dict.fromkeys(f for c in undone for f in olds.get(c.key, ())))
+    new = [line for c in undone for line in canon.get(c.key, [])]
+    rewritten = await _rewrite_text(db, models, story_id, text, table, old, new, guidance)
+    if rewritten is None:
+        return None
+    return [
+        (
+            _fix_draft(table, record_id, rewritten),
+            {"record": {"table": table, "id": record_id}, "rewrites": part_id},
+        )
+    ]
 
 
 async def _now_false(conn: AsyncConnection, belief_id: str, change: Mapping[str, Any]) -> bool:

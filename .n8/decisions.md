@@ -11631,3 +11631,23 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
 - **Decision:** the fallback is read lazily, not by a start-up and hourly background probe. When a completion reports no `system_fingerprint`, the Model Access Layer reads the `version` field of the model's `/models` entry through an optional adapter method `listed_versions(purpose)`. The OpenAI-compatible adapter and the stub implement it; it is not added to the `ModelAdapter` protocol, so wrappers stay valid. The listing is cached in-process per purpose for an hour (`reported_version.LISTING_TTL_S`). A failed or slow probe (bounded by `PROBE_TIMEOUT_S`) leaves the version unknown and never affects the call.
   **Why:** the first call after start-up probes, and the cache expires hourly, which gives the planned cadence without a new recurring task. The listing is only needed when a call has no fingerprint, so endpoints that send one never pay for it.
   **Issue:** #710
+
+### #707 and #711 — #140's check under the hypothetical canon; undo's `rewrite` option
+
+- **Decision:** one module, `orchestrator/rewrite/hypothetical.py`, holds the check both issues need. It fetches a claim's records through `check_with` (`fetched`), takes out the facts the change supersedes, adds the change's proposition, and runs the pure `check`. One commit carries both issues because `apply.py` and `plan.py` change inseparably.
+  **Issue:** #707, #711
+- **Decision (#707):** the planner settles two provisional actions (`plan._settle`).
+  - A `causes` decision (an event) is `keep` when one of its other premises (another `causes` target fact, not on the change's key) is still `supported` under the hypothetical canon. It is not regenerated, and the report carries a `decision_kept` notification.
+  - This premise check runs before the `decision_effects`/`player_authored` conflict test, so a supported decision never becomes a conflict.
+  - A `derives` belief of kind `inference` now gets the new provisional action `re_run`. It cascades when no other premise contradicts the new value (the changed premise now states it), and is kept otherwise.
+  **Why:** "support through another premise" maps to the decision's other `causes` targets, the only premises the edges record.
+  **Issue:** #707
+- **Decision (#711):** a dependent amendment B's undo question offers `cascade_undo | rewrite | cancel`.
+  - `rewrite` on a proposition part writes a `version` part (`facts` record part) on B's fact, with the restored value in place of the undone one. B stays active.
+  - The restored value is the undo change's `object_id`. When the undone part superseded nothing (a second enrollment), it is the one value left on the key.
+  - A record part's text goes through `rewrite_record`.
+  - When neither works, the conflict falls back to `cascade_undo` with a `rewrite_failed` notification, so B never stays contradicting the restored canon.
+  - `keep` is added to an undo conflict only for a fact or belief that `stays_consistent` finds not contradicted. Narrative text has no proposition to check, so it is never offered `keep` (unchanged).
+  **Issue:** #711
+- **Decision (Rule 1, #711):** `apply._answers` ignored answers to `dependent` questions, because it read only `kind == "conflict"`. An author's `cancel` for B was handled elsewhere, but any other answer silently became the recommendation. It now reads both kinds. Regression: `test_s_amend_undo__rewrite`.
+  **Issue:** #711

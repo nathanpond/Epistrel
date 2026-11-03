@@ -43,7 +43,9 @@ BUCKEYES = "Go Buckeyes, Bobby!"
 VISIT = "Bobby decides to visit his old coach in Los Angeles."
 
 
-async def _dependents(engine: AsyncEngine, ed: Education) -> dict[str, str]:
+async def _dependents(
+    engine: AsyncEngine, ed: Education, *, premises: tuple[str, ...] = ()
+) -> dict[str, str]:
     made: dict[str, str] = {}
     async with Operation(
         engine, story_id=ed.story_id, kind=OperationKind.TURN, principal="p-test"
@@ -76,7 +78,7 @@ async def _dependents(engine: AsyncEngine, ed: Education) -> dict[str, str]:
                     DependencyEdgeType.CAUSES,
                     "events",
                     found[DECISION],
-                    [ed.enrollment.id],
+                    [ed.enrollment.id, *premises],
                     position=at,
                 ),
                 *await edges.fact_edges(
@@ -167,3 +169,35 @@ async def test_s_ucla(pg_url: str, engine: AsyncEngine, drained_embedding_jobs: 
             engine, "SELECT status FROM amendments WHERE id = :a", a=result["amendment_id"]
         )
         assert amendment.status == "reverted"
+
+
+@pytest.mark.part("M7", "FR-DIRECT-3")
+async def test_s_ucla__supported_decision(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#707 (#225's ``causes`` → ``re_evaluate``): a decision with another premise, Bobby's
+    OSU degree, which #140's check still supports under the hypothetical canon (enrolled at
+    UCLA), is kept: its line is not regenerated (no ``rewrite_record`` call for it), it is not
+    flagged ``regenerated``, and the report says ``decision_kept``. The single-premise decision
+    of ``test_s_ucla`` is the complement (regenerated)."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        ed = await bobby_education(client, engine, witnesses=True, closed_enrollment=False)
+        story = ed.story_id
+        made = await _dependents(engine, ed, premises=(ed.degree.id,))
+        stub = epistrel.models.stub
+        stub.when("", rs.UCLA, purpose="rewrite_parse")
+        stub.when("", f'{{"text": "{VISIT}"}}', purpose="rewrite_record")
+        session = (await rs.open_session(client, story, resolution_mode="best_effort")).json()
+        planned = {
+            e["record"]["id"]: e["action"] for e in session["preview"]["blast_radius"]["cascaded"]
+        }
+        assert planned[made["decision"]] == "keep"
+        revision = await rs.revision(engine, story)
+        applied = await rs.apply(client, story, session["id"], revision)
+        assert applied.status_code == 200, applied.text
+        report = applied.json()["report"]
+        assert not [e for e in report["applied"]["cascaded"] if e.get("regenerated")]
+        kept = [n for n in report["notifications"] if n["kind"] == "decision_kept"]
+        assert [n["record"]["id"] for n in kept] == [made["decision"]]
+        assert (await _transcript(engine, story))[made["decision"]] == DECISION

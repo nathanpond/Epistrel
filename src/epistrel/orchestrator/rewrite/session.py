@@ -1377,7 +1377,11 @@ async def _plan_sourced(
             plan = await _planner_of(pipeline).plan(conn, story, parsed, base_revision=revision)
         mine = {target}
         plan.irreducible = [
-            c for c in undo.undo_options(plan.irreducible) if not await _own_part(conn, c, mine)
+            c
+            for c in await undo.checked_undo_options(
+                conn, story_id, plan.irreducible, parsed.changes
+            )
+            if not await _own_part(conn, c, mine)
         ]
         plan.cascaded = [c for c in plan.cascaded if not await _own_part(conn, c, mine)]
         plan.incidental = [c for c in plan.incidental if not await _own_part(conn, c, mine)]

@@ -103,9 +103,11 @@ async def get_amendment(
         "Undo is a new, checked amendment (FR-REWRITE-10): a rewrite session of kind `undo` "
         "whose changes take back the amendment's parts and whose blast radius is planned "
         "against the restored canon. A later amendment relying on it is asked about "
-        "(`cascade_undo`, recommended, or `cancel`, which cancels the undo); a record that "
-        "would contradict the restored canon is repaired. Applied, it records an `undo` "
-        "amendment and the undone one is `reverted`, never deleted. 409 "
+        "(`cascade_undo`, recommended; `rewrite`, which rewrites its contradicted parts into "
+        "the undo and keeps it active; or `cancel`, which cancels the undo); a record that "
+        "would contradict the restored canon is repaired, and `keep` is offered only for a "
+        "fact or belief the deterministic check finds consistent without it. Applied, it "
+        "records an `undo` amendment and the undone one is `reverted`, never deleted. 409 "
         "`amendment_already_reverted`; 422 `use_redo` for an `undo` amendment."
         + _SESSION
         + _OMNISCIENT

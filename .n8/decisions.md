@@ -11601,3 +11601,9 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - **What the slice covers.** Two cheap guarantees: no imported operation counts as guardrail-checked, and no imported outbox row is dispatchable.
   - **Status.** #251 is left open with a comment; no `Closes`.
   **Issue:** #251
+
+### M7 close-out — current_milestone, 2026-11-03
+
+- **Decision:** `[tool.epistrel.gates] current_milestone` stays `6`. It is not bumped to `7` at this PR.
+  **Why:** with `7`, `check-traceability` fails on 28 planned-but-absent M7 parts. Examples: S-PRUNE's FR-CONC-15/FR-EXT-21/FR-STORE-1, S-RETENTION, S-REWIND, C-09, X-01, and I-10's FR-ADMIN-9/FR-RATE-7/FR-STORE-30. These belong to the stories this run built in part (#228, #250) or not at all (#251, #235, and the not-built slices filed as #698–#705). Bumping would turn CI red on work the run did not finish. M7 is **partially executed**, and the bump belongs to the run that completes it.
+  **Issue:** #228, #250, #251, #235

@@ -804,7 +804,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | FR-STORE-4 | M | M2 | I-02 (M2), REPLAY (M2) |
 | FR-STORE-5 | M | M2 | I-01 (M2) |
 | FR-STORE-6 | M | M2 | I-03 (M2), I-03 (M7) |
-| FR-STORE-7 | M | M7 | I-10 (M7), I-10 (M8), C-09 (M7) |
+| FR-STORE-7 | M | M7 | I-10 (M7), I-10 (M8), C-09 (M7), BUNDLE-SECRET-SCAN (M7), BUNDLE-TABLES-COVERAGE (M7) |
 | FR-STORE-8 | M | M2 | TIME (M2) |
 | FR-STORE-9 | M | M4 | TIME (M4) |
 | FR-STORE-10 | M | M2 | I-04 (M2), TIME (M2), S-REWIND (M2), S-FLASHBACK-TRUNCATE (M4) |

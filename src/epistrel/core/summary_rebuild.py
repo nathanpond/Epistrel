@@ -7,9 +7,13 @@ structured data dormant (#231's decrease: coverage closed, nothing deleted) and 
 ``lite_summary`` job (#72), which compresses those turns on its normal grid. The story is not
 paused (the owner's round-two decision): turns go on under Lite with the segments written so
 far and the verbatim window, and each reply carries ``degradation: ["summary_rebuilding"]``
-until the summary has caught up. The row then ends ``completed`` (``settle``); ``DELETE
-/stories/{id}/backfill`` cancels it (the segments already written stay, as the incremental job
-would have written them).
+until the summary has caught up. The row then ends ``completed`` (``settle``), recording the
+``rolling_summary`` coverage of its range (#709); ``DELETE /stories/{id}/backfill`` cancels it
+and the segments it wrote are discarded (``discard_segments``).
+
+#709: the range is ``coverage.gaps(story, "rolling_summary")`` (a first era's covered turns are
+not rebuilt), and the row enqueues the ``lite_summary`` job's rebuild mode (its own coalesce
+key, through ``summary_port.schedule_rebuild``).
 """
 
 from __future__ import annotations
@@ -29,6 +33,9 @@ from epistrel.observability.logging import get_logger
 log = get_logger(__name__)
 
 KIND = "resummarize"
+CAPABILITY = "rolling_summary"
+"""#709: the coverage capability of the Lite rolling summary (internal: never a gained or lost
+capability of an impact report)."""
 REBUILDING = "summary_rebuilding"
 """The degradation step a Lite reply carries while the summary is rebuilt."""
 
@@ -62,10 +69,16 @@ async def start(conn: AsyncConnection, story_id: str, principal: str) -> str | N
     state = await summary.summary_state(conn, story_id)
     if not state.settings.enabled or not state.chunks:
         return None
-    from epistrel.core.backfill import running
+    from epistrel.core import summary_port
+    from epistrel.core.backfill import coverage, running
 
     if await running(conn, story_id) is not None:
         return None
+    # #709: the range is what the rolling summary's coverage lacks (a first-era summary whose
+    # turns are covered is not rebuilt), else the summary's own pending chunks.
+    missing = await coverage.gaps(conn, story_id, CAPABILITY)
+    low = missing[0][0] if missing else state.chunks[0].covers_from
+    high = missing[-1][1] if missing else state.chunks[-1].covers_to
     backfill_id = new_ulid()
     await conn.execute(
         story_backfills.insert().values(
@@ -73,14 +86,15 @@ async def start(conn: AsyncConnection, story_id: str, principal: str) -> str | N
             story_id=story_id,
             kind=KIND,
             status="extracting",
-            capabilities=["rolling_summary"],
-            range_from_turn=state.chunks[0].covers_from,
-            range_to_turn=state.chunks[-1].covers_to,
+            capabilities=[CAPABILITY],
+            range_from_turn=low,
+            range_to_turn=high,
             chunks_total=len(state.chunks),
             requested_by=principal,
             started_at=clock.now(),
         )
     )
+    await summary_port.schedule_rebuild(conn, story_id, backfill_id, low, high)
     log.info("summary rebuild started", backfill_id=backfill_id, chunks=len(state.chunks))
     return backfill_id
 
@@ -119,6 +133,17 @@ async def settle(conn: AsyncConnection, story_id: str) -> bool:
         return False
     if await summary.needs_work(conn, story_id):
         return True
+    from epistrel.core.backfill import coverage
+
+    # #709: the rolling summary covers the rebuilt range now (coverage means "segments exist").
+    await coverage.add(
+        conn,
+        story_id,
+        CAPABILITY,
+        int(found.range_from_turn),
+        int(found.range_to_turn),
+        source=coverage.BACKFILL,
+    )
     await conn.execute(
         update(story_backfills)
         .where(story_backfills.c.id == found.id)
@@ -136,9 +161,45 @@ async def rebuilding(db: AsyncConnection | AsyncEngine, story_id: str) -> bool:
         return await settle(conn, story_id)
 
 
+async def discard_segments(conn: AsyncConnection, row: Any) -> int:
+    """#709: a cancelled or failed summarization backfill's segments (written since it
+    started) are discarded with their operations; the story stays on Lite without them."""
+    from sqlalchemy import func, select
+
+    from epistrel.core.enums import Membership
+    from epistrel.core.membership import flip_membership
+    from epistrel.core.tables import lite_summary_segments, operations
+
+    s, o = lite_summary_segments.c, operations.c
+    ops = [
+        str(op)
+        for (op,) in await conn.execute(
+            select(func.distinct(s.operation_id))
+            .join(operations, o.operation_id == s.operation_id)
+            .where(
+                s.story_id == row.story_id,
+                o.membership == Membership.ACTIVE.value,
+                o.committed_at >= row.started_at,
+            )
+        )
+    ]
+    if ops:
+        await flip_membership(conn, ops, Membership.DISCARDED, story_id=str(row.story_id))
+        await conn.execute(
+            update(operations)
+            .where(o.operation_id.in_(ops))
+            .values(
+                membership=Membership.DISCARDED.value, membership_tx=func.transaction_timestamp()
+            )
+        )
+    return len(ops)
+
+
 __all__ = [
+    "CAPABILITY",
     "KIND",
     "REBUILDING",
+    "discard_segments",
     "downgraded",
     "estimate",
     "on_configuration",

@@ -660,10 +660,23 @@ async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> No
         assert entry["summary_backfill"]["estimate"]["model_calls"] > 0
         (rebuild,) = await rows(
             engine,
-            "SELECT kind, status FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
+            "SELECT id, kind, status, capabilities, range_from_turn, range_to_turn "
+            "FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
             s=story,
         )
         assert rebuild.status == "extracting"
+        # #709: the rolling summary's coverage capability, its range the coverage's gap, and the
+        # lite_summary job's rebuild mode queued for it.
+        assert list(rebuild.capabilities) == ["rolling_summary"]
+        assert (rebuild.range_from_turn, rebuild.range_to_turn) == (1, lls.LATE)
+        (queued,) = await rows(
+            engine,
+            "SELECT payload FROM jobs WHERE story_id = :s AND kind = 'lite_summary' "
+            "AND coalesce_key = :k",
+            s=story,
+            k=f"lite_summary_rebuild:{story}",
+        )
+        assert queued.payload["backfill_id"] == str(rebuild.id)
         kept = [
             tuple(r)
             for r in await rows(
@@ -699,6 +712,13 @@ async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> No
             s=story,
         )
         assert done.status == "completed"
+        covered = await rows(
+            engine,
+            "SELECT from_turn, to_turn FROM capability_coverage WHERE story_id = :s "
+            "AND capability = 'rolling_summary'",
+            s=story,
+        )
+        assert [(c.from_turn, c.to_turn) for c in covered] == [(1, lls.LATE)]
 
         await lls.long_lite_story(engine, story, actor, 20)  # ten more turns
         up = await ok(
@@ -718,6 +738,91 @@ async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> No
             )
         }
         assert {f[0] for f in facts if f[1] == "active"} <= again
+
+
+@pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
+async def test_i_19__m7_resummarize_cancel(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#709 (#232's cancel clause): a downgrade's summarization rebuild is cancelled
+    (``DELETE /stories/{id}/backfill``) after some segments are written: they are discarded
+    with their operations, the next Lite prompt reads none of them, and the story stays on
+    Lite with no ``summary_rebuilding``. A Lite turn under the downgrade reads nothing
+    structured (spies on retrieval, verification and the belief readers count zero)."""
+    from epistrel.core.epistemic import partitions
+    from epistrel.core.retrieval import pipeline as retrieval
+    from epistrel.core.verify import rules
+    from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
+    from tests.summary_support import run_due_jobs
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, actor, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        await ok(
+            await client.put(
+                f"/stories/{story}/engine-profile",
+                json={"profile_id": LITE_PRESET_ID, "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        assert lib.models is not None
+        await run_due_jobs(engine, lib.models, story, limit=1)
+        written = await rows(
+            engine,
+            "SELECT s.segment_id FROM lite_summary_segments s JOIN operations o "
+            "ON o.operation_id = s.operation_id WHERE s.story_id = :s "
+            "AND o.membership = 'active'",
+            s=story,
+        )
+        assert written, "the rebuild wrote segments before the cancel"
+        cancelled = await client.delete(f"/stories/{story}/backfill", headers=WRITE)
+        assert cancelled.status_code == 200, cancelled.text
+        (ended,) = await rows(
+            engine,
+            "SELECT status FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
+            s=story,
+        )
+        assert ended.status == "cancelled"
+        left = await rows(
+            engine,
+            "SELECT s.segment_id FROM lite_summary_segments s JOIN operations o "
+            "ON o.operation_id = s.operation_id WHERE s.story_id = :s "
+            "AND o.membership = 'active'",
+            s=story,
+        )
+        assert left == []
+
+        seen: list[str] = []
+        real_retrieve, real_check = retrieval.retrieve, rules.check_with
+
+        async def spy_retrieve(*args: Any, **kwargs: Any) -> Any:
+            seen.append("retrieve")
+            return await real_retrieve(*args, **kwargs)
+
+        async def spy_check(*args: Any, **kwargs: Any) -> Any:
+            seen.append("check_with")
+            return await real_check(*args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(retrieval, "retrieve", spy_retrieve)
+            patched.setattr(rules, "check_with", spy_check)
+            if hasattr(partitions, "beliefs_of"):
+                real_beliefs = partitions.beliefs_of
+
+                async def spy_beliefs(*args: Any, **kwargs: Any) -> Any:
+                    seen.append("beliefs")
+                    return await real_beliefs(*args, **kwargs)
+
+                patched.setattr(partitions, "beliefs_of", spy_beliefs)
+            played = await ok(
+                await client.post(
+                    f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE
+                )
+            )
+        assert seen == []
+        assert "summary_rebuilding" not in played["degradation"]
+        del lite_summary_job
 
 
 async def test_backfill__gap_fill(stub_settings: Any, engine: AsyncEngine) -> None:

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 logger = logging.getLogger(__name__)
 
@@ -49,4 +49,35 @@ async def notify(db: AsyncEngine, story_id: str) -> bool:
         return False
 
 
-__all__ = ["Scheduler", "notify", "scheduler", "set_scheduler"]
+RebuildScheduler = Callable[[AsyncConnection, str, str, int, int], Awaitable[None]]
+"""#709: ``schedule(conn, story_id, backfill_id, from_turn, to_turn)``: enqueue the
+``lite_summary`` job's rebuild mode in ``conn``'s transaction."""
+
+_REBUILD: list[RebuildScheduler] = []
+
+
+def set_rebuild_scheduler(found: RebuildScheduler | None) -> None:
+    _REBUILD.clear()
+    if found is not None:
+        _REBUILD.append(found)
+
+
+async def schedule_rebuild(
+    conn: AsyncConnection, story_id: str, backfill_id: str, from_turn: int, to_turn: int
+) -> bool:
+    """#709: enqueue a summarization rebuild (``False``: no scheduler bound)."""
+    if not _REBUILD:
+        return False
+    await _REBUILD[0](conn, story_id, backfill_id, from_turn, to_turn)
+    return True
+
+
+__all__ = [
+    "RebuildScheduler",
+    "Scheduler",
+    "notify",
+    "schedule_rebuild",
+    "scheduler",
+    "set_rebuild_scheduler",
+    "set_scheduler",
+]

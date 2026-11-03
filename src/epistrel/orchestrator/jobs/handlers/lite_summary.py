@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -114,6 +115,39 @@ def bound() -> ModelAccessLayer | None:
 def coalesce_key(story_id: str) -> str:
     """One queued summary job per story."""
     return f"{LITE_SUMMARY}:{story_id}"
+
+
+class LiteSummaryPayload(BaseModel):
+    """The job's payload: empty for the incremental job (and the recurring fan-out), or #709's
+    **rebuild** mode after a downgrade (#232): the ``resummarize`` backfill it serves and the
+    range it covers. Both modes compress what the summary lacks on #72's grid; a rebuild run
+    then settles its backfill (completion records the ``rolling_summary`` coverage)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    backfill_id: str | None = None
+    range_from_turn: int | None = None
+    range_to_turn: int | None = None
+
+
+def rebuild_key(story_id: str) -> str:
+    """#709: the rebuild's own coalesce key, so #72's incremental job still runs past it."""
+    return f"{LITE_SUMMARY}_rebuild:{story_id}"
+
+
+async def schedule_rebuild(
+    conn: AsyncConnection, story_id: str, backfill_id: str, from_turn: int, to_turn: int
+) -> None:
+    """#709: enqueue the rebuild over ``[from_turn, to_turn]`` in ``conn``'s transaction."""
+    await queue.enqueue(
+        conn,
+        LITE_SUMMARY,
+        LiteSummaryPayload(
+            backfill_id=backfill_id, range_from_turn=from_turn, range_to_turn=to_turn
+        ),
+        story_id=story_id,
+        coalesce_key=rebuild_key(story_id),
+    )
 
 
 # -- scheduling ---------------------------------------------------------------------------------
@@ -580,7 +614,7 @@ class ErasureCompressor:
 
 LITE_SUMMARY_HANDLER = JobHandler(
     kind=LITE_SUMMARY,
-    payload=NoPayload,
+    payload=LiteSummaryPayload,
     run=_run,
     operation_kind=OperationKind.CONSOLIDATION,
     max_attempts=1,
@@ -588,6 +622,7 @@ LITE_SUMMARY_HANDLER = JobHandler(
 LITE_SUMMARY_TASK = RecurringTask(LITE_SUMMARY, INTERVAL)
 
 summary_port.set_scheduler(schedule)
+summary_port.set_rebuild_scheduler(schedule_rebuild)
 timeline.on_membership_change(on_membership_change, phase=timeline.HookPhase.POST_COMMIT)
 
 __all__ = [

@@ -11835,3 +11835,8 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   - **I-10 M7.** `export_rich` (`FR-STORE-7; FR-ADMIN-4`), `export_erasure_race` (`FR-ADMIN-9`), `export_lifecycle` (`FR-STORE-30`) and `export_snapshot` (20 concurrent turns).
   - **C-09 M7.** `test_c_09__m7_bundle`.
   **Issue:** #704
+- **Decision (Lite summary rebuild, #709):** the downgrade's rebuild computes its range from `coverage.gaps` for `rolling_summary` and enqueues `lite_summary` with a `LiteSummaryPayload(backfill_id, range_from_turn, range_to_turn)` under the single key `lite_summary_rebuild:<story>`, through a `summary_port.schedule_rebuild` port (Core does not import the orchestrator). `settle` writes the `rolling_summary` coverage row with source `backfill`. Cancelling a resummarize backfill flips the segment operations committed since it started to `discarded` (`summary_rebuild.discard_segments`), so readers never see a half-built summary.
+  **Issue:** #709
+- **Decision (S-PROFILE-SWITCH round trip, partial):** `test_s_profile_switch__round_trip` covers 200 Lite turns with the prompt-only clock, pins and custom instructions, the upgrade with backfill (the meeting becomes Jenni's canon scheduled event; the clock keeps the Lite era's pacing fold), and the return to Lite (data dormant, pins and instructions back in the prompt).
+  **Not built:** (a) resolving "at 17:00" to a scheduled time: the extraction time grammar has no clock times, so the meeting's planned time stays unset; (b) per-character beliefs after the backfill: the backfill writes facts, not beliefs. Both need a grammar or a pipeline change beyond this fix. #709 stays open for them.
+  **Issue:** #709

@@ -547,6 +547,11 @@ async def discard(conn: AsyncConnection, row: Any, *, status: str, error: str | 
                 membership=Membership.DISCARDED.value, membership_tx=func.transaction_timestamp()
             )
         )
+    if str(row.kind) == "resummarize" and row.started_at is not None:
+        from epistrel.core import summary_rebuild
+
+        # #709: the rebuild's segments go with it; the story stays on Lite without them.
+        await summary_rebuild.discard_segments(conn, row)
     await conn.execute(delete(backfill_chunks).where(backfill_chunks.c.backfill_id == row.id))
     await conn.execute(
         update(story_backfills)

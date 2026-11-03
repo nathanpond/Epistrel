@@ -165,6 +165,35 @@ async def _translated_candidates(ctx: ImportContext, entry: Any, request: Any) -
     ]
 
 
+async def _empty_cards(ctx: ImportContext, catalog_id: str) -> None:
+    """#382 on import: a catalog-scope entry, run as a story-scope erasure of the story
+    character (which keeps the public card, name redacted), also empties the card cast from the
+    catalog character in the imported story's genesis creation report, as the catalog-scope
+    erasure did in every story's report it reached."""
+    from epistrel.core.erasure.erase import catalog_erased_report
+    from epistrel.core.tables import operations
+
+    o = operations.c
+    async with ctx.db.begin() as conn:
+        found = await conn.execute(
+            select(o.operation_id, o.turn_report).where(
+                o.story_id == ctx.story_id, o.kind == OperationKind.GENESIS.value
+            )
+        )
+        for row in list(found):
+            value = row.turn_report
+            report = value.get("creation_report") if isinstance(value, dict) else None
+            if not isinstance(report, dict):
+                continue
+            emptied = catalog_erased_report(dict(report), catalog_id)
+            if emptied != report:
+                await conn.execute(
+                    update(operations)
+                    .where(o.operation_id == row.operation_id)
+                    .values(turn_report={**value, "creation_report": emptied})
+                )
+
+
 async def apply_erasure_ledger(ctx: ImportContext) -> None:
     from epistrel.core.erasure import erase as erasure
     from epistrel.core.erasure import guard
@@ -203,6 +232,8 @@ async def apply_erasure_ledger(ctx: ImportContext) -> None:
             )
         except SubjectNotFound, StoryNotFound:
             continue  # a post-erasure bundle: nothing of the subject left to apply
+        if str(entry.scope) == "catalog":
+            await _empty_cards(ctx, str(entry.subject_id))
         applied += 1
         remaining += int(result.candidates_remaining)
     async with ctx.db.begin() as conn:

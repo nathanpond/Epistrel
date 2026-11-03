@@ -1954,3 +1954,120 @@ async def _started_keyed(client: Any, data: bytes, key: dict[str, str]) -> Any:
         },
         headers={**WRITE, **key},
     )
+
+
+# -- M7: the import gates' slices (#721, #251) ----------------------------------------------------
+
+
+async def _event_texts(engine: AsyncEngine, story_id: str) -> list[str]:
+    found = await rows(
+        engine,
+        "SELECT payload->>'text' AS line FROM events WHERE story_id = :s "
+        "AND type IN ('player_input', 'message_rendered') ORDER BY seq",
+        s=story_id,
+    )
+    return [str(r.line) for r in found if r.line is not None]
+
+
+async def _import_with(client: Any, engine: AsyncEngine, data: bytes, **meta: Any) -> _Imported:
+    return await _import(client, engine, data, metadata=meta or None)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-ADMIN-7,9; FR-STORE-7")
+async def test_i_10__m7_erasure_on_import(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#251's erasure gate, the slices #721 names.
+
+    - **Confirmed candidates (ADR-154).** "Will Black" is erased from the source after its
+      export, with the candidate "Will you come?" confirmed and "Black clouds gather." left
+      unconfirmed. The import of the earlier bundle removes the confirmed candidate too
+      (its id translated through the import's id map) and keeps the other, which the report
+      counts in ``candidates_remaining``.
+    - **An unrelated story's erasure.** "Ty" is erased only in another story; the bundle also
+      has a "Ty" (another character), and she is **not** erased from the import.
+    - The source story's other content is intact in the import."""
+    from tests import erasure_support as es
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import new_story, played, respond_client
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, lib):
+        story, ids = await new_story(client, "Wren", "Will Black", "Ty")
+        lib.models.stub.script("generation", ["Ty nods.", "Ty shrugs.", "The rain falls."])
+        for line in ("Will you come?", "Black clouds gather.", "Ty asked Will Black."):
+            await played(client, story, respond_body(ids["Wren"], line))
+        data = await _exported(client, engine, story, tmp_path)
+        listed = await es.erase(client, "character", ids["Will Black"], story, dry_run=True)
+        confirmed = [c["candidate_id"] for c in listed["candidates"] if "Will you" in c["snippet"]]
+        unconfirmed = [c for c in listed["candidates"] if "Black clouds" in c["snippet"]]
+        assert confirmed
+        assert unconfirmed
+        done = await es.erase(client, "character", ids["Will Black"], story, confirm=confirmed)
+        assert done["candidates_remaining"] == len(unconfirmed)
+        assert "Will you come?" not in await _event_texts(engine, story)
+        # The unrelated story: its own "Ty", erased there only.
+        other, other_ids = await new_story(client, "Wren", "Ty")
+        lib.models.stub.script("generation", ["Ty waits."])
+        await played(client, other, respond_body(other_ids["Wren"], "Hello, Ty."))
+        await es.erase(client, "character", other_ids["Ty"], other)
+
+        imported = await _import(client, engine, data)
+        assert imported.ready, imported.status
+        assert imported.status is not None
+        erasure = imported.status["report"]["erasure"]
+        assert erasure["applied"] == 1, erasure
+        assert erasure["candidates_remaining"] >= len(unconfirmed), erasure
+        texts = await _event_texts(engine, imported.story_id)
+        assert "Will you come?" not in texts  # the confirmed candidate, translated
+        assert "[erased] you come?" in texts
+        assert "Black clouds gather." in texts  # unconfirmed: kept
+        assert not any(es.naming(t, ["Will Black"]) for t in texts)
+        names = {
+            r.name
+            for r in await rows(
+                engine, "SELECT name FROM characters WHERE story_id = :s", s=imported.story_id
+            )
+        }
+        assert "Ty" in names  # erased only in an unrelated story
+        assert "Will Black" not in names
+        assert {"Ty nods.", "Ty shrugs.", "The rain falls."} <= set(texts)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-ADMIN-7,9; FR-STORE-7")
+async def test_i_10__m7_erasure_on_import__catalog(
+    pg_url: str, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251's catalog-scope variant: a catalog character the bundle's snapshot references
+    ("June Harrow", cast as the mother) is erased from the catalog after the export; the import
+    of the earlier bundle erases her story character (no record names her) and empties her card
+    in the genesis creation report (#382: only ids, version and status kept). Complement: the
+    card is in the bundle's report before, and the story's other characters are intact."""
+    from tests import erasure_support as es
+    from tests.integration.test_i_27 import CARD_LABEL, _card, _cast_june, _report
+    from tests.respond_support import respond_client
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, _):
+        story, june, mother = await _cast_june(client, f"{CARD_LABEL}-import")
+        assert _card(await _report(engine, story), mother)["name"] == "June Harrow"
+        data = await _exported(client, engine, story, tmp_path)
+        source_names = {
+            r.name
+            for r in await rows(engine, "SELECT name FROM characters WHERE story_id = :s", s=story)
+        }
+        await es.erase(client, "catalog_character", mother)
+        imported = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert imported.ready, imported.status
+        assert imported.status is not None
+        assert imported.status["report"]["erasure"]["applied"] == 1
+        names = {
+            r.name
+            for r in await rows(
+                engine, "SELECT name FROM characters WHERE story_id = :s", s=imported.story_id
+            )
+        }
+        assert "June Harrow" not in names
+        assert names == source_names - {"June Harrow"}
+        card = _card(await _report(engine, imported.story_id), mother)
+        assert (card["name"], card["public_description"], card["labels"]) == (None, None, [])
+        texts = await _event_texts(engine, imported.story_id)
+        assert not any(es.naming(t, ["June Harrow", "June"]) for t in texts)

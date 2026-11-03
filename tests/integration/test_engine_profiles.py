@@ -186,6 +186,7 @@ LITE_ROUTED = set(STORY_PURPOSES) - {
     "rewrite_record",
     "directive_parse",
     "lite_rewrite_reach",
+    "lite_rewrite_parse",
 }
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls
 in a turn. The history and directive side-channel's (#223, #224, #226, #245's

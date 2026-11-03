@@ -444,6 +444,9 @@ async def prepare(
                     prepared.parts.append(("resolutions", draft, label))
                 after = "rewritten"
         elif action == "rewrite":
+            # #700: a Lite conflict has no normalized change: the line is rewritten to agree
+            # with the session's change statement, the hit's reason as the guidance.
+            statement = [str(conflict["statement"])] if conflict.get("statement") else []
             rewritten = (
                 None
                 if before is None
@@ -454,8 +457,8 @@ async def prepare(
                     before,
                     record[0],
                     olds.get(conflict["change_key"], ()),
-                    canon.get(conflict["change_key"], []),
-                    guidance or "",
+                    canon.get(conflict["change_key"]) or statement,
+                    guidance or str(conflict.get("why") or ""),
                 )
             )
             if rewritten is None:

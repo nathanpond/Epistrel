@@ -73,6 +73,7 @@ DETERMINISTIC_FIRST_EXEMPT = frozenset(
         "rewrite_record",
         "directive_parse",
         "lite_rewrite_reach",
+        "lite_rewrite_parse",
     }
 )
 """Purposes with no deterministic path (FR-MODEL-5's residual is the whole call).

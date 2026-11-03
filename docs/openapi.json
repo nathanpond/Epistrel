@@ -39163,6 +39163,41 @@
             "title": "Lite Author Facts Max",
             "type": "integer"
           },
+          "lite_reach_chunk_messages": {
+            "default": 60,
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Lite Reach Chunk Messages",
+            "type": "integer"
+          },
+          "lite_reach_chunk_tokens": {
+            "default": 12000,
+            "maximum": 200000.0,
+            "minimum": 500.0,
+            "title": "Lite Reach Chunk Tokens",
+            "type": "integer"
+          },
+          "lite_reach_deadline_seconds": {
+            "default": 120,
+            "maximum": 3600.0,
+            "minimum": 5.0,
+            "title": "Lite Reach Deadline Seconds",
+            "type": "integer"
+          },
+          "lite_reach_max_calls": {
+            "default": 24,
+            "maximum": 500.0,
+            "minimum": 2.0,
+            "title": "Lite Reach Max Calls",
+            "type": "integer"
+          },
+          "lite_reach_parallelism": {
+            "default": 4,
+            "maximum": 32.0,
+            "minimum": 1.0,
+            "title": "Lite Reach Parallelism",
+            "type": "integer"
+          },
           "lite_summary_chunk": {
             "default": 10,
             "maximum": 200.0,
@@ -40655,6 +40690,61 @@
               }
             ],
             "title": "Lite Author Facts Max"
+          },
+          "lite_reach_chunk_messages": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Reach Chunk Messages"
+          },
+          "lite_reach_chunk_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Reach Chunk Tokens"
+          },
+          "lite_reach_deadline_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Reach Deadline Seconds"
+          },
+          "lite_reach_max_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Reach Max Calls"
+          },
+          "lite_reach_parallelism": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Reach Parallelism"
           },
           "lite_summary_chunk": {
             "anyOf": [
@@ -53454,6 +53544,11 @@
                           "lite_generation_defaults.length",
                           "lite_generation_defaults.temperature",
                           "lite_generation_defaults.top_p",
+                          "lite_reach_chunk_messages",
+                          "lite_reach_chunk_tokens",
+                          "lite_reach_deadline_seconds",
+                          "lite_reach_max_calls",
+                          "lite_reach_parallelism",
                           "lite_summary_chunk",
                           "lite_summary_max_tokens",
                           "lite_window_messages",

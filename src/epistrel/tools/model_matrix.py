@@ -141,7 +141,13 @@ from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
 
 SIDE_CHANNEL = frozenset(
-    {"rewrite_parse", "rewrite_record", "directive_parse", "lite_rewrite_reach"}
+    {
+        "rewrite_parse",
+        "rewrite_record",
+        "directive_parse",
+        "lite_rewrite_reach",
+        "lite_rewrite_parse",
+    }
 )
 """Story purposes no turn calls: the history and directive side-channel's (#223, #224, #226)."""
 

@@ -953,19 +953,8 @@ async def test_i_19__m7_lite_corrections(stub_settings: Any, engine: AsyncEngine
         assert stub is not None
         stub.when(
             "",
-            json.dumps(
-                {
-                    "changes": [
-                        {
-                            "kind": "proposition",
-                            "subject": "Bobby",
-                            "predicate": "age",
-                            "literal": 40,
-                        }
-                    ]
-                }
-            ),
-            purpose="rewrite_parse",
+            json.dumps({"change_statement": forty, "world_change": True}),
+            purpose="lite_rewrite_parse",
         )
         stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
         opened = await ok(

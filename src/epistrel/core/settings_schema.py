@@ -954,6 +954,22 @@ class RewriteSettings(BaseModel):
     lite_author_facts_max: Annotated[StrictInt, PROSPECTIVE] = Field(default=50, ge=1, le=1_000)
     """#699 (FR-LITE-8): the most active lasting author facts a Lite story holds; one more is
     409 ``author_fact_limit``."""
+    lite_reach_chunk_messages: Annotated[StrictInt, PROSPECTIVE] = Field(default=60, ge=1, le=500)
+    """#700 (FR-LITE-8): the transcript lines one ``lite_rewrite_reach`` call reads."""
+    lite_reach_chunk_tokens: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=12_000, ge=500, le=200_000
+    )
+    """#700: a reach chunk closes early when its next line would pass this estimate (a single
+    line over it is left unsearched)."""
+    lite_reach_max_calls: Annotated[StrictInt, PROSPECTIVE] = Field(default=24, ge=2, le=500)
+    """#700: the most ``lite_rewrite_reach`` calls one reach pass makes, the summary and
+    re-check calls included; past it the unsearched range is reported ``truncated``."""
+    lite_reach_parallelism: Annotated[StrictInt, PROSPECTIVE] = Field(default=4, ge=1, le=32)
+    """#700: the transcript chunks a reach pass searches at once."""
+    lite_reach_deadline_seconds: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=120, ge=5, le=3_600
+    )
+    """#700: a whole reach pass's deadline; chunks it leaves out are reported unsearched."""
 
 
 DAY_S = 86_400

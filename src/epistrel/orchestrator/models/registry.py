@@ -1717,6 +1717,58 @@ LITE_REWRITE_REACH = Purpose(
 """``lite_rewrite_reach`` (#245): one call per Lite rewrite session the author opens with an
 instruction (``orchestrator.rewrite.lite``)."""
 
+LITE_PARSE_RECENT_MAX = 10
+"""#700: the latest transcript lines ``lite_rewrite_parse`` reads with the instruction."""
+LITE_PARSE_FACTS_MAX = 50
+
+
+class LiteRewriteParseInputs(InputSchema):
+    """A Lite history rewrite's instruction (FR-LITE-8; #245, #700), the answers so far, the
+    latest lines (newest first, at most ``LITE_PARSE_RECENT_MAX``) and the story's lasting
+    author facts: what the change statement is read from."""
+
+    instruction: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=REWRITE_INSTRUCTION_MAX)
+    answers: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(default_factory=list, max_length=20)
+    recent: Annotated[list[LiteReachLine], C.RECENT_MESSAGE] = Field(
+        default_factory=list, max_length=LITE_PARSE_RECENT_MAX
+    )
+    author_facts: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(
+        default_factory=list, max_length=LITE_PARSE_FACTS_MAX
+    )
+
+
+class LiteRewriteParseResult(BaseModel):
+    """What ``lite_rewrite_parse`` answers: the correction as one plain statement (``""``: the
+    instruction stands as given), whether it changes the story's world (a ``lite_note`` part,
+    "Author correction: ..."), and what it could not decide (each a clarification question
+    with a recommended option)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    change_statement: str = Field(default="", max_length=REWRITE_INSTRUCTION_MAX)
+    world_change: bool = False
+    ambiguities: list[RewriteAmbiguity] = Field(default_factory=list, max_length=8)
+
+
+LITE_REWRITE_PARSE = Purpose(
+    name="lite_rewrite_parse",
+    description=(
+        "Reads a Lite story's history-rewrite instruction as one change statement, says whether "
+        "it changes the world, and asks what it cannot decide, on the author's side-channel, "
+        "never in a turn (FR-LITE-8)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=LiteRewriteParseInputs,
+    template="lite_rewrite_parse.j2",
+    hot_path=False,
+    never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION, C.RECENT_MESSAGE},
+    response_schema=LiteRewriteParseResult,
+    story_scoped=True,
+)
+"""``lite_rewrite_parse`` (#700): one call per Lite rewrite session the author opens with an
+instruction, and one per answer that re-reads it (``orchestrator.rewrite.lite``)."""
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
@@ -1886,6 +1938,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         REWRITE_RECORD,
         DIRECTIVE_PARSE,
         LITE_REWRITE_REACH,
+        LITE_REWRITE_PARSE,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -1927,6 +1980,9 @@ __all__ = [
     "EXTRACTION_MAX_CLAIMS",
     "EXTRACTION_MIN_CONFIDENCE",
     "IMPORTANCE_SCORING",
+    "LITE_PARSE_FACTS_MAX",
+    "LITE_PARSE_RECENT_MAX",
+    "LITE_REWRITE_PARSE",
     "LITE_REWRITE_REACH",
     "PORTS",
     "QUALITY_JUDGE",
@@ -1987,6 +2043,8 @@ __all__ = [
     "KnownHit",
     "LiteReachHit",
     "LiteReachLine",
+    "LiteRewriteParseInputs",
+    "LiteRewriteParseResult",
     "LiteRewriteReachInputs",
     "LiteRewriteReachResult",
     "LiteSummaryInputs",

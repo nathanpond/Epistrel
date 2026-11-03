@@ -455,6 +455,19 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         ),
     ),
     _row(
+        "lite_rewrite_parse",
+        "Lite history rewrite parse",
+        M,
+        UNMEASURED,
+        purposes=("lite_rewrite_parse",),
+        in_story=False,
+        note=(
+            "The author's side-channel, never in a turn: a Lite rewrite's instruction is read "
+            "as one change statement, and every ambiguity is asked, with a recommendation, "
+            "before the reach pass searches the transcript."
+        ),
+    ),
+    _row(
         "directive_parse",
         "directive parse",
         M,

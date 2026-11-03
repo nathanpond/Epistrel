@@ -78,6 +78,7 @@ from epistrel.orchestrator.models.registry import (
 )
 from epistrel.orchestrator.models.structured import Uncertain
 from epistrel.orchestrator.rewrite import templates as t
+from epistrel.orchestrator.rewrite import timing
 
 PARSE_CALLS = 4
 """The calls one parse may make (#53's retries included)."""
@@ -116,6 +117,9 @@ class Story:
     states: tuple[Any, ...]
     now_minutes: int | None
     margin: float
+    retcon_timing: str = "include_if_possible"
+    """#240: the story's ``ambiguous_retcon_timing`` when the rewrite is planned."""
+    head_turn: int = 0
 
 
 async def load_story(
@@ -147,7 +151,16 @@ async def load_story(
             now = (await world_clock.clock_at(conn, story_id, world_clock.HEAD)).offset_minutes
         except EpistrelError:
             now = None
-    return Story(story_id, found, registry, defined, now, margin)
+    return Story(
+        story_id,
+        found,
+        registry,
+        defined,
+        now,
+        margin,
+        await timing.setting(conn, story_id),
+        await timing.head(conn, story_id),
+    )
 
 
 def summary_inputs(story: Story, instruction: str, answers: Sequence[str]) -> RewriteParseInputs:
@@ -252,6 +265,8 @@ class Parsed:
     refused: list[dict[str, Any]] = field(default_factory=list)
     new_entities: list[dict[str, Any]] = field(default_factory=list)
     noops: list[dict[str, Any]] = field(default_factory=list)
+    timing_uncertain: list[dict[str, Any]] = field(default_factory=list)
+    """#240: the changes placed by an absolute time the clock could not decide."""
 
 
 _WORDS = re.compile(r"[a-z0-9]+")
@@ -439,7 +454,14 @@ async def _proposition(conn: AsyncConnection, ctx: _Context, n: int, change: Rew
         )
         return
     key = prop_key(subject, predicate)
-    placed_from, valid_from = _time(ctx, change.valid.from_, key)
+    absolute = timing.absolute(change.valid.from_)
+    uncertain, bound = False, None
+    if absolute is not None:
+        placed_from, valid_from = True, None
+        placed_abs, uncertain, bound = await _absolute_timing(conn, ctx, key, absolute)
+        placed_from = placed_from and placed_abs
+    else:
+        placed_from, valid_from = _time(ctx, change.valid.from_, key)
     placed_to, valid_to = _time(ctx, change.valid.to, key)
     if not (placed_from and placed_to):
         return
@@ -454,6 +476,10 @@ async def _proposition(conn: AsyncConnection, ctx: _Context, n: int, change: Rew
         "valid_from_minutes": valid_from,
         "valid_to_minutes": valid_to,
     }
+    if absolute is not None:
+        summary["valid_spec"] = {"absolute": absolute}
+        summary["timing_uncertain"] = uncertain
+        summary["position_bound"] = bound
     pending = subject.startswith(("new:", "register:")) or (obj or "").startswith(
         ("new:", "register:")
     )
@@ -476,10 +502,53 @@ async def _proposition(conn: AsyncConnection, ctx: _Context, n: int, change: Rew
             return
         superseded = next((o for o in current if o != wanted and isinstance(o, str)), None)
         draft = PropositionPartDraft(
-            proposition, valid_from_minutes=valid_from, valid_to_minutes=valid_to
+            proposition,
+            valid_from_minutes=valid_from,
+            valid_to_minutes=valid_to,
+            absolute=absolute,
+            timing_uncertain=uncertain,
+            position_bound=bound,
         )
     summary["superseded_object_id"] = superseded
     ctx.parsed.changes.append(Normalized(key, "proposition", draft, summary, superseded))
+
+
+async def _absolute_timing(
+    conn: AsyncConnection, ctx: _Context, change_key: str, text: str
+) -> tuple[bool, bool, dict[str, Any] | None]:
+    """``(placed, timing_uncertain, position_bound)`` for a part beginning at an absolute time
+    (#240; ``rewrite.timing``): decided by the anchor, or flagged under
+    ``include_if_possible``, or placed by the author's answer under ``ask_author`` (a required
+    ``timing`` question until answered: ``placed`` false)."""
+    undecidable = await timing.undecidable_at(conn, ctx.story.story_id, text)
+    if not undecidable:
+        return True, False, None
+    if ctx.story.retcon_timing != timing.ASK:
+        ctx.parsed.timing_uncertain.append(
+            {
+                "change_key": change_key,
+                "valid_spec": {"absolute": text},
+                "undecidable_at": undecidable,
+            }
+        )
+        return True, True, None
+    key = question_key("timing", change_key, "absolute", text)
+    bound = ctx.bindings.get(key)
+    if bound is not None and isinstance(bound.get("bound"), dict):
+        return True, False, await timing.with_variant(conn, ctx.story.story_id, bound["bound"])
+    choices, best = timing.options(ctx.story.head_turn, text)
+    options = _options(choices)
+    ctx.parsed.questions.append(
+        Question(
+            kind="timing",
+            key=key,
+            prompt=t.ABSOLUTE_PROMPT.format(expression=text),
+            options=options,
+            recommended=str(options[best]["id"]),
+            reason=t.ABSOLUTE_REASONS[best],
+        )
+    )
+    return False, False, None
 
 
 async def _current_objects(

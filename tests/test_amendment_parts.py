@@ -59,6 +59,35 @@ def test_eligibility() -> None:
         partial_period("last spring")
 
 
+def test_eligibility__bounds() -> None:
+    """#240: a position bound decides by turn index, whatever the valid-time: ``story_start``
+    is in everywhere; ``after T`` is out at ``T-1`` and ``T``, in at ``T⁺1`` and ``T+1``;
+    ``before T`` is out at ``T-1``, in at ``T``, ``T⁺1`` and ``T+1``. Complement: a fully dated
+    anchor decides "2012" exactly (never undecidable)."""
+    turn = 40
+    points = {"T-1": (turn - 1, 0), "T": (turn, 0), "T+slot": (turn, 1), "T+1": (turn + 1, 0)}
+    start = PartTiming.of(None, {"absolute": "2012"}, {"story_start": True})
+    after = PartTiming.of(None, {"absolute": "2012"}, {"relation": "after", "turn": turn})
+    before = PartTiming.of(None, {"absolute": "2012"}, {"relation": "before", "turn": turn})
+    found = {
+        name: tuple(
+            eligible(t, story_time=None, absolute=None, checkpoint=at).value
+            for t in (start, after, before)
+        )
+        for name, at in points.items()
+    }
+    assert found == {
+        "T-1": ("included", "excluded", "excluded"),
+        "T": ("included", "excluded", "included"),
+        "T+slot": ("included", "included", "included"),
+        "T+1": ("included", "included", "included"),
+    }
+    dated = (date(2025, 6, 7), date(2025, 6, 8))
+    year = PartTiming(absolute=partial_period("2012"))
+    assert eligible(year, story_time=0, absolute=dated) is IN
+    assert eligible(year, story_time=0, absolute=None) is OPEN
+
+
 def test_correctable_tables() -> None:
     """Every table holding correctable narrative content is registered with its strategy, and
     the deliberate exclusions are named with their reason; every name is a table."""

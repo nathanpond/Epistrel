@@ -1322,15 +1322,23 @@ async def _ineligible(
         if not wanted:
             return {}
         found = await conn.execute(
-            select(p.id, p.valid_from_minutes, p.valid_spec, p.superseded_fact_ids).where(
-                p.id.in_(wanted), p.status == "active"
-            )
+            select(
+                p.id, p.valid_from_minutes, p.valid_spec, p.superseded_fact_ids, p.position_bound
+            ).where(p.id.in_(wanted), p.status == "active")
         )
         return {str(r.id): r for r in found}
 
+    checkpoint = (
+        (int(through[0]), int(through[1]))
+        if isinstance(through, tuple)
+        else (int(through.turn), int(through.slot_k))
+    )
+
     def excluded_part(part: Any) -> bool:
-        timing = PartTiming.of(part.valid_from_minutes, part.valid_spec)
-        return not eligible(timing, story_time=story_time, absolute=absolute).folds
+        timing = PartTiming.of(part.valid_from_minutes, part.valid_spec, part.position_bound)
+        return not eligible(
+            timing, story_time=story_time, absolute=absolute, checkpoint=checkpoint
+        ).folds
 
     parts = await parts_of(str(r.amendment_part_id) for r in rows if r.amendment_part_id)
     excluded = {

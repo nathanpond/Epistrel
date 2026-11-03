@@ -169,6 +169,11 @@ class PropositionPartDraft:
     valid_to_minutes: int | None = None
     absolute: str | None = None
     relative: str | None = None
+    timing_uncertain: bool = False
+    """#240: undecidable against the anchor and included under ``include_if_possible``."""
+    position_bound: Mapping[str, Any] | None = None
+    """#240: the author's placement under ``ask_author`` (``{story_start: true}`` or
+    ``{relation, turn, variant}``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -352,6 +357,8 @@ async def _apply_proposition(
         "valid_spec": _valid_spec(draft),
         "written_fact_id": written.id,
         "superseded_fact_ids": list(written.superseded_ids),
+        "timing_uncertain": bool(draft.timing_uncertain),
+        "position_bound": None if draft.position_bound is None else dict(draft.position_bound),
     }
 
 
@@ -942,6 +949,7 @@ async def record_amendment(
     written: list[str] = []
     transcript: list[TranscriptPatch] = []
     state_keys: list[tuple[str, str | None]] = []
+    timing: list[dict[str, Any]] = []
     for ordinal, draft in enumerate(parts):
         part_id = new_ulid()
         # The part row first: a version written for it names it (deferred FK either way).
@@ -982,6 +990,14 @@ async def record_amendment(
             )
         )
         part_ids.append(part_id)
+        if values.get("timing_uncertain") or values.get("position_bound"):
+            timing.append(
+                {
+                    "part_id": part_id,
+                    "timing_uncertain": bool(values.get("timing_uncertain")),
+                    "position_bound": values.get("position_bound"),
+                }
+            )
         fact_id = values.get("written_fact_id")
         if isinstance(fact_id, str):
             written.append(fact_id)
@@ -999,7 +1015,10 @@ async def record_amendment(
         story_id,
         "amendment_recorded",
         AmendmentRecorded(
-            amendment_id=amendment_id, part_ids=tuple(part_ids), transcript=tuple(transcript)
+            amendment_id=amendment_id,
+            part_ids=tuple(part_ids),
+            transcript=tuple(transcript),
+            timing=tuple(timing),
         ),
     )
     return RecordedAmendment(amendment_id, tuple(part_ids), event_id, tuple(written))

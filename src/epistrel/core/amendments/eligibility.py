@@ -12,8 +12,14 @@ evaluated **per part**, never per amendment:
   certainly before (``Included``) when the period ends at or before the range's start,
   certainly after (``Excluded``) when it starts after the range's end, else ``Undecidable``.
   No valid start means valid since the story began (``Included`` everywhere); no anchor, an
-  unknown year, or an unknown checkpoint is ``Undecidable``, which reads as ``Included`` until
-  #240 asks the author.
+  unknown year, or an unknown checkpoint is ``Undecidable``, which reads as ``Included``
+  (#240's ``include_if_possible``: such a part is stored ``timing_uncertain``).
+- #240: a part the author placed (``ask_author``) carries an explicit **position bound**, the
+  one place a narrative position bounds a correction (FR-BITEMP-5), compared by turn index
+  along the active chain: ``{story_start: true}`` is in everywhere; ``{relation: after, turn:
+  T}`` is in at checkpoints after turn ``T`` (``N > T``, or ``T⁺k``) and out at and before it;
+  ``{relation: before, turn: T}`` is in at checkpoints at or after ``T`` and out earlier. A
+  bound wins over the valid-time: it is the author's answer for good.
 
 Pure: the caller reads the checkpoint's story-time (``world_clock.story_time_at``) and the
 anchor's range (``world_clock.anchor_at(...).absolute_at``).
@@ -51,9 +57,18 @@ class PartTiming:
 
     valid_from_minutes: int | None = None
     absolute: Period | None = None
+    bound: Mapping[str, Any] | None = None
+    """The author's position bound (#240), when the part has one."""
 
     @classmethod
-    def of(cls, valid_from_minutes: int | None, valid_spec: Mapping[str, Any] | None) -> PartTiming:
+    def of(
+        cls,
+        valid_from_minutes: int | None,
+        valid_spec: Mapping[str, Any] | None,
+        bound: Mapping[str, Any] | None = None,
+    ) -> PartTiming:
+        if bound:
+            return cls(bound=dict(bound))
         if valid_from_minutes is not None:
             return cls(valid_from_minutes=int(valid_from_minutes))
         spec = valid_spec or {}
@@ -116,12 +131,33 @@ def checkpoint_period(found: AbsoluteRange | None) -> Period | None:
     return date(lo_year, 1, 1), date(hi_year + 1, 1, 1)
 
 
+def bounded(bound: Mapping[str, Any], checkpoint: tuple[int, int] | None) -> Eligibility:
+    """A position bound's answer at a checkpoint ``(turn, slot_k)`` (``None``: the head)."""
+    if bound.get("story_start"):
+        return Eligibility.INCLUDED
+    if checkpoint is None:
+        return Eligibility.INCLUDED
+    turn, slot = checkpoint
+    at = int(bound["turn"])
+    if bound.get("relation") == "after":
+        after = turn > at or (turn == at and slot > 0)
+        return Eligibility.INCLUDED if after else Eligibility.EXCLUDED
+    return Eligibility.INCLUDED if turn >= at else Eligibility.EXCLUDED
+
+
 def eligible(
-    timing: PartTiming, *, story_time: int | None, absolute: Period | None = None
+    timing: PartTiming,
+    *,
+    story_time: int | None,
+    absolute: Period | None = None,
+    checkpoint: tuple[int, int] | None = None,
 ) -> Eligibility:
     """Whether a proposition part beginning at ``timing`` is in the corrected history at a
-    checkpoint whose story-time is ``story_time`` (a clock offset) and whose admissible dates
-    are ``absolute`` (see the module docstring)."""
+    checkpoint whose story-time is ``story_time`` (a clock offset), whose admissible dates are
+    ``absolute`` and whose position is ``checkpoint`` (``(turn, slot_k)``; see the module
+    docstring)."""
+    if timing.bound:
+        return bounded(timing.bound, checkpoint)
     if timing.valid_from_minutes is None and timing.absolute is None:
         return Eligibility.INCLUDED
     if timing.valid_from_minutes is not None:
@@ -146,6 +182,7 @@ __all__ = [
     "Eligibility",
     "PartTiming",
     "Period",
+    "bounded",
     "checkpoint_period",
     "eligible",
     "partial_period",

@@ -1085,6 +1085,9 @@ class AmendmentRecorded(EventPayload):
     amendment_id: str
     part_ids: tuple[str, ...] = ()
     transcript: tuple[TranscriptPatch, ...] = ()
+    timing: tuple[dict[str, Any], ...] = ()
+    """#240: ``{part_id, timing_uncertain, position_bound}`` of each part placed by an absolute
+    time the clock could not decide (the audit view's flag)."""
 
 
 @register("directive_applied", category=EventCategory.CONTROL)

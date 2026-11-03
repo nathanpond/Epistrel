@@ -11277,3 +11277,17 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #239
 - **Decision:** test scale. S-REWRITE-ORDER uses 10 turns with a fork at 8, not 1,000/800, with amendments made through `tests.amendment_support` rather than a scripted `rewrite_parse`. The positional point is asserted through the amendment event's `seq`. The recommendations unit test is unmarked (`tests/test_support_check.py`); its name maps to no docs/04 ID.
   **Issue:** #239
+
+### #240 — corrections the clock can't place, 2026-11-02
+
+- **Decision:** an absolute valid start is recognised only as an ISO partial date with a preposition ("in 2012", "since 2012-05"), or as a dated form (`YYYY-MM`, `YYYY-MM-DD`). A bare four-digit number stays a clock offset in minutes (the existing `_MINUTES` reading). Such a part is stored with `valid_spec.absolute` and no offset (its fact is open in valid-time).
+  **Issue:** #240
+- **Decision:** undecidability is checked at the story's start (turn 0) and at the head, not at every checkpoint on the chain. The anchor's admissible range only narrows as the story moves, so those two bound it.
+  - The flag is stored at insert and never recomputed; `timing_uncertain_now` at read time was not built.
+  - The `timing` question's options are the story's start and before/after the head turn, without the subject's first/last mention turns.
+  - Free text is read by `rewrite.timing.parse_bound` (before/after turn N, the story's start); anything else is 422 `invalid_answer`, with the question left open.
+  **Issue:** #240
+- **Decision:** a position bound is compared by turn only (`after T` is in at `T⁺k` and later; `before T` is in from `T`). The stored `variant` is the active variant of `T` when answered (audit only). Forks copy the column with the part, and the fork's own checkpoint decides. State parts get no flag or bound: their parts are offset-only.
+  **Issue:** #240
+- **Decision:** test placement. The bounds unit test is `tests/test_amendment_parts.py::test_eligibility__bounds`, unmarked like #221's `test_eligibility` (the plan's `tests/test_eligibility.py` does not exist). The "changing the setting moves no stored part" case is in S-RETCON-TIMING. The S-RETCON-TIMING checkpoints are 4 and 8 rather than 40 and 80. Subject (b) is Cal, because `located_at` is functional and Bobby's undecidable coast part would supersede his Ohio part.
+  **Issue:** #240

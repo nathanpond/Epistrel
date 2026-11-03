@@ -896,6 +896,13 @@ async def _superseded(conn: AsyncConnection, session_id: str, question_id: str, 
     )
 
 
+def _placement(question: Any) -> bool:
+    """Whether a question places a correction in the story (#240's ``timing`` question)."""
+    return str(question.kind) == "timing" and any(
+        "bound" in dict(o.get("effect") or {}) for o in question.options or []
+    )
+
+
 def free_texts(request: AnswerRequest) -> list[str]:
     """The free-text answers (gated by the Engine before ``answer``)."""
     return [a.text for a in request.answers if a.text is not None]
@@ -997,6 +1004,18 @@ async def answer(
                 if "choice" in effect:
                     answers.append(f"{question.prompt} {option['label']}")
                     reparse = True
+            elif _placement(question):
+                # #240: a free-text placement is read deterministically, never guessed.
+                from epistrel.orchestrator.rewrite import timing
+
+                bound = timing.parse_bound(str(item.text or ""), await timing.head(conn, story_id))
+                if bound is None:
+                    raise InvalidAnswer(
+                        "the placement could not be read: name a turn of the story "
+                        "(before/after turn N) or the story's start",
+                        {"question_id": str(question.id)},
+                    )
+                bindings[str(question.key)] = {"bound": bound}
             else:
                 answers.append(f"{question.prompt} {item.text}")
                 reparse = True

@@ -84,6 +84,9 @@ class Plan:
     new_entities: list[dict[str, Any]] = field(default_factory=list)
     truncated: bool = False
     read_set: dict[str, Any] = field(default_factory=dict)
+    timing_uncertain: list[dict[str, Any]] = field(default_factory=list)
+    """#240: changes placed by an absolute time the clock could not decide (included,
+    flagged)."""
 
     @property
     def plan_hash(self) -> str:
@@ -112,7 +115,7 @@ class Plan:
             "relabels": self.relabels,
             "refused_changes": self.refused,
             "notifications": [],
-            "timing_uncertain": [],
+            "timing_uncertain": self.timing_uncertain,
             "suggested_ports": [],
         }
 
@@ -282,6 +285,7 @@ class StructuredPlanner:
             changes=[c.summary for c in parsed.changes],
             refused=list(parsed.refused),
             new_entities=list(parsed.new_entities),
+            timing_uncertain=list(parsed.timing_uncertain),
         )
         max_results, max_depth = await edges.search_bounds(conn)
         players = await _players(conn, story.story_id)

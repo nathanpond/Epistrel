@@ -6501,6 +6501,16 @@
             "title": "Allow New Arrivals",
             "type": "boolean"
           },
+          "ambiguous_retcon_timing": {
+            "default": "include_if_possible",
+            "description": "How a rewrite places a correction whose absolute time the clock's anchor cannot decide\n(FR-STORE-20; #240): ``include_if_possible`` (the default) includes it at every checkpoint\nit might precede and marks it ``timing_uncertain``; ``ask_author`` asks the author, in every\nresolution mode, and stores the answer as the part's position bound. Read when a rewrite is\nplanned: parts already stored keep their flag or bound. Genesis copies the scenario's\n``story_settings_defaults.ambiguous_retcon_timing``. No effect under Lite. Prospective.",
+            "enum": [
+              "include_if_possible",
+              "ask_author"
+            ],
+            "title": "Ambiguous Retcon Timing",
+            "type": "string"
+          },
           "audit_retention_days": {
             "anyOf": [
               {
@@ -43610,6 +43620,23 @@
             "description": "Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival\n(a ``located_at``/``present_at`` claim on a person with no prior placement) is permitted\nnovelty, and a render may bring in a new unmodeled person as scene texture, only while this\nis on. Genesis copies the scenario's ``story_settings_defaults.allow_new_arrivals``; a story\nwithout it reads true. Interpretive: a structured turn's permission checks depend on it\n(#136's re-check at commit).",
             "title": "Allow New Arrivals"
           },
+          "ambiguous_retcon_timing": {
+            "anyOf": [
+              {
+                "enum": [
+                  "include_if_possible",
+                  "ask_author"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How a rewrite places a correction whose absolute time the clock's anchor cannot decide\n(FR-STORE-20; #240): ``include_if_possible`` (the default) includes it at every checkpoint\nit might precede and marks it ``timing_uncertain``; ``ask_author`` asks the author, in every\nresolution mode, and stores the answer as the part's position bound. Read when a rewrite is\nplanned: parts already stored keep their flag or bound. Genesis copies the scenario's\n``story_settings_defaults.ambiguous_retcon_timing``. No effect under Lite. Prospective.",
+            "title": "Ambiguous Retcon Timing"
+          },
           "audit_retention_days": {
             "anyOf": [
               {
@@ -71618,6 +71645,7 @@
                       {
                         "enum": [
                           "allow_new_arrivals",
+                          "ambiguous_retcon_timing",
                           "audit_retention_days",
                           "co_author_knowledge",
                           "content_rating_id",

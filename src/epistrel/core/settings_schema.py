@@ -319,6 +319,10 @@ CHARACTER_VIEWPOINT_PREFIX = "character:"
 OMNISCIENT = "omniscient"
 
 
+RetconTiming = Literal["include_if_possible", "ask_author"]
+"""#240: ``StorySettings.ambiguous_retcon_timing``'s values."""
+
+
 class StorySettings(BaseModel):
     """A story's settings: what the story is, never how hard the engine works (FR-PROF-5; the
     engine dials are its profile's, ``SUPERSEDED_STORY_SETTINGS``). Unknown keys are kept so
@@ -409,6 +413,14 @@ class StorySettings(BaseModel):
     their character is not in), still never a ``think`` or ``latent``. The character's own
     partition and memory are the same under both. A no-op where perception is ``none``. A
     request (and a history read) overrides it. Prospective."""
+
+    ambiguous_retcon_timing: Annotated[RetconTiming, PROSPECTIVE] = "include_if_possible"
+    """How a rewrite places a correction whose absolute time the clock's anchor cannot decide
+    (FR-STORE-20; #240): ``include_if_possible`` (the default) includes it at every checkpoint
+    it might precede and marks it ``timing_uncertain``; ``ask_author`` asks the author, in every
+    resolution mode, and stores the answer as the part's position bound. Read when a rewrite is
+    planned: parts already stored keep their flag or bound. Genesis copies the scenario's
+    ``story_settings_defaults.ambiguous_retcon_timing``. No effect under Lite. Prospective."""
 
     player_authority: Annotated[PlayerAuthority, INTERPRETIVE] = DEFAULT_PLAYER_AUTHORITY
     """The player's authority over the other characters (FR-RESP-11; #180; the owner's default

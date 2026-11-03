@@ -57,7 +57,21 @@ PAST_LIFE_STAGES = (
 """Words that make an unplaceable time expression a past life stage: the recommendation is
 then "before the story began" (#223's recommendation rule)."""
 
+ABSOLUTE_PROMPT = (
+    "The story's clock cannot tell whether {expression} came before or after parts of the "
+    "story. Where does this correction belong?"
+)
+"""#240: the ``timing`` question for an undecidable absolute time (``ask_author``)."""
+ABSOLUTE_REASONS = {
+    0: "A year or a month this broad most likely lies before the story began.",
+    1: "Placed before the latest turn.",
+    2: "A date this exact most likely belongs to the story's recent past: after the latest turn.",
+}
+
+
 __all__ = [
+    "ABSOLUTE_PROMPT",
+    "ABSOLUTE_REASONS",
     "CONFLICT_PROMPT",
     "CONFLICT_REASONS",
     "ENTITY_PROMPT",

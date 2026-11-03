@@ -529,6 +529,7 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "player_view": st.sampled_from(["character", "story"]),  # #177
         "player_authority": st.sampled_from(["own_character", "co_author"]),  # #180
         "co_author_knowledge": st.sampled_from(["confirm", "free"]),  # #598
+        "ambiguous_retcon_timing": st.sampled_from(["include_if_possible", "ask_author"]),  # #240
     }
     return st.fixed_dictionaries(
         {

@@ -11625,3 +11625,9 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #714
 - **Decision:** "replay" is tested as the projection refold (`projections.fold.rebuild`), the story's replay from its event log; the test spies that no `time_estimation` call is made and the clock reads the same.
   **Issue:** #714
+
+### #710 — reported version: the `/v1/models` fallback
+
+- **Decision:** the fallback is read lazily, not by a start-up and hourly background probe. When a completion reports no `system_fingerprint`, the Model Access Layer reads the `version` field of the model's `/models` entry through an optional adapter method `listed_versions(purpose)`. The OpenAI-compatible adapter and the stub implement it; it is not added to the `ModelAdapter` protocol, so wrappers stay valid. The listing is cached in-process per purpose for an hour (`reported_version.LISTING_TTL_S`). A failed or slow probe (bounded by `PROBE_TIMEOUT_S`) leaves the version unknown and never affects the call.
+  **Why:** the first call after start-up probes, and the cache expires hourly, which gives the planned cadence without a new recurring task. The listing is only needed when a call has no fingerprint, so endpoints that send one never pay for it.
+  **Issue:** #710

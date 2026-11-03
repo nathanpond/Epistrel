@@ -11944,3 +11944,44 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #702, #703, #700, #698
 - **Decision (Rule 1, #709):** `summary_rebuild.discard_segments` now also sets the cancelled rebuild's segment rows to `discarded`. Before, only their operations were flipped and the projection rows stayed `active`. Every later summary run was then dropped as "already written" and requeued forever: CI's `test_notify_wakes_a_worker_before_its_poll` found the worker always busy. The import-unchecked test now asserts through #120's guard functions instead of leaving a reactivation check pending on the shared database.
   **Issue:** #709, #705
+
+## /n8-exec M7 (retry 2: verify fixes) — 2026-11-03
+
+Branch `milestone/m7-verify-fixes-2`, PR #719. This pass takes the open `bug`/`confirmed` issues the re-verify at e9881ea filed (#716, #717, #718) and the open partial ones (#700, #709), then the open M7 stories.
+
+- **Decision:** the local gate per issue is the touched tests, the tests matching their area, and every static CI check (a scratchpad script runs the 17 `ci.yml` static steps). The full suite runs in CI on the PR.
+  **Why:** same practice as the earlier M7 and M6 fix passes; a local full run takes over two hours on this host.
+  **Issue:** all below
+
+### #717 — the upgrade estimate's parse calls
+
+- **Decision:** the Lite fact and note queries (`lite_facts`, `lite_note_parts`, `converted_before`) moved from the Orchestrator to a new `core.author_facts`, and the Orchestrator reads them from there.
+  **Why:** the impact report is Core, and Core may not import the Orchestrator (import-linter contract).
+  **Issue:** #717
+- **Decision:** the estimate adds one `directive_parse` call per *pending* key: active facts plus active notes, less the keys an earlier completed backfill converted. That is exactly what `_parse_author_facts` will call. Tokens are not raised; the duration follows the calls.
+  **Issue:** #717
+
+### #718 — the held render
+
+- **Decision:** the "held render" is built as a withdrawn dry run plus replayed model answers, rather than serializing the pipeline's in-memory turn draft.
+  - **At the regenerate call:** the regeneration plays under `directed.capture`. Its commit's first step reads the composed reply and raises `HeldRenderCaptured` (a `Withdrawn`), so the operation ends `abandoned` with no events. The `HeldCalls` the Model Access Layer recorded are stored as `held_render {message_text, calls}`.
+  - **At apply:** the play is repeated with the answers replayed by purpose and message hash. A prompt the story changed under is sent again: the planner's "re-generated only if ... touched".
+  **Why:** the structured turn's draft (TurnRead, Rendered, Checked, composition) is a graph of in-memory objects across a 7,000-line pipeline. Serializing it would be a far larger change with a far larger blast radius. Replaying the answers re-runs every deterministic check against the state at apply, and commits the same reply when nothing changed.
+  **Issue:** #718
+- **Decision:** a held play leaves one `abandoned` turn operation row with no events.
+  **Why:** it is the same audit trace any withdrawn or abandoned turn leaves. "On cancel nothing is committed" holds: no event, no membership change, no revision.
+  **Issue:** #718
+- **Decision:** a play that fails at the regenerate call cancels the session, and the error is returned to the caller. The 202 is never answered without a held render.
+  **Issue:** #718
+- **Decision (Rule 1):** an apply of a held `directed_resolution` session through `POST .../apply` stored the turn's `RegenerateResult` as the apply's idempotent result, and serialization failed (500). `IdempotentCall.result_in_commit` is now a property, and `keeping_result()` makes a turn played inside another call bind the key without storing its own result.
+  **Why:** the apply path had never been driven over REST (#712's test applied directly in the regenerate call).
+  **Issue:** #718, #712
+
+### #716 — a nudge during a Lite turn
+
+- **Decision:** built #244's AC for Lite turns, and kept #226's rule for structured turns, instead of blocking for the owner.
+  **Why:** #226's rule ("the next structured turn's renders carry it") is written for structured turns, and #244's read-set AC for Lite turns, so the two need not conflict.
+  - `UNVERSIONED_MEMBERS = ("author_direction",)` are compared at a Lite turn's commit even when the revision has not moved.
+  - `decide` regenerates on a touched member when the revision has not moved.
+  - Cost if wrong: one condition in `Operation._revalidate`.
+  **Issue:** #716

@@ -12076,3 +12076,8 @@ Branch `milestone/m7-verify-fixes-2`, PR #719. This pass takes the open `bug`/`c
   **Issue:** #251
 - **Decision:** `FORMAT_MIGRATIONS` maps a from-version to `(to-version, step)` and chains to `FORMAT_VERSION`. A registered version with a gap is `unsupported_format_version`; an older MINOR with no step imports as it is.
   **Issue:** #250
+
+### #235 / #228 / #720 — scope left at the end of retry 2
+- **#235**: I did not build the `evals certify --presets` tooling. A draft depended on runner/report APIs that are shaped differently, and the owner's multi-hour live run gates it anyway. #235 stays blocked/needs-owner-action; the tooling and the live run are both named on the issue.
+- **#228**: partial (clock, scheduled times, inferred observations). It stays open and is not in the PR's Closes list.
+- **#250/#251**: closed by the PR. The hardening follow-ups (imported_unsettled compensation, erasure-candidate translation, streaming batches and crash points) are filed as #720 (needs-triage), not built inline.

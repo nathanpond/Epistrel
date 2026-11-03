@@ -70,6 +70,7 @@ from epistrel.orchestrator.rewrite.api import (
     AnswerRequest,
     Applied,
     ApplyRequest,
+    HeldRender,
     MergeRequest,
     Preview,
     QuestionOption,
@@ -148,6 +149,45 @@ def _mode(row: Any) -> Any:
     return str(row.resolution_mode)
 
 
+def _held_view(held: Any) -> HeldRender | None:
+    """#718: the session's held render as the author sees it (the answers stay stored)."""
+    if not held:
+        return None
+    return HeldRender(
+        message_text=str(held.get("message_text") or ""),
+        model_calls=len(held.get("calls") or []),
+    )
+
+
+async def hold_render(
+    db: AsyncEngine, story_id: str, session_id: str, text: str, calls: Sequence[Any]
+) -> RewriteSession:
+    """#718: store a ``directed_resolution`` session's held render (its composed reply and the
+    answers its play recorded), indexed for erasure like the session's other texts."""
+    async with db.begin() as conn:
+        row = await _row(conn, story_id, session_id, lock=True)
+        _open(row)
+        await conn.execute(
+            update(rewrite_sessions)
+            .where(rewrite_sessions.c.id == session_id)
+            .values(held_render={"message_text": text, "calls": list(calls)})
+        )
+        await _index(conn, session_id)
+        return await view(conn, await _row(conn, story_id, session_id))
+
+
+async def held_calls(conn: AsyncConnection, story_id: str, session_id: str) -> list[Any] | None:
+    """#718: the answers a session's held render recorded (``None``: it holds none)."""
+    found = await conn.scalar(
+        select(rewrite_sessions.c.held_render).where(
+            rewrite_sessions.c.story_id == story_id, rewrite_sessions.c.id == session_id
+        )
+    )
+    if not found:
+        return None
+    return list(dict(found).get("calls") or [])
+
+
 async def view(conn: AsyncConnection, row: Any) -> RewriteSession:
     plan = dict(row.plan or {})
     preview = plan.get("preview")
@@ -175,6 +215,7 @@ async def view(conn: AsyncConnection, row: Any) -> RewriteSession:
         result_amendment_id=row.result_amendment_id,
         report=row.report,
         last_error=row.last_error,
+        held_render=_held_view(row.held_render),
         created_at=row.created_at,
         updated_at=row.updated_at,
         expires_at=row.expires_at,

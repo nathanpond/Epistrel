@@ -409,10 +409,34 @@ class IdempotentCall:
         self.token = random_ulid()
         self.claimed = False
         self.window = IdempotencySettings()
-        self.result_in_commit: ResultInCommit | None = None
+        self._result_in_commit: ResultInCommit | None = None
+        self._result_kept = False
         self.committed_value: Any = None
         self.stored_in_commit = False
         self._renewal: asyncio.Task[None] | None = None
+
+    @property
+    def result_in_commit(self) -> ResultInCommit | None:
+        """What the committing operation stores as the call's result in its transaction (the
+        Lite and structured turns'), ``None`` when the call stores its own at ``finish``."""
+        return self._result_in_commit
+
+    @result_in_commit.setter
+    def result_in_commit(self, value: ResultInCommit | None) -> None:
+        if not self._result_kept:
+            self._result_in_commit = value
+
+    @contextlib.contextmanager
+    def keeping_result(self) -> Iterator[None]:
+        """#718: a turn played inside another call (a ``directed_resolution`` session's apply
+        plays its regeneration) binds its operation to the key, but the result stored is the
+        outer call's, at ``finish``: the turn's ``result_in_commit`` is ignored meanwhile."""
+        kept, self._result_kept = self._result_kept, True
+        self._result_in_commit = None
+        try:
+            yield
+        finally:
+            self._result_kept = kept
 
     # -- claim ----------------------------------------------------------------------------
 

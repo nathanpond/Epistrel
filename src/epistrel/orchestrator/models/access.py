@@ -85,6 +85,7 @@ from epistrel.orchestrator.models.errors import (
     ModelUnavailable,
     map_provider_error,
 )
+from epistrel.orchestrator.models.held import HELD_CALLS
 from epistrel.orchestrator.models.metrics import (
     ModelCall,
     Outcome,
@@ -379,9 +380,15 @@ class ModelAccessLayer:
         call_started()
         started = time.perf_counter()
         bound = asyncio.timeout(limit)
+        held = HELD_CALLS.get()
+        # #718: a held play answers a call it recorded from the hold, sending nothing.
+        kept = None if held is None else held.take(purpose, messages)
         try:
             async with bound:
-                result = await self.adapter.complete(purpose, messages, params, response_schema)
+                if kept is not None:
+                    result = kept
+                else:
+                    result = await self.adapter.complete(purpose, messages, params, response_schema)
         except TimeoutError:
             if not bound.expired():
                 raise
@@ -403,6 +410,8 @@ class ModelAccessLayer:
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
         result = _without_nul(purpose, result)
+        if held is not None and kept is None:
+            held.keep(purpose, messages, result)
         outcome: Outcome = "ok" if usable is None or usable(result) else "invalid_output"
         record(
             ModelCall(

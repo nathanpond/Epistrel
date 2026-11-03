@@ -220,8 +220,10 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models import ModelAccessLayer, ModelError, ModelParams
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models import facts as model_facts
+from epistrel.orchestrator.models import held as held_models
 from epistrel.orchestrator.models import metrics as model_metrics
 from epistrel.orchestrator.models import registry as model_registry
+from epistrel.orchestrator.models.held import HeldCalls
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
@@ -3090,10 +3092,13 @@ class Engine:
                 run=self._held_run(ctx, story_id, request, principal, prepared, held),
             )
             if written.apply is None:
+                session = await self._hold_render(
+                    ctx, story_id, request, principal, prepared, written
+                )
                 async with self.db.connect() as conn:
                     head = await directed.head_variant(conn, story_id)
                 return directed.DirectedPending(
-                    rewrite_session=written.session,
+                    rewrite_session=session,
                     previous_variant=head,
                     timeline_revision=written.timeline_revision,
                     warnings=list(prepared.warnings),
@@ -3147,6 +3152,45 @@ class Engine:
         finally:
             handle.close()
 
+    async def _hold_render(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: RegenerateRequest,
+        principal: str,
+        prepared: directed.Directed,
+        written: rewrite_api.RewriteWrite,
+    ) -> rewrite_api.RewriteSession:
+        """#718 (FR-COMMIT-12): the variant of a held directed regeneration, rendered now. The
+        regeneration plays up to its commit, which is withdrawn (``directed.capture``: nothing is
+        written, the revision does not move); the composed reply and the answers the play's
+        model calls got are held on the session (``held_render``), and the apply replays them.
+        A play that fails cancels the session and the error is the call's."""
+        replay = request.model_copy(update={"directive": None})
+        calls = HeldCalls()
+        session_id = written.session.id
+        token = directed.HELD.set(directed.capture)
+        call = idempotency.current_call()
+        try:
+            with held_models.holding(calls), directed.directing(prepared):
+                await self._regenerate(ctx, story_id, replay, principal)
+        except directed.HeldRenderCaptured as captured:
+            text = captured.text
+        except BaseException:
+            await rewrite_session.cancel(self.db, story_id, session_id, principal=principal)
+            raise
+        else:  # pragma: no cover - a structured regenerate always stages ``HELD``
+            raise RewriteApplyFailed(
+                "the directed regeneration committed without its amendment", {"retryable": False}
+            )
+        finally:
+            directed.HELD.reset(token)
+            if call is not None:
+                call.result_in_commit = None  # the withdrawn commit stored nothing
+        return await rewrite_session.hold_render(
+            self.db, story_id, session_id, text, calls.document()
+        )
+
     def _held_run(
         self,
         ctx: RequestContext,
@@ -3155,11 +3199,14 @@ class Engine:
         principal: str,
         prepared: directed.Directed,
         held: dict[str, Any],
+        recorded: list[Any] | None = None,
     ) -> rewrite_apply.Run:
         """#712: the commit of a ``directed_resolution`` session's apply: the directed
         regeneration, played with the amendment staged on its turn (``directed.HELD``), so the
         regenerated variant and the amendment commit in one transaction or neither does.
-        ``held`` receives the regeneration's result."""
+        ``held`` receives the regeneration's result. ``recorded`` (#718): the answers of the
+        session's held render, replayed so the variant the author saw is the one that commits
+        (a call the story changed under since is made again)."""
         replay = request.model_copy(update={"directive": None})
 
         async def run(stage: rewrite_apply.Stage) -> tuple[str, int]:
@@ -3168,11 +3215,24 @@ class Engine:
                 stage(op)
 
             token = directed.HELD.set(staging)
+            calls = HeldCalls(recorded) if recorded is not None else None
+            call = idempotency.current_call()
+            outer = (
+                call.keeping_result()
+                if call is not None and call.operation != "regenerate"
+                else contextlib.nullcontext()
+            )
             try:
-                with directed.directing(prepared):
-                    result = await self._regenerate(ctx, story_id, replay, principal)
+                with outer, directed.directing(prepared):
+                    if calls is None:
+                        result = await self._regenerate(ctx, story_id, replay, principal)
+                    else:
+                        with held_models.holding(calls):
+                            result = await self._regenerate(ctx, story_id, replay, principal)
             finally:
                 directed.HELD.reset(token)
+            if calls is not None:
+                held["held_render"] = {"replayed": calls.replayed, "made_again": calls.live}
             if "operation_id" not in held:  # pragma: no cover - a structured regenerate stages
                 raise RewriteApplyFailed(
                     "the directed regeneration did not carry its amendment",
@@ -6883,6 +6943,7 @@ class Engine:
         async def run(ctx_: RequestContext) -> rewrite_api.RewriteWrite:
             async with self.db.connect() as conn:
                 stored = await rewrite_session.stored_plan(conn, story_id, session_id)
+                recorded = await rewrite_session.held_calls(conn, story_id, session_id)
             document = stored.get("directed")
             commit = None
             prepared = None
@@ -6891,7 +6952,9 @@ class Engine:
                 # amendment staged on its turn: one transaction.
                 prepared = directed.Directed.of(dict(document))
                 replay = RegenerateRequest.model_validate(document.get("regenerate") or {})
-                commit = self._held_run(ctx_, story_id, replay, principal, prepared, {})
+                commit = self._held_run(
+                    ctx_, story_id, replay, principal, prepared, {}, recorded=recorded
+                )
             written = await rewrite_session.apply_session(
                 self.db,
                 self.models,

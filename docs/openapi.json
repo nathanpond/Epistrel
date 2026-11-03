@@ -14782,6 +14782,26 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "HeldRender": {
+        "additionalProperties": false,
+        "description": "#718 (FR-COMMIT-12): a ``directed_resolution`` session's variant, rendered at the\nregenerate call and held until the apply commits it: the reply the author approves. Its\n``model_calls`` answers are replayed at apply; a call whose prompt the story changed\nunder is made again.",
+        "properties": {
+          "message_text": {
+            "title": "Message Text",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message_text",
+          "model_calls"
+        ],
+        "title": "HeldRender",
+        "type": "object"
+      },
       "HiddenFactBody": {
         "description": "A hidden fact (#169, FR-COMMIT-4): a current canon version scoped away from the shared\nview (``characters``: the ones who know it; ``engine``: nobody does), its proposition, its\nvalid-time (story-minutes) and the turn that committed it.",
         "properties": {
@@ -35057,6 +35077,16 @@
             "title": "Expires At",
             "type": "string"
           },
+          "held_render": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldRender"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -35244,6 +35274,16 @@
             "format": "date-time",
             "title": "Expires At",
             "type": "string"
+          },
+          "held_render": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HeldRender"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "id": {
             "title": "Id",

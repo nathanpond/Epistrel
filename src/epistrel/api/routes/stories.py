@@ -384,6 +384,16 @@ class StoryPauseBody(BaseModel):
     progress: StoryPauseProgressBody
 
 
+class AmendmentChecksBody(BaseModel):
+    """``amendment_checks_pending``: how many support-check questions are open, and (for an
+    omniscient read) the system session holding them (#239)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    session_id: str | None = None
+
+
 class StoryBody(StorySummaryBody):
     """One story: the summary, its cast (true ages only for an omniscient read), its settings,
     its engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``
@@ -404,6 +414,11 @@ class StoryBody(StorySummaryBody):
     """While ``status`` is ``paused`` (#118): the check that paused it; ``null`` otherwise."""
     scenario: ScenarioOriginBody | None = None
     """The scenario version the story was created from (#119); ``null`` for a blank story."""
+    amendment_checks_pending: AmendmentChecksBody | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    """#239: the open support-check questions about the story's amendments, after a
+    truncation, swap or fork (``session_id`` for an omniscient read only); omitted when none."""
 
     @classmethod
     def of(cls, story: StoryView, undo: UndoState, chains: list[Chain]) -> StoryBody:
@@ -423,6 +438,9 @@ class StoryBody(StorySummaryBody):
                 for c in undo.dormant_chains
             ],
             variant_chains=[VariantChainBody.of(c) for c in chains],
+            amendment_checks_pending=None
+            if story.amendment_checks_pending is None
+            else AmendmentChecksBody.model_validate(story.amendment_checks_pending),
             pause=StoryPauseBody.model_validate(story.pause) if story.pause else None,
             scenario=None
             if story.scenario is None

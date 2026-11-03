@@ -908,3 +908,79 @@ async def test_i_04__m7_survive(engine: AsyncEngine) -> None:
     assert await projection_support.untruncate(engine, w.story_id) is not None
     (event,) = [e for e in await corrected_history(engine, w.story_id) if e.id == line]
     assert event.payload.model_dump()["text"] == "corrected"
+
+
+@pytest.mark.part("M7", "FR-STORE-22")
+async def test_i_04__m7_conflict_check(pg_url: str, engine: AsyncEngine) -> None:
+    """#239: an amendment whose rationale cites a reply the timeline then leaves behind is
+    surfaced by the support check, never kept or dropped silently. Truncating past the reply
+    adds a ``support`` question (``keep | undo | rewrite``, ``keep`` recommended: its fact
+    correction still holds) to the story's system session; a fork at the same point surfaces it
+    on the fork. Complement: the amendment's rows are unchanged (row diff) and the check moves no
+    revision."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from epistrel.orchestrator.rewrite import support_check
+    from tests import amendment_support as am
+    from tests import canon_support as c
+    from tests.memory_support import use_structured
+
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    bobby = w.people["Bobby"]
+    await c.commit(engine, story, c.at(bobby, w.places["school"], None, None))
+    replies = await am.play(engine, story, 6, start=2)
+    cited = replies[6]
+    _, made, _ = await am.amend(
+        engine,
+        story,
+        [PropositionPartDraft(c.at(bobby, w.places["garden"], None, None))],
+        rationale=[{"table": "events", "id": cited}],
+    )
+    async with engine.connect() as conn:
+        assert await support_check.findings(conn, story) == []
+    before = {t: await am.table_rows(engine, t, story) for t in ("amendments", "amendment_parts")}
+
+    truncated = await projection_support.truncate(engine, story, 4)
+    assert truncated is not None
+    revision = await scalar(engine, "SELECT timeline_revision FROM stories WHERE id = :s", s=story)
+    assert revision == truncated.timeline_revision
+    async with engine.connect() as conn:
+        pending = await support_check.pending(conn, story)
+    assert pending is not None
+    assert pending["count"] == 1
+    (question,) = await rows(
+        engine,
+        "SELECT kind, options, recommended_option_id FROM rewrite_questions "
+        "WHERE session_id = :i AND superseded_by IS NULL",
+        i=pending["session_id"],
+    )
+    actions = {o["id"]: o["effect"]["action"] for o in question.options}
+    assert (question.kind, sorted(actions.values())) == ("support", ["keep", "rewrite", "undo"])
+    assert actions[question.recommended_option_id] == "keep"
+    assert all(o["effect"]["amendment_id"] == made.amendment_id for o in question.options)
+    assert {t: await am.table_rows(engine, t, story) for t in before} == before
+    # ``GET /stories/{id}`` reports it: the count to anyone, the session to an omniscient read.
+    from epistrel import Engine
+    from epistrel.core.context import RequestContext
+
+    lib = Engine(auth_settings(pg_url, model_adapter="stub"), db=engine)
+    ctx = RequestContext(principal="p-author")
+    plain = await lib.get_story(ctx, story)
+    told = await lib.get_story(ctx, story, viewpoint="omniscient")
+    assert plain.amendment_checks_pending == {"count": 1}
+    assert told.amendment_checks_pending == pending
+
+    # Untruncating restores the reply: the question is superseded, the session closes.
+    assert await projection_support.untruncate(engine, story) is not None
+    async with engine.connect() as conn:
+        assert await support_check.pending(conn, story) is None
+
+    # A fork at turn 4 copies the amendment but not the reply it cites: surfaced on the fork.
+    forked = await fork(engine, story, 4)
+    async with engine.connect() as conn:
+        on_fork = await support_check.pending(conn, forked.story_id)
+        on_source = await support_check.pending(conn, story)
+    assert on_fork is not None
+    assert on_fork["count"] == 1
+    assert on_source is None

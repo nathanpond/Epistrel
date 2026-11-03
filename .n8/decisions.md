@@ -11256,3 +11256,24 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #238
 - **Decision:** not built: a separate undo-staleness test (an undo session runs the same #237 revalidation as any session); the list's `amendment_id` in report `resolutions[]`; indexes on `undoes`/`redoes`. `determinism.ORDER` gains `rewrite_sessions`, `rewrite_questions` and `directives`: S-ERASURE-BOUNDARY's resurrection replay compares every story table. This is a Rule 1 fix for #223/#226.
   **Issue:** #238
+
+### #239 — amendments across truncation, swap and fork, 2026-11-02
+
+- **Decision:** the support check runs inline in the `post_commit` membership hook (`orchestrator/rewrite/support_check.py`), not as a #70 job.
+  - The checks are a few indexed reads; the hook already runs after the edit's commit on its own connection, and a failure is logged without undoing the edit.
+  - Causes covered: truncate, untruncate, swap and fork (the fork runs the post-commit hooks with cause `fork`).
+  - Regeneration is not covered: a regenerate is a turn commit and fires no membership hook. It would need a hook in `Operation` (a follow-up if wanted).
+  **Issue:** #239
+- **Decision:** what the check reads:
+  - "Unsupported": a rationale record, or a #220 `relies_on` target, that is not an active record of the story itself. A fork's copy keeps the source's id for a record it left behind, which counts as absent.
+  - "Conflict": a proposition part's written fact that is no longer current (`canon._load`). This stands in for a full #140 re-verification against the new chain.
+  - Ports are suggested for `replace` parts on events only, matched by same turn, type and `character_id`, with containment of `patch_before.text` (exact, else case and whitespace normalized). A port answer records the amendment directly in a `rewrite_session` operation (`payload.ported_from`), not through a #224 session.
+  - Each option's effect carries its `amendment_id` (and a port's `part_id`), so an answer never re-derives the finding.
+  **Issue:** #239
+- **Decision:** fork copy (`core/fork.py`):
+  - an amendment part's record part is copied only when the record's operation is copied (events through the event map);
+  - `amendments.session_id` is set to null (sessions are not copied, and a dangling FK would block deleting the source);
+  - `superseded_fact_ids` is remapped, with uncopied facts dropped.
+  **Issue:** #239
+- **Decision:** test scale. S-REWRITE-ORDER uses 10 turns with a fork at 8, not 1,000/800, with amendments made through `tests.amendment_support` rather than a scripted `rewrite_parse`. The positional point is asserted through the amendment event's `seq`. The recommendations unit test is unmarked (`tests/test_support_check.py`); its name maps to no docs/04 ID.
+  **Issue:** #239

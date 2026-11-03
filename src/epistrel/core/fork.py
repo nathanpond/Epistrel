@@ -655,6 +655,16 @@ def _mapped_or_null(column: str) -> str:
 _ACTIVE = f"'{Membership.ACTIVE.value}'"
 
 OVERRIDES: dict[str, dict[str, str]] = {
+    # #239: a fork copies no rewrite session, so its amendments name none; a part's superseded
+    # facts name the fork's copies (one the fork left behind is dropped).
+    "amendments": {"session_id": "NULL"},
+    "amendment_parts": {
+        "superseded_fact_ids": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.superseded_fact_ids) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+    },
     operations.name: {
         "membership": _ACTIVE,
         "membership_tx": (
@@ -853,9 +863,19 @@ ROW_FILTERS: dict[str, str] = {
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
     # Capability coverage (#228): the intervals that begin at or before the fork point.
     "capability_coverage": f"t.from_turn <= {_THROUGH}",
-    # Amendments (#221): an amendment follows its operation (the default); its parts follow it.
+    # Amendments (#221): an amendment follows its operation (the default); its parts follow it,
+    # and (#239) a record part only when the fork copies its record (a record correction lives
+    # and dies with its record; the record's operation decides, as it does the record's copy).
     "amendment_parts": (
-        f"t.amendment_id::text IN (SELECT old_id FROM {_MAP} WHERE kind = 'amendments')"  # noqa: S608
+        f"t.amendment_id::text IN (SELECT old_id FROM {_MAP} WHERE kind = 'amendments') "  # noqa: S608
+        "AND (t.record_id IS NULL "
+        f"OR (t.record_table = 'events' AND t.record_id::text IN {_EVENT_IDS}) "
+        + " ".join(
+            f"OR (t.record_table = '{name}' AND t.record_id IN "  # noqa: S608 - fixed names
+            f'(SELECT r.id FROM "{name}" r WHERE r.operation_id IN {_OPERATION_IDS}))'
+            for name in ("facts", "beliefs", "memories", "utterances", "state_changes")
+        )
+        + ")"
     ),
     # The outbox's outcome records (#210) follow the outbox rows the fork copies, and (#217) a
     # consumer-applied effect's follow its copied ``requested_effect`` (whose effect id a fork

@@ -277,6 +277,32 @@
         "title": "AffectedStory",
         "type": "object"
       },
+      "AmendmentChecksBody": {
+        "additionalProperties": false,
+        "description": "``amendment_checks_pending``: how many support-check questions are open, and (for an\nomniscient read) the system session holding them (#239).",
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "title": "AmendmentChecksBody",
+        "type": "object"
+      },
       "AmendmentDetail": {
         "additionalProperties": false,
         "description": "``GET /stories/{id}/amendments/{aid}``: the summary, the part rows, what its parts were\nrecorded as relying on (``relies_on``) and the #220 dependents of its parts and the facts\nthey wrote (``dependents``, depth 1; ``truncated`` when the search's cap cut it).",
@@ -42316,6 +42342,16 @@
       "StoryBody": {
         "description": "One story: the summary, its cast (true ages only for an omniscient read), its settings,\nits engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``\nhas the whole configuration), whether a truncation can be undone, its dormant continuations\nand every variant chain.",
         "properties": {
+          "amendment_checks_pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AmendmentChecksBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "archived_at": {
             "anyOf": [
               {

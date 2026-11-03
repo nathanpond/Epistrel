@@ -230,6 +230,7 @@ from epistrel.orchestrator.providers.manifest import ProviderRegistration, Provi
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.rewrite import api as rewrite_api
 from epistrel.orchestrator.rewrite import session as rewrite_session
+from epistrel.orchestrator.rewrite import support_check  # registers its membership hook
 from epistrel.orchestrator.structured import pipeline as structured_turn
 from epistrel.orchestrator.structured import staged as staged_turns
 from epistrel.orchestrator.verify import extraction as extraction_job
@@ -550,6 +551,17 @@ class EffectiveBudget:
     turn_deadline: float
     reserved: dict[str, int]
     minimum_required: int
+
+
+def _with_checks(
+    story: stories.StoryView, checks: dict[str, Any] | None, *, omniscient: bool
+) -> stories.StoryView:
+    """#239: the open support-check questions on a story read (a character viewpoint, or none,
+    sees only the count)."""
+    if checks is None:
+        return story
+    shown = checks if omniscient else {"count": checks["count"]}
+    return dataclasses.replace(story, amendment_checks_pending=shown)
 
 
 def _body(model: Any) -> Any:
@@ -2628,8 +2640,10 @@ class Engine:
         cast is 422 ``viewpoint_unresolved``. With none named the read is character-safe."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         story = await stories.get_story(self.db, story_id, omniscient=False)
+        async with self.db.connect() as conn:
+            checks = await support_check.pending(conn, story_id)
         if ctx.viewpoint is None:
-            return story
+            return _with_checks(story, checks, omniscient=False)
         resolved = resolve_viewpoint(
             ctx.viewpoint,
             actor_character_id=None,
@@ -2638,8 +2652,9 @@ class Engine:
             field="query.viewpoint",
         )
         if not is_omniscient(resolved):
-            return story
-        return await stories.get_story(self.db, story_id, omniscient=True)
+            return _with_checks(story, checks, omniscient=False)
+        found = await stories.get_story(self.db, story_id, omniscient=True)
+        return _with_checks(found, checks, omniscient=True)
 
     @library_only("served as `undo_available`/`dormant_chains` in `GET /stories/{id}`")
     @refuses_nul()

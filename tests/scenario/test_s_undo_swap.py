@@ -375,3 +375,56 @@ async def cs_turn(engine: AsyncEngine, story: str, step: Any) -> Any:
     """Run ``step`` in a new turn's commit (#146's commit step)."""
     _, found = await canon_run(engine, story, step)
     return found
+
+
+@pytest.mark.part("M7", "FR-STORE-21")
+async def test_s_undo_swap__m7(engine: AsyncEngine) -> None:
+    """#239: an amendment recorded while 5'-7' were active stays in force after the swap back
+    to the original chain (it has no position: it is never discarded with a variant), and the
+    support check runs against the restored chain: its rationale cited 6', now dormant, so it
+    is surfaced (``keep`` recommended, its correction still holding). Swapping to 5'-7' again
+    restores its support and the question is withdrawn."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from epistrel.core.canon import facts as canon
+    from epistrel.orchestrator.rewrite import support_check
+    from tests import amendment_support as am
+    from tests import canon_support as c
+    from tests.memory_support import use_structured
+
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    bobby = w.people["Bobby"]
+    await c.commit(engine, story, c.at(bobby, w.places["school"], None, None))
+    await am.play(engine, story, 6, start=2)
+    await timeline.truncate(engine, story, timeline.TruncateRequest(to_turn=4), principal=PRINCIPAL)
+    primes = await am.play(engine, story, 3, start=5)
+    _, made, _ = await am.amend(
+        engine,
+        story,
+        [PropositionPartDraft(c.at(bobby, w.places["garden"], None, None))],
+        rationale=[{"table": "events", "id": primes[6]}],
+    )
+
+    undone = await timeline.untruncate(engine, story, principal=PRINCIPAL)
+    assert undone.swapped
+    (row,) = await rows(engine, "SELECT status FROM amendments WHERE id = :a", a=made.amendment_id)
+    assert row.status == "active"
+    async with engine.connect() as conn:
+        held = await canon.canon(conn, story, subject=bobby, predicate=c.LOCATED_AT)
+        pending = await support_check.pending(conn, story)
+    assert [f.proposition.object_id for f in held] == [w.places["garden"]]
+    assert pending is not None
+    assert pending["count"] == 1
+    (question,) = await rows(
+        engine,
+        "SELECT options, recommended_option_id FROM rewrite_questions "
+        "WHERE session_id = :i AND superseded_by IS NULL",
+        i=pending["session_id"],
+    )
+    actions = {o["id"]: o["effect"]["action"] for o in question.options}
+    assert actions[question.recommended_option_id] == "keep"
+
+    await _swap(engine, story, 5, 2)
+    async with engine.connect() as conn:
+        assert await support_check.pending(conn, story) is None

@@ -675,6 +675,9 @@ class StoryView:
     scenario: ScenarioOrigin | None = None
     """The scenario version the story was created from (#119); ``None`` for a blank story.
     Read by ``get_story`` only."""
+    amendment_checks_pending: dict[str, Any] | None = None
+    """#239: ``{count, session_id}`` of the open support-check questions about the story's
+    amendments (``None`` when none); filled by ``Engine.get_story``."""
 
 
 @dataclass(frozen=True, slots=True)

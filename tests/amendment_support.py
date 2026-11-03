@@ -4,7 +4,7 @@ side-channel that produces them arrives in #223/#224)."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import text
@@ -45,9 +45,12 @@ async def amend(
     *,
     kind: str = "rewrite",
     revert: str | None = None,
+    rationale: Sequence[Mapping[str, str]] = (),
+    relies_on: Sequence[str] = (),
 ) -> tuple[Operation, store.RecordedAmendment, list[str]]:
     """One ``rewrite_session`` operation recording an amendment of ``parts`` (and, with
-    ``revert``, reverting that amendment into it)."""
+    ``revert``, reverting that amendment into it); ``rationale`` its rationale records and
+    ``relies_on`` the facts it relies on (#239)."""
     found: dict[str, Any] = {}
     async with Operation(
         engine,
@@ -58,7 +61,14 @@ async def amend(
     ) as op:
 
         async def step(conn: AsyncConnection) -> None:
-            made = await store.record_amendment(conn, op, kind=kind, parts=parts)
+            made = await store.record_amendment(
+                conn,
+                op,
+                kind=kind,
+                parts=parts,
+                rationale_record_ids=rationale,
+                relies_on=relies_on,
+            )
             found["made"] = made
             found["inverse"] = (
                 []

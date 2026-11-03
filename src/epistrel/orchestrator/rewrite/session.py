@@ -949,6 +949,16 @@ async def answer(
         settings = await read_section(conn, RewriteSettings)
         row = await _row(conn, story_id, session_id)
         _open(row)
+    if str(row.kind) == "support_check":
+        # #239: the system session's questions are answered by the support check.
+        from epistrel.orchestrator.rewrite import support_check
+
+        found: RewriteWrite = await support_check.answer(
+            db, models, story_id, session_id, request, principal=principal
+        )
+        return found
+    async with db.connect() as conn:
+        row = await _row(conn, story_id, session_id)
         asked = {str(q.id): q for q in await _questions(conn, session_id)}
         chosen: list[tuple[Any, Any, dict[str, Any] | None]] = []
         for item in request.answers:

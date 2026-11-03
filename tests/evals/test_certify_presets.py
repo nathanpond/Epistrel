@@ -3,6 +3,9 @@ certifies Standard, Full and Max in one command, the records it writes make a de
 same model report ``certified``, ``INDEX.md``'s Presets table follows the records and the preset
 constants, and no workflow runs a real model.
 
+No test here carries a part marker: C-18's M7 part (``tests/integration/test_c_18_m7.py``) is
+the §15 row these requirements map to, and a part lives in one file.
+
 The stub run here is the CI path's (``ci.yml``'s ``evals`` job runs the command on the stub per
 preset); this test runs its own, narrowed to the ``smoke`` suite, on a scratch database.
 """
@@ -125,7 +128,6 @@ async def _status(client: httpx.AsyncClient, preset: str) -> dict[str, Any]:
 
 
 @pytest.mark.integration
-@pytest.mark.part("M7", "NFR-QUAL-11; FR-PROF-15")
 async def test_certify_presets__stub(
     pg_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -231,7 +233,6 @@ async def test_certify_presets__stub(
     assert cli.index_check(out / "reports", out / "records") == 0
 
 
-@pytest.mark.part("M7", "NFR-QUAL-11")
 @pytest.mark.xfail(not committed_records(), reason="awaiting owner run (#235's Demo)", strict=False)
 def test_committed_certifications() -> None:
     """Every committed record validates and matches its committed report's SHA-256, was

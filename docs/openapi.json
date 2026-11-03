@@ -47994,6 +47994,9 @@
             "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
             "type": "string"
           },
+          "inferred": {
+            "type": "boolean"
+          },
           "kind": {
             "enum": [
               "delta",

@@ -530,9 +530,16 @@ async def _run_import_job(engine: AsyncEngine, bundle_id: str) -> None:
         )
 
 
-async def _nothing_left(engine: AsyncEngine, stories_before: int) -> None:
-    """#250's complement after a refusal: no story, no import job queued or running."""
+async def _nothing_left(
+    engine: AsyncEngine, stories_before: int, *, story_id: str | None = None
+) -> None:
+    """#250's complement after a refusal: no story, no import job queued or running, and
+    (``story_id``: a story the request created) no row with its id in any table of #50's
+    enumeration."""
     assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+    if story_id is not None:
+        left = await _rows_left(engine, story_id)
+        assert {t: n for t, n in left.items() if n} == {}, story_id
     assert (
         await count(
             engine,
@@ -700,7 +707,11 @@ async def test_i_10__m7_import_bad_bundles(
                     None,
                 )
                 assert refused.status["report"]["errors"], refused.status
-            await _nothing_left(engine, stories_before)
+            await _nothing_left(
+                engine,
+                stories_before,
+                story_id=None if refused.status is None else refused.story_id,
+            )
         # The staged uploads are deleted with the refusals (their records keep no path).
         assert (
             await count(
@@ -1469,3 +1480,477 @@ async def test_i_10__m7_import_older_format(
         monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, "1.0.0", ("1.0.9", step))
         gap = await _import(client, engine, data)
         assert gap.error["code"] == "unsupported_format_version", gap.error
+
+
+# -- M7: the import job's crash recovery and refusals (#722, #250) -----------------------------
+
+
+async def _import_state(db: AsyncEngine, bundle_id: str) -> Any:
+    (found,) = await rows(
+        db,
+        "SELECT b.status, b.stage, b.attempts, b.story_id, j.status AS job_status "
+        "FROM bundle_jobs b LEFT JOIN jobs j ON j.id = b.job_id WHERE b.id = :b",
+        b=bundle_id,
+    )
+    return found
+
+
+async def _until_terminal(db: AsyncEngine, bundle_id: str, timeout_s: float = 60.0) -> Any:
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while True:
+        found = await _import_state(db, bundle_id)
+        if found.status in ("ready", "refused", "failed"):
+            return found
+        assert loop.time() < deadline, found
+        await asyncio.sleep(0.2)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-STORE-7; NFR-REL-1")
+async def test_i_10__m7_crash_resume(pg_url: str, tmp_path: Any) -> None:
+    """#250: a worker killed mid-import (``SIGKILL`` at a crash point) is recovered by the
+    job's lease: the reclaimed attempt deletes the partial story's rows, recreates the story
+    row and starts again from the staged file, and the import ends ``ready`` with one story
+    whose rows are exactly a clean import's (no duplicate). Two points: mid-way through the
+    insert transaction (``bundles.import.mid_records``, nothing of it committed) and after the
+    bundle's rows committed, before any gate (``bundles.import.after_insert``: the partial rows
+    are there when the worker dies). Complement: the crash really left the import ``running``
+    with its story ``importing``."""
+    import secrets
+
+    from sqlalchemy import text
+
+    from epistrel.core.db import make_engine
+    from epistrel.testing import crash
+    from epistrel.testing.faults import EngineProcess
+    from tests.auth_support import CREDENTIAL_A, auth_settings
+    from tests.conformance.conftest import migrated_database
+
+    with migrated_database(pg_url, f"epistrel_imp_{secrets.token_hex(4)}") as url:
+        settings = auth_settings(url, model_adapter="stub").model_copy(
+            update={"bundle_dir": tmp_path / "bundles"}
+        )
+        db = make_engine(settings)
+        child = EngineProcess(url, CREDENTIAL_A, mode="all")
+        try:
+            async with rest(settings, db) as client:
+                source = (await create(client, story_body("Wren", "Ada")))["story_id"]
+                for turn in range(3):
+                    await play_turn(db, source, f"Line {turn}.", principal="p-export")
+                data = await _exported(client, db, source, tmp_path)
+                before = await _rows_left(db, source)
+                for point in ("bundles.import.mid_records", "bundles.import.after_insert"):
+                    started = await _started(client, data)
+                    assert started.status_code == 202, started.text
+                    bundle, imported = started.json()["job_id"], started.json()["story_id"]
+                    child.crash = crash.crash_at(point, 2 if point.endswith("records") else 1)
+                    await child.start()
+                    assert await child.wait_exit(60) == crash.EXIT_STATUS, point
+                    crashed = await _import_state(db, bundle)
+                    assert (crashed.status, crashed.attempts) == ("running", 1), crashed
+                    assert crashed.job_status == "running", crashed
+                    (story_row,) = await rows(
+                        db, "SELECT status FROM stories WHERE id = :s", s=imported
+                    )
+                    assert story_row.status == "importing"
+                    partial = await count(
+                        db, "SELECT count(*) FROM events WHERE story_id = :s", s=imported
+                    )
+                    if point.endswith("after_insert"):
+                        assert partial > 0  # the committed rows the next attempt purges
+                    else:
+                        assert partial == 0  # the insert transaction died with the worker
+                    # The lease lapses (sooner than its full length, which is what the
+                    # worker's reaper waits out).
+                    async with db.begin() as conn:
+                        await conn.execute(
+                            text(
+                                "UPDATE jobs SET lease_until = now() - interval '1 second' "
+                                "WHERE id = (SELECT job_id FROM bundle_jobs WHERE id = :b)"
+                            ),
+                            {"b": bundle},
+                        )
+                    child.crash = None
+                    await child.start()
+                    done = await _until_terminal(db, bundle)
+                    await child.kill()
+                    assert (done.status, done.story_id, done.attempts) == (
+                        "ready",
+                        imported,
+                        2,
+                    ), done
+                    assert (
+                        await count(db, "SELECT count(*) FROM stories WHERE id = :s", s=imported)
+                        == 1
+                    )
+                    # The bundle's rows once each (the worker's later background work, an
+                    # embed job's ``maintenance`` operation, is not the import's).
+                    imported_only = (
+                        "story_id = :s AND operation_id NOT IN (SELECT operation_id FROM "
+                        "operations WHERE story_id = :s AND kind = 'maintenance')"
+                    )
+                    for table in ("operations", "events"):
+                        sql = f"SELECT count(*) FROM {table} WHERE {imported_only}"  # noqa: S608
+                        extra = 1 if table == "operations" else 0
+                        assert await count(db, sql, s=imported) == before[table] + extra, (
+                            point,
+                            table,
+                        )
+                    assert (
+                        await count(
+                            db, "SELECT count(*) FROM characters WHERE story_id = :s", s=imported
+                        )
+                        == before["characters"]
+                    )
+                    assert (
+                        await count(
+                            db,
+                            "SELECT count(*) FROM operations WHERE story_id = :s "
+                            "AND kind = 'import'",
+                            s=imported,
+                        )
+                        == 1
+                    )
+                assert await _rows_left(db, source) == before
+        finally:
+            await child.kill()
+            await db.dispose()
+
+
+def _story_routes() -> list[tuple[str, str]]:
+    """Every ``(method, path)`` the app serves under ``/stories/{story_id}`` and
+    ``/admin/stories/{story_id}``, from ``app.routes``."""
+    from fastapi.routing import APIRoute, iter_route_contexts
+
+    from epistrel.api.app import create_app
+    from tests.auth_support import auth_settings
+
+    app = create_app(auth_settings("postgresql+psycopg://unused/unused"))
+    found: set[tuple[str, str]] = set()
+    for context in iter_route_contexts(app.routes):
+        path = context.path or ""
+        if not isinstance(context.original_route, APIRoute):
+            continue
+        for item in ("/stories/{story_id}", "/admin/stories/{story_id}"):
+            if path == item or path.startswith(f"{item}/"):
+                found.update((method, path) for method in context.methods or ())
+    return sorted(found)
+
+
+def _documented(method: str, path: str) -> tuple[Any, dict[str, str]]:
+    """The committed OpenAPI document's request for ``method path``: its body schema's first
+    example (or ``None``), and its required query parameters, each an id no record holds."""
+    from tests.openapi_support import COMMITTED
+
+    operation = COMMITTED["paths"][path.replace("{principal:path}", "{principal}")][method.lower()]
+    content = operation.get("requestBody", {}).get("content", {}).get("application/json", {})
+    ref = content.get("schema", {}).get("$ref")
+    examples = (
+        COMMITTED["components"]["schemas"][ref.rsplit("/", 1)[-1]].get("examples") if ref else None
+    )
+    query = {
+        q["name"]: "01J00000000000000000000000"
+        for q in operation.get("parameters", [])
+        if q.get("in") == "query" and q.get("required")
+    }
+    return (examples[0] if examples else None), query
+
+
+class _AnyId(dict[str, str]):
+    """A cast lookup any name answers (an id no story holds)."""
+
+    def __missing__(self, key: str) -> str:
+        return "01J00000000000000000000000"
+
+
+def _probe(path: str, story: str) -> str:
+    """``path`` for ``story``, its other path values ones no record holds."""
+    import re
+
+    filled = path.replace("{story_id}", story).replace("{principal:path}", "{principal}")
+    return re.sub(
+        r"\{([a-z_]+)\}",
+        lambda m: (
+            "01J00000000000000000000000"
+            if m.group(1).endswith("id") or m.group(1) in ("listing", "cid")
+            else {"principal": "p-other", "relation": "editor", "name": "lamp"}.get(m.group(1), "1")
+        ),
+        filled,
+    )
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_importing__running(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#250: the import job held at ``bundles.import.before_ready`` (the bundle inserted, every
+    gate passed, the story still ``importing``): every route under ``/stories/{id}`` and
+    ``/admin/stories/{id}``, enumerated from ``app.routes`` and sent the minimal request the
+    ownership matrix uses (``CALLS``), answers 409 ``story_importing`` naming the job and its
+    stage, and nothing is written (the story's operation and event counts unchanged).
+    Complement: the import's status route answers ``running`` at stage ``embedding``, another
+    story's routes answer normally, and once released the import is ``ready``."""
+    import asyncio
+
+    from epistrel.testing import pauses
+    from tests.integration.ownership_fixtures import CALLS, Entity
+
+    routes = _story_routes()
+    assert len(routes) > 60, routes  # the whole surface, not a sample
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        started = await _started(client, data)
+        assert started.status_code == 202, started.text
+        imported, job = started.json()["story_id"], started.json()["job_id"]
+        entity = Entity(imported, _AnyId())
+        with pauses.held(pauses.BUNDLE_IMPORT_BEFORE_READY) as hold:
+            running = asyncio.create_task(_run_import_job(engine, job))
+            try:
+                await hold.arrived()
+                state = await client.get(f"/admin/stories/imports/{job}", headers=READ)
+                assert (state.json()["status"], state.json()["stage"]) == (
+                    "running",
+                    "embedding",
+                ), state.text
+                operations = await _operations(engine, imported)
+                events = await count(
+                    engine, "SELECT count(*) FROM events WHERE story_id = :s", s=imported
+                )
+                assert operations > 0  # the bundle is in, not served
+                assert events > 0
+                answered: dict[tuple[str, str], Any] = {}
+                for method, path in routes:
+                    call = CALLS.get((method, path))
+                    example, query = _documented(method, path)
+                    body = example if call is None else call.body(entity)
+                    if body is None and method in ("POST", "PUT", "PATCH"):
+                        body = {}
+                    sent = await client.request(
+                        method,
+                        _probe(path, imported),
+                        json=body,
+                        params={**query, **({} if call is None else call.queries[-1])},
+                        headers=WRITE,
+                    )
+                    error = sent.json().get("error", {}) if sent.content else {}
+                    if sent.status_code != 409 or error.get("code") != "story_importing":
+                        answered[(method, path)] = (sent.status_code, error.get("code"))
+                        continue
+                    assert error["details"]["job_id"] == job, (path, error)
+                    assert error["details"]["stage"] == "embedding", (path, error)
+                assert answered == {}, sorted(answered.items())
+                assert await _operations(engine, imported) == operations
+                assert (
+                    await count(
+                        engine, "SELECT count(*) FROM events WHERE story_id = :s", s=imported
+                    )
+                    == events
+                )
+                other = await client.get(f"/stories/{story}/history", headers=READ)
+                assert other.status_code == 200, other.text
+                assert (await client.get(f"/stories/{story}", headers=READ)).status_code == 200
+            finally:
+                hold.release()
+                await running
+        state = await client.get(f"/admin/stories/imports/{job}", headers=READ)
+        assert state.json()["status"] == "ready", state.text
+        served = await client.get(f"/stories/{imported}", headers=READ)
+        assert served.status_code == 200, served.text
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7; FR-MEDIA-2")
+async def test_i_10__m7_refusal_leaves_nothing(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#250's complement after a refusal found by the job, once the bundle's rows and media
+    are in (a gate's refusal, here #251's guardrail gate): no row with the story's id in any
+    table of #50's enumeration (the story row included), the story count unchanged, no
+    ``story_import`` job queued or running, the staged file gone; the media the import stored
+    are ``retired``, and after the media sweep with the clock 2 h on they are gone, while the
+    source's asset with the same checksum keeps its row and the bytes."""
+    from datetime import timedelta
+
+    from epistrel.core import clock
+    from epistrel.core.media.stores import make_store
+    from epistrel.core.media.sweep import sweep
+    from tests import bundle_support as bs
+    from tests.media_support import blob_path
+    from tests.policy_support import unique
+
+    operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+    word = f"quuxly{unique('w').lower().replace('-', '')}"
+    async with rest(settings, engine) as client:
+        rich = await bs.build_rich_story(client, engine)
+        await play_turn(engine, rich.story_id, f"I hold the {word}.", principal="p-export")
+        job = await _export(client, engine, rich.story_id, tmp_path)
+        data = (await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)).content
+        made = await client.post(
+            "/admin/policies",
+            json={
+                "scope": "global",
+                "name": unique("import-refusal"),
+                "rule": {"type": "wordlist", "words": [word]},
+                "message": "Not here.",
+            },
+            headers=operator,
+        )
+        assert made.status_code == 201, made.text
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        try:
+            refused = await _import(client, engine, data)
+        finally:
+            gone = await client.delete(f"/admin/policies/{made.json()['id']}", headers=operator)
+            assert gone.status_code in (200, 204), gone.text
+        assert refused.error["code"] == "rating_check_failed", refused.error
+        assert refused.status is not None
+        bundle = refused.started.json()["job_id"]
+        (record,) = await rows(
+            engine, "SELECT request, path, story_id FROM bundle_jobs WHERE id = :b", b=bundle
+        )
+        assert (record.path, record.story_id) == (None, None)
+        media_ids = list(record.request["media_ids"])
+        assert media_ids  # the import stored the image before the gate refused it
+        await _nothing_left(engine, stories_before, story_id=refused.story_id)
+        assert not list((settings.bundle_dir / "imports").glob(f"{bundle}*"))
+        states = await rows(
+            engine, "SELECT state FROM media_assets WHERE id = ANY(:m)", m=media_ids
+        )
+        assert {r.state for r in states} == {"retired"}
+        await sweep(engine, make_store(settings), now=clock.now() + timedelta(hours=2))
+        assert (
+            await rows(engine, "SELECT id FROM media_assets WHERE id = ANY(:m)", m=media_ids) == []
+        )
+        (kept,) = await rows(
+            engine, "SELECT checksum, state FROM media_assets WHERE id = :m", m=rich.media_id
+        )
+        assert (kept.checksum, kept.state) == (bs.IMAGE_SHA, "live")
+        assert blob_path(settings.media_root, bs.IMAGE_SHA).exists()
+
+
+async def _aged_audit_event(engine: AsyncEngine, story: str, operation_id: str, days: int) -> str:
+    """An ``audit`` event of ``operation_id`` recorded ``days`` days ago (the log is
+    append-only, so a test writes it aged rather than aging it)."""
+    from sqlalchemy import text
+
+    from epistrel.core.ids import new_ulid
+
+    event_id = new_ulid()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO events (id, story_id, seq, operation_id, category, principal, type, "
+                "payload, valid_time, tx_time, provenance, authority) "
+                "SELECT :id, :s, coalesce(max(seq), 0) + 1, :o, 'audit', 'p-test', "
+                "'guardrail_output_rejected', CAST(:payload AS jsonb), "
+                "now() - make_interval(days => :d), now() - make_interval(days => :d), "
+                "'engine', 'authoritative' FROM events WHERE story_id = :s"
+            ),
+            {
+                "id": event_id,
+                "s": story,
+                "o": operation_id,
+                "d": days,
+                "payload": json.dumps({"text": f"aged {days}", "reason": "test"}),
+            },
+        )
+    return event_id
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-30")
+async def test_i_10__m7_retention(settings: Settings, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#250 (FR-STORE-30): imported events keep their original ``tx_time``, so retention
+    counts from when they were recorded, not from the import. The source holds an audit event
+    aged 100 days and one aged 89 under a deployment retention of 365 (the sweep keeps both);
+    it is exported, the retention set to 90 and the bundle imported: after the sweep the
+    imported 100-day event is gone and the 89-day one remains."""
+    from epistrel.orchestrator.jobs.handlers import retention
+
+    operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        turn = await play_turn(engine, story, "Line.", principal="p-export")
+        await _aged_audit_event(engine, story, turn.operation_id, 100)
+        await _aged_audit_event(engine, story, turn.operation_id, 89)
+
+        async def aged(of: str) -> set[str]:
+            found = await rows(
+                engine,
+                "SELECT payload->>'text' AS said FROM events WHERE story_id = :s "
+                "AND category = 'audit' AND payload->>'text' LIKE 'aged %'",
+                s=of,
+            )
+            return {str(r.said) for r in found}
+
+        longer = await client.put(
+            "/admin/settings", json={"audit_retention_days": 365}, headers=operator
+        )
+        assert longer.status_code == 200, longer.text
+        try:
+            await retention.sweep_retention(engine)
+            assert await aged(story) == {"aged 100", "aged 89"}
+            data = await _exported(client, engine, story, tmp_path)
+            shorter = await client.put(
+                "/admin/settings", json={"audit_retention_days": 90}, headers=operator
+            )
+            assert shorter.status_code == 200, shorter.text
+            made = await _import(client, engine, data)
+            assert made.ready, made.status
+            assert await aged(made.story_id) == {"aged 100", "aged 89"}
+            await retention.sweep_retention(engine)
+            assert await aged(made.story_id) == {"aged 89"}
+        finally:
+            restored = await client.put(
+                "/admin/settings", json={"audit_retention_days": 90}, headers=operator
+            )
+            assert restored.status_code == 200, restored.text
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_conflicts(settings: Settings, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#250: the same bundle imported twice gives two stories, and a turn on one leaves the
+    other's rows unchanged; the same ``Idempotency-Key`` again returns the first story; the same
+    key with a different bundle is 409 ``idempotency_conflict`` and creates nothing."""
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        await play_turn(engine, story, "Another line.", principal="p-export")
+        other = await _exported(client, engine, story, tmp_path)
+        assert other != data
+        key = {"Idempotency-Key": "01JB0000000000000000000CNF"}
+        first = await _import(client, engine, data, key)
+        second = await _import(client, engine, data)
+        assert first.ready, first.status
+        assert second.ready, second.status
+        assert first.story_id != second.story_id
+        untouched = await _rows_left(engine, second.story_id)
+        await play_turn(engine, first.story_id, "Only here.", principal="p-import")
+        assert await _rows_left(engine, second.story_id) == untouched
+        replayed = await _started_keyed(client, data, key)
+        assert replayed.status_code == 202, replayed.text
+        assert replayed.json()["story_id"] == first.story_id
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        conflict = await _started_keyed(client, other, key)
+        assert conflict.status_code == 409, conflict.text
+        assert conflict.json()["error"]["code"] == "idempotency_conflict"
+        assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+
+
+async def _started_keyed(client: Any, data: bytes, key: dict[str, str]) -> Any:
+    return await client.post(
+        "/admin/stories/import",
+        files={
+            "metadata": (None, json.dumps({}), "application/json"),
+            "file": ("story.epistrel.tgz", data, "application/gzip"),
+        },
+        headers={**WRITE, **key},
+    )

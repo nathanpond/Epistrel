@@ -29,6 +29,13 @@ hit once per staged turn by whichever process runs that stage:
   completion not;
 - ``staged.after_completion``: the completion committed, the response not stored.
 
+A story import's job (#250; ``core.bundles``), each hit by the worker running it:
+
+- ``bundles.import.mid_records``: one table of the bundle inserted (hit after each table), its
+  transaction not committed;
+- ``bundles.import.after_insert``: the bundle's rows committed into the importing story, no
+  gate run yet (the next attempt purges them and starts again from the staged file).
+
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 ``epistrel.testing.faults`` (the child-process harness) re-exports ``crash_at`` and ``hit``.
 """
@@ -57,7 +64,9 @@ STAGED_POINTS = (
     "staged.after_completion",
 )
 """A staged turn's stage boundaries (#213)."""
-POINTS = (*COMMIT_POINTS, *STAGED_POINTS)
+IMPORT_POINTS = ("bundles.import.mid_records", "bundles.import.after_insert")
+"""A story import's job (#250)."""
+POINTS = (*COMMIT_POINTS, *STAGED_POINTS, *IMPORT_POINTS)
 ENABLE_VAR = "EPISTREL_TEST_FAULTS"
 CRASH_VAR = "EPISTREL_TEST_CRASH_AT"
 EXIT_STATUS = 137
@@ -136,6 +145,7 @@ __all__ = [
     "CRASH_VAR",
     "ENABLE_VAR",
     "EXIT_STATUS",
+    "IMPORT_POINTS",
     "POINTS",
     "STAGED_POINTS",
     "CrashPlan",

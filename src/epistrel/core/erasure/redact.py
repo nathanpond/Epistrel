@@ -93,6 +93,9 @@ class Candidate:
     field: str
     snippet: str
     rule: str
+    start: int = 0
+    """Where in the field's NFC text it starts (an input of ``candidate_id``: #251 translates
+    a bundle's confirmed ids through the import's id map with it)."""
 
 
 class Redactor:
@@ -134,6 +137,7 @@ class Redactor:
                     *at,
                     snippet(value, mention.start, mention.end),
                     mention.rule.value,
+                    mention.start,
                 ),
             )
             if found in self.confirmed:

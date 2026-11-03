@@ -215,7 +215,8 @@ async def settle_now(
         "an inter-turn slot operation and dispatched like any other. The listed effect shows "
         "`status: compensated` until the compensating effect is confirmed. 422 "
         "`provider_read_only` when the State's provider is not write-capable; 422 "
-        "`state_unpermitted` for a State no external provider owns." + _LISTED
+        "`state_unpermitted` for a State no external provider owns. An imported row parked "
+        "`imported_unsettled` (never dispatched) is listed for compensate too." + _LISTED
     ),
 )
 async def compensate(

@@ -12,11 +12,12 @@ still ``importing``; any refusal (``ImportRefused``, or the erasure fence's
    entries whose subject the imported rows reference structurally (a character's
    ``source_catalog_id``, a player's ``persona_id``), run as a story-scope erasure of that
    story character. Each re-runs #124's ``erase`` with the entry's own id, principal ``system``
-   and no ledger line, as #125's reapply does; a subject the bundle no longer holds (a
-   post-erasure bundle) is nothing to apply. The entries are then copied to the new story with
-   ``copied_from`` set (as a fork copies them, #127), and the guard checks every imported text
-   against them (``guard.check_content``), which must find nothing. Without the deployment's
-   erasure key the gate cannot run and the import is refused.
+   and no ledger line, as #125's reapply does, with the entry's confirmed candidates (ADR-154)
+   translated through the id map (``_translated_candidates``); a subject the bundle no longer
+   holds (a post-erasure bundle) is nothing to apply. The entries are then copied to the new
+   story with ``copied_from`` set (as a fork copies them, #127), and the guard checks every
+   imported text against them (``guard.check_content``), which must find nothing. Without the
+   deployment's erasure key the gate cannot run and the import is refused.
 2. ``check_guardrails`` (stage ``guardrails``): the whole active history checked against the
    chosen rating's effective guardrails (global, the rating's, the story's and its characters',
    the minors policy among them) with #118's evaluator, exactly as a tightening checks it, every
@@ -135,6 +136,35 @@ async def _subject_of(conn: AsyncConnection, ctx: ImportContext, entry: Any) -> 
     return {"kind": "character", "id": str(found or entry.subject_id)}
 
 
+async def _translated_candidates(ctx: ImportContext, entry: Any, request: Any) -> list[str]:
+    """ADR-154 on import (#251): the entry's operator-confirmed candidates, translated to the
+    imported story. A candidate id hashes its record's id (``redact.candidate_id``), which the
+    import remapped, so a dry run of the erasure on the imported story lists the candidates it
+    meets, and each whose source id (its record's id mapped back, the same field, start and
+    rule) the entry confirmed is confirmed here. A confirmed id the bundle does not hold (a
+    record the source wrote after the export, or a projection rebuilt with a new id) is
+    skipped, as #125's reapply skips one."""
+    from epistrel.core.erasure import erase as erasure
+    from epistrel.core.erasure.redact import candidate_id
+
+    counts = entry.counts if isinstance(entry.counts, dict) else {}
+    source = {str(c) for c in counts.get("confirmed_candidates") or ()}
+    if not source:
+        return []
+    reverse = {new: old for old, new in ctx.inserted.ids.items()}
+    preview = await erasure.dry_run(
+        ctx.db, request, compressor=ctx.services.extra["compressor"], principal=SYSTEM
+    )
+    return [
+        c.candidate_id
+        for c in preview.candidates
+        if candidate_id(
+            c.record_table, reverse.get(c.record_id, c.record_id), c.field, c.start, c.rule
+        )
+        in source
+    ]
+
+
 async def apply_erasure_ledger(ctx: ImportContext) -> None:
     from epistrel.core.erasure import erase as erasure
     from epistrel.core.erasure import guard
@@ -159,6 +189,7 @@ async def apply_erasure_ledger(ctx: ImportContext) -> None:
             {"subject": subject, "scope": {"story": ctx.story_id}}
         )
         try:
+            confirmed = await _translated_candidates(ctx, entry, request)
             result = await erasure.erase(
                 ctx.db,
                 request,
@@ -168,7 +199,7 @@ async def apply_erasure_ledger(ctx: ImportContext) -> None:
                 collect=ctx.services.extra.get("collect"),
                 erasure_id=str(entry.copied_from or entry.id),
                 write_ledger=False,
-                confirmed=(),
+                confirmed=confirmed,
             )
         except SubjectNotFound, StoryNotFound:
             continue  # a post-erasure bundle: nothing of the subject left to apply

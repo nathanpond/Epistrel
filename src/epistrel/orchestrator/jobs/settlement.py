@@ -942,7 +942,8 @@ async def reverify(db: AsyncEngine, story_id: str, outbox_id: str) -> core_outbo
 class NoListing(StoryNotFound):
     """The story lists no such effect for an explicit action (404 ``not_found``, ``reason:
     no_listing``): an unknown outbox row, or one not listed ``late_success_after_expiry``,
-    ``confirmed_discarded_origin`` or ``settlement_conflict``."""
+    ``confirmed_discarded_origin`` or ``settlement_conflict`` (or, for compensate and resolve,
+    ``imported_unsettled``, #251)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -981,18 +982,29 @@ class Compensated:
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
-async def _listed_for_action(conn: AsyncConnection, story_id: str, outbox_id: str) -> list[str]:
+async def _listed_for_action(
+    conn: AsyncConnection, story_id: str, outbox_id: str, *, parked: bool = False
+) -> list[str]:
     """The settleable reasons outbox row ``outbox_id`` is listed with (404 ``no_listing``
-    when none)."""
+    when none). ``parked`` (#251, owner decision 5: ``compensate`` only): an imported row
+    parked ``imported_unsettled`` (never executable) with that mark open is listed too."""
     o = external_effect_outbox.c
-    found = await conn.scalar(
-        select(o.id).where(o.id == outbox_id, o.story_id == story_id, o.executable.is_(True))
-    )
-    reasons = (
-        []
-        if found is None
-        else [r for r in await core_outbox.open_marks(conn, story_id, outbox_id) if r in SETTLEABLE]
-    )
+    found = (
+        await conn.execute(
+            select(o.id, o.executable, o.status).where(o.id == outbox_id, o.story_id == story_id)
+        )
+    ).one_or_none()
+    marks = [] if found is None else await core_outbox.open_marks(conn, story_id, outbox_id)
+    reasons: list[str] = []
+    if found is not None and found.executable is True:
+        reasons = [r for r in marks if r in SETTLEABLE]
+    elif (
+        found is not None
+        and parked
+        and str(found.status) == IMPORTED_UNSETTLED
+        and IMPORTED_UNSETTLED in marks
+    ):
+        reasons = [IMPORTED_UNSETTLED]
     if not reasons:
         raise NoListing(
             f"the story lists no effect {outbox_id} for settle-now or compensate",
@@ -1098,7 +1110,7 @@ async def compensate(
     await require_writable(db, story_id)
     async with db.connect() as conn:
         await states.require_module(conn, story_id)
-        await _listed_for_action(conn, story_id, outbox_id)
+        await _listed_for_action(conn, story_id, outbox_id, parked=True)
         definition = await states.definition(conn, story_id, effect.state)
         if definition.owner is not StateOwner.EXTERNAL or definition.provider_id is None:
             raise StateUnpermitted(

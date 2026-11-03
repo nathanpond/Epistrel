@@ -74,6 +74,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.tables import bundle_jobs, stories
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.observability.logging import get_logger
+from epistrel.testing import crash, pauses
 
 log = get_logger(__name__)
 
@@ -557,6 +558,10 @@ async def _reset(conn: AsyncConnection, row: Any) -> None:
             engine_profile_version_pin=request.get("engine_profile_version_pin"),
         )
     )
+    # The story row's deletion cleared the record's ``story_id`` (``ON DELETE SET NULL``).
+    await conn.execute(
+        update(bundle_jobs).where(bundle_jobs.c.id == row.id).values(story_id=story_id)
+    )
 
 
 async def _media_retired(conn: AsyncConnection, media_ids: Sequence[str]) -> None:
@@ -618,6 +623,7 @@ async def run_import(db: AsyncEngine, job_id: str) -> dict[str, Any]:
                     .where(bundle_jobs.c.id == job_id)
                     .values(request={**request, "media_ids": inserted.media_ids})
                 )
+            crash.hit("bundles.import.after_insert")
             if media and the.blobs is None:
                 inserted.warnings.append({"code": "media_not_imported", "count": len(media)})
             report["warnings"] = list(inserted.warnings)
@@ -661,6 +667,7 @@ async def run_import(db: AsyncEngine, job_id: str) -> dict[str, Any]:
             await replace_with_fold(conn, story_id)
             await reindex_story(conn, story_id)
         await set_stage(db, job_id, "embedding")
+        await pauses.pause(pauses.BUNDLE_IMPORT_BEFORE_READY)
         async with db.begin() as conn:
             if the.after is not None:
                 await the.after(conn, story_id)

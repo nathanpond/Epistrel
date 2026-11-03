@@ -53,11 +53,26 @@ async def test_s_audit_view(pg_url: str, engine: AsyncEngine) -> None:
     assert not {"reply 20", "a later fix"} & corrected
 
 
+async def _lazy_resolution(engine: AsyncEngine) -> Any:
+    """A turn exposing Ann to Bobby's claim, then a later turn resolving it lazily."""
+    from tests import exposure_support as xs
+    from tests.memory_support import use_structured
+
+    w = await c.world(engine)
+    await use_structured(engine, w.story_id)
+    claim = c.at(w.people["Cal"], w.places["garden"], None, None)
+    exposure_id, _ = await xs.expose(
+        engine, w.story_id, w.characters["Ann"], claim, source=w.characters["Bobby"]
+    )
+    resolution, _ = await xs.resolve(engine, w.story_id, exposure_id)
+    return resolution
+
+
 @pytest.mark.part("M7", "FR-STORE-23")
 async def test_s_audit_view__spy(pg_url: str, engine: AsyncEngine, monkeypatch: Any) -> None:
     """No player-facing path reads the as-recorded view: a spy on it records zero calls during
-    respond, regenerate and fork. Complement: the history read with ``view=as_recorded`` is a
-    call (the spy sees it)."""
+    respond, regenerate, fork and a lazy belief resolution. Complement: the history read with
+    ``view=as_recorded`` is a call (the spy sees it)."""
     calls: list[str] = []
     original = views.as_originally_recorded
 
@@ -77,6 +92,10 @@ async def test_s_audit_view__spy(pg_url: str, engine: AsyncEngine, monkeypatch: 
         ):
             answer: httpx.Response = await client.post(path, json=body, headers=write)
             assert answer.status_code in (200, 201), answer.text
+        assert calls == []
+        # The fourth player-facing path: a lazy belief resolution inside a later turn.
+        resolution = await _lazy_resolution(engine)
+        assert resolution.belief is not None
         assert calls == []
         read = await client.get(
             f"/stories/{story}/history",
@@ -146,3 +165,52 @@ async def test_s_audit_view__omniscient_only(pg_url: str, engine: AsyncEngine) -
         )
         assert missing.status_code == 404, missing.text
         assert missing.json()["error"]["code"] == "checkpoint_not_found"
+
+
+@pytest.mark.part("M7", "FR-STORE-23,26")
+async def test_s_audit_view__beliefs(engine: AsyncEngine) -> None:
+    """#222 AC1, the beliefs section (FR-STORE-26: only if created at or before the boundary).
+    Ann comes to believe Cal is in the garden (turn 2) and that Bobby is in the kitchen (turn 3),
+    then sees Cal is not in the garden (turn 4), which closes the first belief. Turn 5 exposes
+    her to Bobby saying Cal is at school, and turn 6 resolves it lazily: the belief is held
+    from turn 5 but recorded by turn 6. As recorded: at 2 only the garden belief; at 3 both;
+    at 5 the kitchen belief and the correction, not the closed garden belief, and not the
+    lazily resolved one (recorded after 5's boundary); at 6 the lazy one too. Complement: the
+    current partition still holds the corrected garden belief as a closed row."""
+    from tests import exposure_support as xs
+    from tests import partition_support as parts
+    from tests.memory_support import use_structured
+
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    ann, bobby = w.characters["Ann"], w.characters["Bobby"]
+    cal = w.people["Cal"]
+    garden = c.at(cal, w.places["garden"], None, None)
+    kitchen = c.at(w.people["Bobby"], w.places["kitchen"], None, None)
+    school = c.at(cal, w.places["school"], None, None)
+    await xs.plain_turn(engine, story)
+    first = await parts.believe(engine, story, ann, garden)
+    second = await parts.believe(engine, story, ann, kitchen)
+    corrected = await parts.believe(engine, story, ann, garden.negation())
+    exposure_id, _ = await xs.expose(engine, story, ann, school, source=bobby)
+    resolution, _ = await xs.resolve(engine, story, exposure_id)
+    assert resolution.belief is not None
+    lazy = resolution.belief
+    assert (first.held_from.turn, second.held_from.turn, corrected.held_from.turn) == (2, 3, 4)
+    assert lazy.held_from.turn == 5
+
+    async def held(turn: int) -> set[str]:
+        view = await views.as_originally_recorded(engine, story, views.Checkpoint(turn))
+        return {b["id"] for b in view.beliefs}
+
+    assert await held(1) == set()
+    assert await held(2) == {first.id}
+    assert await held(3) == {first.id, second.id}
+    at_5 = await held(5)
+    assert {second.id, corrected.id} <= at_5
+    assert first.id not in at_5  # closed (corrected) before the boundary
+    assert lazy.id not in at_5  # held from 5, recorded after 5's boundary
+    assert lazy.id in await held(6)
+    closed = {r.id: r for r in await parts.belief_rows(engine, story)}[first.id]
+    assert closed.tx_to is not None

@@ -73,6 +73,7 @@ from pydantic_core import CoreSchema
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import author_facts
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, estimates, schema
@@ -367,16 +368,20 @@ def affected(
     queue_position: int | None = None,
     deferred: Mapping[str, int] | None = None,
     summary: Mapping[str, Any] | None = None,
+    parses: int = 0,
 ) -> AffectedStory:
     """``story_id``'s entry: a backfill is needed when the change adds data-producing
     capability and the story has history (#229: never unavailable from M7 on), estimated over
-    its transcript (``messages``, ``characters``) for the turns ``span`` holds; ``mode`` is how
-    it upgrades (``backfill`` by default: its ``queue_position``; ``forward_only``: the gap its
-    earlier turns keep)."""
+    its transcript (``messages``, ``characters``) for the turns ``span`` holds, plus one
+    ``directive_parse`` call per Lite author fact the upgrade converts (``parses``, #717);
+    ``mode`` is how it upgrades (``backfill`` by default: its ``queue_position``;
+    ``forward_only``: the gap its earlier turns keep)."""
     needed = bool(change.increases) and history
     estimate = None
     if needed:
-        calls, tokens, duration = estimates.backfill_cost(*transcript, len(change.increases))
+        calls, tokens, duration = estimates.backfill_cost(
+            *transcript, len(change.increases), parses=parses
+        )
         estimate = BackfillEstimate(model_calls=calls, tokens=tokens, duration_s=duration)
     chosen: UpgradeMode | None = (mode or "backfill") if needed else None
     gap = None
@@ -641,6 +646,7 @@ async def following_report(
         )
     ]
     sizes = await transcripts(conn, [s for s in listed if s in keep])
+    parses = await author_facts.pending_parses(conn, [s for s in listed if s in keep])
     ahead = await queued_count(conn)
     order = {s: ahead + n for n, s in enumerate(sorted(keep), start=1)}
     entries = [
@@ -654,6 +660,7 @@ async def following_report(
             queue_position=order.get(s),
             deferred=await deferred_counts(conn, s, overridden.get(s, change)),
             summary=await summary_counts(conn, s, overridden.get(s, change)),
+            parses=parses.get(s, 0),
         )
         for s in listed
     ]
@@ -716,6 +723,7 @@ async def stories_report(
             spans[story] = span
     keep = set(spans)
     sizes = await transcripts(conn, sorted(keep))
+    parses = await author_facts.pending_parses(conn, sorted(keep))
     ahead = await queued_count(conn)
     order = {s: ahead + n for n, s in enumerate(sorted(keep), start=1)}
     entries = [
@@ -729,6 +737,7 @@ async def stories_report(
             queue_position=order.get(s),
             deferred=await deferred_counts(conn, s, changes[s]),
             summary=await summary_counts(conn, s, changes[s]),
+            parses=parses.get(s, 0),
         )
         for s in ids[:AFFECTED_MAX]
     ]
@@ -931,8 +940,13 @@ async def preview(
         change = delta(current.configuration(), Configuration(profile_id, version, settings), facts)
         history = await with_history(conn, [story_id]) if change.increases else set()
         sizes = await transcripts(conn, history)
+        parses = await author_facts.pending_parses(conn, history)
     entry = affected(
-        story_id, change, history=story_id in history, transcript=sizes.get(story_id, (0, 0))
+        story_id,
+        change,
+        history=story_id in history,
+        transcript=sizes.get(story_id, (0, 0)),
+        parses=parses.get(story_id, 0),
     )
     return single_report(entry, change, budget_warnings=safety_warnings(settings, safety))
 

@@ -38,8 +38,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import author_facts, pause
 from epistrel.core import backfill as core_backfill
-from epistrel.core import pause
 from epistrel.core.backfill import conflicts as backfill_conflicts
 from epistrel.core.backfill import coverage, reconcile
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
@@ -486,25 +486,14 @@ async def _after_complete(conn: AsyncConnection, story_id: str) -> None:
 
 
 AUTHOR_FACT_PARSES = "author_fact_parses"
-NOTE_KEY = "note:"
-"""#700: a Lite world note's key among the parsed author facts (``note:<part id>``)."""
-NOTE_PREFIX = "Author correction: "
 """#699: the report key holding each Lite lasting author fact's ``directive_parse`` changes
 (``None``: kept as text), parsed after extraction (model calls outside any transaction)."""
-
-
-async def _converted_before(conn: AsyncConnection, story_id: str) -> set[str]:
-    """#699: the Lite fact events earlier completed backfills of the story converted (a
-    re-upgrade never converts one twice)."""
-    rows = await conn.execute(
-        select(story_backfills.c.report).where(
-            story_backfills.c.story_id == story_id, story_backfills.c.status == "completed"
-        )
-    )
-    found: set[str] = set()
-    for (report,) in rows:
-        found.update(str(i) for i in dict(report or {}).get("author_facts", {}).get("ids", []))
-    return found
+NOTE_KEY = author_facts.NOTE_KEY
+"""#700: a Lite world note's key among the parsed author facts (``note:<part id>``)."""
+NOTE_PREFIX = "Author correction: "
+"""#700: the prefix a Lite world note's text carries, dropped before it is parsed."""
+_converted_before = author_facts.converted_before
+"""#699: the Lite fact keys earlier completed backfills converted (``core.author_facts``)."""
 
 
 async def _parse_author_facts(ctx: JobContext, row: Any) -> dict[str, Any]:
@@ -519,12 +508,12 @@ async def _parse_author_facts(ctx: JobContext, row: Any) -> dict[str, Any]:
     if str(row.kind) != "upgrade":
         return {}
     async with ctx.db.connect() as conn:
-        facts = await directives.lite_facts(conn, story_id)
+        facts = await author_facts.lite_facts(conn, story_id)
         # #700: each active Lite world note ("Author correction: ...") converts the same way,
         # at the story's start, keyed by its part.
         facts += [
             (f"{NOTE_KEY}{part_id}", 0, 0, text.removeprefix(NOTE_PREFIX))
-            for part_id, text in await directives.lite_note_parts(conn, story_id)
+            for part_id, text in await author_facts.lite_note_parts(conn, story_id)
         ]
         done = await _converted_before(conn, story_id)
         if not facts:
@@ -576,11 +565,11 @@ async def _convert_author_facts(conn: AsyncConnection, row: Any) -> dict[str, An
     )
     positions = {
         event_id: (turn, slot)
-        for event_id, turn, slot, _ in await directives.lite_facts(conn, story_id)
+        for event_id, turn, slot, _ in await author_facts.lite_facts(conn, story_id)
     }
     positions.update(
         (f"{NOTE_KEY}{part_id}", (0, 0))
-        for part_id, _ in await directives.lite_note_parts(conn, story_id)
+        for part_id, _ in await author_facts.lite_note_parts(conn, story_id)
     )
     converted: list[str] = []
     kept = 0

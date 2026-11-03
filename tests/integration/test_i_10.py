@@ -2071,3 +2071,211 @@ async def test_i_10__m7_erasure_on_import__catalog(
         assert (card["name"], card["public_description"], card["labels"]) == (None, None, [])
         texts = await _event_texts(engine, imported.story_id)
         assert not any(es.naming(t, ["June Harrow", "June"]) for t in texts)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-RATE-7; FR-STORE-7")
+async def test_i_10__m7_guardrails_on_import(
+    pg_url: str, engine: AsyncEngine, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#251's guardrail gate, the slices #721 names.
+
+    - **The minors policy.** An Explicit story with a 16-year-old in its cast, whose active
+      history holds a line the (stub) guardrail model flags under the age-conditioned policy.
+      First with the gate removed (a test-only change of ``IMPORT_GATES``) the bundle imports
+      and is served, which shows the gate is what stops it; then with the gate it is
+      ``refused`` ``rating_check_failed``, the violation listing its position and the minors
+      policy, and nothing remains.
+    - **The named rating's own policy.** A bundle imported under a rating whose own policy its
+      history breaks is refused the same way. Complement: named its own rating, it imports."""
+    from epistrel.core.bundles import import_job
+    from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
+    from tests import minors_support as mi
+    from tests import policy_support as pol
+    from tests.respond_support import respond_client
+
+    phrase = "a fixture phrase the guardrail model flags"
+    async with respond_client(auth_settings_stub(pg_url), engine) as (client, lib):
+        story = await mi.explicit_story(engine, minor=True)
+        await play_turn(engine, story, f"Then {phrase}.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        mi.recognise(lib.models.stub, phrase)
+
+        gates = [g for g in import_job.IMPORT_GATES if g[0] != "check_guardrails"]
+        with monkeypatch.context() as patched:
+            patched.setattr(import_job, "IMPORT_GATES", gates)
+            served = await _import(client, engine, data)
+        assert served.ready, served.status
+        assert (await client.get(f"/stories/{served.story_id}", headers=READ)).status_code == 200
+
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        refused = await _import(client, engine, data)
+        assert refused.status is not None
+        assert refused.status["status"] == "refused", refused.status
+        assert refused.error["code"] == "rating_check_failed", refused.error
+        violations = refused.error["details"]["violations"]
+        assert MINORS_POLICY_ID in {v["policy_id"] for v in violations}, violations
+        assert {v["position"].get("turn") for v in violations if v.get("position")} == {1}
+        await _nothing_left(engine, stories_before, story_id=refused.story_id)
+
+        word = f"glorp{pol.unique('w').lower().replace('-', '')}"
+        plain = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, plain, f"I carry the {word}.", principal="p-export")
+        plain_data = await _exported(client, engine, plain, tmp_path)
+        rating, policy = await pol.rated_policy_rating(lib, engine, pol.words(word))
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        strict = await _import(client, engine, plain_data, metadata={"content_rating_id": rating})
+        assert strict.error["code"] == "rating_check_failed", strict.error
+        assert {v["policy_id"] for v in strict.error["details"]["violations"]} == {policy.id}
+        await _nothing_left(engine, stories_before, story_id=strict.story_id)
+        (source_rating,) = await rows(
+            engine, "SELECT content_rating_id FROM stories WHERE id = :s", s=plain
+        )
+        named = await _import(
+            client,
+            engine,
+            plain_data,
+            metadata={"content_rating_id": str(source_rating.content_rating_id)},
+        )
+        assert named.ready, named.status
+
+
+@pytest.mark.part("M7", "FR-RATE-7")
+async def test_i_10__m7_inactive_reactivation(pg_url: str, tmp_path: Any) -> None:
+    """#251 (FR-RATE-7): forbidden content only in the bundle's dormant continuation (turn 2's
+    first variant) and its truncated tail (turn 3). Imported under Teen, whose policy forbids
+    it, the clean active history passes and the import is ready; but no imported inactive turn
+    carries this deployment's stamp, so untruncate, swap back to the dormant chain and promote
+    that chain into a fork are each held for #120's check (202) and ``refused`` with the
+    violation listed: no membership changes and no fork is created (the story count
+    unchanged)."""
+    from epistrel.core.seeds.ratings import EXPLICIT_ID, TEEN_ID
+    from tests.integration.test_rating_change import (
+        _count,
+        _edit,
+        _ended,
+        _held,
+        _memberships,
+        _played_story,
+        _truncated,
+    )
+    from tests.rating_change_support import guard_rating, rating_db
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import played
+
+    async with rating_db(pg_url) as s:
+        dragons = await guard_rating(s)
+        explicit = "A dragon lands on the roof."
+        story, ids = await _played_story(s, EXPLICIT_ID, "A cat purrs.", explicit)
+        await _truncated(s, story, 1)
+        s.lib.models.stub.script("generation", ["Wind."])
+        await played(s.client, story, respond_body(ids["Wren"]))
+        s.lib.models.stub.script("generation", [f"Again: {explicit}"])
+        await played(s.client, story, respond_body(ids["Wren"]))
+        await _truncated(s, story, 2)
+        source = await _memberships(s, story)
+        assert {(2, 1, "dormant"), (3, 1, "discarded")} <= set(source), source
+
+        data = await _exported(s.client, s.db, story, tmp_path)
+        made = await _import(s.client, s.db, data, metadata={"content_rating_id": TEEN_ID})
+        assert made.ready, made.status
+        imported = made.story_id
+        before = await _memberships(s, imported)
+        assert before == source
+        stories_before = await _count(s, "stories")
+
+        for path, payload in (
+            ("untruncate", None),
+            ("swap", {"to_variant_chain": {"turn": 2, "variant": 1}}),
+            ("fork", {"variant_chain": {"turn": 2, "variant": 1}}),
+        ):
+            job = await _held(await _edit(s, imported, path, payload), imported)
+            ended = await _ended(s, imported, job)
+            assert ended["status"] == "refused", (path, ended)
+            assert ended["violations"], (path, ended)
+            assert {v["policy_id"] for v in ended["violations"]} == {dragons.id}, path
+            assert "dragon lands" not in str(ended).lower()
+            assert await _memberships(s, imported) == before, path
+            assert await _count(s, "stories") == stories_before, path
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-PROF-7,8; FR-STORE-7")
+async def test_i_10__m7_profile_on_import(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251's profile gate, the slices #721 names: a Lite bundle imported under Full without
+    ``ignore_warnings`` answers ``{applied: false, impact}`` and creates nothing: no story
+    row, no ``bundle_jobs`` row, no ``story_import`` job and no staged file. With
+    ``upgrade_mode: forward_only`` it imports, attaches Full and ends ``ready`` and active
+    (not paused, no backfill), the gap reported. Complement: the default mode (``backfill``)
+    pauses it for a backfill."""
+    from epistrel.core.seeds.profiles import FULL_PRESET_ID
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        counted = {
+            "stories": "SELECT count(*) FROM stories",
+            "bundle_jobs": "SELECT count(*) FROM bundle_jobs WHERE kind = 'import'",
+            "jobs": "SELECT count(*) FROM jobs WHERE kind = 'story_import'",
+        }
+
+        async def counts() -> dict[str, int]:
+            return {name: await count(engine, sql) for name, sql in counted.items()}
+
+        staged = settings.bundle_dir / "imports"
+        files_before = set(staged.glob("*")) if staged.exists() else set()
+        before = await counts()
+        warned = await _started(client, data, {"engine_profile_id": FULL_PRESET_ID})
+        assert warned.status_code == 200, warned.text
+        assert warned.json()["applied"] is False
+        assert warned.json()["impact"]["warnings"]
+        assert await counts() == before
+        assert (set(staged.glob("*")) if staged.exists() else set()) == files_before
+
+        forward = await _import(
+            client,
+            engine,
+            data,
+            metadata={
+                "engine_profile_id": FULL_PRESET_ID,
+                "ignore_warnings": True,
+                "upgrade_mode": "forward_only",
+            },
+        )
+        assert forward.ready, forward.status
+        assert forward.status is not None
+        assert forward.status["report"]["profile"]["upgrade_mode"] == "forward_only"
+        (row,) = await rows(
+            engine,
+            "SELECT status, engine_profile_id FROM stories WHERE id = :s",
+            s=forward.story_id,
+        )
+        assert (row.status, str(row.engine_profile_id)) == ("active", FULL_PRESET_ID)
+        assert (
+            await count(
+                engine, "SELECT count(*) FROM story_backfills WHERE story_id = :s",
+                s=forward.story_id,
+            )
+            == 0
+        )
+        backfilled = await _import(
+            client,
+            engine,
+            data,
+            metadata={"engine_profile_id": FULL_PRESET_ID, "ignore_warnings": True},
+        )
+        assert backfilled.ready, backfilled.status
+        (paused,) = await rows(
+            engine, "SELECT status FROM stories WHERE id = :s", s=backfilled.story_id
+        )
+        assert paused.status == "paused"
+        async with engine.begin() as conn:
+            await conn.execute(
+                __import__("sqlalchemy").text(
+                    "DELETE FROM jobs WHERE kind = 'backfill' AND story_id = :s"
+                ),
+                {"s": backfilled.story_id},
+            )

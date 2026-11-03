@@ -722,6 +722,11 @@ async def _load_certifications(conn: AsyncConnection) -> None:
     await certification.load_committed(conn)
 
 
+LITE_NO_RECONCILIATION = "lite_no_reconciliation"
+"""#699: the warning on a Lite directed regeneration that named ``resolution_mode`` or
+``preview`` (Lite has no reconciliation to run them)."""
+
+
 class Engine:
     """The async entry point to Epistrel.
 
@@ -3039,9 +3044,17 @@ class Engine:
             token = lite.LITE_NUDGE.set(request.directive.text)
             try:
                 replay = request.model_copy(update={"directive": None})
-                return await self._regenerate(ctx, story_id, replay, principal)
+                played = await self._regenerate(ctx, story_id, replay, principal)
             finally:
                 lite.LITE_NUDGE.reset(token)
+            if {"resolution_mode", "preview"} & request.model_fields_set and isinstance(
+                played, RegenerateResult
+            ):
+                # #699 (FR-LITE-8): Lite keeps no canon, so the modes have nothing to settle.
+                from epistrel.orchestrator.lite.schemas import TurnWarning
+
+                played.warnings.append(TurnWarning(kind=LITE_NO_RECONCILIATION))
+            return played
         prepared = await directed.prepare(self.db, self.models, story_id, request.directive.text)
         if prepared.conflicting:
             overrides = request.model_dump(

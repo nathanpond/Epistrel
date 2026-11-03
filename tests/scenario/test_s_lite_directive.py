@@ -138,3 +138,141 @@ async def test_s_lite_directive(stub_settings: Settings, engine: AsyncEngine) ->
             s=story,
         )
         assert row.disposition == "directed_regeneration"
+
+
+async def _lite_story(client: Any, engine: AsyncEngine, **overrides: Any) -> tuple[str, str]:
+    from tests.respond_support import PLAYER, new_story
+
+    story, ids = await new_story(client, PLAYER, FIRST, overrides=overrides or None)
+    return story, ids[PLAYER]
+
+
+def _clock_parse(**clock: Any) -> str:
+    return json.dumps(
+        {
+            "classification": "durable",
+            "temporal_scope": "now",
+            "changes": [{"kind": "clock", **clock}],
+            "steer_text": "",
+        }
+    )
+
+
+@pytest.mark.part("M7", "FR-LITE-8; FR-DIRECT-1,2")
+async def test_s_lite_directive__dispatch(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#699 (#244's dispatch, clock, cap and hint clauses), on Lite stories:
+
+    - a character viewpoint is 403 ``omniscient_required``; an idempotent replay of a lasting
+      fact answers the same ``author_fact.id`` and writes nothing more;
+    - standing guidance ("always …") is a nudge with ``hints: [use_custom_instructions]``;
+    - with the prompt-only clock on, a time-only directive moves the clock at the slot and
+      records no author fact (``applied.author_fact: null``); a time of day the unanchored clock
+      cannot place is 422 ``clock_unanchored`` with nothing written; with the clock off the same
+      parse is a lasting fact holding the author's text, and no clock change is written;
+    - past ``lite_author_facts_max`` active facts, one more is 409 ``author_fact_limit``."""
+    from tests import clock_support as ck
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, actor = await _lite_story(client, engine)
+        await _turn(client, story, actor, stub)
+
+        forbidden = await client.post(
+            f"/stories/{story}/directives",
+            params={"viewpoint": f"character:{actor}"},
+            json={"text": RAIN},
+            headers=WRITE,
+        )
+        assert forbidden.status_code == 403, forbidden.text
+        stub.when("raining", NOW, purpose="directive_parse")
+        keyed = {**WRITE, "Idempotency-Key": "lite-fact-1"}
+        first = await client.post(
+            f"/stories/{story}/directives", params=rs.OMNISCIENT, json={"text": RAIN}, headers=keyed
+        )
+        assert first.status_code == 200, first.text
+        count = await rs.count(engine, "directives", story)
+        again = await client.post(
+            f"/stories/{story}/directives", params=rs.OMNISCIENT, json={"text": RAIN}, headers=keyed
+        )
+        assert again.status_code == 200, again.text
+        assert (
+            again.json()["applied"]["author_fact"]["id"]
+            == (first.json()["applied"]["author_fact"]["id"])
+        )
+        assert await rs.count(engine, "directives", story) == count
+
+        stub.when(
+            "Always",
+            json.dumps(
+                {
+                    "classification": "ephemeral",
+                    "steer_text": "Describe the weather.",
+                    "standing": True,
+                }
+            ),
+            purpose="directive_parse",
+        )
+        standing = await _directive(client, story, text="Always describe the weather.")
+        assert standing.status_code == 200, standing.text
+        assert standing.json()["disposition"] == "steer_queued"
+        assert standing.json()["hints"] == ["use_custom_instructions"]
+
+        # The prompt-only clock: a time-only directive moves it; no author fact.
+        clocked, clocked_actor = await _lite_story(client, engine, clock={"level": "prompt_only"})
+        await _turn(client, clocked, clocked_actor, stub)
+        stub.when("hour", _clock_parse(minutes=60), purpose="directive_parse")
+        moved = await _directive(client, clocked, text="An hour passes.")
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["applied"]["author_fact"] is None
+        assert len(moved.json()["applied"]["clock"]) == 1
+        stub.when("noon", _clock_parse(to="12:00"), purpose="directive_parse")
+        revision = await rs.revision(engine, clocked)
+        unplaced = await _directive(client, clocked, text="It is noon.")
+        assert unplaced.status_code == 422, unplaced.text
+        assert unplaced.json()["error"]["code"] == "clock_unanchored"
+        assert await rs.revision(engine, clocked) == revision
+        await ck.set_level(engine, clocked, None)
+        off = await _directive(client, clocked, text="An hour passes.")
+        assert off.status_code == 200, off.text
+        assert off.json()["applied"]["author_fact"]["text"] == "An hour passes."
+        assert off.json()["applied"]["clock"] == []
+
+        # The cap: lite_author_facts_max active facts.
+        put = await client.put("/admin/settings", json={"lite_author_facts_max": 2}, headers=WRITE)
+        assert put.status_code == 200, put.text
+        try:
+            stub.when("snow", NOW, purpose="directive_parse")
+            second = await _directive(client, story, text="It starts to snow.")
+            assert second.status_code == 200, second.text
+            capped = await _directive(client, story, text="More snow falls.")
+            assert capped.status_code == 409, capped.text
+            assert capped.json()["error"]["details"] == {"active": 2, "max": 2}
+        finally:
+            await client.put("/admin/settings", json={"lite_author_facts_max": 50}, headers=WRITE)
+
+
+@pytest.mark.part("M7", "FR-LITE-8; FR-DIRECT-1,2")
+async def test_s_lite_directive__regeneration(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#699 (#244's directed-regeneration clause): the directive is a nudge for that
+    regeneration only, with no parse and no reconciliation; naming ``resolution_mode`` or
+    ``preview`` answers the warning ``lite_no_reconciliation`` (none without them)."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, actor = await _lite_story(client, engine)
+        await _turn(client, story, actor, stub)
+        stub.calls.clear()
+        plain = await client.post(
+            f"/stories/{story}/regenerate", json={"directive": {"text": NUDGE}}, headers=WRITE
+        )
+        assert plain.status_code == 200, plain.text
+        assert plain.json().get("warnings", []) == []
+        assert NUDGE in _prompt(stub)
+        assert not [c for c in stub.calls if c.purpose == "directive_parse"]
+        warned = await client.post(
+            f"/stories/{story}/regenerate",
+            json={"directive": {"text": NUDGE}, "resolution_mode": "best_effort"},
+            headers=WRITE,
+        )
+        assert warned.status_code == 200, warned.text
+        assert [w["kind"] for w in warned.json()["warnings"]] == ["lite_no_reconciliation"]
+        assert await rs.count(engine, "rewrite_sessions", story) == 0

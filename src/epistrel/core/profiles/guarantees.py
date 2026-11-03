@@ -114,6 +114,9 @@ class GuaranteeRow:
     delivered_in: str | None = None
     in_story: bool = True
     note: str = ""
+    lite_form: str | None = None
+    """#699 (FR-LITE-8): the form a step takes under ``lite``, where it holds in a reduced form
+    (the published table's notes say "Lite form: …")."""
 
     @property
     def delivered(self) -> bool:
@@ -462,6 +465,20 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
             "The author's side-channel, never in a turn: a request's explicit kind overrides "
             "its classification, and a change to the past is previewed as a rewrite."
         ),
+        lite_form="the same parse classifies a Lite directive as a nudge or a lasting author "
+        "fact (FR-LITE-8); whether the model honours the fact in its reply is unmeasured",
+    ),
+    _row(
+        "author_directives",
+        "author directives",
+        D,
+        in_story=False,
+        note="The author's directions apply with author authority at the next inter-turn slot "
+        "(FR-DIRECT-1,2): facts are checked by the contradiction rules, and narrative canon "
+        "never supersedes them (FR-DIRECT-6).",
+        lite_form="prompt-only: a nudge for the next reply, or a lasting author fact in every "
+        "later prompt, following timeline membership; no contradiction checking (Lite keeps "
+        "no canon)",
     ),
     _row(
         "quality_judge",

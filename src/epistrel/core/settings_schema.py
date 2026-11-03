@@ -948,6 +948,9 @@ class RewriteSettings(BaseModel):
     )
     """#696: an unconsumed ephemeral directive (a steer) older than this is dropped
     (disposition ``expired``) by the ``rewrite_session_expiry`` sweep."""
+    lite_author_facts_max: Annotated[StrictInt, PROSPECTIVE] = Field(default=50, ge=1, le=1_000)
+    """#699 (FR-LITE-8): the most active lasting author facts a Lite story holds; one more is
+    409 ``author_fact_limit``."""
 
 
 DAY_S = 86_400

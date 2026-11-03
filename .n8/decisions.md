@@ -11730,3 +11730,33 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   - **Rewrites:** `parse._proposition` puts it in `refused_changes` (`external_owned`, `PAST`). A rewrite with only such changes is 422 with no session.
   - **Why it is never routed:** the provider registry maps no predicate to a provider or a write shape (#204's writes name State values). The verdict names "the game" as provider and the predicate as the value.
   **Issue:** #697
+
+### #699 — Lite directive follow-ups
+
+- **Decision:** a Lite lasting fact's `directive_applied` event now carries `lite: true`. The flag tells a Lite fact apart from a structured durable directive's event, which a Lite prompt also renders after a downgrade. The cap, the upgrade conversion and the structured rendering of kept facts all read it. Facts recorded before this change carry no flag, and they still render under Lite.
+  **Issue:** #699
+- **Decision (clock):** with the prompt-only clock on, a Lite directive's parsed `clock` changes advance the clock at the same slot through #226's writer. That path already gives 422 `clock_backward`/`clock_unanchored` with nothing written.
+  - **Time-only.** A directive whose only change is the clock, with an empty `steer_text`, records no author fact (`applied.author_fact: null`).
+  - **Clock off.** The clock changes are dropped and the text is the fact.
+  **Issue:** #699
+- **Decision (cap):** `RewriteSettings.lite_author_facts_max` (default 50, in `SettingsPatch` too, with `directive_steer_ttl_minutes`). The count runs in the slot's commit step under the story lock and excludes the slot's own staged event. The 409 is `author_fact_limit {active, max}`.
+  **Issue:** #699
+- **Decision (read set):** `author_facts` (the active `directive_applied` events and their texts) and `author_direction` (the unconsumed nudges) are appended to `READ_SET_MEMBERS`. A fact landing at a slot moves the revision, so the turn in flight regenerates. A nudge moves no revision, so the turn in flight commits as it is and the next turn carries the nudge.
+  **Why:** #226's settled steer rule says a steer attaches to the next turn whose assembly starts after it. #244's AC expected a nudge to regenerate the turn; the two plans conflict, and the shipped #226 behaviour is kept.
+  **Issue:** #699
+- **Decision (upgrade):**
+  - **Parse.** After extraction, an upgrade backfill parses each active Lite fact with `directive_parse`, using the bound target models and outside any transaction. The result goes to `report.author_fact_parses`.
+  - **Convert.** At completion, before `core.backfill.complete` and under the backfill operation flipped active and then dormant, the proposition changes are written as author-tier facts (`provenance = author`, `authority = author`) at the fact's slot. A cancelled or failed backfill writes none.
+  - **Report.** It lists `author_facts {converted, kept_as_text, ids}`. A later backfill skips the ids an earlier completed one converted.
+  - **Kept facts.** A fact kept as text reaches only the narrator, as an "Author facts" block in `TurnRead.director`. A character learns it only through its context (NFR-PRIV-4), including with partitions off.
+  - **Not built.** The cost estimate does not count the parse calls.
+  **Issue:** #699
+- **Decision (warning):** a Lite directed regeneration that names `resolution_mode` or `preview` answers warning `lite_no_reconciliation`.
+  **Issue:** #699
+- **Decision (guarantee table):** `GuaranteeRow` gains `lite_form`, rendered in the notes as "Lite form: …".
+  - A deterministic `author_directives` row is added.
+  - The `directive_parse` row gains the Lite form. The executor of #244 used `directive_parse` for Lite rather than a separate `lite_directive_parse` purpose, so no purpose row is added.
+  **Issue:** #699
+- **Decision (test ids):** the planned `test_lite_directive_dispatch` and `test_lite_directed_regeneration` are written as `test_s_lite_directive__dispatch` and `__regeneration`, and the upgrade case is `test_i_19__m7_author_facts` with I-19's existing M7 requirements.
+  **Why:** a new test id needs a §15 row, and S-LITE-DIRECTIVE and I-19 already own these requirements.
+  **Issue:** #699

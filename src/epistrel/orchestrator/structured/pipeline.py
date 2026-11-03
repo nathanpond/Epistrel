@@ -1106,6 +1106,10 @@ async def read_turn(
                 director.append(value.strip())
             elif isinstance(value, list):
                 director.extend(str(v) for v in value if isinstance(v, str) and v.strip())
+    kept = await author_directives.kept_author_facts(conn, story_id, turn)
+    if kept:
+        # #699: Lite lasting author facts an upgrade kept as text, the narrator's alone.
+        director.append(kept)
     return TurnRead(
         inputs=inputs,
         resolved=resolved,

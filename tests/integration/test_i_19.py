@@ -523,6 +523,103 @@ async def test_i_19__m7_conflict_value(stub_settings: Any, engine: AsyncEngine) 
 
 
 @pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
+async def test_i_19__m7_author_facts(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#699 (#244's upgrade clause): a Lite story holds two lasting author facts at a slot, one
+    ``directive_parse`` turns into a structured change ("Bobby is forty") and one it does not
+    ("The air smells of rain"). Switched to Full: the backfill converts the first into an
+    author-tier fact at the fact's slot (``provenance = author``) and keeps the second as text;
+    its report lists ``author_facts {converted: 1, kept_as_text: 1}``. The kept fact is in the
+    narrator's author notes from its position on, and the converted one is not (it is canon
+    now); a character render of the next turn carries neither."""
+    import json
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, actor, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        stub = lib.models.stub
+        assert stub is not None
+        forty = "Bobby is forty years old."
+        rain = "The air smells of rain."
+        for text_ in (forty, rain):
+            stub.when(
+                text_,
+                json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []}),
+                purpose="directive_parse",
+            )
+            made = await client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": text_},
+                headers=WRITE,
+            )
+            assert made.status_code == 200, made.text
+        # The upgrade's parse: forty is a structured change, the rain is not.
+        stub.reset()
+        lls.script(stub)
+        stub.when(
+            forty,
+            json.dumps(
+                {
+                    "classification": "durable",
+                    "temporal_scope": "now",
+                    "changes": [
+                        {
+                            "kind": "proposition",
+                            "subject": "Bobby",
+                            "predicate": "age",
+                            "literal": 40,
+                        }
+                    ],
+                }
+            ),
+            purpose="directive_parse",
+        )
+        stub.when(
+            rain,
+            json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []}),
+            purpose="directive_parse",
+        )
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        (report,) = await rows(
+            engine, "SELECT report FROM story_backfills WHERE id = :b", b=done["id"]
+        )
+        summary = report.report["author_facts"]
+        assert (summary["converted"], summary["kept_as_text"]) == (1, 1)
+        authored = await rows(
+            engine,
+            "SELECT f.provenance::text AS p, f.authority::text AS a, pr.literal FROM facts f "
+            "JOIN propositions pr ON pr.id = f.proposition_id "
+            "WHERE f.story_id = :s AND f.authority = 'author' AND f.membership = 'active'",
+            s=story,
+        )
+        assert [(a.p, a.a, a.literal["value"]) for a in authored] == [("author", "author", 40)]
+        stub.reset()
+        played = await client.post(
+            f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE
+        )
+        assert played.status_code == 200, played.text
+        prompts = [
+            "\n".join(m.content for m in c.messages)
+            for c in stub.calls
+            if c.purpose == "generation"
+        ]
+        # A character render never carries the kept fact (NFR-PRIV-4: a character learns it only
+        # through its context); the narrator's author notes do (``TurnRead.director``).
+        assert prompts
+        assert not any(rain in p for p in prompts)
+        from epistrel.orchestrator.directives import kept_author_facts
+
+        async with engine.connect() as conn:
+            block = await kept_author_facts(conn, story, 10**6)
+        assert rain in block
+        assert forty not in block
+
+
+@pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
 async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> None:
     """#232: a 400-turn Lite story upgraded to Full (backfilled), then switched back to Lite:
     the downgrade applies at once (no pause, no structured backfill), reports

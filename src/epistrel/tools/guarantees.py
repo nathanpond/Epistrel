@@ -306,7 +306,14 @@ def render(spec_path: Path = SPEC_PATH) -> str:
         for row in GUARANTEES
     ]
     lines += ["", "## Notes", ""]
-    lines += [f"- `{row.id}`: {row.note}" for row in GUARANTEES if row.note]
+    lines += [
+        f"- `{row.id}`: "
+        + " ".join(
+            x for x in (row.note, f"Lite form: {row.lite_form}." if row.lite_form else "") if x
+        )
+        for row in GUARANTEES
+        if row.note or row.lite_form
+    ]
     lines += ["", "## Outside the guarantee: voice and plot", ""]
     lines += OUTSIDE.splitlines()
     lines += ["", "## Per profile", ""]

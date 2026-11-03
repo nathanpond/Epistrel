@@ -47,6 +47,7 @@ from epistrel.core.enums import (
     StateChangeSource,
 )
 from epistrel.core.errors import (
+    AuthorFactLimit,
     DirectiveAmbiguous,
     DirectiveNoChanges,
     DirectiveSplitRequired,
@@ -441,6 +442,8 @@ async def _apply_now(
     *,
     principal: str,
     routed: Sequence[tuple[Any, Any]] = (),
+    lite_fact: str | None = None,
+    fact_limit: int | None = None,
 ) -> tuple[DirectiveApplied, str, int]:
     """One inter-turn slot operation applying every change (see the module docstring); #242:
     each ``routed`` change of a game-owned value is written as an ``intended`` outbox row the
@@ -505,6 +508,14 @@ async def _apply_now(
 
     async def step(conn: AsyncConnection) -> None:
         position = slot_position(op)
+        if lite_fact and fact_limit is not None:
+            # #699: the cap, under the story lock (concurrent requests cannot both pass it).
+            active = await lite_fact_count(conn, story_id, excluding=op.operation_id)
+            if active >= fact_limit:
+                raise AuthorFactLimit(
+                    "the story holds the most lasting author facts it may",
+                    {"active": active, "max": fact_limit},
+                )
         if routed:
             applied["outbox_ids"] = await _route_writes(
                 conn, op, story_id, directive_id, routed, position.slot_k, principal=principal
@@ -605,7 +616,12 @@ async def _apply_now(
         async with op:
             op.append(
                 "directive_applied",
-                {"directive_id": directive_id, "text": request.text, "changes": payload},
+                {
+                    "directive_id": directive_id,
+                    "text": request.text if lite_fact is None else lite_fact,
+                    "changes": payload,
+                    **({"lite": True} if lite_fact else {}),
+                },
                 provenance=Provenance.CONSUMER,
             )
             op.add_commit_step(step)
@@ -707,15 +723,31 @@ async def apply_directive(
     if lite and classification != "ephemeral" and result.temporal_scope != "past":
         # #244 (FR-LITE-8): a lasting author fact (a past one is a Lite rewrite, #245, routed
         # below like a structured story's).
-        fact = (result.steer_text or "").strip() or request.text
+        from epistrel.core import world_clock
+
+        clock = [c for c in result.changes if c.kind == "clock"]
+        async with db.connect() as conn:
+            clock_on = await world_clock.clock_level(conn, story_id) is not None
+        # #699: with the prompt-only clock on, the parse's clock advance moves it in the same
+        # slot (422 ``clock_backward``/``clock_unanchored``, nothing written); off, it is
+        # dropped and the text is the fact.
+        advances = [{"minutes": c.minutes, "to": c.to} for c in clock] if clock and clock_on else []
+        time_only = (
+            bool(advances)
+            and not (result.steer_text or "").strip()
+            and all(c.kind == "clock" for c in result.changes)
+        )
+        fact = "" if time_only else (result.steer_text or "").strip() or request.text
         noted, at, moved = await _apply_now(
             db,
             story_id,
             directive_id,
-            request.model_copy(update={"text": fact}),
-            _Normalized(),
+            request.model_copy(update={"text": fact}) if fact else request,
+            _Normalized(clock=advances),
             payload,
             principal=principal,
+            lite_fact=fact,
+            fact_limit=settings.lite_author_facts_max,
         )
         return DirectiveResult(
             directive_id,
@@ -723,9 +755,14 @@ async def apply_directive(
             "applied",
             position=at,
             applied=noted.model_copy(
-                update={"author_fact": {"id": directive_id, "position": at, "text": fact}}
+                update={
+                    "author_fact": {"id": directive_id, "position": at, "text": fact}
+                    if fact
+                    else None
+                }
             ),
             timeline_revision=moved,
+            hints=(USE_CUSTOM_INSTRUCTIONS,) if result.standing else (),
         )
     if classification == "ephemeral":
         steer = result.steer_text.strip() or request.text
@@ -945,6 +982,81 @@ async def author_facts(conn: AsyncConnection, story_id: str, before_turn: int) -
     ]
 
 
+async def lite_fact_count(
+    conn: AsyncConnection, story_id: str, *, excluding: str | None = None
+) -> int:
+    """#699: the story's active Lite lasting author facts (``directive_applied`` events marked
+    ``lite`` whose slot operation is on the active chain), ``excluding`` an operation's own
+    (the slot being written, whose event is already staged in its transaction)."""
+    from sqlalchemy import func
+
+    from epistrel.core.membership import active_operation
+    from epistrel.core.tables import operations
+
+    o, e = operations.c, events.c
+    found = await conn.scalar(
+        select(func.count())
+        .select_from(events.join(operations, o.operation_id == e.operation_id))
+        .where(
+            e.story_id == story_id,
+            e.type == "directive_applied",
+            e.payload["lite"].as_boolean().is_(True),
+            active_operation(operations),
+            *([e.operation_id != excluding] if excluding is not None else []),
+        )
+    )
+    return int(found or 0)
+
+
+async def lite_facts(conn: AsyncConnection, story_id: str) -> list[tuple[str, int, int, str]]:
+    """#699: the active Lite lasting author facts in narrative order: ``(event id, turn,
+    slot, text)``."""
+    from epistrel.core.membership import active_operation
+    from epistrel.core.tables import operations
+
+    o, e = operations.c, events.c
+    rows = await conn.execute(
+        select(e.id, o.narrative_turn, o.slot_k, e.payload)
+        .join(operations, o.operation_id == e.operation_id)
+        .where(
+            e.story_id == story_id,
+            e.type == "directive_applied",
+            e.payload["lite"].as_boolean().is_(True),
+            active_operation(operations),
+        )
+        .order_by(o.narrative_turn, o.slot_k, e.seq)
+    )
+    return [
+        (str(r.id), int(r.narrative_turn or 0), int(r.slot_k or 0), str(r.payload.get("text")))
+        for r in rows
+        if str(dict(r.payload or {}).get("text", "")).strip()
+    ]
+
+
+async def kept_author_facts(conn: AsyncConnection, story_id: str, before_turn: int) -> str:
+    """#699: under the structured pipeline, the Lite lasting author facts an upgrade kept as
+    text (no completed backfill converted them), set before ``before_turn``: the narrator's
+    "Author facts" block (a character learns them only through its context, NFR-PRIV-4)."""
+    from epistrel.core.tables import story_backfills
+
+    facts = [f for f in await lite_facts(conn, story_id) if f[1] < before_turn]
+    if not facts:
+        return ""
+    converted: set[str] = set()
+    for (report,) in await conn.execute(
+        select(story_backfills.c.report).where(
+            story_backfills.c.story_id == story_id, story_backfills.c.status == "completed"
+        )
+    ):
+        converted.update(str(i) for i in dict(report or {}).get("author_facts", {}).get("ids", []))
+    kept = [
+        f"(after turn {turn}) {text.strip()}" for i, turn, _, text in facts if i not in converted
+    ]
+    if not kept:
+        return ""
+    return lite_notes((), kept)
+
+
 def lite_notes(steers: Sequence[tuple[str, str]], facts: Sequence[str]) -> str:
     """#244: the Lite prompt's author blocks, as author notes."""
     blocks: list[str] = []
@@ -973,6 +1085,9 @@ __all__ = [
     "apply_directive",
     "author_facts",
     "consume_steers",
+    "kept_author_facts",
+    "lite_fact_count",
+    "lite_facts",
     "lite_notes",
     "precheck",
     "queued_steers",

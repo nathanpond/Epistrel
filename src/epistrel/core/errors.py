@@ -1598,6 +1598,14 @@ class SteerBudgetExceeded(EpistrelError):
     http_status = 409
 
 
+class AuthorFactLimit(EpistrelError):
+    """A Lite story already holds ``lite_author_facts_max`` active lasting author facts (#699,
+    FR-LITE-8): 409; nothing is written. ``details``: ``active`` and ``max``."""
+
+    code = "author_fact_limit"
+    http_status = 409
+
+
 class AuthorityConflict(EpistrelError):
     """A write of a lower authority tier would supersede a fact a higher tier holds (#226,
     FR-DIRECT-6): narrative canon never supersedes the author's locked canon. Internal: the

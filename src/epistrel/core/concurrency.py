@@ -76,12 +76,17 @@ READ_SET_MEMBERS: tuple[str, ...] = (
     "director_notes",
     "time",
     "tracked_values",
+    "author_facts",
+    "author_direction",
 )
 """The Lite read set (FR-CONC-4: the assembled prompt's inputs); a story created from a
 scenario adds its two rendered blocks (``scenario_text``, ``director_notes``: each the block's
 text, hashed; #122); the prompt-only clock and States add what their sections show (``time``,
 ``tracked_values``: #662, read by ``core.lite_context``, the prompt's own reader; empty unless
-the story runs the Lite pipeline with that module on). Members are appended, never
+the story runs the Lite pipeline with that module on); #699 adds the author blocks
+(``author_facts``: the ``directive_applied`` events on the active chain, ids and texts, a Lite
+fact or a downgraded durable directive; ``author_direction``: the unconsumed nudges), so a fact
+or a nudge landing while a turn generates makes it regenerate. Members are appended, never
 reordered. Guardrail and policy sets are
 not members: they belong to #64's configuration dependency set, which is re-checked. Neither is
 the configuration (the generation settings, the window): a turn captures it at its start and
@@ -432,6 +437,36 @@ async def _tracked_values(conn: AsyncConnection, story_id: str, spec: LiteReadSe
     return list(found.tracked_values)
 
 
+async def _author_facts(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """#699: the lasting author facts a Lite prompt carries (``directive_applied`` events on
+    the active chain): ``[event id, text]`` in narrative order."""
+    o, e = operations.c, events.c
+    found = await conn.execute(
+        select(e.id, e.payload)
+        .join(operations, o.operation_id == e.operation_id)
+        .where(e.story_id == story_id, e.type == "directive_applied", _committed_active(story_id))
+        .order_by(o.narrative_turn, o.slot_k, e.seq)
+    )
+    return [[str(r.id), str(dict(r.payload or {}).get("text", ""))] for r in found]
+
+
+async def _author_direction(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """#699: the unconsumed nudges (``steer_queued`` directives) the next prompt carries."""
+    from epistrel.core.tables import directives
+
+    d = directives.c
+    found = await conn.execute(
+        select(d.id)
+        .where(
+            d.story_id == story_id,
+            d.disposition == "steer_queued",
+            d.consumed_by_operation_id.is_(None),
+        )
+        .order_by(d.created_at, d.id)
+    )
+    return [str(r.id) for r in found]
+
+
 for _name, _loader in (
     ("window", _window),
     ("segments", _segments),
@@ -443,6 +478,8 @@ for _name, _loader in (
     ("director_notes", _director_notes),
     ("time", _time),
     ("tracked_values", _tracked_values),
+    ("author_facts", _author_facts),
+    ("author_direction", _author_direction),
 ):
     register_read_set_member(_name, _loader)
 

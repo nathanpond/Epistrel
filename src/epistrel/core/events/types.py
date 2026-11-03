@@ -1114,6 +1114,9 @@ class DirectiveAppliedEvent(EventPayload):
     directive_id: str
     text: str
     changes: tuple[dict[str, Any], ...] = ()
+    lite: bool = False
+    """#699: a Lite story's lasting author fact (FR-LITE-8): its ``text`` is the fact the Lite
+    prompt carries, and an upgrade converts it (or keeps it as text)."""
 
 
 @register("rewrite_question", category=EventCategory.AUDIT)

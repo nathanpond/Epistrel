@@ -38952,6 +38952,13 @@
             "title": "Listing Status Values",
             "type": "array"
           },
+          "lite_author_facts_max": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Lite Author Facts Max",
+            "type": "integer"
+          },
           "lite_summary_chunk": {
             "default": 10,
             "maximum": 200.0,
@@ -40185,6 +40192,17 @@
             ],
             "title": "Dependency Search Max Results"
           },
+          "directive_steer_ttl_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directive Steer Ttl Minutes"
+          },
           "embedding_batch_max": {
             "anyOf": [
               {
@@ -40411,6 +40429,17 @@
               }
             ],
             "title": "Listing Status Values"
+          },
+          "lite_author_facts_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Author Facts Max"
           },
           "lite_summary_chunk": {
             "anyOf": [
@@ -48573,6 +48602,7 @@
                           "idempotency_result_window",
                           "job_retention_days",
                           "listing_status_values",
+                          "lite_author_facts_max",
                           "lite_generation_defaults",
                           "lite_generation_defaults.length",
                           "lite_generation_defaults.temperature",
@@ -75409,7 +75439,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `steer_budget_exceeded`, `story_paused`."
+            "description": "Conflict; nothing was written: `author_fact_limit`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `steer_budget_exceeded`, `story_paused`."
           },
           "422": {
             "content": {

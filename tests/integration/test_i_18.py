@@ -1308,7 +1308,8 @@ async def test_i_18__m7_read_set(
 @pytest.mark.part("M7", "FR-CONC-4")
 def test_i_18__m7_members() -> None:
     """#662 (FR-CONC-4): the full Lite read-set member tuple, the M2/M3 members leading in order
-    and #662's ``time`` and ``tracked_values`` appended (#244 appends after them); a name that is
+    and #662's ``time`` and ``tracked_values`` appended, then #699's ``author_facts`` and
+    ``author_direction``; a name that is
     no member still cannot be registered."""
     assert READ_SET_MEMBERS == (
         "window",
@@ -1321,6 +1322,8 @@ def test_i_18__m7_members() -> None:
         "director_notes",
         "time",
         "tracked_values",
+        "author_facts",
+        "author_direction",
     )
     with pytest.raises(ValueError, match="not a Lite read-set member"):
         register_read_set_member("guardrails", lambda conn, story, spec: None)  # type: ignore[arg-type,return-value]
@@ -1486,3 +1489,71 @@ async def test_i_18__m7_skip_replay(
         )
         assert TIME_ESTIMATE_SKIPPED in report.turn_report["degradation"]
         assert report.turn_report["clock"]["skips_refused"] == [{"reason": "unestimated"}]
+
+
+@pytest.mark.part("M7", "FR-CONC-4")
+async def test_i_18__m7_author_read_set(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#699 (FR-CONC-4, FR-LITE-8): a Lite turn regenerates when, while it generates, a lasting
+    author fact lands at a slot: two generation calls, the attempt names ``author_facts``, and
+    the second prompt carries the fact. A nudge queued meanwhile moves no revision: the turn in
+    flight commits as it is and the next turn carries the nudge (#226's steer rule; the
+    ``author_direction`` member keeps the hash honest when the revision moves for another
+    reason). Complement: a fact landing on another story leaves the turn committing with one
+    call."""
+    import json
+
+    from epistrel.orchestrator.lite.pipeline import LITE_NUDGE  # noqa: F401 - the Lite path
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST)
+        other, _ = await new_story(client, PLAYER, FIRST)
+        monkeypatch.setattr(state_api, "turn_slot", _no_slot)
+        now = json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []})
+        actor = ids[PLAYER]
+        await played(client, story, body(actor, "Hello?"))
+
+        def fact(where: str, text: str) -> Any:
+            async def post() -> Any:
+                stub.when(text, now, purpose="directive_parse")
+                return await client.post(
+                    f"/stories/{where}/directives",
+                    params={"viewpoint": "omniscient"},
+                    json={"text": text},
+                    headers=WRITE,
+                )
+
+            return post
+
+        def nudge() -> Any:
+            return client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": "Make it quiet.", "kind": "ephemeral"},
+                headers=WRITE,
+            )
+
+        calls, attempts = await _held(
+            client, engine, stub, story, actor, fact(story, "It starts raining.")
+        )
+        assert len(calls) == 2
+        regenerated = [a for a in attempts if a["outcome"] == "regenerate"]
+        assert regenerated, attempts
+        assert "author_facts" in regenerated[0]["touched"], attempts
+        assert "It starts raining." not in system_of(calls[0])
+        assert "It starts raining." in system_of(calls[1])
+        # A nudge moves no revision, so the turn in flight commits as it is (#226: a steer
+        # attaches to the next turn whose assembly starts after it); the next turn carries it.
+        calls, attempts = await _held(client, engine, stub, story, actor, nudge)
+        assert len(calls) == 1
+        assert "Make it quiet." not in system_of(calls[0])
+        stub.reset()
+        await played(client, story, body(actor, "And now?"))
+        assert "Make it quiet." in system_of(generation_calls(stub)[-1])
+        calls, attempts = await _held(
+            client, engine, stub, story, actor, fact(other, "Snow on the other story.")
+        )
+        assert len(calls) == 1
+        assert all(a["outcome"] != "regenerate" for a in attempts), attempts

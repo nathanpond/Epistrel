@@ -285,7 +285,23 @@ async def events_at(
         held = latest.get(found.event_id)
         if held is None or _order(found) > _order(held):
             latest[found.event_id] = found
-    return sorted(latest.values(), key=lambda e: (e.planned, e.event_id))
+    return sorted(
+        [await _placed_through_merge(conn, story_id, e) for e in latest.values()],
+        key=lambda e: (e.planned, e.event_id),
+    )
+
+
+async def _placed_through_merge(
+    conn: AsyncConnection, story_id: str, event: ScheduledEvent
+) -> ScheduledEvent:
+    """#713 (FR-PROP-7): an event placed at an entity an author's merge took in is placed at
+    the entity the merge kept, read through the merge (the stored row keeps its id)."""
+    if event.place_id is None:
+        return event
+    from epistrel.core.canon.facts import merge_survivor
+
+    kept = await merge_survivor(conn, story_id, event.place_id)
+    return event if kept == event.place_id else replace(event, place_id=kept)
 
 
 async def event_at(

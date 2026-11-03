@@ -270,11 +270,63 @@ async def stays_consistent(
     return True
 
 
+MERGE_CONTRADICTION = "merge_contradiction"
+"""#713: the conflict reason of a merged entity's fact the survivor's canon contradicts."""
+
+
+async def merge_contradictions(
+    conn: AsyncConnection, story_id: str, entity_ids: Sequence[str]
+) -> list[dict[str, Any]]:
+    """#713 (FR-PROP-7): the merged entities' current facts that contradict the survivor's
+    canon once they speak of one entity: each merged entity's fact (as its subject), restated
+    of the survivor, through #140's check; a ``contradicted`` one is an irreducible conflict
+    (``rewrite``: the fact is versioned to the value the survivor's cited fact holds; or
+    ``keep``)."""
+    from epistrel.core.canon import facts as canon
+    from epistrel.orchestrator.rewrite.plan import _conflict_id
+
+    survivor, *others = entity_ids
+    registry = await load(conn, story_id)
+    lookup = KeyedLookup(conn, StructuredReadSet())
+    found: list[dict[str, Any]] = []
+    for other in others:
+        for fact in await canon.canon(conn, story_id, subject=other):
+            claim = fact.proposition.model_copy(update={"subject_id": survivor})
+            if claim.object_id == other:
+                continue
+            verdict = await check_with(lookup, story_id, claim, registry=registry)
+            if verdict.kind is not VerdictKind.CONTRADICTED:
+                continue
+            cited = next((e.fact_id for e in verdict.evidence if e.fact_id is not None), None)
+            agree = None if cited is None else await _current(conn, story_id, cited)
+            key = f"merge:{survivor}:{other}"
+            found.append(
+                {
+                    "record": {"table": "facts", "id": fact.id},
+                    "edge_type": "presupposes",
+                    "edges": [],
+                    "change_key": key,
+                    "target": {"kind": "fact", "id": cited or fact.id},
+                    "action": "fix",
+                    "conflict_id": _conflict_id(key, "facts", fact.id),
+                    "reason": MERGE_CONTRADICTION,
+                    "severity": "high",
+                    "options": ["rewrite", "keep"] if agree is not None else ["keep"],
+                    "agree_with": None if agree is None else agree.id,
+                    "excerpt": None,
+                    "before_excerpt": None,
+                }
+            )
+    return found
+
+
 __all__ = [
     "HYPOTHETICAL",
+    "MERGE_CONTRADICTION",
     "decision_supported",
     "hypothetical_records",
     "inference_follows",
+    "merge_contradictions",
     "premises_support",
     "proposition_of",
     "stays_consistent",

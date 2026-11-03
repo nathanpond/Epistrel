@@ -414,7 +414,16 @@ async def prepare(
         action, auto, guidance = chosen.get(key, (least_change(conflict), True, None))
         before = texts.get(record)
         after: str | None = None
-        if action == "rewrite" and record[0] == "amendment_parts":
+        if action == "rewrite" and conflict.get("reason") == "merge_contradiction":
+            # #713: the merged entity's fact takes the value the survivor's canon holds.
+            async with db.connect() as conn:
+                agreed = await _merge_agreed(conn, story_id, record[1], conflict)
+            if agreed is None:
+                action = "keep"
+            else:
+                prepared.parts.append(("resolutions", agreed, {"record": conflict["record"]}))
+                after = "rewritten"
+        elif action == "rewrite" and record[0] == "amendment_parts":
             # #711: B is rewritten into this undo's parts and stays active; what cannot be
             # rewritten is cascade-undone, so B never stays contradicting restored canon.
             rewrites = await _rewrite_dependent(
@@ -499,6 +508,36 @@ async def prepare(
     for entity in plan.get("preview", {}).get("new_entities") or []:
         prepared.notifications.append({"kind": "new_entity", "name": entity.get("name")})
     return prepared
+
+
+async def _merge_agreed(
+    conn: AsyncConnection, story_id: str, fact_id: str, conflict: Mapping[str, Any]
+) -> Any:
+    """#713: a ``version`` part of a merged entity's fact with the object (or literal) of the
+    survivor's fact it contradicted; ``None`` when either is gone."""
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.canon.errors import FactNotFound
+
+    agree = conflict.get("agree_with")
+    if not isinstance(agree, str):
+        return None
+    try:
+        mine, mine_current = await canon._load(conn, story_id, fact_id)
+        theirs, theirs_current = await canon._load(conn, story_id, agree)
+    except FactNotFound:
+        return None
+    if not (mine_current and theirs_current):
+        return None
+    held = theirs.proposition
+    agreed = mine.proposition.model_copy(
+        update={
+            "object_id": held.object_id,
+            "literal": held.literal,
+            "object_set": held.object_set,
+            "polarity": held.polarity,
+        }
+    )
+    return RecordPartDraft("facts", mine.id, "replace", {"proposition": agreed})
 
 
 async def _rewrite_dependent(

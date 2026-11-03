@@ -41,6 +41,9 @@ def least_change(conflict: Mapping[str, Any]) -> str:
     table = conflict["record"]["table"]
     if conflict.get("reason") == "decision_effects":
         return "keep"  # #225: the effects stay committed; the prose is never regenerated
+    if conflict.get("reason") == "merge_contradiction":
+        # #713: the merged entity's fact is versioned to agree with the survivor's canon.
+        return "rewrite" if "rewrite" in (conflict.get("options") or []) else "keep"
     if table == "amendment_parts":
         return "cascade_undo"
     if table in ("events", "memories"):

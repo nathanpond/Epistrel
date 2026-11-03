@@ -782,6 +782,13 @@ async def open_merge(
         )
         revision = int((await _story(conn, story_id)).timeline_revision)
         plan = await planner.plan(conn, story, parsed, base_revision=revision)
+        from epistrel.orchestrator.rewrite import hypothetical
+
+        # #713: what the merged entities' facts say against the survivor's canon.
+        plan.irreducible = [
+            *plan.irreducible,
+            *await hypothetical.merge_contradictions(conn, story_id, ids),
+        ]
         parsed.questions.extend(dispose(plan.irreducible, mode, threshold).questions)
         locked = await _story(conn, story_id, lock=True)
         from epistrel.core import pause
@@ -1389,6 +1396,16 @@ async def _plan_sourced(
         plan.irreducible = [
             *plan.irreducible,
             *await _directed_conflicts(conn, stored["directed"], plan),
+        ]
+    if stored.get("merge") is not None:
+        from epistrel.orchestrator.rewrite import hypothetical
+
+        # #713: what the merged entities' facts say against the survivor's canon.
+        plan.irreducible = [
+            *plan.irreducible,
+            *await hypothetical.merge_contradictions(
+                conn, story_id, list(stored["merge"]["entity_ids"])
+            ),
         ]
     asked = dispose(plan.irreducible, mode, threshold).questions
     if stored.get("undo") is not None:

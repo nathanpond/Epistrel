@@ -1180,6 +1180,7 @@ async def _profiles(
 ) -> dict[str, ProfileView]:
     """The profiles of ``entities_by_id`` (known entities) as of ``turn`` for ``ctx``: the one
     builder ``profile_view`` and ``profile_views`` share, so both answer identical views."""
+    from epistrel.core.canon.facts import merged_classes
     from epistrel.core.propositions.registry import load
 
     wanted = list(entities_by_id)
@@ -1188,23 +1189,47 @@ async def _profiles(
     registry = await load(conn, story_id)
     omniscient = ctx.viewpoint == OMNISCIENT
     current = _current(registry, ctx, turn)
+    # #713 (FR-PROP-7): a profile answers for the entity and every entity an author's merge
+    # made one with it; their rows read as the profiled entity's.
+    one_of: dict[str, str] = {}
+    for e, members_of in (await merged_classes(conn, story_id, wanted)).items():
+        for member in members_of:
+            one_of.setdefault(member, e)
+    members = list(one_of)
+
+    def through(row: dict[str, Any], *columns: str) -> dict[str, Any]:
+        return {
+            **row,
+            **{
+                c: one_of[str(row[c])]
+                for c in columns
+                if row[c] is not None and str(row[c]) in one_of
+            },
+        }
 
     rel_rows = [
-        dict(r._mapping)
+        through(dict(r._mapping), "subject_id", "object_id")
         for r in await conn.execute(
             select(relationships).where(
                 relationships.c.story_id == story_id,
-                or_(relationships.c.subject_id.in_(wanted), relationships.c.object_id.in_(wanted)),
+                or_(
+                    relationships.c.subject_id.in_(members),
+                    relationships.c.object_id.in_(members),
+                ),
             )
         )
     ]
-    rel_rows = [r for r in rel_rows if current(r, str(r["predicate_id"]))]
+    rel_rows = [
+        r
+        for r in rel_rows
+        if current(r, str(r["predicate_id"])) and r["subject_id"] != r["object_id"]
+    ]
     place_rows = [
-        dict(r._mapping)
+        through(dict(r._mapping), "entity_id", "container_id")
         for r in await conn.execute(
             select(placement).where(
                 placement.c.story_id == story_id,
-                or_(placement.c.entity_id.in_(wanted), placement.c.container_id.in_(wanted)),
+                or_(placement.c.entity_id.in_(members), placement.c.container_id.in_(members)),
             )
         )
     ]

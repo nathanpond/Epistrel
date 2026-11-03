@@ -321,7 +321,21 @@ async def definitions(
     if View(view) is View.ACTIVE:
         where.append(active_only(state_definitions))
     found = await conn.execute(select(state_definitions).where(*where).order_by(d.name))
-    return [_definition_of(r) for r in found]
+    return [await _through_merge(conn, story_id, _definition_of(r)) for r in found]
+
+
+async def _through_merge(
+    conn: AsyncConnection, story_id: str, found: StateDefinition
+) -> StateDefinition:
+    """#713 (FR-PROP-7): a State tracking an entity an author's merge took in tracks the
+    entity the merge kept, read through the merge (the stored row keeps its id, so an undone
+    merge reads as before)."""
+    if found.entity_id is None:
+        return found
+    from epistrel.core.canon.facts import merge_survivor
+
+    kept = await merge_survivor(conn, story_id, found.entity_id)
+    return found if kept == found.entity_id else found.model_copy(update={"entity_id": kept})
 
 
 async def definition(
@@ -344,7 +358,9 @@ async def definition(
         raise StateNotFound(
             f"the story has no State {name!r}", {"story_id": story_id, "state": name}
         )
-    return _definition_of(row)
+    if lock:
+        return _definition_of(row)  # a write's read: the stored ids, never a merge's
+    return await _through_merge(conn, story_id, _definition_of(row))
 
 
 def _change_of(kind_of: StateType, row: Any) -> ChangeRow:

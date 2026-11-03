@@ -23,6 +23,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.enums import OperationKind
 from tests import rewrite_support as rs
 from tests import testimony_support as ts
 from tests.auth_support import auth_settings
@@ -212,3 +213,239 @@ async def test_s_entity_identity__m7_places(
         )
         assert undone.status_code == 201, undone.text
         assert (await at(inn), await at(tavern)) == before
+
+
+@pytest.mark.part("M7", "FR-PROP-7; FR-DIRECT-8")
+async def test_s_entity_identity__m7_read_through(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#713 (#481's read-through clause): "the tavern" and "the inn" are two places; the
+    tavern is named "The Prancing Pony" and lies in the market town, the inn is named
+    "Crossroads Inn"; a State tracks the inn and a scheduled event is placed at it. Merging the
+    inn into the tavern (``synchronous``) asks about the inn's name, which contradicts the
+    tavern's under one entity (``merge_contradiction``, recommended ``rewrite``); answered and
+    applied, the inn's name is versioned to "The Prancing Pony". After the merge the State
+    tracks the tavern, the event is placed at the tavern and both profiles answer the market
+    town (no stored row rewritten); retrieval about the inn reads the tavern's canon. Undone,
+    the State and the event read the inn again."""
+    from epistrel.core.propositions.model import Interval, Proposition, TypedLiteral
+    from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_AT
+    from tests import clock_support as ck
+    from tests import perception_support as ps
+    from tests import state_support as ss
+    from tests.canon_support import commit
+    from tests.story_support import READ
+    from tests.structured_turn_support import structured_story
+
+    name = CORE_BY_NAME["name"].id
+
+    def named(entity: str, text: str) -> Proposition:
+        return Proposition(
+            subject_id=entity,
+            predicate_id=name,
+            literal=TypedLiteral(kind="str", value=text),
+            valid_time=Interval.of(None, None),
+        )
+
+    async with respond_client(stub_settings, engine) as (client, _epistrel):
+        story, _ids = await structured_story(client, "Wren", "Maren")
+        tavern = await ps.place_entity(engine, story, "the tavern")
+        inn = await ps.place_entity(engine, story, "the inn")
+        town = await ps.place_entity(engine, story, "the market town")
+        author: dict[str, Any] = {"kind": OperationKind.CONTROL, "provenance": "author"}
+        await commit(engine, story, named(tavern, "The Prancing Pony"), **author)
+        inn_name = await commit(engine, story, named(inn, "Crossroads Inn"), **author)
+        await commit(
+            engine,
+            story,
+            Proposition(
+                subject_id=tavern,
+                predicate_id=LOCATED_AT,
+                object_id=town,
+                valid_time=Interval.of(None, None),
+            ),
+            **author,
+        )
+        await ss.set_level(engine, story, "on")
+        await ck.set_clock(engine, story, "on")
+        made = await client.post(
+            f"/stories/{story}/states",
+            json={"definition": {"name": "rooms", "type": "number", "entity_id": inn}},
+            headers=WRITE,
+        )
+        assert made.status_code == 201, made.text
+        planned = await client.post(
+            f"/stories/{story}/scheduled-events",
+            json={"proposition": "the coach", "planned": 600, "place": inn},
+            headers=WRITE,
+        )
+        assert planned.status_code == 201, planned.text
+
+        async def tracked() -> str:
+            found = await client.get(
+                f"/stories/{story}/states/rooms/definition",
+                params={"viewpoint": "omniscient"},
+                headers=READ,
+            )
+            assert found.status_code == 200, found.text
+            return str(found.json()["definition"]["entity_id"])
+
+        async def placed() -> str:
+            found = await client.get(
+                f"/stories/{story}/scheduled-events",
+                params={"viewpoint": "omniscient"},
+                headers=READ,
+            )
+            assert found.status_code == 200, found.text
+            (event,) = found.json()["events"]
+            return str(event["place_id"])
+
+        assert (await tracked(), await placed()) == (inn, inn)
+
+        opened = await client.post(
+            f"/stories/{story}/entities/merge",
+            params=rs.OMNISCIENT,
+            json={"entity_ids": [tavern, inn]},
+            headers=WRITE,
+        )
+        assert opened.status_code == 201, opened.text
+        session = opened.json()
+        (conflict,) = [
+            c
+            for c in session["preview"]["blast_radius"]["irreducible"]
+            if c["reason"] == "merge_contradiction"
+        ]
+        assert conflict["record"] == {"table": "facts", "id": inn_name.id}
+        answered = await rs.answer_all(client, story, session)
+        assert answered.status_code == 200, answered.text
+        ready = answered.json()
+        applied = await rs.apply(client, story, ready["id"], ready["base_revision"])
+        assert applied.status_code == 200, applied.text
+        amendment = applied.json()["amendment_id"]
+
+        (now_named,) = await rows(
+            engine,
+            "SELECT p.literal FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND f.subject_id = :i AND f.predicate_id = :n "
+            "AND f.superseded_by IS NULL AND f.membership = 'active'",
+            s=story,
+            i=inn,
+            n=name,
+        )
+        assert now_named.literal["value"] == "The Prancing Pony"
+        assert (await tracked(), await placed()) == (tavern, tavern)
+        for one in (tavern, inn):
+            profile = await client.get(
+                f"/stories/{story}/entities/{one}/profile",
+                params={"viewpoint": "omniscient"},
+                headers=READ,
+            )
+            assert profile.status_code == 200, profile.text
+            assert profile.json()["placement"]["location"]["entity_id"] == town
+        found = await client.get(
+            f"/stories/{story}/retrieve",
+            params={"q": "Where is the inn?", "viewpoint": "omniscient"},
+            headers=READ,
+        )
+        assert found.status_code == 200, found.text
+        retrieved = found.json()
+        assert {inn, tavern} <= set(retrieved["resolution"]["entities"])
+        assert any(
+            c["subject_id"] == tavern and c["object_id"] == town for c in retrieved["canon"]
+        ), retrieved["canon"]
+        stored = await rows(
+            engine, "SELECT entity_id FROM state_definitions WHERE story_id = :s", s=story
+        )
+        assert {str(r.entity_id) for r in stored if r.entity_id is not None} == {inn}
+
+        undone = await client.post(
+            f"/stories/{story}/amendments/{amendment}/undo",
+            params=rs.OMNISCIENT,
+            json={"resolution_mode": "best_effort", "preview": "apply_directly"},
+            headers=WRITE,
+        )
+        assert undone.status_code == 201, undone.text
+        assert (await tracked(), await placed()) == (inn, inn)
+
+
+@pytest.mark.part("M7", "FR-PROP-7; FR-DIRECT-8")
+@pytest.mark.parametrize("seed", range(5))
+async def test_s_entity_identity__m7_merge_undo(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None, seed: int
+) -> None:
+    """#713 (#481's property): over seeded random canon for two places (names, which may
+    contradict under one entity, and placements among a few towns), a merge applied
+    ``best_effort`` and then undone restores both entities' current canon exactly."""
+    import random
+
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.propositions.model import Interval, Proposition, TypedLiteral
+    from epistrel.core.propositions.vocabulary import CORE_BY_NAME, LOCATED_AT
+    from tests import perception_support as ps
+    from tests.canon_support import commit
+    from tests.structured_turn_support import structured_story
+
+    rng = random.Random(seed)  # noqa: S311 - a seeded test sequence
+    name = CORE_BY_NAME["name"].id
+    async with respond_client(stub_settings, engine) as (client, _epistrel):
+        story, _ids = await structured_story(client, "Wren", "Maren")
+        a = await ps.place_entity(engine, story, "the tavern")
+        b = await ps.place_entity(engine, story, "the inn")
+        towns = [await ps.place_entity(engine, story, f"town {n}") for n in range(3)]
+        author: dict[str, Any] = {"kind": OperationKind.CONTROL, "provenance": "author"}
+        for entity in (a, b):
+            if rng.random() < 0.8:
+                label = rng.choice(["The Pony", "Crossroads", "The Bell"])
+                await commit(
+                    engine,
+                    story,
+                    Proposition(
+                        subject_id=entity,
+                        predicate_id=name,
+                        literal=TypedLiteral(kind="str", value=label),
+                        valid_time=Interval.of(None, None),
+                    ),
+                    **author,
+                )
+            if rng.random() < 0.8:
+                await commit(
+                    engine,
+                    story,
+                    Proposition(
+                        subject_id=entity,
+                        predicate_id=LOCATED_AT,
+                        object_id=rng.choice(towns),
+                        valid_time=Interval.of(None, None),
+                    ),
+                    **author,
+                )
+
+        async def held() -> set[tuple[Any, ...]]:
+            async with engine.connect() as conn:
+                found: set[tuple[Any, ...]] = set()
+                for entity in (a, b):
+                    for f in await canon.canon(conn, story, subject=entity):
+                        p = f.proposition
+                        found.add(
+                            (
+                                entity,
+                                p.predicate_id,
+                                p.object_id,
+                                None if p.literal is None else p.literal.value,
+                                p.polarity.value,
+                            )
+                        )
+                return found
+
+        before = await held()
+        merged = await _merge(client, story, [a, b])
+        assert merged.status_code == 201, merged.text
+        amendment = merged.json()["apply"]["amendment_id"]
+        undone = await client.post(
+            f"/stories/{story}/amendments/{amendment}/undo",
+            params=rs.OMNISCIENT,
+            json={"resolution_mode": "best_effort", "preview": "apply_directly"},
+            headers=WRITE,
+        )
+        assert undone.status_code == 201, undone.text
+        assert await held() == before

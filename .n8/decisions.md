@@ -11663,3 +11663,20 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
 - **Decision:** `valid_from`/`valid_to` are story minutes: an int, or its digits as a string. They bound a `value` or `choose` resolution, and an open bound keeps the statement's own. A window always writes a new fact, even for a statement whose value the pass already wrote. A window that ends before it starts is 422 `invalid_resolution`. The resolution records `value` and the window in `choice`.
   **Why:** the AC names neither the window's unit nor date strings. Minutes are the unit #221's parts and the clock use; ISO dates would need the anchor, which a Lite story being upgraded may not have.
   **Issue:** #708
+
+### #713 — entity merge read-through
+
+- **Decision:** reads answer through a merge, and no history row is rewritten.
+  - **The survivor.** `canon.merge_survivor` names the entity a merge kept: the subject of its active `same_as` part, followed from the merged side.
+  - **States and events.** A State's `entity_id` and a scheduled event's `place_id` are shown as the survivor by `states.definitions`/`definition` and `stops.events_at`. A `definition(..., lock=True)` read, which is a write's read, keeps the stored id, so a later definition version never bakes the merge in.
+  - **Profiles.** A profile answers for the whole merge class (`merged_classes`, one read per batch, so #451's constant statement count holds). Rows of the merged entities read as the profiled one.
+  - **Retrieval.** It already expanded canon `same_as` identities (#171's `identities_for`). The new test asserts it.
+  **Issue:** #713
+- **Decision:** the functional-contradiction report runs #140's check on each merged entity's current fact, restated of the survivor, against the survivor's canon. A `contradicted` fact is an irreducible conflict, `merge_contradiction`, with options `rewrite | keep`.
+  - **`rewrite` (recommended):** versions the merged entity's fact to the cited survivor fact's value.
+  - **`keep`:** records `kept_inconsistent`.
+  - **Where it is planned:** in `open_merge` and in the sourced re-plan (`_plan_sourced`).
+  **Why:** the AC says "reported through #224's conflict resolution", and #140's rules decide contradiction everywhere else.
+  **Issue:** #713
+- **Decision:** the merge-then-undo property runs as five seeded random cases on Postgres (`test_s_entity_identity__m7_merge_undo`), not as Hypothesis examples. This is the pattern of `test_clock_monotonic__postgres`: each example is a whole story, and Hypothesis's shrinking cannot run across the async database fixtures.
+  **Issue:** #713

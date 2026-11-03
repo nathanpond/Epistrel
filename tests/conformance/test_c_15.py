@@ -1196,7 +1196,7 @@ def test_c_15__api_surface(dummy_dsn: str) -> None:
     later = {
         (row["item"], row["milestone"]) for row in table["routes"] if row["status"] != "present"
     }
-    assert {milestone for _, milestone in later} == {"M7", "M8"}
+    assert {milestone for _, milestone in later} == {"M8"}
     assert c03.parity_gaps(Engine, app, c03._steps()) == []
     assert schema_problems(app.openapi(), app) == []
 

@@ -33,12 +33,17 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import StoryPaused
-from epistrel.core.tables import rating_check_jobs, stories, story_backfills
+from epistrel.core.tables import (
+    backfill_conflicts,
+    rating_check_jobs,
+    stories,
+    story_backfills,
+)
 
 RATING_CHECK = "rating_check"
 """The ``cause`` of a pause by a rating tightening's history check."""
@@ -47,6 +52,9 @@ REACTIVATION_CHECK = "reactivation_check"
 REACTIVATION_KIND = "reactivation"
 BACKFILL = "backfill"
 """The ``cause`` of a pause by a backfill (#228)."""
+BACKFILL_CONFLICTS = "backfill_conflicts"
+"""The ``cause`` while a backfill waits for its conflicts to be resolved (#230)."""
+BACKFILL_CONFLICTS_STATUS = "paused_for_conflicts"
 """``rating_check_jobs.kind`` of a reactivation check."""
 
 _holding: ContextVar[str | None] = ContextVar("epistrel_pause_holding", default=None)
@@ -81,12 +89,28 @@ async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
             await conn.execute(select(story_backfills).where(story_backfills.c.id == row.paused_by))
         ).one_or_none()
         if backfill is not None:
-            return {
+            found: dict[str, Any] = {
                 "story_id": story_id,
                 "job_id": backfill.job_id or backfill.id,
                 "cause": BACKFILL,
                 "progress": backfill_progress(backfill),
             }
+            if str(backfill.status) == BACKFILL_CONFLICTS_STATUS:
+                # #230: the backfill finished its pass and waits for the author.
+                found["cause"] = BACKFILL_CONFLICTS
+                found["backfill_id"] = str(backfill.id)
+                found["conflicts_open"] = int(
+                    await conn.scalar(
+                        select(func.count())
+                        .select_from(backfill_conflicts)
+                        .where(
+                            backfill_conflicts.c.backfill_id == backfill.id,
+                            backfill_conflicts.c.status == "open",
+                        )
+                    )
+                    or 0
+                )
+            return found
     progress = dict(row.progress or {}) if row is not None else {}
     return {
         "story_id": story_id,
@@ -121,6 +145,7 @@ async def paused_error(conn: AsyncConnection, story_id: str) -> StoryPaused:
         RATING_CHECK: "its rating is checked",
         REACTIVATION_CHECK: "the turns an edit would reactivate are checked",
         BACKFILL: "its structured data is backfilled",
+        BACKFILL_CONFLICTS: "its backfill's conflicts wait to be resolved",
     }[found["cause"]]
     return StoryPaused(f"story {story_id} is paused while {what}; try again when it resumes", found)
 

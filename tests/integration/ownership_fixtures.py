@@ -784,6 +784,10 @@ async def _no_session(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> 
     return {"session_id": NO_SUCH}
 
 
+async def _no_conflict(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"cid": NO_SUCH}
+
+
 async def _no_amendment(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     return {"amendment_id": NO_SUCH}
 
@@ -830,6 +834,10 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/backfill"): Call(404),
     ("DELETE", f"{S}/backfill"): Call(404),
     ("POST", f"{S}/backfill"): Call(409, {}),  # a story with no turn has nothing to backfill
+    # #230: no backfill, so no conflict to resolve.
+    ("POST", f"{S}/backfill/conflicts/{{cid}}"): Call(
+        404, {"accept_recommendation": True}, prepare=_no_conflict
+    ),
     # #233: a certification run's estimate (the harness installed; nothing written).
     ("POST", f"{S}/certification-runs"): Call(
         200, CERTIFICATION_RUN, prepare=_harness, cleanup=_no_harness

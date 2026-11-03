@@ -368,6 +368,130 @@ async def test_i_19__m7_last_mention_default(stub_settings: Any, engine: AsyncEn
         )
 
 
+async def _policy_story(
+    client: httpx.AsyncClient, engine: AsyncEngine, lib: Engine, policy: str | None
+) -> tuple[str, str]:
+    """A long Lite story (Bobby thirty at turn 100, thirty-five at 400) under ``policy``,
+    switched to Full: its backfill run through its pass."""
+    story, actor, _ = await _story(client, engine, lib, 2 * lls.LATE)
+    if policy is not None:
+        await ok(
+            await client.patch(
+                f"/stories/{story}/settings",
+                json={"backfill_conflict_policy": policy},
+                headers=WRITE,
+            )
+        )
+    await ok(await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202)
+    await run_backfill(engine, story)
+    return story, actor
+
+
+async def _claims(engine: AsyncEngine, story: str) -> list[int]:
+    """The turns of the in-world claims (false utterances) the backfill recorded."""
+    found = await rows(
+        engine,
+        "SELECT narrative_turn FROM utterances WHERE story_id = :s "
+        "AND objective_relation = 'false' AND membership = 'active' ORDER BY narrative_turn",
+        s=story,
+    )
+    return [int(r.narrative_turn) for r in found]
+
+
+def _current(ages: list[Any]) -> set[Any]:
+    return {a.literal["value"] for a in ages if a.current and a.narrative_turn >= lls.EARLY}
+
+
+@pytest.mark.part("M7", "FR-PROF-10")
+async def test_i_19__m7_conflicts(stub_settings: Any, engine: AsyncEngine) -> None:
+    """The story's ``backfill_conflict_policy`` settles Bobby thirty at turn 100 against
+    thirty-five at 400 (#230): ``last_mention`` makes thirty-five canon and turn 100's line an
+    in-world claim, ``first_mention`` keeps thirty and makes turn 400's the claim. Under ``ask``
+    the pass ends ``paused_for_conflicts`` with the conflict listed (its recommended answer the
+    turn-400 statement) and the story paused: respond is 409 ``story_paused`` (``cause:
+    backfill_conflicts``) and records nothing; a second resolve is ``backfill_conflict_closed``.
+    Accepting the recommendation completes the backfill and resumes the story. Resumed with
+    ``ignore_warnings`` instead, the conflict is ``uncertain`` and the backfill completes. The
+    transcript is untouched in every branch."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        last, _ = await _policy_story(client, engine, lib, None)
+        assert 35 in _current(await _ages(engine, last))
+        assert await _claims(engine, last) == [lls.EARLY]
+
+        first, _ = await _policy_story(client, engine, lib, "first_mention")
+        ages = await _ages(engine, first)
+        assert _current(ages) == {30}
+        assert await _claims(engine, first) == [lls.LATE]
+        (conflict,) = await rows(
+            engine, "SELECT resolution FROM backfill_conflicts WHERE story_id = :s", s=first
+        )
+        assert conflict.resolution["policy"] == "first_mention"
+
+        asked, actor = await _policy_story(client, engine, lib, "ask")
+        before = await _transcript(engine, asked)
+        shown = await ok(await client.get(f"/stories/{asked}/backfill", headers=READ))
+        assert shown["status"] == "paused_for_conflicts"
+        (listed,) = shown["conflict_list"]
+        assert [s["turn"] for s in listed["statements"]] == [lls.EARLY, lls.LATE]
+        assert listed["recommended"]["choose"] == listed["statements"][-1]["statement_id"]
+        assert listed["statements"][0]["quote"] == lls.THIRTY
+        counts = await _counts(engine, asked)
+        refused = await client.post(
+            f"/stories/{asked}/respond", json=respond_body(actor), headers=WRITE
+        )
+        assert refused.status_code == 409, refused.text
+        details = refused.json()["error"]["details"]
+        assert (details["cause"], details["conflicts_open"]) == ("backfill_conflicts", 1)
+        assert await _counts(engine, asked) == counts
+        held = await ok(await client.post(f"/stories/{asked}/backfill", json={}, headers=WRITE))
+        assert (held["applied"], held["conflicts_open"]) == (False, 1)
+        wrong = await client.post(
+            f"/stories/{asked}/backfill/conflicts/{listed['id']}",
+            json={"choose": "nonesuch:0-0"},
+            headers=WRITE,
+        )
+        assert wrong.status_code == 422, wrong.text
+        assert wrong.json()["error"]["code"] == "invalid_resolution"
+        done = await ok(
+            await client.post(
+                f"/stories/{asked}/backfill/conflicts/{listed['id']}",
+                json={"accept_recommendation": True},
+                headers=WRITE,
+            )
+        )
+        assert done["backfill"] == {"status": "completed", "conflicts_open": 0}
+        assert done["conflict"]["resolution"]["via"] == "recommendation"
+        assert 35 in _current(await _ages(engine, asked))
+        assert await _claims(engine, asked) == [lls.EARLY]
+        again = await client.post(
+            f"/stories/{asked}/backfill/conflicts/{listed['id']}",
+            json={"accept_recommendation": True},
+            headers=WRITE,
+        )
+        assert again.status_code == 409, again.text
+        assert again.json()["error"]["code"] == "backfill_not_awaiting_conflicts"
+        assert await _transcript(engine, asked) == before
+        played = await client.post(
+            f"/stories/{asked}/respond", json=respond_body(actor), headers=WRITE
+        )
+        assert played.status_code == 200, played.text
+
+        resumed, _ = await _policy_story(client, engine, lib, "ask")
+        moved = await ok(
+            await client.post(
+                f"/stories/{resumed}/backfill", json={"ignore_warnings": True}, headers=WRITE
+            )
+        )
+        assert (moved["applied"], moved["conflicts_made_uncertain"]) == (True, 1)
+        (row,) = await rows(
+            engine, "SELECT status FROM backfill_conflicts WHERE story_id = :s", s=resumed
+        )
+        assert row.status == "uncertain"
+        assert (await ok(await client.get(f"/stories/{resumed}/backfill", headers=READ)))[
+            "status"
+        ] == "completed"
+
+
 async def test_backfill__gap_fill(stub_settings: Any, engine: AsyncEngine) -> None:
     """``POST /stories/{id}/backfill`` without ``ignore_warnings`` answers the preview and writes
     no backfill; with it, 202 and a backfill; once it completes, the story has no gap left: 409

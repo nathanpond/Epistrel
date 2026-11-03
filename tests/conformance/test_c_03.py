@@ -70,6 +70,7 @@ from epistrel.api.routes.admin.stories import (
     RebuildResponse,
 )
 from epistrel.api.routes.backfill import BackfillCancelledBody, GapFillBody
+from epistrel.api.routes.backfill import ResolvedBody as ConflictResolvedBody
 from epistrel.api.routes.catalog_characters import (
     CharacterDraftBody,
     CharacterListBody,
@@ -187,6 +188,7 @@ from epistrel.api.routes.timeline import (
 from epistrel.config import Settings
 from epistrel.core import outbox as core_outbox
 from epistrel.core.backfill import BackfillRequest
+from epistrel.core.backfill.conflicts import ResolveRequest as ConflictResolution
 from epistrel.core.catalog.characters import (
     CharacterCreate,
     CharacterPatch,
@@ -1373,6 +1375,25 @@ def _steps() -> list[Step]:
             "cancel_backfill",
             lambda ids: Rest("DELETE", f"{s}/backfill"),
             lambda e, ids: _cancelled(e.cancel_backfill(CTX, ids["story"])),
+        ),
+        # #230: a backfill waiting for one conflict (planted: no public call pauses a Lite
+        # story for conflicts): accepting the recommendation completes it.
+        Step(
+            "resolve_backfill_conflict",
+            lambda ids: Rest(
+                "POST",
+                f"{s}/backfill/conflicts/{ids['conflict']}",
+                {"accept_recommendation": True},
+            ),
+            lambda e, ids: _conflict_resolved(
+                e.resolve_backfill_conflict(
+                    CTX,
+                    ids["story"],
+                    ids["conflict"],
+                    ConflictResolution(accept_recommendation=True),
+                )
+            ),
+            prepare=_awaiting_conflict,
         ),
         Step(
             "archive_story",
@@ -3715,6 +3736,67 @@ async def _coverage_gap(engine: Engine, ids: Ids) -> None:
         await conn.execute(
             text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
             {"s": ids["story"]},
+        )
+
+
+async def _conflict_resolved(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ConflictResolvedBody.of(await call))
+
+
+async def _awaiting_conflict(engine: Engine, ids: Ids) -> None:
+    """A backfill of the story paused for one open conflict (#230), both statements already in
+    canon (so resolving writes nothing but the resolution) and no speaker (no in-world claim)."""
+    story = ids["story"]
+    backfill, operation, conflict = new_ulid(), new_ulid(), new_ulid()
+    ids["conflict"] = conflict
+    statements = [
+        {
+            "statement_id": f"{n}:0-0",
+            "event_id": None,
+            "turn": n,
+            "beat": 1,
+            "position": n,
+            "speaker": None,
+            "source": "transcript",
+            "value": n,
+            "fact_id": new_ulid(),
+        }
+        for n in (1, 2)
+    ]
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO operations (operation_id, story_id, kind, principal, status, "
+                "membership_tx, committed_at) VALUES (:o, :s, 'backfill', :p, 'committed', "
+                "transaction_timestamp(), transaction_timestamp())"
+            ),
+            {"o": operation, "s": story, "p": PRINCIPAL},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO story_backfills (id, story_id, operation_id, status, kind, "
+                "capabilities, range_from_turn, range_to_turn, requested_by) VALUES "
+                "(:b, :s, :o, 'paused_for_conflicts', 'gap_fill', '{}', 1, 1, :p)"
+            ),
+            {"b": backfill, "s": story, "o": operation, "p": PRINCIPAL},
+        )
+        await conn.execute(
+            text("UPDATE stories SET status = 'paused', paused_by = :b WHERE id = :s"),
+            {"b": backfill, "s": story},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO backfill_conflicts (id, backfill_id, story_id, subject, "
+                "statements, status) VALUES (:c, :b, :s, CAST(:subject AS jsonb), "
+                "CAST(:statements AS jsonb), 'open')"
+            ),
+            {
+                "c": conflict,
+                "b": backfill,
+                "s": story,
+                "subject": json.dumps({"entity_id": None, "predicate": "age"}),
+                "statements": json.dumps(statements),
+            },
         )
 
 

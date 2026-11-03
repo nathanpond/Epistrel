@@ -246,6 +246,10 @@ ERROR_STATUS: dict[str, int] = {
     "backfill_in_progress": 409,
     "checkpoint_incomplete": 409,
     "nothing_to_backfill": 409,
+    "backfill_conflict_not_found": 404,
+    "backfill_conflict_closed": 409,
+    "backfill_not_awaiting_conflicts": 409,
+    "invalid_resolution": 422,
     "certification_run_in_progress": 409,
     "already_corrected": 409,
     "revision_conflict": 409,
@@ -600,6 +604,14 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Backfill (#228): a gap fill, its read and its cancel.
     "start_backfill": ("backfill_in_progress", "nothing_to_backfill", "story_archived"),
     "get_backfill": ("backfill_not_found",),
+    # #230: a conflict's resolution.
+    "resolve_backfill_conflict": (
+        "backfill_not_found",
+        "backfill_conflict_not_found",
+        "backfill_not_awaiting_conflicts",
+        "backfill_conflict_closed",
+        "invalid_resolution",
+    ),
     "cancel_backfill": ("backfill_not_found", "backfill_not_cancellable"),
     # Certifications (#233): runs need the eval harness; one run per fingerprint at a time.
     "request_certification_run_profile": (

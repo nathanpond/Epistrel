@@ -368,8 +368,8 @@
     {
       "item": "per story — conflict resolution",
       "method": "POST",
-      "path": "/stories/{id}/backfill/conflicts/{cid}",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill/conflicts/{cid}",
+      "status": "present",
       "milestone": "M7"
     },
     {

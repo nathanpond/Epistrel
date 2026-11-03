@@ -1730,6 +1730,37 @@ class NothingToBackfill(EpistrelError):
     http_status = 409
 
 
+class BackfillConflictNotFound(EpistrelError):
+    """No conflict of that id belongs to the story's backfill (#230)."""
+
+    code = "backfill_conflict_not_found"
+    http_status = 404
+
+
+class BackfillConflictClosed(EpistrelError):
+    """The conflict is not open: resolved, or left uncertain (#230): ``details``:
+    ``conflict_id``, ``status``."""
+
+    code = "backfill_conflict_closed"
+    http_status = 409
+
+
+class BackfillNotAwaitingConflicts(EpistrelError):
+    """The story's backfill is not paused for conflicts (#230): ``details``: ``backfill_id``,
+    ``status``."""
+
+    code = "backfill_not_awaiting_conflicts"
+    http_status = 409
+
+
+class InvalidResolution(EpistrelError):
+    """A conflict resolution names no statement of the conflict, or a value that does not
+    normalize for its predicate (#230)."""
+
+    code = "invalid_resolution"
+    http_status = 422
+
+
 class CheckpointNotFound(EpistrelError):
     """No committed checkpoint is at that turn, slot or variant (#222)."""
 

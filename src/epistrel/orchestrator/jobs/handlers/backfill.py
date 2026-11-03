@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import backfill as core_backfill
 from epistrel.core import pause
+from epistrel.core.backfill import conflicts as backfill_conflicts
 from epistrel.core.backfill import coverage, reconcile
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.ids import ULID_PATTERN, new_ulid
@@ -331,9 +332,17 @@ async def _begin(ctx: JobContext, row: Any) -> JobOutput | None:
             return JobOutput(
                 result={"backfill_id": str(row.id), "waiting": "turn"}, requeue_in=WAIT_S
             )
-        revision = await conn.scalar(
-            select(stories.c.timeline_revision).where(stories.c.id == story_id)
-        )
+        found = (
+            await conn.execute(
+                select(stories.c.timeline_revision, stories.c.settings).where(
+                    stories.c.id == story_id
+                )
+            )
+        ).one()
+        revision = found.timeline_revision
+        # #230: the conflict policy is read when the backfill starts; a change while it runs
+        # affects the next one.
+        policy = dict(row.report or {}).get("policy") or _policy(found.settings)
         operation_id = new_ulid()
         now = func.transaction_timestamp()
         await conn.execute(
@@ -354,10 +363,32 @@ async def _begin(ctx: JobContext, row: Any) -> JobOutput | None:
                 status="extracting",
                 operation_id=operation_id,
                 started_at=datetime.now(UTC),
-                report={**dict(row.report or {}), "timeline_revision": int(revision or 0)},
+                report={
+                    **dict(row.report or {}),
+                    "timeline_revision": int(revision or 0),
+                    "policy": policy,
+                },
             )
         )
     return None
+
+
+def _policy(settings: Any) -> str:
+    """The story's ``backfill_conflict_policy`` (a story created before #230 may hold it under
+    ``settings.inactive``; without it, ``last_mention``)."""
+    found = dict(settings or {})
+    value = found.get("backfill_conflict_policy")
+    if value is None:
+        inactive = dict(found.get("inactive") or {}).get("backfill_conflict_policy")
+        value = inactive.get("value") if isinstance(inactive, dict) else None
+    return str(value) if value in reconcile.POLICIES else reconcile.LAST_MENTION
+
+
+async def complete_now(conn: AsyncConnection, row: Any) -> None:
+    """#230: the completion transaction a resolve or resume runs in its request."""
+    from epistrel.core.profiles.story import apply_held
+
+    await core_backfill.complete(conn, row, apply_target=apply_held, after_complete=_after_complete)
 
 
 async def _restart_if_moved(ctx: JobContext, row: Any) -> bool:
@@ -443,6 +474,15 @@ async def _complete(ctx: JobContext, row: Any) -> None:
             )
         ).one_or_none()
         if locked is None or locked.status != "reconciling":
+            return
+        if await backfill_conflicts.open_count(conn, str(locked.id)):
+            # #230 (``ask``): the pass is done; the story stays paused for the author.
+            await conn.execute(
+                update(story_backfills)
+                .where(story_backfills.c.id == locked.id)
+                .values(status=backfill_conflicts.AWAITING)
+            )
+            log.info("backfill awaits its conflicts", backfill_id=str(locked.id))
             return
         await core_backfill.complete(
             conn, locked, apply_target=apply_held, after_complete=_after_complete
@@ -564,4 +604,12 @@ BACKFILL_HANDLER = JobHandler(
     records_operation=False,
 )
 
-__all__ = ["BACKFILL_HANDLER", "BackfillPayload", "bind", "bound", "configure", "start_job"]
+__all__ = [
+    "BACKFILL_HANDLER",
+    "BackfillPayload",
+    "bind",
+    "bound",
+    "complete_now",
+    "configure",
+    "start_job",
+]

@@ -11387,3 +11387,24 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #229, #306
 - **Decision (process):** the plan comment was posted after the code, a deviation from the skill. The fail-first run against the pre-change code was not done: the routes and fields the test asserts did not exist before.
   **Issue:** #229
+
+### #230 — backfill conflict policies, 2026-11-02
+
+- **Decision:** `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`) is now a `StorySettings` field, prospective. Its `SETTING_CAPABILITIES` entry is `None`, so every story gets it, like #240's. Migration 0122 promotes an inactive value. The backfill reads it at `_begin` into `report.policy`, also reading `settings.inactive` for an unmigrated row.
+  **Issue:** #230
+- **Decision (deviation from discretion):** while conflicts are open, `stories.status` stays `paused` (paused_by = the backfill) and only `story_backfills.status` is `paused_for_conflicts`. The 409 details carry `cause: backfill_conflicts`, `backfill_id` and `conflicts_open`. A new `StoryStatus` value would have touched every `is_paused` caller and the erasure block for no observable difference. A `paused_for_conflicts` backfill frees its #229 queue slot.
+  **Issue:** #230
+- **Decision:** `ask` handling.
+  - The pass does not write the contradicting later statement. Each key gets one open row per backfill, and later statements join it rather than opening one row per overlap window.
+  - Until the conflict is resolved, the earlier value the pass wrote stays the provisional value. It is dormant, as every backfill row is until completion, so nothing is visible. The issue's "no canon for the overlap while open" is therefore met only through dormancy.
+  - On an `ignore_warnings` resume, the earlier value stays canon. When the target runs commitment, an open thunk lists the values; the overlap itself is not closed.
+  - Resolution writes the chosen statement under the backfill operation with provenance `author` when the pass never wrote it.
+  **Issue:** #230
+- **Decision:** in-world claims are `utterances` rows (`objective_relation = false`, `classification = sincere_error`, `belief_relation = unknown`) for losing statements a character spoke. The lie/sincere-error split against the speaker's partition is not computed. Statements carry no text: the listing quotes `transcript_messages` (capped at 500), and extraction keeps no span (`statement_id = <event_id>:0-0`).
+  **Issue:** #230
+- **Decision (not built):** the `value` resolution accepts only a value one of the statements states; normalizing a new value and the `valid_from`/`valid_to` windows are refused. No `audit_log` row is written. The tests plant #228's Bobby-age contradiction instead of the car colours.
+  **Issue:** #230
+- **Decision:** there is no `Engine.resume_backfill`. The resume is `Engine.start_backfill` (`POST /stories/{id}/backfill`) on a backfill awaiting conflicts, because C-02/C-03 refuse a library method without a route of its own. C-03's resolve step plants a `paused_for_conflicts` backfill (no public call pauses a Lite story for conflicts).
+  **Issue:** #230
+- **Decision (Rule 1):** C-01's fuzzing sent `version: 2147483648` to `POST /engine-profiles/{id}/certification-runs` and got a 500 (integer out of range). `CertificationRunRequest.version` now has `le=2**31 - 1`.
+  **Issue:** #230 (found while running C-01; #233's route)

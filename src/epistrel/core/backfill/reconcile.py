@@ -9,9 +9,15 @@ through the live writers and under the backfill operation at each turn's own pos
 - **facts** (the structured pipeline or verification gained): ``canon.commit_fact`` per
   proposition, citing its message's event. A functional key's value that differs from the one
   the backfill last wrote for it, with no narrated change (the claim's ``time``), is a
-  **contradiction**: under the default policy ``last_mention`` the later statement is canon for
-  the overlap (``commit_fact`` closes the earlier version), and a ``backfill_conflicts`` row
-  records both statements, ``resolved``, ``{policy: last_mention}`` (#230 adds the others);
+  **contradiction**, settled by the story's ``backfill_conflict_policy`` (#230, read at the
+  backfill's start into ``report.policy``): ``last_mention`` (the default) makes the later
+  statement canon for the overlap (``commit_fact`` closes the earlier version), and
+  ``first_mention`` keeps the earlier one (the later is not written); either way a
+  ``backfill_conflicts`` row records the statements, ``resolved``, ``{policy}``, and the losing
+  statement, when a character spoke it, is recorded as an in-world claim (an ``utterances`` row,
+  ``objective_relation = false``, ``sincere_error``). Under ``ask`` the later statement is not
+  written: the row is ``open`` (a further contradicting statement of the key joins it) and
+  ``core.backfill.conflicts`` settles it;
 - **episodic memories** (the structured pipeline gained, with ``episodic`` on in the target
   configuration): ``memory.records.write_episodic``, one per observable message, trust tier
   ``backfill`` (the lowest);
@@ -42,12 +48,12 @@ from epistrel.core.enums import ExposureFidelity, RecordProvenance
 from epistrel.core.epistemic.exposure import Exposed, record_exposures
 from epistrel.core.errors import ErasedSubjectReferenced
 from epistrel.core.ids import new_ulid
-from epistrel.core.membership import Position
+from epistrel.core.membership import Position, insert_derived
 from epistrel.core.memory import records as memories
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Cardinality, Proposition
 from epistrel.core.propositions.registry import Registry
-from epistrel.core.tables import backfill_conflicts, facts, transcript_messages
+from epistrel.core.tables import backfill_conflicts, facts, transcript_messages, utterances
 
 FACT_CAPABILITIES = frozenset({"pipeline", "verification"})
 """Gained capabilities whose data is canon facts."""
@@ -56,6 +62,9 @@ MEMORY_CAPABILITIES = frozenset({"pipeline"})
 ``episodic`` module on (a behavioral module, so never in coverage itself; the writer checks)."""
 EXPOSURE_CAPABILITIES = frozenset({"partitions"})
 LAST_MENTION = "last_mention"
+FIRST_MENTION = "first_mention"
+ASK = "ask"
+POLICIES = (LAST_MENTION, FIRST_MENTION, ASK)
 
 
 class ReadProposition(BaseModel):
@@ -97,6 +106,7 @@ class Tally:
     memories: int = 0
     exposures: int = 0
     conflicts: int = 0
+    open: int = 0
     skipped_erased: int = 0
     by_turn: dict[int, int] = field(default_factory=dict)
 
@@ -139,33 +149,150 @@ async def _previous(
     ).one_or_none()
 
 
+def value_of(proposition: Proposition) -> Any:
+    """A statement's value as the conflict listing shows it."""
+    if proposition.literal is not None:
+        return proposition.literal.value
+    if proposition.object_set is not None:
+        return list(proposition.object_set)
+    return proposition.object_id
+
+
+def statement(
+    proposition: Proposition,
+    *,
+    turn: int,
+    variant: int,
+    beat: int,
+    event_id: str | None,
+    speaker: str | None,
+    fact_id: str | None = None,
+) -> dict[str, Any]:
+    """One statement of a conflict (``statement_id = <event_id>:<start>-<end>``; extraction keeps
+    no span here, so ``0-0``). No text: the listing quotes the transcript (an erasure's
+    redaction holds)."""
+    return {
+        "statement_id": f"{event_id}:0-0",
+        "event_id": event_id,
+        "turn": turn,
+        "variant": variant,
+        "beat": beat,
+        "position": turn,
+        "speaker": speaker,
+        "source": "transcript",
+        "value": value_of(proposition),
+        "proposition": proposition.model_dump(mode="json"),
+        "fact_id": fact_id,
+    }
+
+
+async def _earlier(
+    conn: AsyncConnection, story_id: str, earlier: Any, stored: Proposition
+) -> dict[str, Any]:
+    event_id = (list(earlier.source_event_ids or []) or [None])[0]
+    speaker = None
+    if event_id is not None:
+        speaker = await conn.scalar(
+            select(transcript_messages.c.actor_character_id).where(
+                transcript_messages.c.story_id == story_id,
+                transcript_messages.c.message_id == event_id,
+            )
+        )
+    return statement(
+        stored,
+        turn=int(earlier.narrative_turn or 0),
+        variant=0,
+        beat=1,
+        event_id=event_id,
+        speaker=None if speaker is None else str(speaker),
+        fact_id=str(earlier.id),
+    )
+
+
+async def in_world_claim(
+    conn: AsyncConnection, story_id: str, operation_id: str, loser: Mapping[str, Any]
+) -> None:
+    """Record a losing statement a character spoke as an in-world claim (#166's labels: what it
+    said is false; a ``sincere_error``, the speaker's belief not read here)."""
+    if not loser.get("speaker") or not loser.get("event_id"):
+        return
+    await insert_derived(
+        conn,
+        utterances,
+        [
+            {
+                "id": new_ulid(),
+                "story_id": story_id,
+                "operation_id": operation_id,
+                "source_event_ids": [loser["event_id"]],
+                "narrative_turn": loser.get("turn"),
+                "turn_variant": loser.get("variant", 0),
+                "event_id": loser["event_id"],
+                "speaker_character_id": loser["speaker"],
+                "objective_relation": "false",
+                "classification": "sincere_error",
+            }
+        ],
+    )
+
+
+async def _open_conflict(
+    conn: AsyncConnection,
+    backfill_id: str,
+    story_id: str,
+    proposition: Proposition,
+    statements: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Open (or join) the key's conflict under ``ask``; whether a new row was opened."""
+    subject = {"entity_id": proposition.subject_id, "predicate": proposition.predicate_id}
+    t = backfill_conflicts.c
+    found = (
+        await conn.execute(
+            select(t.id, t.statements).where(
+                t.backfill_id == backfill_id, t.status == "open", t.subject == subject
+            )
+        )
+    ).one_or_none()
+    if found is not None:
+        known = {s.get("statement_id") for s in found.statements or []}
+        joined = [*found.statements, *(s for s in statements if s["statement_id"] not in known)]
+        await conn.execute(
+            backfill_conflicts.update().where(t.id == found.id).values(statements=joined)
+        )
+        return False
+    await conn.execute(
+        insert(backfill_conflicts).values(
+            id=new_ulid(),
+            backfill_id=backfill_id,
+            story_id=story_id,
+            subject=subject,
+            statements=list(statements),
+            status="open",
+        )
+    )
+    return True
+
+
 async def _conflict(
     conn: AsyncConnection,
     backfill_id: str,
     story_id: str,
     proposition: Proposition,
-    earlier: Any,
-    later: tuple[int, str],
+    statements: Sequence[Mapping[str, Any]],
+    policy: str,
 ) -> None:
-    turn, event_id = later
-    statements = [
-        {
-            "fact_id": str(earlier.id),
-            "position": earlier.narrative_turn,
-            "event_id": (list(earlier.source_event_ids or []) or [None])[0],
-            "source": "transcript",
-        },
-        {"position": turn, "event_id": event_id, "source": "transcript"},
-    ]
     await conn.execute(
         insert(backfill_conflicts).values(
             id=new_ulid(),
             backfill_id=backfill_id,
             story_id=story_id,
             subject={"entity_id": proposition.subject_id, "predicate": proposition.predicate_id},
-            statements=statements,
+            statements=list(statements),
             status="resolved",
-            resolution={"policy": LAST_MENTION, "canon": "latest"},
+            resolution={
+                "policy": policy,
+                "canon": "latest" if policy == LAST_MENTION else "earliest",
+            },
             resolved_by="system:backfill",
             resolved_at=clock.now(),
         )
@@ -184,6 +311,7 @@ async def _turn(
 ) -> None:
     story_id, op_id = str(row.story_id), str(row.operation_id)
     op = _shim(op_id, story_id, str(row.requested_by), turn)
+    policy = str((row.report or {}).get("policy") or LAST_MENTION)
     beats: list[memories.Beat] = []
     exposed: list[Exposed] = []
     for index, message in enumerate(turn.messages):
@@ -199,15 +327,30 @@ async def _turn(
                 ):
                     stored, _ = await canon._load(conn, story_id, str(earlier.id))
                     if stored.proposition.object_key() != proposition.object_key():
-                        await _conflict(
-                            conn,
-                            str(row.id),
-                            story_id,
+                        old = await _earlier(conn, story_id, earlier, stored.proposition)
+                        new = statement(
                             proposition,
-                            earlier,
-                            (turn.turn, message.event_id),
+                            turn=turn.turn,
+                            variant=turn.variant,
+                            beat=index + 1,
+                            event_id=message.event_id,
+                            speaker=message.speaker,
+                        )
+                        if policy == ASK:
+                            if await _open_conflict(
+                                conn, str(row.id), story_id, proposition, [old, new]
+                            ):
+                                tally.conflicts += 1
+                                tally.open += 1
+                            continue
+                        await _conflict(
+                            conn, str(row.id), story_id, proposition, [old, new], policy
                         )
                         tally.conflicts += 1
+                        if policy == FIRST_MENTION:
+                            await in_world_claim(conn, story_id, op_id, new)
+                            continue
+                        await in_world_claim(conn, story_id, op_id, old)
                 fact = await canon.commit_fact(
                     conn,
                     story_id,
@@ -308,23 +451,33 @@ def merge_report(report: Mapping[str, Any], tally: Tally) -> dict[str, Any]:
     conflicts = dict(found.get("conflicts") or {"total": 0, "by_resolution": {}})
     conflicts["total"] = int(conflicts.get("total", 0)) + tally.conflicts
     by = dict(conflicts.get("by_resolution") or {})
-    if tally.conflicts:
-        by[LAST_MENTION] = int(by.get(LAST_MENTION, 0)) + tally.conflicts
+    policy = str(found.get("policy") or LAST_MENTION)
+    settled = tally.conflicts - tally.open
+    if settled:
+        by[policy] = int(by.get(policy, 0)) + settled
+    if tally.open:
+        by["open"] = int(by.get("open", 0)) + tally.open
     conflicts["by_resolution"] = by
     found["conflicts"] = conflicts
     return found
 
 
 __all__ = [
+    "ASK",
     "EXPOSURE_CAPABILITIES",
     "FACT_CAPABILITIES",
+    "FIRST_MENTION",
     "LAST_MENTION",
     "MEMORY_CAPABILITIES",
+    "POLICIES",
     "Extracted",
     "ReadMessage",
     "ReadProposition",
     "ReadTurn",
     "Tally",
+    "in_world_claim",
     "merge_report",
     "reconcile_turns",
+    "statement",
+    "value_of",
 ]

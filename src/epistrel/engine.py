@@ -20,7 +20,7 @@ import types
 import typing
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol, overload
+from typing import Any, Literal, Protocol, overload
 
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select, true
@@ -56,6 +56,7 @@ from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
 from epistrel.core import story_settings as settings_store
 from epistrel.core.amendments import read as amendment_reads
+from epistrel.core.backfill import conflicts as backfill_conflicts
 from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -344,6 +345,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
         core_backfill.GapFill, status=lambda found: 202 if found.backfill is not None else 200
     ),
     "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
+    "resolve_backfill_conflict": ResultCodec.of(backfill_conflicts.Resolved),
     # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
     "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
     "answer_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
@@ -6255,6 +6257,7 @@ class Engine:
                 request,
                 principal=principal,
                 start_job=backfill_job.start_job,
+                complete_conflicts=backfill_job.complete_now,
             )
 
         return await self._keyed(
@@ -6266,9 +6269,54 @@ class Engine:
         )
 
     @refuses_nul()
-    async def get_backfill(self, ctx: RequestContext, story_id: str) -> core_backfill.Backfill:
-        """The story's latest backfill, any kind (#228); 404 ``backfill_not_found``."""
-        return await core_backfill.get(self.db, story_id)
+    async def get_backfill(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        conflicts: Literal["open", "all"] = "open",
+        limit: int = 50,
+    ) -> core_backfill.Backfill:
+        """The story's latest backfill, any kind (#228), with its conflicts (#230: the open
+        ones, or ``all``); 404 ``backfill_not_found``."""
+        return await core_backfill.get(self.db, story_id, conflicts=conflicts, limit=limit)
+
+    async def resolve_backfill_conflict(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        conflict_id: str,
+        request: backfill_conflicts.ResolveRequest,
+    ) -> backfill_conflicts.Resolved:
+        """Settle one of a backfill's open conflicts (FR-PROF-10; #230): the chosen statement
+        is canon for the overlap and the others in-world claims; the last one completes the
+        backfill in the same call. 404 ``backfill_not_found`` / ``backfill_conflict_not_found``,
+        409 ``backfill_not_awaiting_conflicts`` / ``backfill_conflict_closed``, 422
+        ``invalid_resolution``."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> backfill_conflicts.Resolved:
+            found = await backfill_conflicts.resolve(
+                self.db,
+                story_id,
+                conflict_id,
+                request,
+                principal=principal,
+                complete=backfill_job.complete_now,
+            )
+            async with self.db.connect() as conn:
+                revision = await conn.scalar(
+                    select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)
+                )
+            return dataclasses.replace(found, timeline_revision=int(revision or 0))
+
+        return await self._keyed(
+            ctx,
+            "resolve_backfill_conflict",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "conflict_id": conflict_id, "body": _body(request)},
+        )
 
     async def cancel_backfill(
         self, ctx: RequestContext, story_id: str

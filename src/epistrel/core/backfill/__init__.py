@@ -40,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, control, pause
 from epistrel.core.backfill import coverage
+from epistrel.core.backfill.conflicts import Resumed
 from epistrel.core.enums import Membership, StoryStatus
 from epistrel.core.errors import (
     BackfillInProgress,
@@ -118,6 +119,11 @@ class Backfill(BaseModel):
     finished_at: datetime | None
     error: str | None
     report: dict[str, Any] = Field(default_factory=dict)
+    conflict_list: list[Any] = Field(
+        default_factory=list,
+        description="#230: the backfill's conflicts with their statements (the open ones, or "
+        "every one with `?conflicts=all`), each open one with its `recommended` answer.",
+    )
 
 
 class BackfillRequest(BaseModel):
@@ -182,6 +188,8 @@ class GapFill:
     backfill: Started | None = None
     timeline_revision: int = 0
     replayed: bool = False
+    resumed: Resumed | None = None
+    """#230: on a backfill awaiting conflicts, the resume's answer."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,13 +254,24 @@ async def running(conn: AsyncConnection, story_id: str) -> Any:
     ).one_or_none()
 
 
-async def get(db: AsyncEngine, story_id: str) -> Backfill:
-    """The story's latest backfill; 404 ``backfill_not_found`` when it never had one."""
+async def get(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    conflicts: Literal["open", "all"] = "open",
+    limit: int = 50,
+) -> Backfill:
+    """The story's latest backfill with its conflicts (#230: the ``open`` ones or ``all``); 404
+    ``backfill_not_found`` when it never had one."""
+    from epistrel.core.backfill import conflicts as backfill_conflicts_module
+
     async with db.connect() as conn:
         row = await latest_row(conn, story_id)
         if row is None:
             raise BackfillNotFound("the story has no backfill", {"story_id": story_id})
-        return await view(conn, row)
+        found = await view(conn, row)
+        listed = await backfill_conflicts_module.listing(conn, str(row.id), conflicts, limit)
+        return found.model_copy(update={"conflict_list": listed})
 
 
 async def refuse_running(conn: AsyncConnection, story_id: str, *, queued_ok: bool = False) -> None:
@@ -383,6 +402,7 @@ async def gap_fill(
     *,
     principal: str,
     start_job: StartJob,
+    complete_conflicts: Any = None,
 ) -> GapFill:
     """``POST /stories/{id}/backfill`` (see the module docstring): the preview without
     ``ignore_warnings``, else the started backfill; 409 ``nothing_to_backfill`` when no
@@ -398,6 +418,30 @@ async def gap_fill(
             from epistrel.core.errors import StoryNotFound
 
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        awaiting = await running(conn, story_id)
+        if (
+            awaiting is not None
+            and str(awaiting.status) == "paused_for_conflicts"
+            and complete_conflicts is not None
+        ):
+            # #230: the resume of a backfill waiting for its conflicts.
+            from epistrel.core.backfill import conflicts as backfill_conflicts_module
+
+            locked = await _lock(conn, str(awaiting.id))
+            resumed = await backfill_conflicts_module.resume(
+                conn,
+                locked,
+                ignore_warnings=request.ignore_warnings,
+                principal=principal,
+                complete=complete_conflicts,
+            )
+            revision = int(
+                await conn.scalar(
+                    select(stories.c.timeline_revision).where(stories.c.id == story_id)
+                )
+                or 0
+            )
+            return GapFill(applied=resumed.applied, resumed=resumed, timeline_revision=revision)
         await refuse_running(conn, story_id)
         current = await effective.effective_configuration(conn, story_id, validate=False)
         enabled = coverage.capabilities_of(current.settings)
@@ -752,7 +796,11 @@ async def claim(
     running_now = await conn.scalar(
         select(func.count())
         .select_from(_joined())
-        .where(t.status.in_(ACTIVE_STATUSES), stories.c.paused_by == t.id)
+        .where(
+            t.status.in_(ACTIVE_STATUSES),
+            t.status != "paused_for_conflicts",  # #230: waiting for the author frees its slot
+            stories.c.paused_by == t.id,
+        )
     )
     status = await conn.scalar(
         select(stories.c.status).where(stories.c.id == row.story_id).with_for_update()

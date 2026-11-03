@@ -67,7 +67,7 @@ class CertificationRunRequest(BaseModel):
         json_schema_extra={"examples": [{"suites": ["smoke"], "seeds": 2, "confirm": True}]},
     )
 
-    version: StrictInt | None = Field(default=None, ge=1)
+    version: StrictInt | None = Field(default=None, ge=1, le=2**31 - 1)
     suites: list[StrictStr] | None = Field(default=None, min_length=1, max_length=50)
     seeds: StrictInt = Field(default=DEFAULT_SEEDS, ge=1, le=5)
     sample: StrictInt | None = Field(default=None, ge=SAMPLE_MIN)

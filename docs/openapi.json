@@ -3208,6 +3208,7 @@
           "version": {
             "anyOf": [
               {
+                "maximum": 2147483647.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -5973,6 +5974,88 @@
         "title": "ConfigReplacement",
         "type": "object"
       },
+      "Conflict": {
+        "description": "A contradiction the backfill met (``GET /stories/{id}/backfill``'s ``conflict_list``).",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "recommended": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Recommended"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved By"
+          },
+          "statements": {
+            "items": {
+              "$ref": "#/components/schemas/Statement"
+            },
+            "title": "Statements",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "additionalProperties": true,
+            "title": "Subject",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "subject",
+          "statements",
+          "recommended",
+          "resolution",
+          "resolved_by",
+          "resolved_at"
+        ],
+        "title": "Conflict",
+        "type": "object"
+      },
       "ConflictCounts": {
         "description": "A backfill's contradictions by status (#230 opens and resolves them).",
         "properties": {
@@ -6585,6 +6668,17 @@
             "default": null,
             "description": "How many days this story's audit records are kept before the ``retention_sweep`` deletes\nthem (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``\n(default 90). Never affects story history. Prospective.",
             "title": "Audit Retention Days"
+          },
+          "backfill_conflict_policy": {
+            "default": "last_mention",
+            "description": "How a backfill settles the story's old text contradicting itself (FR-PROF-10; #230):\n``last_mention`` (the default) makes the latest statement canon for the overlap,\n``first_mention`` the earliest, and ``ask`` lists the conflicts for the author and keeps the\nstory paused until they are resolved (or the backfill is resumed with ``ignore_warnings``,\nleaving them uncertain). The losing statements stay in the transcript as in-world claims.\nRead when a backfill starts (``story_backfills.report.policy``): a change while one runs\naffects the next. Genesis copies the scenario's\n``story_settings_defaults.backfill_conflict_policy``. Prospective.",
+            "enum": [
+              "last_mention",
+              "first_mention",
+              "ask"
+            ],
+            "title": "Backfill Conflict Policy",
+            "type": "string"
           },
           "co_author_knowledge": {
             "default": "confirm",
@@ -13721,9 +13815,50 @@
                 "$ref": "#/components/schemas/epistrel__core__backfill__Preview"
               },
               {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Backfill"
+          },
+          "conflicts": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/Conflict"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflicts"
+          },
+          "conflicts_made_uncertain": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflicts Made Uncertain"
+          },
+          "conflicts_open": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflicts Open"
           },
           "idempotency_key": {
             "anyOf": [
@@ -31475,6 +31610,25 @@
         "title": "RecentMessage",
         "type": "object"
       },
+      "Recommended": {
+        "description": "The engine's recommended answer (owner decision 4): the latest statement.",
+        "properties": {
+          "choose": {
+            "title": "Choose",
+            "type": "string"
+          },
+          "reason": {
+            "default": "last_mention",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "choose"
+        ],
+        "title": "Recommended",
+        "type": "object"
+      },
       "ReconcileBody": {
         "description": "One contradictory pair of a turn's concurrent commitments (#177, FR-MULTI-3): the\nproposition key they disagreed on, the beat whose commitment stood, the beat rewritten as an\nattempt (or whose ``latent`` was dropped) and the rule: ``author`` (a narrator beat or the\nplayer's input), ``earlier_beat`` (a ``sequential`` turn's earlier beat) or\n``request_order`` (a ``simultaneous`` turn's); ``dedupe`` keeps one of two identical\ncommitments.",
         "properties": {
@@ -32912,91 +33066,6 @@
           "time_reason"
         ],
         "title": "ResolutionBody",
-        "type": "object"
-      },
-      "ResolveRequest": {
-        "additionalProperties": false,
-        "description": "#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed\nconsumer-applied effect is resolved (``applied_elsewhere`` or ``abandoned``).",
-        "examples": [
-          {
-            "resolution": "applied_elsewhere"
-          }
-        ],
-        "properties": {
-          "resolution": {
-            "enum": [
-              "applied_elsewhere",
-              "abandoned"
-            ],
-            "title": "Resolution",
-            "type": "string"
-          }
-        },
-        "required": [
-          "resolution"
-        ],
-        "title": "ResolveRequest",
-        "type": "object"
-      },
-      "ResolvedBody": {
-        "description": "A resolve: the listed request, how it was resolved, the reasons it was listed under,\nand the inter-turn slot (`position`, `N⁺k`; `slot` the full position) and operation that\nrecorded it.",
-        "properties": {
-          "idempotency_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Idempotency Key"
-          },
-          "operation_id": {
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "position": {
-            "title": "Position",
-            "type": "string"
-          },
-          "reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Reasons",
-            "type": "array"
-          },
-          "request_id": {
-            "title": "Request Id",
-            "type": "string"
-          },
-          "resolution": {
-            "title": "Resolution",
-            "type": "string"
-          },
-          "slot": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Slot",
-            "type": "object"
-          },
-          "timeline_revision": {
-            "title": "Timeline Revision",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "timeline_revision",
-          "request_id",
-          "resolution",
-          "reasons",
-          "position",
-          "slot",
-          "operation_id"
-        ],
-        "title": "ResolvedBody",
         "type": "object"
       },
       "RespondRequest": {
@@ -42632,6 +42701,75 @@
         "title": "StateWrittenBody",
         "type": "object"
       },
+      "Statement": {
+        "description": "One statement of a conflict: where it is, who said it, the quoted text and its value.",
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "position": {
+            "title": "Position",
+            "type": "integer"
+          },
+          "quote": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "speaker": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Speaker"
+          },
+          "statement_id": {
+            "title": "Statement Id",
+            "type": "string"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "value": {
+            "title": "Value"
+          }
+        },
+        "required": [
+          "statement_id",
+          "event_id",
+          "turn",
+          "position",
+          "speaker",
+          "source",
+          "quote",
+          "value"
+        ],
+        "title": "Statement",
+        "type": "object"
+      },
       "StatesBody": {
         "description": "The States the viewpoint may read, the world clock (only here, never among `states`),\nthe story's revision and the viewpoint the read was produced for.",
         "properties": {
@@ -44047,6 +44185,24 @@
             "default": null,
             "description": "How many days this story's audit records are kept before the ``retention_sweep`` deletes\nthem (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``\n(default 90). Never affects story history. Prospective.",
             "title": "Audit Retention Days"
+          },
+          "backfill_conflict_policy": {
+            "anyOf": [
+              {
+                "enum": [
+                  "last_mention",
+                  "first_mention",
+                  "ask"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How a backfill settles the story's old text contradicting itself (FR-PROF-10; #230):\n``last_mention`` (the default) makes the latest statement canon for the overlap,\n``first_mention`` the earliest, and ``ask`` lists the conflicts for the author and keeps the\nstory paused until they are resolved (or the backfill is resumed with ``ignore_warnings``,\nleaving them uncertain). The losing statements stay in the transcript as in-world claims.\nRead when a backfill starts (``story_backfills.report.policy``): a change while one runs\naffects the next. Genesis copies the scenario's\n``story_settings_defaults.backfill_conflict_policy``. Prospective.",
+            "title": "Backfill Conflict Policy"
           },
           "co_author_knowledge": {
             "anyOf": [
@@ -46787,6 +46943,41 @@
         "title": "PositionBody",
         "type": "object"
       },
+      "epistrel__api__routes__backfill__ResolvedBody": {
+        "description": "A settled conflict, and the backfill's status and open count after it.",
+        "properties": {
+          "backfill": {
+            "additionalProperties": true,
+            "title": "Backfill",
+            "type": "object"
+          },
+          "conflict": {
+            "$ref": "#/components/schemas/Conflict"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "conflict",
+          "backfill"
+        ],
+        "title": "ResolvedBody",
+        "type": "object"
+      },
       "epistrel__api__routes__inspect__PositionBody": {
         "description": "A narrative position: the turn, its variant and the beat (``null`` when position-less).",
         "properties": {
@@ -46832,6 +47023,67 @@
         "title": "PositionBody",
         "type": "object"
       },
+      "epistrel__api__routes__reconciliation__ResolvedBody": {
+        "description": "A resolve: the listed request, how it was resolved, the reasons it was listed under,\nand the inter-turn slot (`position`, `N⁺k`; `slot` the full position) and operation that\nrecorded it.",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "position": {
+            "title": "Position",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "resolution": {
+            "title": "Resolution",
+            "type": "string"
+          },
+          "slot": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Slot",
+            "type": "object"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "request_id",
+          "resolution",
+          "reasons",
+          "position",
+          "slot",
+          "operation_id"
+        ],
+        "title": "ResolvedBody",
+        "type": "object"
+      },
       "epistrel__core__backfill__Backfill": {
         "description": "``GET /stories/{id}/backfill``: the story's latest backfill (see the module docstring).",
         "properties": {
@@ -46840,6 +47092,12 @@
               "type": "string"
             },
             "title": "Capabilities",
+            "type": "array"
+          },
+          "conflict_list": {
+            "description": "#230: the backfill's conflicts with their statements (the open ones, or every one with `?conflicts=all`), each open one with its `recommended` answer.",
+            "items": {},
+            "title": "Conflict List",
             "type": "array"
           },
           "conflicts": {
@@ -46960,6 +47218,81 @@
         "title": "Preview",
         "type": "object"
       },
+      "epistrel__core__backfill__conflicts__ResolveRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/backfill/conflicts/{cid}``: exactly one of ``choose`` (a statement\nid), ``value`` (a value one of the statements states) or ``accept_recommendation``.",
+        "examples": [
+          {
+            "accept_recommendation": true
+          }
+        ],
+        "properties": {
+          "accept_recommendation": {
+            "default": false,
+            "title": "Accept Recommendation",
+            "type": "boolean"
+          },
+          "choose": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Choose"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          },
+          "valid_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid To"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "title": "ResolveRequest",
+        "type": "object"
+      },
       "epistrel__core__memory__consolidation__Scope": {
         "additionalProperties": false,
         "description": "One viewpoint scope: shared (``characters`` ``None``) or the characters named.",
@@ -46982,6 +47315,30 @@
           }
         },
         "title": "Scope",
+        "type": "object"
+      },
+      "epistrel__core__outbox__ResolveRequest": {
+        "additionalProperties": false,
+        "description": "#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed\nconsumer-applied effect is resolved (``applied_elsewhere`` or ``abandoned``).",
+        "examples": [
+          {
+            "resolution": "applied_elsewhere"
+          }
+        ],
+        "properties": {
+          "resolution": {
+            "enum": [
+              "applied_elsewhere",
+              "abandoned"
+            ],
+            "title": "Resolution",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resolution"
+        ],
+        "title": "ResolveRequest",
         "type": "object"
       },
       "epistrel__core__policies__model__Scope": {
@@ -70406,7 +70763,7 @@
         ]
       },
       "get": {
-        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report. 404 `backfill_not_found` when the story never had one.",
+        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report. #230: `conflict_list` lists its conflicts with their statements (`statement_id`, `event_id`, `turn`, `position`, `speaker`, `source`, the quoted transcript `quote`, `value`), each open one with its `recommended` answer (the `last_mention` statement): the open ones by default, every one with `conflicts=all`; at most `limit` (50, at most 200). A backfill under `backfill_conflict_policy: ask` ends its pass `paused_for_conflicts` and the story stays paused (409 `story_paused`, `cause: backfill_conflicts`, `conflicts_open`) until they are resolved. 404 `backfill_not_found` when the story never had one.",
         "operationId": "get_backfill",
         "parameters": [
           {
@@ -70422,6 +70779,32 @@
               "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
               "title": "Story Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conflicts",
+            "required": false,
+            "schema": {
+              "default": "open",
+              "enum": [
+                "open",
+                "all"
+              ],
+              "title": "Conflicts",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
             }
           }
         ],
@@ -70504,7 +70887,7 @@
         ]
       },
       "post": {
-        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability the story does not have on is 422 `validation_error`. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
+        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability the story does not have on is 422 `validation_error`. On a backfill `paused_for_conflicts` (#230) it resumes instead: without `ignore_warnings`, 200 `applied: false` with `conflicts_open` and the open `conflicts` (nothing changes); with it the backfill completes and every open conflict becomes `uncertain` (`conflicts_made_uncertain`): an open thunk where the target configuration runs commitment. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
         "operationId": "start_backfill",
         "parameters": [
           {
@@ -70717,6 +71100,212 @@
           }
         ],
         "summary": "Backfill the gaps in a story's structured data",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/backfill/conflicts/{cid}": {
+      "post": {
+        "description": "FR-PROF-10 (#230): settle an open conflict of a backfill `paused_for_conflicts`, with exactly one of `choose` (a statement id), `value` (a value one of the statements states) or `accept_recommendation: true` (the listing's recommended answer, the `last_mention` statement). The chosen statement is canon for the overlap (provenance `author`) and the others, when a character spoke them, are recorded as in-world claims; the conflict is `resolved` with `resolution {choice, via, by}`. Resolving the last open one completes the backfill in the same call (`backfill.status: completed`, the story resumed). 404 `backfill_not_found` / `backfill_conflict_not_found`, 409 `backfill_not_awaiting_conflicts`, 409 `backfill_conflict_closed`, 422 `invalid_resolution` (or `validation_error` for a body with none or several).",
+        "operationId": "resolve_backfill_conflict",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The conflict's id.",
+            "in": "path",
+            "name": "cid",
+            "required": true,
+            "schema": {
+              "description": "The conflict's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Cid",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/epistrel__core__backfill__conflicts__ResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/epistrel__api__routes__backfill__ResolvedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `backfill_conflict_not_found`, `backfill_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `backfill_conflict_closed`, `backfill_not_awaiting_conflicts`, `idempotency_conflict`, `revision_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_resolution`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Resolve one of a backfill's conflicts",
         "tags": [
           "stories"
         ]
@@ -72296,6 +72885,7 @@
                           "allow_new_arrivals",
                           "ambiguous_retcon_timing",
                           "audit_retention_days",
+                          "backfill_conflict_policy",
                           "co_author_knowledge",
                           "content_rating_id",
                           "default_output_viewpoint",
@@ -79569,7 +80159,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResolveRequest"
+                "$ref": "#/components/schemas/epistrel__core__outbox__ResolveRequest"
               }
             }
           },
@@ -79580,7 +80170,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResolvedBody"
+                  "$ref": "#/components/schemas/epistrel__api__routes__reconciliation__ResolvedBody"
                 }
               }
             },
@@ -83459,7 +84049,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a history rewrite places a correction whose absolute time the clock's anchor cannot decide, included and flagged `timing_uncertain` by default or asked of the author; read when a rewrite is planned). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a history rewrite places a correction whose absolute time the clock's anchor cannot decide, included and flagged `timing_uncertain` by default or asked of the author; read when a rewrite is planned), and `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`: how a backfill settles old text that contradicts itself, the latest or earliest statement canon, or the conflicts listed for the author while the story stays paused; read when a backfill starts). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

@@ -29,11 +29,9 @@ TABLE_PATH = REPO_ROOT / "tests" / "fixtures" / "api" / "fr_api_6_routes.json"
 CURRENT = "M7"
 """The milestone this table was checked at: every ``present`` row is delivered by it, every
 ``not_yet`` row by a later one (or named in ``PENDING``)."""
-PENDING: dict[tuple[str, str], str] = {
-    ("POST", "/stories/{id}/backfill/conflicts/{cid}"): "#230 (M7) delivers it",
-}
+PENDING: dict[tuple[str, str], str] = {}
 """``not_yet`` rows of ``CURRENT``'s milestone still being built, each with the story that
-delivers it (M7 is in progress: #228 served the backfill routes, #230 serves this one)."""
+delivers it (none: #230 served the last M7 row, the conflict resolution)."""
 
 ITEMS = (
     "characters",

@@ -321,6 +321,8 @@ OMNISCIENT = "omniscient"
 
 RetconTiming = Literal["include_if_possible", "ask_author"]
 """#240: ``StorySettings.ambiguous_retcon_timing``'s values."""
+BackfillConflictPolicy = Literal["last_mention", "first_mention", "ask"]
+"""#230: ``StorySettings.backfill_conflict_policy``'s values."""
 
 
 class StorySettings(BaseModel):
@@ -421,6 +423,16 @@ class StorySettings(BaseModel):
     resolution mode, and stores the answer as the part's position bound. Read when a rewrite is
     planned: parts already stored keep their flag or bound. Genesis copies the scenario's
     ``story_settings_defaults.ambiguous_retcon_timing``. No effect under Lite. Prospective."""
+
+    backfill_conflict_policy: Annotated[BackfillConflictPolicy, PROSPECTIVE] = "last_mention"
+    """How a backfill settles the story's old text contradicting itself (FR-PROF-10; #230):
+    ``last_mention`` (the default) makes the latest statement canon for the overlap,
+    ``first_mention`` the earliest, and ``ask`` lists the conflicts for the author and keeps the
+    story paused until they are resolved (or the backfill is resumed with ``ignore_warnings``,
+    leaving them uncertain). The losing statements stay in the transcript as in-world claims.
+    Read when a backfill starts (``story_backfills.report.policy``): a change while one runs
+    affects the next. Genesis copies the scenario's
+    ``story_settings_defaults.backfill_conflict_policy``. Prospective."""
 
     player_authority: Annotated[PlayerAuthority, INTERPRETIVE] = DEFAULT_PLAYER_AUTHORITY
     """The player's authority over the other characters (FR-RESP-11; #180; the owner's default

@@ -62,6 +62,7 @@ from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
 from tests.profile_support import (
+    DEFAULT_UPGRADE_MODE,
     LITE_CAPABILITIES,
     NO_BACKFILL,
     POLISH,
@@ -824,12 +825,12 @@ async def test_an_edit_reaches_each_follower_through_its_overrides(scratch: Spac
 async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch: Space) -> None:
     """A data-producing edit reaches each follower through its own overrides (FR-PROF-5,7,8): a
     confirmed edit that adds data-producing capability keeps a following story with history on
-    the version it ran on, its backfill queued (#229), only when the change that story sees adds
-    the capability. The polish
+    the version it ran on, its re-derivation queued (#229), only when the change that story
+    sees adds the capability. The polish
     pass is marked data-producing for the test (``data_producing``; none is in M3). Two stories
     follow a profile with the polish pass off and have each played a turn; one of them
     overrides the polish pass on. The edit that turns it on reports the plain story
-    with ``upgrade_mode: backfill`` (it gains the polish pass) and the other not (it gains
+    under the default upgrade mode (it gains the polish pass) and the other not (it gains
     nothing). Confirmed, the plain story is pinned to version 1 without the polish pass, and the
     other moves to version 2, unpinned. ``GET /stories/{id}`` names the version each runs on: the
     plain story's pin (1), not the profile's latest, and the other's latest (2)."""
@@ -850,7 +851,7 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
             assert (
                 entries[plain]["upgrade_mode"],
                 entries[plain]["capabilities_gained"],
-            ) == ("backfill", ["polish"])
+            ) == (DEFAULT_UPGRADE_MODE, ["polish"])
             assert (
                 entries[polished]["upgrade_unavailable"],
                 entries[polished]["capabilities_gained"],

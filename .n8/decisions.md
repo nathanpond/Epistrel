@@ -11430,3 +11430,5 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #231
 - **Decision:** `core.genesis.deferred` is not listed in `CONTENT_WRITE_PATHS`, contrary to the AC. The guard test admits only the subject index's writer modules, and every write it makes goes through those guarded writers (`structured.write`, `canon.commit_fact`, `write_seed`).
   **Issue:** #231
+- **Decision (correction to the #229 entry):** `check-traceability --write` does retire the interim entry; #306 is in place. §15's FR-PROF-7 row now reads `C-16 (M4, retired at M7)` and gains `C-16 (M7)`. The earlier "changed nothing" came from a stale `build/parts.json`: the gates read it, so `check-parts --json` must run first. CI at 18d88e3 failed `check-lexicon` (an M3 part's docstring said "backfill") and `check-traceability` for this reason; both are fixed.
+  **Issue:** #229

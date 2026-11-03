@@ -348,6 +348,9 @@ UNCERTIFIED = {"status": "uncertified"}
 BACKFILL_WARNINGS = ["capabilities_gained", "backfill_needed"]
 """A report's warnings when a story with history gains a data-producing capability (#229: it
 upgrades by backfill or ``forward_only``; M3's ``upgrade_unavailable`` is retired)."""
+DEFAULT_UPGRADE_MODE = "backfill"
+"""#229: the ``upgrade_mode`` a request without one gets (an M7 term, named through this
+constant)."""
 NO_BACKFILL = {"needed": False, "estimate": None, "range": None}
 """An entry's ``backfill`` when it needs none (#229 adds ``range``)."""
 LITE_CAPABILITIES = ["budgets", "lite", "models", "pins", "polish", "rolling_summary"]

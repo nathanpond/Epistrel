@@ -6997,6 +6997,13 @@
             "title": "Facts",
             "type": "array"
           },
+          "outbox_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outbox Ids",
+            "type": "array"
+          },
           "scheduled_events": {
             "items": {
               "type": "string"
@@ -73043,7 +73050,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_no_changes`, `directive_unparseable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_no_changes`, `directive_unparseable`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -81101,7 +81108,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {

@@ -596,6 +596,25 @@ async def open_session(
                 "the instruction asks for no change the story does not already have",
                 {"already_true": len(parsed.noops)},
             )
+        external = [r for r in parsed.refused if r.get("reason") == "external_owned"]
+        if external and not parsed.changes and not parsed.questions:
+            # #242: a rewrite whose only changes are game-owned values opens no session.
+            from epistrel.core.errors import ExternalValueNotOverridable
+
+            raise ExternalValueNotOverridable(
+                str(external[0]["explanation"]),
+                {
+                    "changes": [
+                        {
+                            "provider": r.get("provider"),
+                            "value_name": r.get("value_name"),
+                            "scope_key": None,
+                        }
+                        for r in external
+                    ],
+                    "explanation": str(external[0]["explanation"]),
+                },
+            )
         locked = await _story(conn, story_id, lock=True)
         from epistrel.core import pause
 

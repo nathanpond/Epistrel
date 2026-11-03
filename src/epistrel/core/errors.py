@@ -1609,6 +1609,14 @@ class AmendmentAlreadyReverted(EpistrelError):
     http_status = 409
 
 
+class ExternalValueNotOverridable(EpistrelError):
+    """An author's change to a value a game's provider owns (#242, FR-EXT-8): 422.
+    ``details``: ``changes`` (``[{provider, value_name, scope_key}]``) and ``explanation``."""
+
+    code = "external_value_not_overridable"
+    http_status = 422
+
+
 class AmendmentNotFound(EpistrelError):
     """No such amendment in the story (#238): 404. ``details``: ``amendment_id``."""
 

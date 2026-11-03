@@ -11324,3 +11324,17 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - A Lite story's directive is 409 `module_off` (`lite_directives`), the engine-wide status.
   - #154's `author_directed` stub is removed from `core/commit/reconcile.py` (`test_no_author_directed_stub`).
   **Issue:** #241
+
+### #242 — game-owned values, 2026-11-02
+
+- **Decision:** the guard covers externally owned **States** (`state_definitions.owner = external`, `provider_id`). Predicates with a registry `owner = external` are not guarded; there is no such predicate path in the directive or rewrite normalizers today.
+  - A story missing a binding is treated as read-only only when the provider's manifest needs binding keys. In-process providers without keys bind implicitly.
+  - Routed writes check the State's `authorization.sources` for `author` directly. `check_settable` refuses every external State (`state_readonly_external`), which is the State API's rule, not the outbox's.
+  **Issue:** #242
+- **Decision:** the rewrite refusal reuses #223's `external_owned` refusal and adds `code`, `explanation`, `provider` and `value_name`. A rewrite whose only changes are game-owned is 422 `external_value_not_overridable` with no session. The error class lives in `core.errors` (`ExternalValueNotOverridable`).
+  **Issue:** #242
+- **Decision (not built; tracked in #697):**
+  - S-LATE-SETTLEMENT M7's backdating clause (the sword amendment and case (6)). It needs dependency edges from story-owned State possession to later lines, which the planner does not find for States today.
+  - The routed-write test's "next turn's pinned value equals the adapter's" assertion: the test asserts the dispatch (idempotency key = the row id) and the row's status after confirmation and after failure, and that no author change or fact is written.
+  - The `ownership_changed` stale reason (#237) for a provider flip between preview and apply.
+  **Issue:** #242

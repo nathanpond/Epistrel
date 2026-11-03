@@ -237,6 +237,7 @@ ERROR_STATUS: dict[str, int] = {
     "record_inactive": 409,
     "amendment_already_reverted": 409,
     "amendment_not_found": 404,
+    "external_value_not_overridable": 422,
     "amendment_not_reverted": 409,
     "amendment_already_redone": 409,
     "use_redo": 422,
@@ -754,6 +755,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erased_subject_referenced",
         "model_unavailable",
         "rewrite_apply_failed",
+        "external_value_not_overridable",
     ),
     "list_rewrites": ("omniscient_required", "viewpoint_unresolved"),
     "get_rewrite": ("omniscient_required", "viewpoint_unresolved", "rewrite_session_not_found"),
@@ -815,6 +817,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "rewrite_session_limit",
         "rewrite_unparseable",
         "rewrite_noop",
+        "external_value_not_overridable",
     ),
     "merge_entities": (
         "omniscient_required",

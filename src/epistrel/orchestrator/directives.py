@@ -112,6 +112,8 @@ class DirectiveApplied(BaseModel):
     beliefs: list[str] = Field(default_factory=list)
     clock: list[str] = Field(default_factory=list)
     scheduled_events: list[str] = Field(default_factory=list)
+    outbox_ids: list[str] = Field(default_factory=list)
+    """#242: the game-owned changes the directive asked the game to make (``routed_write``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,8 +334,12 @@ async def _apply_now(
     payload: list[dict[str, Any]],
     *,
     principal: str,
+    routed: Sequence[tuple[Any, Any]] = (),
 ) -> tuple[DirectiveApplied, str, int]:
-    """One inter-turn slot operation applying every change (see the module docstring)."""
+    """One inter-turn slot operation applying every change (see the module docstring); #242:
+    each ``routed`` change of a game-owned value is written as an ``intended`` outbox row the
+    provider applies (its dispatch enqueued in the same commit), never a ``state_changes``
+    row."""
     from epistrel.core import states, world_clock
     from epistrel.core.canon import facts as canon
     from epistrel.core.epistemic import transitions
@@ -366,10 +372,15 @@ async def _apply_now(
         "beliefs": [],
         "clock": [],
         "scheduled_events": [],
+        "outbox_ids": [],
     }
 
     async def step(conn: AsyncConnection) -> None:
         position = slot_position(op)
+        if routed:
+            applied["outbox_ids"] = await _route_writes(
+                conn, op, story_id, directive_id, routed, position.slot_k, principal=principal
+            )
         event_id = await conn.scalar(
             select(events.c.id).where(events.c.operation_id == op.operation_id)
         )
@@ -431,7 +442,7 @@ async def _apply_now(
                 text=request.text,
                 kind="durable",
                 classified_by="request" if request.kind is not None else "model",
-                disposition="applied",
+                disposition="routed_write" if routed else "applied",
                 temporal_scope="now",
                 changes=payload,
                 operation_id=op.operation_id,
@@ -456,6 +467,63 @@ async def _apply_now(
     assert op.timeline_revision is not None  # noqa: S101 - a committed story operation
     label = f"{op.narrative_turn}⁺{op.slot_k}"
     return DirectiveApplied(**applied), label, int(op.timeline_revision)
+
+
+async def _route_writes(
+    conn: AsyncConnection,
+    op: Any,
+    story_id: str,
+    directive_id: str,
+    routed: Sequence[tuple[Any, Any]],
+    slot_k: int,
+    *,
+    principal: str,
+) -> list[str]:
+    """#242 (FR-EXT-10): the game-owned changes as ``intended`` outbox rows (the author's
+    authorization recorded, #214), each dispatched like any effect; their ids."""
+    from epistrel.core import outbox as core_outbox
+    from epistrel.core import states
+    from epistrel.core.errors import StateUnpermitted
+    from epistrel.core.states.api import sources_admit
+    from epistrel.core.states.model import to_json
+    from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
+
+    rows: list[core_outbox.Intended] = []
+    for change, judged in routed:
+        definition = await states.definition(conn, story_id, change.state)
+        if not sources_admit(definition, AUTHOR):
+            raise StateUnpermitted(
+                f"State {change.state!r} does not admit changes from the author",
+                {"state": change.state, "reason": "source", "source": AUTHOR},
+            )
+        effect: dict[str, Any] = {
+            "kind": "change",
+            "state": judged.state,
+            "reason": "author directive",
+            "source": "author",
+            "directive_id": directive_id,
+            "requested_by": principal,
+            "authorized": {"state": judged.state, "source": "author"},
+        }
+        if change.delta is not None:
+            effect["delta"] = float(change.delta)
+        else:
+            effect["value"] = to_json(change.value)
+        rows.append(
+            core_outbox.Intended(
+                id=new_ulid(),
+                provider_name=judged.provider,
+                value_name=judged.value_name,
+                scope_key=judged.scope_key,
+                effect=effect,
+                beat=0,
+                slot_k=slot_k,
+            )
+        )
+    await core_outbox.write_intended(conn, op, rows)
+    for row in rows:
+        await dispatcher.enqueue(conn, row.id, story_id)
+    return [r.id for r in rows]
 
 
 async def apply_directive(
@@ -553,13 +621,33 @@ async def apply_directive(
         raise DirectiveNoChanges(
             "the directive asks for no change", {"text_length": len(request.text)}
         )
+    from epistrel.orchestrator import external_guard
+
+    async with db.connect() as conn:
+        judged = await external_guard.classify(conn, story_id, normalized.states)
+    refused = [v for _, v in judged if v.action == "refuse"]
+    if refused:
+        # #242: a game-owned value on a read-only provider: the whole directive is refused.
+        raise external_guard.refusal(refused)
+    writes = [(c, v) for c, v in judged if v.action == "route"]
+    if writes:
+        normalized = dataclasses.replace(
+            normalized, states=[c for c in normalized.states if all(c is not r for r, _ in writes)]
+        )
     applied, label, revision = await _apply_now(
-        db, story_id, directive_id, request, normalized, payload, principal=principal
+        db,
+        story_id,
+        directive_id,
+        request,
+        normalized,
+        payload,
+        principal=principal,
+        routed=writes,
     )
     return DirectiveResult(
         directive_id,
         "durable",
-        "applied",
+        "routed_write" if applied.outbox_ids else "applied",
         position=label,
         applied=applied,
         timeline_revision=revision,

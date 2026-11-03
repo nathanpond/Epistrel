@@ -682,8 +682,20 @@ async def _state(conn: AsyncConnection, ctx: _Context, n: int, change: RewriteCh
         )
         return
     if str(getattr(found.owner, "value", found.owner)) != "story":
+        # #242 (FR-EXT-8): a game-owned value's past is the game's: always refused.
+        from epistrel.orchestrator.external_guard import CODE, PAST
+
         ctx.parsed.refused.append(
-            {"index": n, "reason": "external_owned", "state": found.name, "change": _dump(change)}
+            {
+                "index": n,
+                "reason": "external_owned",
+                "code": CODE,
+                "explanation": PAST,
+                "state": found.name,
+                "provider": None if found.provider_id is None else str(found.provider_id),
+                "value_name": found.external_value_name or found.name,
+                "change": _dump(change),
+            }
         )
         return
     rule = derived_rule(found)

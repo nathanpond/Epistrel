@@ -318,6 +318,27 @@ class _Message:
     revisions: Mapping[str, Any]
 
 
+async def _refuse_pruned(conn: AsyncConnection, story_id: str, message_id: str) -> None:
+    """#702 (FR-STORE-32): a write to the rating of a message a pruning removed is 409
+    ``pruned`` (its ratings are kept, marked ``pruned_at``, and read as such)."""
+    from epistrel.core.errors import Pruned
+
+    gone = await conn.scalar(
+        select(message_feedback.c.id)
+        .where(
+            message_feedback.c.story_id == story_id,
+            message_feedback.c.message_id == message_id,
+            message_feedback.c.pruned_at.is_not(None),
+        )
+        .limit(1)
+    )
+    if gone is not None:
+        raise Pruned(
+            "the message was pruned; its ratings are kept as they were",
+            {"message_id": message_id, "story_id": story_id},
+        )
+
+
 async def _message(
     conn: AsyncConnection, story_id: str, message_id: str, *, lock: bool
 ) -> _Message:
@@ -348,6 +369,8 @@ async def _message(
             )
         )
     ).one_or_none()
+    if found is None and lock:
+        await _refuse_pruned(conn, story_id, message_id)
     if found is None or found.narrative_turn is None or found.turn_variant is None:
         raise MessageNotFound(
             f"message {message_id} is not a generated message of story {story_id}",

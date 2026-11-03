@@ -7,16 +7,19 @@ relying on A's fact (its #220 edges); a later turn has Marcus form a memory from
 (a ``derives`` edge onto B's fact). Undo A:
 
 - **synchronous** (``preview_first``): the undo's blast radius holds B (a ``dependent``
-  question, options ``cascade_undo`` (recommended) and ``cancel``) and Marcus's memory (through
-  B: B is recommended for cascade-undo); nothing commits while the question is open (canon
-  still UCLA, B active). Answered and applied: one ``undo`` amendment (``undoes = A``); A and B
-  ``reverted`` with ``reverted_by`` the undo, never deleted (amendment rows only grow); canon
-  is OSU again and no active part's fact contradicts it. Redo A: a ``redo`` session, its own
-  checked plan; applied, a ``redo`` amendment (``redoes = A``) and canon says UCLA again, while
-  A stays ``reverted``.
+  question, options ``cascade_undo`` (recommended), ``rewrite`` (#711) and ``cancel``) and
+  Marcus's memory (through B: B is recommended for cascade-undo); nothing commits while the
+  question is open (canon still UCLA, B active). Answered and applied: one ``undo`` amendment
+  (``undoes = A``); A and B ``reverted`` with ``reverted_by`` the undo, never deleted (amendment
+  rows only grow); canon is OSU again and no active part's fact contradicts it. Redo A: a
+  ``redo`` session, its own checked plan; applied, a ``redo`` amendment (``redoes = A``) and
+  canon says UCLA again, while A stays ``reverted``.
 - **best_effort** (``apply_directly``): B is cascade-undone and Marcus's memory regenerated,
   both in the report.
 - **cancel**: answering B's question with ``cancel`` cancels the whole undo; nothing reverted.
+- **rewrite** (#711, ``test_s_amend_undo__rewrite``): answering B's question with ``rewrite``
+  reverts A only; B stays active and its graduation is rewritten (a ``version`` of its fact, a
+  part of the undo amendment) to the restored school, so no active part contradicts canon.
 - The routes (``test_s_amend_undo__routes``): list and detail shapes (``relies_on``,
   ``dependents``), 404 ``amendment_not_found``, 403 ``omniscient_required``, 409
   ``amendment_already_reverted``, 422 ``use_redo``, 409 ``amendment_not_reverted``, 409
@@ -257,7 +260,7 @@ async def test_s_amend_undo(pg_url: str, engine: AsyncEngine, drained_embedding_
         assert ("memories", made.memory) in planned
         (asked,) = [q for q in session["questions"] if q["kind"] == "dependent"]
         actions = {o["id"]: o["effect"]["action"] for o in asked["options"]}
-        assert sorted(actions.values()) == ["cancel", "cascade_undo"]
+        assert sorted(actions.values()) == ["cancel", "cascade_undo", "rewrite"]  # #711
         assert actions[asked["recommended_option_id"]] == "cascade_undo"
         # Nothing commits while the question is open.
         assert made.ucla in await _enrolled(engine, ed)
@@ -476,3 +479,49 @@ async def test_s_amend_undo__routes(
         assert opened.status_code == 201, opened.text
         assert opened.json()["kind"] == "undo"
         assert await rs.count(engine, "rewrite_sessions", lite) == 1
+
+
+@pytest.mark.part("M7", "FR-REWRITE-10,11; FR-STORE-18")
+async def test_s_amend_undo__rewrite(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#711: ``rewrite`` for the dependent amendment B rewrites B's graduation into the undo
+    (OSU, the restored school) and leaves B active; A alone is reverted."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        made = await _amended(client, engine, epistrel.models.stub)
+        story, ed = made.story_id, made.ed
+        opened = await _undo(client, story, made.a)
+        assert opened.status_code == 201, opened.text
+        session = opened.json()
+        (asked,) = [q for q in session["questions"] if q["kind"] == "dependent"]
+        rewrite = next(o["id"] for o in asked["options"] if o["effect"]["action"] == "rewrite")
+        chosen = await client.post(
+            f"/stories/{story}/rewrites/{session['id']}/answers",
+            params=rs.OMNISCIENT,
+            json={"answers": [{"question_id": asked["id"], "option_id": rewrite}]},
+            headers=WRITE,
+        )
+        assert chosen.status_code == 200, chosen.text
+        answered = await rs.answer_all(client, story, chosen.json())
+        assert answered.status_code == 200, answered.text
+        ready = answered.json()
+        applied = await rs.apply(client, story, ready["id"], ready["base_revision"])
+        assert applied.status_code == 200, applied.text
+        undo_id = applied.json()["amendment_id"]
+        assert await _status(engine, made.a) == ("reverted", undo_id)
+        assert await _status(engine, made.b) == ("active", None)
+        assert ed.osu in await _enrolled(engine, ed)
+        # B's graduation now names OSU: a version of its fact, written by the undo.
+        (part,) = await rows(
+            engine,
+            "SELECT p.written_fact_id, pr.object_id FROM amendment_parts p "
+            "JOIN facts f ON f.id = p.written_fact_id JOIN propositions pr ON pr.id = "
+            "f.proposition_id WHERE p.amendment_id = :u AND p.record_table = 'facts'",
+            u=undo_id,
+        )
+        assert str(part.object_id) == ed.osu
+        (old,) = await rows(
+            engine, "SELECT superseded_by FROM facts WHERE id = :f", f=made.graduation_fact
+        )
+        assert old.superseded_by is not None

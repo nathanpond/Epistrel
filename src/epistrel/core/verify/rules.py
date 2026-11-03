@@ -335,6 +335,10 @@ class Rule(StrEnum):
     INSTANT_IDENTITY = "instant_identity"
     FLUENT_CHANGE = "fluent_change"
     """#518: a ``novel`` claim's change of a fluent, citing each record it closes."""
+    AUTHORITY = "authority"
+    """#696 (FR-DIRECT-6): a narrative claim that would change (close) a fact the author
+    locked: ``contradicted``, citing the locked fact, so #142 repairs the claim; canon's write
+    would refuse it (``AuthorityConflict``)."""
 
 
 CONTRADICTION_RULES = frozenset(Rule) - {Rule.COVERAGE, Rule.FLUENT_CHANGE}
@@ -1788,6 +1792,7 @@ async def check_with(
     options: Options = Options(),  # noqa: B008 - frozen
     fetched: list[Record] | None = None,
     mover: str | None = None,
+    author: bool = False,
 ) -> Verdict:
     """Fetch what ``claim`` needs through ``lookup`` (each read a query key of the turn's read
     set) and ``check`` it. ``viewpoint`` filters canon (a character's claim is checked only
@@ -1796,9 +1801,13 @@ async def check_with(
     partition at the claim's position (``belief_through``) and the canon A may read, the belief
     winning (see the module docstring). ``fetched``, when given, receives the records the
     verdict was decided over (#142's entailment call is shown exactly those). ``mover``: see
-    ``check``."""
+    ``check``. ``author``: the claim is the author's (#145's author facts, a directive), which
+    may change what the author locked; any other claim that would close an author-locked fact
+    (a ``fluent_change`` superseding it) is ``contradicted`` by rule ``authority`` (#696,
+    FR-DIRECT-6)."""
     if holder.kind == "utterance":
         raise ValueError("check_with reads canon; pass an utterance holder's records to check()")
+    locked: set[str] = set()
     registry = registry or await load(lookup.conn, story_id)
     predicate = registry.get(claim.predicate_id)
     if predicate is None:
@@ -1821,6 +1830,7 @@ async def check_with(
             through_position=through_position,
             registry=registry,
         )
+        locked.update(f.id for f in facts if f.author_locked)
         # #146: an introduced or pending fact is not settled, so it is no evidence yet.
         return [Record.of_fact(f) for f in facts if f.commit_state in EVIDENCE_STATES]
 
@@ -1936,7 +1946,7 @@ async def check_with(
     if fetched is not None:
         fetched.extend(unique)
     log.debug("verify fetched %d records, %d closed sets", len(unique), len(closed))
-    return check(
+    verdict = check(
         claim,
         unique,
         registry=registry,
@@ -1947,6 +1957,18 @@ async def check_with(
         owned=owned_found,
         mover=mover,
     )
+    overridden = [f for f in verdict.supersedes if f in locked]
+    if overridden and not author and options.contradictions:
+        # #696 (FR-DIRECT-6): narrative canon never supersedes the author's locked canon.
+        cited = {r.fact_id: r.proposition_id for r in unique if r.fact_id is not None}
+        return replace(
+            verdict,
+            kind=VerdictKind.CONTRADICTED,
+            evidence=tuple(
+                Evidence(Rule.AUTHORITY, proposition_id=cited.get(f), fact_id=f) for f in overridden
+            ),
+        )
+    return verdict
 
 
 async def _belief_canon(

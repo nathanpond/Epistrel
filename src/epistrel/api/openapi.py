@@ -318,12 +318,17 @@ ERROR_STATUS: dict[str, int] = {
     "state_not_amendable": 422,
     "rewrite_unparseable": 422,
     "rewrite_noop": 422,
+    "line_not_editable": 422,
+    "beat_required": 422,
     "invalid_answer": 422,
     "base_revision_required": 422,
     "merge_invalid": 422,
     "directive_unparseable": 422,
     "directive_no_changes": 422,
     "directive_ambiguous": 422,
+    "directive_split_required": 422,
+    "steer_budget_exceeded": 409,
+    "author_fact_limit": 409,
     "unknown_erasure_candidate": 422,
     "invalid_listing_status": 422,
     "invalid_profile": 422,
@@ -376,6 +381,7 @@ ERROR_STATUS: dict[str, int] = {
     "budget_exhausted": 503,
     "certification_unavailable": 503,
     "rewrite_apply_failed": 503,
+    "rewrite_reach_failed": 503,
     "config_key_missing": 503,
     "config_missing": 503,
     "database_unavailable": 503,
@@ -780,6 +786,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "module_off",
         "rewrite_unparseable",
         "rewrite_noop",
+        "line_not_editable",
+        "beat_required",
+        "record_inactive",
+        "rewrite_reach_failed",
         "erased_subject_referenced",
         "model_unavailable",
         "rewrite_apply_failed",
@@ -833,6 +843,10 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "module_off",
         "directive_unparseable",
         "directive_no_changes",
+        "directive_split_required",
+        "directive_ambiguous",
+        "steer_budget_exceeded",
+        "author_fact_limit",
         "erased_subject_referenced",
         "model_unavailable",
         "state_constraint_violation",
@@ -1330,6 +1344,10 @@ def _extra_components() -> dict[str, Any]:
         ref_template=REF,
     )
     components: dict[str, Any] = schema.get("$defs", {})
+    from epistrel.core.bundles.format import bundle_schemas
+
+    # #704 (FR-STORE-7): the story bundle's line schemas.
+    components.update(bundle_schemas())
     return components
 
 

@@ -492,6 +492,133 @@ async def test_i_19__m7_conflicts(stub_settings: Any, engine: AsyncEngine) -> No
         ] == "completed"
 
 
+@pytest.mark.part("M7", "FR-PROF-10")
+async def test_i_19__m7_conflict_value(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#708 (#230's resolve clause): under ``ask``, a resolution with a value neither statement
+    states (thirty-three) and a ``valid_from`` window is normalized against the age predicate
+    and written as canon; both statements become in-world claims and the conflict records the
+    value and window. Complements: a value that does not normalize (text for an int age) and a
+    window that ends before it starts are 422 ``invalid_resolution``, and nothing changes."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        asked, _ = await _policy_story(client, engine, lib, "ask")
+        (listed,) = (await ok(await client.get(f"/stories/{asked}/backfill", headers=READ)))[
+            "conflict_list"
+        ]
+        path = f"/stories/{asked}/backfill/conflicts/{listed['id']}"
+        for wrong in ({"value": "thirty-three"}, {"value": 33, "valid_from": 9, "valid_to": 3}):
+            refused = await client.post(path, json=wrong, headers=WRITE)
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "invalid_resolution"
+        done = await ok(await client.post(path, json={"value": 33, "valid_from": 0}, headers=WRITE))
+        assert done["backfill"] == {"status": "completed", "conflicts_open": 0}
+        assert done["conflict"]["resolution"]["via"] == "value"
+        assert done["conflict"]["resolution"]["choice"] == {
+            "statement_id": None,
+            "value": 33,
+            "valid_from": 0,
+            "valid_to": None,
+        }
+        assert 33 in _current(await _ages(engine, asked))
+        assert await _claims(engine, asked) == [lls.EARLY, lls.LATE]
+
+
+@pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
+async def test_i_19__m7_author_facts(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#699 (#244's upgrade clause): a Lite story holds two lasting author facts at a slot, one
+    ``directive_parse`` turns into a structured change ("Bobby is forty") and one it does not
+    ("The air smells of rain"). Switched to Full: the backfill converts the first into an
+    author-tier fact at the fact's slot (``provenance = author``) and keeps the second as text;
+    its report lists ``author_facts {converted: 1, kept_as_text: 1}``. The kept fact is in the
+    narrator's author notes from its position on, and the converted one is not (it is canon
+    now); a character render of the next turn carries neither."""
+    import json
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, actor, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        stub = lib.models.stub
+        assert stub is not None
+        forty = "Bobby is forty years old."
+        rain = "The air smells of rain."
+        for text_ in (forty, rain):
+            stub.when(
+                text_,
+                json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []}),
+                purpose="directive_parse",
+            )
+            made = await client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": text_},
+                headers=WRITE,
+            )
+            assert made.status_code == 200, made.text
+        # The upgrade's parse: forty is a structured change, the rain is not.
+        stub.reset()
+        lls.script(stub)
+        stub.when(
+            forty,
+            json.dumps(
+                {
+                    "classification": "durable",
+                    "temporal_scope": "now",
+                    "changes": [
+                        {
+                            "kind": "proposition",
+                            "subject": "Bobby",
+                            "predicate": "age",
+                            "literal": 40,
+                        }
+                    ],
+                }
+            ),
+            purpose="directive_parse",
+        )
+        stub.when(
+            rain,
+            json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []}),
+            purpose="directive_parse",
+        )
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        (report,) = await rows(
+            engine, "SELECT report FROM story_backfills WHERE id = :b", b=done["id"]
+        )
+        summary = report.report["author_facts"]
+        assert (summary["converted"], summary["kept_as_text"]) == (1, 1)
+        authored = await rows(
+            engine,
+            "SELECT f.provenance::text AS p, f.authority::text AS a, pr.literal FROM facts f "
+            "JOIN propositions pr ON pr.id = f.proposition_id "
+            "WHERE f.story_id = :s AND f.authority = 'author' AND f.membership = 'active'",
+            s=story,
+        )
+        assert [(a.p, a.a, a.literal["value"]) for a in authored] == [("author", "author", 40)]
+        stub.reset()
+        played = await client.post(
+            f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE
+        )
+        assert played.status_code == 200, played.text
+        prompts = [
+            "\n".join(m.content for m in c.messages)
+            for c in stub.calls
+            if c.purpose == "generation"
+        ]
+        # A character render never carries the kept fact (NFR-PRIV-4: a character learns it only
+        # through its context); the narrator's author notes do (``TurnRead.director``).
+        assert prompts
+        assert not any(rain in p for p in prompts)
+        from epistrel.orchestrator.directives import kept_author_facts
+
+        async with engine.connect() as conn:
+            block = await kept_author_facts(conn, story, 10**6)
+        assert rain in block
+        assert forty not in block
+
+
 @pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
 async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> None:
     """#232: a 400-turn Lite story upgraded to Full (backfilled), then switched back to Lite:
@@ -533,10 +660,23 @@ async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> No
         assert entry["summary_backfill"]["estimate"]["model_calls"] > 0
         (rebuild,) = await rows(
             engine,
-            "SELECT kind, status FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
+            "SELECT id, kind, status, capabilities, range_from_turn, range_to_turn "
+            "FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
             s=story,
         )
         assert rebuild.status == "extracting"
+        # #709: the rolling summary's coverage capability, its range the coverage's gap, and the
+        # lite_summary job's rebuild mode queued for it.
+        assert list(rebuild.capabilities) == ["rolling_summary"]
+        assert (rebuild.range_from_turn, rebuild.range_to_turn) == (1, lls.LATE)
+        (queued,) = await rows(
+            engine,
+            "SELECT payload FROM jobs WHERE story_id = :s AND kind = 'lite_summary' "
+            "AND coalesce_key = :k",
+            s=story,
+            k=f"lite_summary_rebuild:{story}",
+        )
+        assert queued.payload["backfill_id"] == str(rebuild.id)
         kept = [
             tuple(r)
             for r in await rows(
@@ -572,6 +712,13 @@ async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> No
             s=story,
         )
         assert done.status == "completed"
+        covered = await rows(
+            engine,
+            "SELECT from_turn, to_turn FROM capability_coverage WHERE story_id = :s "
+            "AND capability = 'rolling_summary'",
+            s=story,
+        )
+        assert [(c.from_turn, c.to_turn) for c in covered] == [(1, lls.LATE)]
 
         await lls.long_lite_story(engine, story, actor, 20)  # ten more turns
         up = await ok(
@@ -591,6 +738,98 @@ async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> No
             )
         }
         assert {f[0] for f in facts if f[1] == "active"} <= again
+
+
+@pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
+async def test_i_19__m7_resummarize_cancel(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#709 (#232's cancel clause): a downgrade's summarization rebuild is cancelled
+    (``DELETE /stories/{id}/backfill``) after some segments are written: they are discarded
+    with their operations, the next Lite prompt reads none of them, and the story stays on
+    Lite with no ``summary_rebuilding``. A Lite turn under the downgrade reads nothing
+    structured (spies on retrieval, verification and the belief readers count zero)."""
+    from epistrel.core.epistemic import partitions
+    from epistrel.core.retrieval import pipeline as retrieval
+    from epistrel.core.verify import rules
+    from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
+    from tests.summary_support import run_due_jobs
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, actor, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        await ok(
+            await client.put(
+                f"/stories/{story}/engine-profile",
+                json={"profile_id": LITE_PRESET_ID, "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        assert lib.models is not None
+        await run_due_jobs(engine, lib.models, story, limit=1)
+        written = await rows(
+            engine,
+            "SELECT s.segment_id FROM lite_summary_segments s JOIN operations o "
+            "ON o.operation_id = s.operation_id WHERE s.story_id = :s "
+            "AND o.membership = 'active'",
+            s=story,
+        )
+        assert written, "the rebuild wrote segments before the cancel"
+        cancelled = await client.delete(f"/stories/{story}/backfill", headers=WRITE)
+        assert cancelled.status_code == 200, cancelled.text
+        (ended,) = await rows(
+            engine,
+            "SELECT status FROM story_backfills WHERE story_id = :s AND kind = 'resummarize'",
+            s=story,
+        )
+        assert ended.status == "cancelled"
+        left = await rows(
+            engine,
+            "SELECT s.segment_id FROM lite_summary_segments s JOIN operations o "
+            "ON o.operation_id = s.operation_id WHERE s.story_id = :s "
+            "AND o.membership = 'active'",
+            s=story,
+        )
+        assert left == []
+        rows_left = await rows(
+            engine,
+            "SELECT segment_id FROM lite_summary_segments WHERE story_id = :s "
+            "AND membership = 'active'",
+            s=story,
+        )
+        assert rows_left == []  # the rows follow their operations (a later run is not dropped)
+
+        seen: list[str] = []
+        real_retrieve, real_check = retrieval.retrieve, rules.check_with
+
+        async def spy_retrieve(*args: Any, **kwargs: Any) -> Any:
+            seen.append("retrieve")
+            return await real_retrieve(*args, **kwargs)
+
+        async def spy_check(*args: Any, **kwargs: Any) -> Any:
+            seen.append("check_with")
+            return await real_check(*args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(retrieval, "retrieve", spy_retrieve)
+            patched.setattr(rules, "check_with", spy_check)
+            if hasattr(partitions, "beliefs_of"):
+                real_beliefs = partitions.beliefs_of
+
+                async def spy_beliefs(*args: Any, **kwargs: Any) -> Any:
+                    seen.append("beliefs")
+                    return await real_beliefs(*args, **kwargs)
+
+                patched.setattr(partitions, "beliefs_of", spy_beliefs)
+            played = await ok(
+                await client.post(
+                    f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE
+                )
+            )
+        assert seen == []
+        assert "summary_rebuilding" not in played["degradation"]
+        del lite_summary_job
 
 
 async def test_backfill__gap_fill(stub_settings: Any, engine: AsyncEngine) -> None:
@@ -644,3 +883,88 @@ async def engine_reset_coverage(engine: AsyncEngine, story: str) -> None:
             ),
             {"s": story},
         )
+
+
+@pytest.mark.part("M7", "FR-LITE-6,8; FR-PROF-9")
+async def test_i_19__m7_lite_corrections(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#700: a Lite rewrite whose correction states a world change ("Bobby is forty.") applies
+    with a ``lite_note`` part. Switched to Full, the backfill parses the note like a lasting
+    author fact (``directive_parse``) and writes it as an author-tier fact; its report counts
+    it among ``author_facts.converted``, keyed ``note:<part id>``."""
+    import json
+
+    forty = "Bobby is forty."
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, _, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        stub = lib.models.stub
+        assert stub is not None
+        stub.when(
+            "",
+            json.dumps(
+                {
+                    "changes": [
+                        {
+                            "kind": "proposition",
+                            "subject": "Bobby",
+                            "predicate": "age",
+                            "literal": 40,
+                        }
+                    ]
+                }
+            ),
+            purpose="rewrite_parse",
+        )
+        stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
+        opened = await ok(
+            await client.post(
+                f"/stories/{story}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": forty, "preview": "apply_directly"},
+                headers=WRITE,
+            ),
+            201,
+        )
+        assert opened["state"] == "applied", opened
+        (note,) = await rows(
+            engine,
+            "SELECT id, patch_after->>'text' AS body FROM amendment_parts "
+            "WHERE story_id = :s AND kind = 'lite_note'",
+            s=story,
+        )
+        assert note.body == f"Author correction: {forty}"
+        stub.when(
+            forty,
+            json.dumps(
+                {
+                    "classification": "durable",
+                    "temporal_scope": "now",
+                    "changes": [
+                        {
+                            "kind": "proposition",
+                            "subject": "Bobby",
+                            "predicate": "age",
+                            "literal": 40,
+                        }
+                    ],
+                }
+            ),
+            purpose="directive_parse",
+        )
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        (report,) = await rows(
+            engine, "SELECT report FROM story_backfills WHERE id = :b", b=done["id"]
+        )
+        summary = report.report["author_facts"]
+        assert f"note:{note.id}" in summary["ids"]
+        authored = await rows(
+            engine,
+            "SELECT pr.literal FROM facts f JOIN propositions pr ON pr.id = f.proposition_id "
+            "WHERE f.story_id = :s AND f.authority = 'author' AND f.membership = 'active'",
+            s=story,
+        )
+        assert [a.literal["value"] for a in authored] == [40]

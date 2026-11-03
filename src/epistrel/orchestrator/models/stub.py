@@ -279,6 +279,11 @@ class StubAdapter:
         self.calls: list[StubCall] = []
         self.reported_version: str | None = None
         """#234: the version each answer reports (none unless a test sets one)."""
+        self.listed_version: str | None = None
+        """#710: the ``version`` field the stub's ``/models`` entry carries (none unless a test
+        sets one); the fallback when an answer reports no version."""
+        self.listings = 0
+        """#710: how many times ``listed_versions`` was read."""
         self._scripts: defaultdict[str, deque[str]] = defaultdict(deque)
         self._faults: defaultdict[str, deque[FaultKind]] = defaultdict(deque)
         self._when: list[tuple[tuple[str, ...], str, str | None]] = []
@@ -366,6 +371,8 @@ class StubAdapter:
         self.fault_hook = None
         self.nondeterministic = False
         self.reported_version = None
+        self.listed_version = None
+        self.listings = 0
 
     # -- the adapter ----------------------------------------------------------------------
 
@@ -502,6 +509,14 @@ class StubAdapter:
         (a queued fault for ``purpose`` applies to that completion)."""
         result = await self.complete(purpose, PROBE_MESSAGES, ModelParams(max_tokens=16))
         return ProbeResult(models=(result.model,), model=result.model)
+
+    async def listed_versions(self, purpose: str) -> dict[str, str]:
+        """#710: the ``version`` of each model the stub's ``/models`` lists (its configured
+        model, when a test set ``listed_version``)."""
+        self.listings += 1
+        if self.listed_version is None:
+            return {}
+        return {await self._model(purpose): self.listed_version}
 
     async def aclose(self) -> None:
         return None

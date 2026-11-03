@@ -165,7 +165,11 @@ async def view(conn: AsyncConnection, row: Any) -> RewriteSession:
         if row.target_amendment_id is None
         else str(row.target_amendment_id),
         base_revision=None if row.base_revision is None else int(row.base_revision),
-        preview=None if preview is None else Preview.model_validate(preview),
+        preview=None
+        if preview is None
+        else Preview.model_validate(
+            {**preview, **({"reach": plan["reach"]} if plan.get("reach") else {})}
+        ),
         questions=[_question_view(q) for q in await _questions(conn, str(row.id))],
         stale_count=int(row.stale_count),
         result_amendment_id=row.result_amendment_id,
@@ -568,25 +572,44 @@ async def open_session(
         settings = await read_section(conn, RewriteSettings)
         pipeline = await pipeline_of(conn, story_id)
         _planner_of(pipeline)
-        await _guard(conn, story_id, [request.instruction])
+        edit = request.line_edit
+        await _guard(
+            conn, story_id, [edit.new_text if edit is not None else request.instruction or ""]
+        )
         story = await parsing.load_story(
             conn,
             story_id,
             await _registry(conn, story_id),
             margin=settings.rewrite_ambiguity_margin,
         )
-    # The model call runs with no transaction open (FR-CONC-2).
-    result = await parsing.call_parse(models, story, request.instruction, [])
-    no_canon: list[dict[str, Any]] = []
-    if pipeline != "structured":
-        # #245 (FR-LITE-8): a Lite story's reach is model-searched over its transcript.
-        from epistrel.orchestrator.rewrite import lite as lite_rewrite
+    from epistrel.orchestrator.rewrite import lite as lite_rewrite
 
-        reached, unfixed = await lite_rewrite.reach(db, models, story_id, request.instruction)
-        result, no_canon = lite_rewrite.lite_result(result, reached)
-        no_canon.extend(unfixed)
-    result, gated = await gate_new_texts(db, models, story_id, result)
-    gated = [*gated, *no_canon]
+    gated: list[dict[str, Any]]
+    no_canon: list[dict[str, Any]] = []
+    reach_meta: dict[str, Any] | None = None
+    if edit is not None:
+        # #700: a direct line edit plans its one record change with no model call (no parse,
+        # no reach, no output gate: the author's text passed the input gate).
+        result = await lite_rewrite.line_edit_change(db, story_id, edit)
+        gated = []
+    else:
+        assert request.instruction is not None  # noqa: S101 - the request validates one
+        # The model call runs with no transaction open (FR-CONC-2).
+        result = await parsing.call_parse(models, story, request.instruction, [])
+        if pipeline != "structured":
+            # #245 (FR-LITE-8): a Lite story's reach is model-searched over its transcript.
+            reached = await lite_rewrite.reach(db, models, story_id, request.instruction)
+            if reached.unfixed[:1] == [{"reason": "reach_unavailable"}]:
+                from epistrel.core.errors import RewriteReachFailed
+
+                raise RewriteReachFailed(
+                    "the reach pass could not search the transcript", {"retryable": True}
+                )
+            reach_meta = reached.meta()
+            result, no_canon = lite_rewrite.lite_result(result, reached.changes)
+            no_canon.extend(reached.unfixed)
+        result, gated = await gate_new_texts(db, models, story_id, result)
+        gated = [*gated, *no_canon]
     mode, threshold = request.mode()
     async with db.begin() as conn:
         parsed, plan, revision = await _compute(
@@ -639,11 +662,19 @@ async def open_session(
                 principal=principal,
                 resolution_mode=mode,
                 threshold_severity=threshold,
-                preview=request.preview,
+                # #700: a truncated reach always previews first.
+                preview="preview_first"
+                if reach_meta is not None and reach_meta["truncated"]
+                else request.preview,
                 state="awaiting_answers",
                 pipeline=pipeline,
                 base_revision=revision,
-                plan=_stored_plan(result, {}, [], parsed, plan, gated),
+                plan={
+                    **_stored_plan(result, {}, [], parsed, plan, gated),
+                    **({} if edit is None else {"line_edit": edit.model_dump(mode="json")}),
+                    **_lite_note(pipeline, request.instruction, no_canon),
+                    **({} if reach_meta is None else {"reach": reach_meta}),
+                },
                 plan_hash=None if plan is None else plan.plan_hash,
                 plan_read_set=None if plan is None else plan.read_set,
                 expires_at=await _expires(conn, settings),
@@ -660,6 +691,24 @@ async def open_session(
     return await _apply_directly(db, models, story_id, written, principal=principal)
 
 
+LITE_NOTE_PREFIX = "Author correction: "
+
+
+def _lite_note(
+    pipeline: str, instruction: str | None, refused: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """#700 (FR-LITE-8): a Lite rewrite whose instruction states a world change (the parse
+    gave proposition or State changes, which Lite cannot hold: ``lite_no_canon``) records one
+    ``lite_note`` part with the instruction, rendered under "Author corrections"."""
+    from epistrel.orchestrator.rewrite.lite import NO_CANON
+
+    if pipeline == "structured" or not instruction:
+        return {}
+    if not any(r.get("reason") == NO_CANON for r in refused):
+        return {}
+    return {"lite_note": LITE_NOTE_PREFIX + instruction}
+
+
 async def _apply_directly(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -667,6 +716,7 @@ async def _apply_directly(
     written: RewriteWrite,
     *,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     """``apply_directly``: the call that leaves nothing pending applies (FR-REWRITE-4)."""
     session = written.session
@@ -679,6 +729,7 @@ async def _apply_directly(
         session.id,
         ApplyRequest(base_revision=session.base_revision),
         principal=principal,
+        run=run,
     )
 
 
@@ -782,6 +833,13 @@ async def open_merge(
         )
         revision = int((await _story(conn, story_id)).timeline_revision)
         plan = await planner.plan(conn, story, parsed, base_revision=revision)
+        from epistrel.orchestrator.rewrite import hypothetical
+
+        # #713: what the merged entities' facts say against the survivor's canon.
+        plan.irreducible = [
+            *plan.irreducible,
+            *await hypothetical.merge_contradictions(conn, story_id, ids),
+        ]
         parsed.questions.extend(dispose(plan.irreducible, mode, threshold).questions)
         locked = await _story(conn, story_id, lock=True)
         from epistrel.core import pause
@@ -909,6 +967,7 @@ async def open_directed(
     resolution_mode: Any,
     preview: str,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     """#241 (FR-COMMIT-12): an author-directed binding that conflicts with recorded history
     proceeds as an amendment: a ``directed_resolution`` session (``instruction``: the
@@ -963,7 +1022,7 @@ async def open_directed(
         )
         await _index(conn, session_id)
         written = await _answer(conn, story_id, session_id)
-    return await _apply_directly(db, models, story_id, written, principal=principal)
+    return await _apply_directly(db, models, story_id, written, principal=principal, run=run)
 
 
 # -- answers ---------------------------------------------------------------------------------------
@@ -1174,7 +1233,7 @@ async def answer(
                 threshold=row.threshold_severity,
             )
         stored = _stored_plan(result, bindings, answers, parsed, computed, gated)
-        for source in SOURCES:
+        for source in KEPT:
             if plan.get(source) is not None:
                 stored[source] = plan[source]
         await _write_questions(conn, story_id, session_id, parsed.questions)
@@ -1250,6 +1309,8 @@ UNDO_DEPTH = 3
 SOURCES = ("merge", "undo", "redo", "directed")
 """Sessions whose changes come from the engine, not a parse: an identity merge (#225), an undo
 and a redo (#238); the stored plan names the source."""
+KEPT = (*SOURCES, "line_edit", "lite_note", "reach")
+"""What a re-plan keeps of the stored plan (#700: a line edit's target, a Lite world note)."""
 
 
 async def _sourced(
@@ -1377,7 +1438,11 @@ async def _plan_sourced(
             plan = await _planner_of(pipeline).plan(conn, story, parsed, base_revision=revision)
         mine = {target}
         plan.irreducible = [
-            c for c in undo.undo_options(plan.irreducible) if not await _own_part(conn, c, mine)
+            c
+            for c in await undo.checked_undo_options(
+                conn, story_id, plan.irreducible, parsed.changes
+            )
+            if not await _own_part(conn, c, mine)
         ]
         plan.cascaded = [c for c in plan.cascaded if not await _own_part(conn, c, mine)]
         plan.incidental = [c for c in plan.incidental if not await _own_part(conn, c, mine)]
@@ -1385,6 +1450,16 @@ async def _plan_sourced(
         plan.irreducible = [
             *plan.irreducible,
             *await _directed_conflicts(conn, stored["directed"], plan),
+        ]
+    if stored.get("merge") is not None:
+        from epistrel.orchestrator.rewrite import hypothetical
+
+        # #713: what the merged entities' facts say against the survivor's canon.
+        plan.irreducible = [
+            *plan.irreducible,
+            *await hypothetical.merge_contradictions(
+                conn, story_id, list(stored["merge"]["entity_ids"])
+            ),
         ]
     asked = dispose(plan.irreducible, mode, threshold).questions
     if stored.get("undo") is not None:
@@ -1447,7 +1522,7 @@ async def _recompute(
             threshold=threshold,
         )
     again = _stored_plan(result, bindings, list(stored.get("answers") or []), parsed, plan, gated)
-    for source in SOURCES:
+    for source in KEPT:
         if stored.get(source) is not None:
             again[source] = stored[source]
     return parsed, plan, revision, again
@@ -1567,6 +1642,7 @@ async def apply_session(
     request: ApplyRequest,
     *,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     """Apply the session's plan as one amendment (#224; see ``rewrite.apply``). The checks, in
     order: 404; an ended session 409 ``rewrite_session_closed``, one being applied 409
@@ -1582,11 +1658,17 @@ async def apply_session(
     recomputed (``_restale``) and, under ``apply_directly`` with nothing left to answer, applied
     again up to ``rewrite_stale_retries`` times, else 409 ``rewrite_stale`` with the new
     preview; an erasure touching the plan abandons the session (409
-    ``erased_subject_referenced``)."""
+    ``erased_subject_referenced``).
+
+    ``run`` (#712): a ``directed_resolution`` session's apply is staged on its directed
+    regeneration's turn, which ``run`` plays and commits: the variant and the amendment commit
+    in one transaction, or neither does."""
     retries = 0
     while True:
         try:
-            return await _apply_once(db, models, story_id, session_id, request, principal=principal)
+            return await _apply_once(
+                db, models, story_id, session_id, request, principal=principal, run=run
+            )
         except revalidate.Revalidated as signal:
             outcome = signal.outcome
             if isinstance(outcome, revalidate.Abandon):
@@ -1614,6 +1696,7 @@ async def _apply_once(
     request: ApplyRequest,
     *,
     principal: str,
+    run: rewrite_apply.Run | None = None,
 ) -> RewriteWrite:
     from epistrel.core import pause
 
@@ -1694,6 +1777,7 @@ async def _apply_once(
             principal=principal,
             audit=rewrite_apply.audit_events(session_id, asked),
             check=_revalidation(story_id, row, settings),
+            run=run,
         )
     except revalidate.Revalidated:
         raise

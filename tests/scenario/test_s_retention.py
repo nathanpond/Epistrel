@@ -188,3 +188,70 @@ async def test_s_retention(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch)
 async def _execute(engine: AsyncEngine, sql: str, **params: Any) -> None:
     async with engine.begin() as conn:
         await conn.execute(text(sql), params)
+
+
+@pytest.mark.part("M7", "FR-STORE-30,32")
+async def test_s_retention__m7(engine: AsyncEngine) -> None:
+    """S-RETENTION M7: continuations persist until deletion only while pruning is off. Two
+    stories each hold a discarded tail and a dormant continuation flipped 30 days ago. With
+    pruning off, the retention sweep and the daily prune run delete nothing of either. Setting a
+    prune policy on one changes nothing by itself (its records and revision unchanged); its
+    first run prunes that story's tail and continuation, and the other story keeps both."""
+    from epistrel.core import clock
+    from epistrel.core.prune import run_policy
+
+    stories = []
+    for _ in range(2):
+        story = await new_story(engine)
+        for n in (1, 2, 3):
+            await play_turn(engine, story, f"line {n}")
+        assert await truncate(engine, story, 1) is not None  # 2..3 discarded
+        await play_turn(engine, story, "new 2")  # the old 2..3 become a dormant continuation
+        await play_turn(engine, story, "new 3")
+        assert await truncate(engine, story, 2) is not None  # the new 3 is a discarded tail
+        await _execute(
+            engine,
+            "UPDATE operations SET membership_tx = membership_tx - make_interval(days => 30) "
+            "WHERE story_id = :s AND membership IN ('discarded', 'dormant')",
+            s=story,
+        )
+        stories.append(story)
+    opted, kept = stories
+    before = await _story_state(engine, opted, kept)
+    await retention.sweep_retention(engine)
+    await run_policy(engine, clock.now())
+    assert await _story_state(engine, opted, kept) == before
+
+    revision = await scalar(engine, "SELECT timeline_revision FROM stories WHERE id = :s", s=opted)
+    await _execute(
+        engine,
+        'UPDATE stories SET settings = settings || \'{"prune_policy": {"older_than_days": 7}}\''
+        "::jsonb WHERE id = :s",
+        s=opted,
+    )
+    assert await _story_state(engine, opted, kept) == before
+    assert (
+        await scalar(engine, "SELECT timeline_revision FROM stories WHERE id = :s", s=opted)
+        == revision
+    )
+
+    ran = await run_policy(engine, clock.now())
+    assert ran["pruned"] >= 1
+    left = {
+        r.membership
+        for r in await rows(
+            engine,
+            "SELECT membership::text AS membership FROM operations WHERE story_id = :s",
+            s=opted,
+        )
+    }
+    assert not {"discarded", "dormant"} & left
+    kept_memberships = {
+        r.membership
+        for r in await rows(
+            engine,
+            "SELECT membership::text AS membership FROM operations WHERE story_id = :s",
+            s=kept,
+        )
+    }
+    assert {"discarded", "dormant"} <= kept_memberships

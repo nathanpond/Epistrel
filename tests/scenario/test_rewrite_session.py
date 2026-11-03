@@ -238,7 +238,8 @@ async def test_rewrite_session(pg_url: str, engine: AsyncEngine) -> None:
 async def test_rewrite_lite_interim(pg_url: str, engine: AsyncEngine) -> None:
     """#245 retires the interim: a Lite story's session is never ``module_off``. With no line
     the reach pass can fix and no change Lite can hold, the instruction is a no-op (422
-    ``rewrite_noop``) and no session row is written."""
+    ``rewrite_noop``) and no session row is written. #700: a story with no line yet makes no
+    reach call (its chunked search has nothing to read)."""
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         story = (await create(client, story_body("Wren", "Ada")))["story_id"]
@@ -247,7 +248,7 @@ async def test_rewrite_lite_interim(pg_url: str, engine: AsyncEngine) -> None:
         found = await _open(client, story, "Ada was always a sailor.")
         assert found.status_code == 422, found.text
         assert found.json()["error"]["code"] == "rewrite_noop"
-        assert [c for c in epistrel.models.stub.calls if c.purpose == "lite_rewrite_reach"]
+        assert [c for c in epistrel.models.stub.calls if c.purpose == "lite_rewrite_reach"] == []
         assert (
             await scalar(
                 engine, "SELECT count(*) FROM rewrite_sessions WHERE story_id = :s", s=story

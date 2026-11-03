@@ -424,6 +424,7 @@ MaterializedOutcome = Literal[
     "state",
     "clock",
     "event",
+    "kept_existing",
 ]
 """What structured genesis did with an item (#149): ``canon`` (facts written), ``memory`` (a
 seed memory written), ``deferred`` (a part waits for a capability the story lacks),
@@ -434,7 +435,9 @@ or a name override recorded), ``rule`` (a story rule registered). With partition
 from a higher source with another audience won) and ``seed_audience_unfilled`` (an audience
 token named an unfilled role or the player's, and was dropped). With States and the clock
 (#202): ``state`` (a State declared, or a role's initial values seeded), ``clock`` (the starting
-clock seeded) and ``event`` (a scheduled event created)."""
+clock seeded) and ``event`` (a scheduled event created). A later materialization of a deferred
+clock or State (#698) reports ``kept_existing`` where the story already holds its own: a clock
+setting or anchor changed since creation, or a State of that name."""
 
 
 class OutcomeCounts(BaseModel):

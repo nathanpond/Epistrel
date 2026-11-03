@@ -1257,6 +1257,76 @@ async def merged_with(conn: AsyncConnection, story_id: str, entity_id: str) -> t
     return (entity_id, *sorted(found - {entity_id}))
 
 
+async def merged_classes(
+    conn: AsyncConnection, story_id: str, entity_ids: Sequence[str]
+) -> dict[str, tuple[str, ...]]:
+    """``merged_with`` for each of ``entity_ids`` in one read of the story's merges (#713:
+    a batch of profiles costs the same statements whatever its size, #451)."""
+    from epistrel.core import turn_memo
+
+    key = ("merged_entities", story_id)
+    links = turn_memo.get(key)
+    if links is turn_memo.MISSING:
+        links = await _merge_links(conn, story_id)
+        turn_memo.put(key, links)
+    found: dict[str, tuple[str, ...]] = {}
+    for entity_id in entity_ids:
+        members = {entity_id}
+        frontier = [entity_id]
+        while frontier:
+            nxt = [o for one in frontier for o in links.get(one, ()) if o not in members]
+            members.update(nxt)
+            frontier = nxt
+        found[entity_id] = (entity_id, *sorted(members - {entity_id}))
+    return found
+
+
+async def merge_survivor(conn: AsyncConnection, story_id: str, entity_id: str) -> str:
+    """#713 (FR-PROP-7): the entity an author's merge kept for ``entity_id``: following the
+    active merges' ``same_as(survivor, merged)`` parts from the merged side, the last survivor
+    (``entity_id`` itself when no merge took it in). Reads that answer for one entity (a State's
+    ``entity_id``, a scheduled event's ``place_id``, #713) show it in place of a merged id; the
+    stored rows keep their ids, so an undone merge reads as before."""
+    from epistrel.core import turn_memo
+
+    key = ("merge_survivors", story_id)
+    kept = turn_memo.get(key)
+    if kept is turn_memo.MISSING:
+        kept = await _merge_survivors(conn, story_id)
+        turn_memo.put(key, kept)
+    seen = {entity_id}
+    current = entity_id
+    while current in kept and kept[current] not in seen:
+        current = kept[current]
+        seen.add(current)
+    return current
+
+
+async def _merge_survivors(conn: AsyncConnection, story_id: str) -> dict[str, str]:
+    """Each merged entity's survivor (the subject of the merge's ``same_as`` part)."""
+    from epistrel.core.propositions.vocabulary import SAME_AS
+    from epistrel.core.tables import amendment_parts
+
+    p = amendment_parts.c
+    rows = await conn.execute(
+        select(propositions.c.subject_id, propositions.c.object_id)
+        .select_from(
+            facts.join(propositions, propositions.c.id == facts.c.proposition_id).join(
+                amendment_parts, p.id == facts.c.amendment_part_id
+            )
+        )
+        .where(
+            facts.c.story_id == story_id,
+            propositions.c.predicate_id == SAME_AS,
+            facts.c.superseded_by.is_(None),
+            facts.c.tx_to.is_(None),
+            active_only(facts),
+            p.status == "active",
+        )
+    )
+    return {str(b): str(a) for a, b in rows if a is not None and b is not None and a != b}
+
+
 async def _merge_links(conn: AsyncConnection, story_id: str) -> dict[str, set[str]]:
     from epistrel.core.propositions.vocabulary import SAME_AS
     from epistrel.core.tables import amendment_parts

@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Request, Response
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
+from pydantic import Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
@@ -128,6 +129,17 @@ class ImportedBody(DeploymentMutationResponse):
     source_story_id: str
     exported_revision: int
     counts: dict[str, int]
+    operation_id: str | None = Field(
+        default=None,
+        description="#705: the story's `import` operation (its `turn_report.imported_from`: "
+        "the source story, the exported revision, the format version and the bundle's "
+        "SHA-256).",
+    )
+    warnings: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="#705: what a bundle of a newer format MINOR carried that this deployment "
+        "ignored (`unknown_member`, `unknown_fields`), or `media_not_imported`.",
+    )
 
     @classmethod
     def of(cls, found: Imported) -> ImportedBody:
@@ -137,6 +149,8 @@ class ImportedBody(DeploymentMutationResponse):
             exported_revision=found.exported_revision,
             counts=found.counts,
             config_revision=found.config_revision,
+            operation_id=found.operation_id,
+            warnings=list(found.warnings),
         )
 
 
@@ -165,10 +179,14 @@ async def _archive(request: Request) -> bytes:
         "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed "
         "archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, "
         "checked against its manifest (format `1.x`, every member's SHA-256), every id it owns "
-        "remapped, and written as a new story in one transaction, owned by `owner` (default: "
+        "remapped, every line checked against its schema (`components.schemas` "
+        "`StoryBundle*`) and every event payload against its type, the members in the export's "
+        "order, and written as a new story in one transaction, owned by `owner` (default: "
         "the caller) under `engine_profile_id` (default: its bundle profile when this "
         "deployment has it, else the default profile); projections and the subject index are "
-        "rebuilt. 201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` "
+        "rebuilt, its media written as new assets of the owner, its revision the exported one "
+        "plus one (an `import` operation records `imported_from`), and the embed job queued. "
+        "201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` "
         "(`details.reason`) or `unsupported_format_version`. A refusal writes nothing."
     ),
     openapi_extra={

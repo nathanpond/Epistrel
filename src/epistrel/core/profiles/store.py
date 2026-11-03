@@ -115,6 +115,7 @@ from epistrel.core.tables import (
     scenario_catalog,
     scenario_versions,
     stories,
+    story_backfills,
 )
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.ownership import EntityType
@@ -665,6 +666,7 @@ async def _upgrade_following(
     pinned (``upgrade-pinned`` brings it forward later)."""
     for story in sorted(following.keep) if forward else ():
         await core_backfill.supersede_queued(conn, story)
+    await _fold_queued(conn, profile_id, set(following.keep), previous_settings)  # #698
     now_following = list(
         await conn.scalars(
             select(stories.c.id)
@@ -700,6 +702,53 @@ async def _upgrade_following(
         principal=principal,
         start_job=start_job,
     )
+
+
+async def _fold_queued(
+    conn: AsyncConnection, profile_id: str, skip: set[str], previous: Any = None
+) -> None:
+    """#698 (#229's queue): a later version of the profile folds into each queued upgrade
+    backfill toward it not yet claimed (``target.pin`` null: its latest version): the backfill's
+    capabilities become what the latest version adds to the story's pinned configuration (a
+    decrease drops one; a further increase adds one). When nothing is left to re-derive, the
+    backfill is superseded and the pin cleared: the story follows the latest version now, its
+    coverage closed for what it lost. ``skip``: the stories this edit itself queues or gaps.
+    Only a version that changes data-producing settings against ``previous`` (the profile's
+    settings before it) folds: a behavioral edit leaves the queue as it is."""
+    t = story_backfills.c
+    rows = await conn.execute(
+        select(story_backfills)
+        .where(t.status == "queued", t.origin == core_backfill.PROFILE_EDIT)
+        .order_by(t.seq)
+    )
+    defaults = await effective.profile_defaults(conn)
+    head = await _head(conn, profile_id)
+    latest = await _version(conn, profile_id, int(head.current_version))
+    if previous is not None:
+        now = effective.merged_settings(defaults, latest.settings)
+        if not schema.data_increases(previous, now) and not schema.data_increases(now, previous):
+            return
+    for row in rows:
+        target = dict(row.target or {})
+        story = str(row.story_id)
+        if story in skip or target.get("profile_id") != profile_id or target.get("pin"):
+            continue
+        if not await core_backfill.waiting(conn, row):
+            continue
+        current = await effective.effective_configuration(conn, story, validate=False)
+        after = effective.merged_settings(defaults, latest.settings, current.overrides)
+        wanted = sorted(schema.data_increases(current.settings, after))
+        if wanted == sorted(row.capabilities or ()):
+            continue
+        if wanted:
+            await conn.execute(
+                update(story_backfills).where(t.id == row.id).values(capabilities=wanted)
+            )
+            continue
+        await core_backfill.supersede_queued(conn, story)
+        await conn.execute(
+            update(stories).where(stories.c.id == story).values(engine_profile_version_pin=None)
+        )
 
 
 async def queue_upgrades(

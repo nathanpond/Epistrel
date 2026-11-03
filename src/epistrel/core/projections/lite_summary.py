@@ -9,7 +9,8 @@ at or after its index ``dormant`` (as its commit does to their operations), and 
 the still-``discarded`` rows at or after its index ``dormant``.
 
 On top of the operation's membership a row can be ``superseded``: while a merged segment (level
-> 0) whose own operation is active names the row's operation among its sources. The state is
+> 0), or a segment rebuilt over corrected lines (#700), whose own operation is active names the
+row's operation among its sources. The state is
 recomputed after every change (``settle``), so a child goes back to ``active`` when its parent
 is discarded by a truncation and is superseded again when an untruncate restores the parent.
 The fold replays the same events through the same ``apply``, so a rebuild equals the
@@ -69,7 +70,7 @@ def settle(rows: Rows) -> None:
     held = {
         str(source["operation_id"])
         for row in current
-        if row["level"] > 0 and operation_membership(row) == ACTIVE
+        if operation_membership(row) == ACTIVE  # #700: a rebuilt segment holds its old one
         for source in row["source_versions"] or ()
     }
     for row in current:

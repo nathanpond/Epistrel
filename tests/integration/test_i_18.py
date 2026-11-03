@@ -1308,7 +1308,8 @@ async def test_i_18__m7_read_set(
 @pytest.mark.part("M7", "FR-CONC-4")
 def test_i_18__m7_members() -> None:
     """#662 (FR-CONC-4): the full Lite read-set member tuple, the M2/M3 members leading in order
-    and #662's ``time`` and ``tracked_values`` appended (#244 appends after them); a name that is
+    and #662's ``time`` and ``tracked_values`` appended, then #699's ``author_facts`` and
+    ``author_direction``; a name that is
     no member still cannot be registered."""
     assert READ_SET_MEMBERS == (
         "window",
@@ -1321,6 +1322,8 @@ def test_i_18__m7_members() -> None:
         "director_notes",
         "time",
         "tracked_values",
+        "author_facts",
+        "author_direction",
     )
     with pytest.raises(ValueError, match="not a Lite read-set member"):
         register_read_set_member("guardrails", lambda conn, story, spec: None)  # type: ignore[arg-type,return-value]
@@ -1416,3 +1419,141 @@ async def test_i_18__m7_skips(stub_settings: Settings, engine: AsyncEngine) -> N
         await turn("Wait for her.", "Twenty minutes later she arrives.")
         assert _estimations(stub) == 0
         assert (await sources())[-1][0] in ("declared_skip", "pacing")
+
+
+@pytest.mark.part("M7", "FR-CLOCK-7,8; FR-LITE-5,7")
+async def test_i_18__m7_skip_replay(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#714 (#632's replay and regenerate clauses, NFR-PERF-7): (a) a refold of the story's
+    projections (the replay) reproduces an estimated Lite skip's advance with no
+    ``time_estimation`` call; (b) regenerating the turn with a reply that narrates no skip
+    recomputes the advance from the new reply (pacing only, the skip's advance gone from the
+    turn); (c) with no estimation call left in the turn's budget the skip is not applied and
+    the respond's ``degradation`` lists ``time_estimate_skipped`` (cause ``budget``), as the
+    stored turn report does."""
+    from epistrel.core.projections.fold import rebuild
+    from epistrel.orchestrator.lite.context import TIME_ESTIMATE_SKIPPED
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, overrides=LITE_FORMS)
+        await clock_support.anchor_at(engine, story, 19 * 60 + 10)
+        actor = ids[PLAYER]
+        stub.when("", "Sure, I love that film.", purpose="generation")
+        quiet = await played(client, story, body(actor, "Shall we put on a movie?"))
+        start = quiet["clock"]["after"]["offset"]
+        stub.reset()
+        stub.when("", MOVIE, purpose="generation")
+        stub.when("", _estimate(90), purpose="time_estimation")
+        watched = await played(client, story, body(actor, "Let's watch it."))
+        assert _estimations(stub) == 1
+        assert watched["clock"]["after"]["offset"] == start + 90
+
+        # (a) Replay: the fold reproduces the advance; no estimator is called.
+        stub.reset()
+        clock_before = _ok(await client.get(f"/stories/{story}/clock", headers=READ))
+        await rebuild(engine, story)
+        assert _estimations(stub) == 0
+        assert _ok(await client.get(f"/stories/{story}/clock", headers=READ)) == clock_before
+
+        # (b) Regenerate with a reply narrating no skip: pacing only, recomputed.
+        stub.reset()
+        stub.when("", "They talk about the film instead.", purpose="generation")
+        again = _ok(await client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE))
+        assert _estimations(stub) == 0
+        paced = again["clock"]["after"]["offset"] - start
+        assert 0 <= paced < 90
+
+        # (c) No call left: unapplied, and the degradation says so.
+        from epistrel.orchestrator.budget import TIME_ESTIMATION, TurnBudget
+
+        real = TurnBudget.try_optional
+
+        def no_estimate(self: TurnBudget, kind: str, cost: int) -> bool:
+            return False if kind == TIME_ESTIMATION else real(self, kind, cost)
+
+        monkeypatch.setattr(TurnBudget, "try_optional", no_estimate)
+        stub.reset()
+        stub.when("", MOVIE, purpose="generation")
+        starved = await played(client, story, body(actor, "Put it back on."))
+        assert _estimations(stub) == 0
+        assert TIME_ESTIMATE_SKIPPED in starved["degradation"]
+        assert {"step": TIME_ESTIMATE_SKIPPED, "cause": "budget"} in starved["degradation_details"]
+        assert starved["clock"]["after"]["offset"] - again["clock"]["after"]["offset"] < 90
+        (report,) = await rows(
+            engine,
+            "SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "ORDER BY narrative_turn DESC, turn_variant DESC LIMIT 1",
+            s=story,
+        )
+        assert TIME_ESTIMATE_SKIPPED in report.turn_report["degradation"]
+        assert report.turn_report["clock"]["skips_refused"] == [{"reason": "unestimated"}]
+
+
+@pytest.mark.part("M7", "FR-CONC-4")
+async def test_i_18__m7_author_read_set(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#699 (FR-CONC-4, FR-LITE-8): a Lite turn regenerates when, while it generates, a lasting
+    author fact lands at a slot: two generation calls, the attempt names ``author_facts``, and
+    the second prompt carries the fact. A nudge queued meanwhile moves no revision: the turn in
+    flight commits as it is and the next turn carries the nudge (#226's steer rule; the
+    ``author_direction`` member keeps the hash honest when the revision moves for another
+    reason). Complement: a fact landing on another story leaves the turn committing with one
+    call."""
+    import json
+
+    from epistrel.orchestrator.lite.pipeline import LITE_NUDGE  # noqa: F401 - the Lite path
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST)
+        other, _ = await new_story(client, PLAYER, FIRST)
+        monkeypatch.setattr(state_api, "turn_slot", _no_slot)
+        now = json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []})
+        actor = ids[PLAYER]
+        await played(client, story, body(actor, "Hello?"))
+
+        def fact(where: str, text: str) -> Any:
+            async def post() -> Any:
+                stub.when(text, now, purpose="directive_parse")
+                return await client.post(
+                    f"/stories/{where}/directives",
+                    params={"viewpoint": "omniscient"},
+                    json={"text": text},
+                    headers=WRITE,
+                )
+
+            return post
+
+        def nudge() -> Any:
+            return client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": "Make it quiet.", "kind": "ephemeral"},
+                headers=WRITE,
+            )
+
+        calls, attempts = await _held(
+            client, engine, stub, story, actor, fact(story, "It starts raining.")
+        )
+        assert len(calls) == 2
+        regenerated = [a for a in attempts if a["outcome"] == "regenerate"]
+        assert regenerated, attempts
+        assert "author_facts" in regenerated[0]["touched"], attempts
+        assert "It starts raining." not in system_of(calls[0])
+        assert "It starts raining." in system_of(calls[1])
+        # A nudge moves no revision, so the turn in flight commits as it is (#226: a steer
+        # attaches to the next turn whose assembly starts after it); the next turn carries it.
+        calls, attempts = await _held(client, engine, stub, story, actor, nudge)
+        assert len(calls) == 1
+        assert "Make it quiet." not in system_of(calls[0])
+        stub.reset()
+        await played(client, story, body(actor, "And now?"))
+        assert "Make it quiet." in system_of(generation_calls(stub)[-1])
+        calls, attempts = await _held(
+            client, engine, stub, story, actor, fact(other, "Snow on the other story.")
+        )
+        assert len(calls) == 1
+        assert all(a["outcome"] != "regenerate" for a in attempts), attempts

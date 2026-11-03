@@ -57,8 +57,8 @@ from epistrel.core.tables import (
     state_definitions,
     utterances,
 )
-from epistrel.orchestrator.rewrite import revalidate
-from epistrel.orchestrator.rewrite.cascade import PlanContext, classify
+from epistrel.orchestrator.rewrite import hypothetical, revalidate
+from epistrel.orchestrator.rewrite.cascade import RE_RUN, Classification, PlanContext, classify
 from epistrel.orchestrator.rewrite.parse import Normalized, Parsed, Story
 
 EXCERPT_MAX = 160
@@ -168,6 +168,51 @@ class _Record:
     narrated_by: str | None = None
     holder: str | None = None
     kind: str | None = None
+
+
+async def _changed_facts(conn: AsyncConnection, story_id: str, change: Normalized) -> set[str]:
+    """The current facts on a proposition change's key (what the change rewrites)."""
+    from epistrel.core.canon import facts as canon
+
+    s = change.summary
+    if change.kind != "proposition" or str(s.get("subject_id", "")).startswith("new:"):
+        return set()
+    if str(s.get("predicate_id", "")).startswith("register:"):
+        return set()
+    current = await canon.canon(
+        conn, story_id, subject=s["subject_id"], predicate=s["predicate_id"]
+    )
+    return {f.id for f in current}
+
+
+async def _settle(
+    conn: AsyncConnection,
+    story_id: str,
+    change: Normalized,
+    classified: Classification,
+    table: str,
+    record_id: str,
+    changed: set[str],
+) -> Classification:
+    """#707: #140's check under the change's hypothetical canon settles a ``causes``
+    decision (``keep`` when another premise still supports it) and an inferred belief
+    (``cascade`` when its premises support the new value, else ``keep``)."""
+    if classified.action == RE_RUN:
+        if change.kind == "proposition" and await hypothetical.inference_follows(
+            conn, story_id, record_id, change.summary, changed
+        ):
+            return Classification(classified.bucket, "cascade")
+        return Classification(classified.bucket, "keep")
+    if (
+        classified.action == "re_evaluate"
+        and table == "events"
+        and change.kind == "proposition"
+        and await hypothetical.decision_supported(
+            conn, story_id, record_id, change.summary, changed
+        )
+    ):
+        return Classification(classified.bucket, "keep")
+    return classified
 
 
 async def _records(
@@ -402,9 +447,13 @@ class StructuredPlanner:
         ctx = PlanContext(change.summary)
         records = await _records(conn, {d.dependent for d in dependents})
         old_forms = await _surface_forms(conn, change.superseded_object)
+        changed = await _changed_facts(conn, story.story_id, change)
         for dependent in dependents:
             table, record_id = dependent.dependent
             classified = classify(ctx, dependent)
+            classified = await _settle(
+                conn, story.story_id, change, classified, table, record_id, changed
+            )
             entry: dict[str, Any] = {
                 "record": {"table": table, "id": record_id},
                 "edge_type": dependent.edge_type.value,
@@ -424,6 +473,15 @@ class StructuredPlanner:
                 # FR-REWRITE-11 (#238): a later amendment relying on what changes is asked
                 # about whatever its edge type (``cascade_undo`` recommended).
                 reason = "dependent_amendment"
+            elif (
+                change.kind == "state"
+                and dependent.edge_type in TEXT_EDGES
+                and table == "events"
+                and found is not None
+            ):
+                # #697 (FR-DIRECT-3): a line that presupposed the State's value (a #191 owned
+                # reading) cannot be fixed by substituting a name: it is a conflict.
+                reason = self._irreducible(found, old_forms) or "state_presupposed"
             elif dependent.edge_type in TEXT_EDGES and found is not None:
                 reason = self._irreducible(found, old_forms)
             elif dependent.edge_type is DependencyEdgeType.CAUSES and table == "events":

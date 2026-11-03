@@ -682,6 +682,10 @@ class StoryView:
     amendment_checks_pending: dict[str, Any] | None = None
     """#239: ``{count, session_id}`` of the open support-check questions about the story's
     amendments (``None`` when none); filled by ``Engine.get_story``."""
+    pruning: dict[str, Any] | None = None
+    """#703 (FR-STORE-32): ``{policy, last_prune_at, next_run_at}``: the story's
+    ``prune_policy`` (``None``: off), its latest pruning (manual or by the policy) and, while
+    the policy is on, when the daily ``prune_run`` runs next. Read by ``get_story`` only."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1650,6 +1654,10 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
     await drop_many(
         conn, idempotency_keys.name, [idempotency_id(k.scope, k.scope_id, k.key) for k in keys]
     )
+    from epistrel.core.bundles import delete_story_bundles
+
+    # #704: the story's exports and their archive files go with it.
+    removed["bundle_exports"] = await delete_story_bundles(conn, story_id)
     for table in STORY_TABLES:
         result = await conn.execute(delete(table).where(table.c.story_id == story_id))
         removed[table.name] = result.rowcount
@@ -1829,7 +1837,34 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
         if row.scenario_id is None
         else ScenarioOrigin(id=str(row.scenario_id), version=int(row.scenario_version))
     )
-    return dataclasses.replace(view, pause=paused, scenario=scenario)
+    async with db.connect() as conn:
+        pruning = await _pruning(conn, story_id, view.settings)
+    return dataclasses.replace(view, pause=paused, scenario=scenario, pruning=pruning)
+
+
+async def _pruning(
+    conn: AsyncConnection, story_id: str, settings: Mapping[str, Any]
+) -> dict[str, Any]:
+    """#703: the story's ``pruning`` block (see ``StoryView.pruning``)."""
+    from epistrel.core.tables import events, recurring_tasks
+
+    policy = dict(settings or {}).get("prune_policy")
+    last = await conn.scalar(
+        select(events.c.tx_time)
+        .where(events.c.story_id == story_id, events.c.type == "pruning")
+        .order_by(events.c.seq.desc())
+        .limit(1)
+    )
+    next_run = None
+    if isinstance(policy, Mapping) and policy:
+        next_run = await conn.scalar(
+            select(recurring_tasks.c.next_run_at).where(recurring_tasks.c.name == "prune_run")
+        )
+    return {
+        "policy": dict(policy) if isinstance(policy, Mapping) else None,
+        "last_prune_at": None if last is None else last.isoformat(),
+        "next_run_at": None if next_run is None else next_run.isoformat(),
+    }
 
 
 async def list_stories(

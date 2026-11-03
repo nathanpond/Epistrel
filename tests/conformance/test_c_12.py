@@ -563,3 +563,46 @@ async def test_c_12__m6_states(
     trust = (await surface.state(story, HIDDEN_STATE, viewpoint="omniscient")).json["state"]
     assert trust["values"] == {player: 0, first: 3, ids[SECOND]: 0}
     assert trust["visibility"] == "hidden"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-RESP-12")
+async def test_c_12__m7_as_recorded(pg_url: str, engine: AsyncEngine) -> None:
+    """C-12 M7: a read of the as-originally-recorded view (``view=as_recorded``) that does not
+    name ``omniscient`` (no viewpoint, or a character's) is rejected, 403
+    ``omniscient_required`` with no record in the body, over REST and the library; naming it
+    answers the view."""
+    from epistrel.core.errors import OmniscientRequired
+    from tests.auth_support import auth_settings, bearer
+    from tests.respond_support import body as respond_body
+    from tests.respond_support import new_story, respond_client
+
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (
+        client,
+        lib,
+    ):
+        story, ids = await new_story(client)
+        actor = next(iter(ids.values()))
+        played = await client.post(
+            f"/stories/{story}/respond", json=respond_body(actor), headers=WRITE
+        )
+        assert played.status_code == 200, played.text
+        for params in (
+            {"view": "as_recorded", "as_of": "1"},
+            {"view": "as_recorded", "as_of": "1", "viewpoint": _vp(actor)},
+        ):
+            refused = await client.get(f"/stories/{story}/history", params=params, headers=bearer())
+            assert refused.status_code == 403, refused.text
+            assert set(refused.json()) == {"error"}
+            assert refused.json()["error"]["code"] == "omniscient_required"
+        with pytest.raises(OmniscientRequired):
+            await lib.history(
+                RequestContext(principal="p-c12"), story, view="as_recorded", as_of="1"
+            )
+        shown = await client.get(
+            f"/stories/{story}/history",
+            params={"view": "as_recorded", "as_of": "1", "viewpoint": "omniscient"},
+            headers=bearer(),
+        )
+        assert shown.status_code == 200, shown.text
+        assert shown.json()["view"] == "as_recorded"

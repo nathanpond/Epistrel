@@ -419,9 +419,33 @@ class ModelAccessLayer:
                 stage=stage,
             )
         )
-        if result.reported_version:
-            await reported_version.observe(self._db, model or result.model, result.reported_version)
+        version = result.reported_version or await self._listed_version(
+            purpose, model or result.model
+        )
+        if version:
+            await reported_version.observe(self._db, model or result.model, version)
         return result
+
+    async def _listed_version(self, purpose: str, model: str) -> str | None:
+        """#710 (FR-PROF-16): the fallback when a completion reports no ``system_fingerprint``:
+        the ``version`` field of the model's entry in its endpoint's ``/models`` list, probed
+        at the first such call and then at most once an hour per purpose
+        (``reported_version.LISTING_TTL_S``); ``None`` when the adapter lists none or the
+        probe fails (the call itself is never affected)."""
+        if self._db is None:
+            return None
+        lister = getattr(self.adapter, "listed_versions", None)
+        if lister is None:
+            return None
+        cached = reported_version.listing(purpose)
+        if cached is None:
+            try:
+                async with asyncio.timeout(PROBE_TIMEOUT_S):
+                    listed: dict[str, str] = await lister(purpose)
+            except Exception:  # a failed probe only leaves the version unknown
+                listed = {}
+            cached = reported_version.remember_listing(purpose, listed)
+        return cached.get(model)
 
     async def _model_name(self, purpose: str) -> str:
         """The model a call for ``purpose`` is configured to use (the adapter's name when no

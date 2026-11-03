@@ -47,8 +47,12 @@ from epistrel.core.enums import (
     StateChangeSource,
 )
 from epistrel.core.errors import (
+    AuthorFactLimit,
+    DirectiveAmbiguous,
     DirectiveNoChanges,
+    DirectiveSplitRequired,
     DirectiveUnparseable,
+    SteerBudgetExceeded,
 )
 from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
@@ -77,6 +81,11 @@ TEXT_MAX = 4_000
 PARSE_CALLS = 4
 PARSE_DEADLINE_S = 120.0
 AUTHOR = "author"
+STEER_BUDGET_TOKENS = 500
+"""#696: the most tokens the story's unconsumed steers may take (one #170 constraint block)."""
+USE_CUSTOM_INSTRUCTIONS = "use_custom_instructions"
+"""#696: the hint on a steer the parse read as standing guidance (FR-LITE-3's custom
+instructions hold it from now on; a steer applies to one turn)."""
 
 
 class DirectiveRequest(BaseModel):
@@ -133,6 +142,8 @@ class DirectiveResult:
     steer_text: str | None = None
     timeline_revision: int = 0
     replayed: bool = False
+    hints: tuple[str, ...] = ()
+    """#696: ``use_custom_instructions`` for standing guidance."""
 
 
 # -- the checks ---------------------------------------------------------------------------------
@@ -218,6 +229,9 @@ class _Normalized:
     states: list[Any] = field(default_factory=list)
     clock: list[dict[str, Any]] = field(default_factory=list)
     beliefs: list[tuple[str, Proposition, BeliefConfidenceLevel]] = field(default_factory=list)
+    events: list[tuple[str, Any]] = field(default_factory=list)
+    """#696: ``("create", ScheduledEventCreate)``, ``("reschedule", (event_id, planned))`` or
+    ``("cancel", event_id)``, through ``core.world_clock.scheduled`` with ``owner = author``."""
     ambiguous: bool = False
     past: bool = False
 
@@ -314,9 +328,105 @@ async def _normalize(
             found.states.append(dataclasses.replace(set_to, source=StateChangeSource.AUTHOR))
         elif change.kind == "clock":
             found.clock.append({"minutes": change.minutes, "to": change.to})
+        elif change.kind in ("event", "reschedule", "cancel_event"):
+            made = await _event_change(conn, story.story_id, change, entity)
+            if made is None:
+                found.ambiguous = True
+            else:
+                found.events.append(made)
     if ctx.parsed.questions:
         found.ambiguous = True
     return found
+
+
+async def _event_change(
+    conn: AsyncConnection, story_id: str, change: DirectiveChange, entity: Any
+) -> tuple[str, Any] | None:
+    """#696: a scheduled-event change, resolved like #196's API: a new event's participants
+    (characters) and place (a place entity) by name, an existing event by its name among the
+    story's open events (422 ``directive_ambiguous {candidates}`` when the name is not exactly
+    one); ``None`` when a name needs a question (the directive routes to a rewrite)."""
+    from epistrel.core.tables.propositions import entities
+    from epistrel.core.world_clock import stops
+    from epistrel.core.world_clock.scheduled import ScheduledEventCreate, event_names
+
+    if change.kind == "event":
+        if not change.name or change.planned is None:
+            return None
+        participants: list[str] = []
+        for name in change.participants:
+            found = entity(name)
+            if found is None or str(found).startswith("new:"):
+                return None
+            character = await conn.scalar(
+                select(entities.c.character_id).where(entities.c.id == found)
+            )
+            if character is None:
+                return None
+            participants.append(str(character))
+        place = None
+        if change.place:
+            place = entity(change.place)
+            if place is None or str(place).startswith("new:"):
+                return None
+        return (
+            "create",
+            ScheduledEventCreate(
+                proposition=change.name,
+                planned=change.planned,
+                participants=participants,
+                place=place,
+                owner="author",
+            ),
+        )
+    if not change.event:
+        return None
+    open_events = [e for e in await stops.events_at(conn, story_id) if e.is_open]
+    names = await event_names(conn, [e.event_id for e in open_events])
+    wanted = change.event.strip().casefold()
+    matches = [e for e in open_events if names.get(e.event_id, "").casefold() == wanted]
+    if len(matches) != 1:
+        raise DirectiveAmbiguous(
+            "the directive names no single open scheduled event",
+            {"candidates": sorted(names.get(e.event_id, "") for e in open_events)[:20]},
+        )
+    if change.kind == "cancel_event":
+        return ("cancel", matches[0].event_id)
+    if change.planned is None:
+        return None
+    return ("reschedule", (matches[0].event_id, change.planned))
+
+
+async def _steer_tokens(conn: AsyncConnection, story_id: str, steer: str) -> int:
+    """#696: the tokens the story's unconsumed steers would take with ``steer`` queued
+    (#53's estimator, one line each)."""
+    from epistrel.core.summary import estimate_tokens
+
+    queued = await queued_steers(conn, story_id)
+    return sum(estimate_tokens(text) for _, text in queued) + estimate_tokens(steer)
+
+
+async def expire_steers(db: AsyncEngine) -> int:
+    """#696: unconsumed steers older than ``directive_steer_ttl_minutes`` are dropped
+    (disposition ``expired``) under the deployment's setting; how many."""
+    from sqlalchemy import func
+
+    async with db.begin() as conn:
+        settings = await read_section(conn, RewriteSettings)
+        d = directives.c
+        done = await conn.execute(
+            update(directives)
+            .where(
+                d.disposition == "steer_queued",
+                d.consumed_by_operation_id.is_(None),
+                d.created_at
+                < func.now()
+                - func.make_interval(0, 0, 0, 0, 0, int(settings.directive_steer_ttl_minutes)),
+            )
+            .values(disposition="expired")
+            .returning(d.id)
+        )
+        return len(list(done))
 
 
 # -- applying ----------------------------------------------------------------------------------
@@ -332,6 +442,8 @@ async def _apply_now(
     *,
     principal: str,
     routed: Sequence[tuple[Any, Any]] = (),
+    lite_fact: str | None = None,
+    fact_limit: int | None = None,
 ) -> tuple[DirectiveApplied, str, int]:
     """One inter-turn slot operation applying every change (see the module docstring); #242:
     each ``routed`` change of a game-owned value is written as an ``intended`` outbox row the
@@ -363,6 +475,28 @@ async def _apply_now(
                 )
                 placed = await clock_precheck(conn, story_id, request_)
                 targets.append((advance["minutes"], placed))
+    from epistrel.core.enums import ScheduledStatus
+    from epistrel.core.world_clock import scheduled, stops
+
+    planned_events: list[tuple[str, Any, Any, Any]] = []
+    if normalized.events:
+        async with db.connect() as conn:
+            for kind, change in normalized.events:
+                event_offset: int | None
+                event_placed: Any
+                if kind == "create":
+                    event_offset, event_placed = await scheduled.prepare_create(
+                        conn, story_id, change
+                    )
+                elif kind == "reschedule":
+                    event_offset, event_placed = await scheduled.prepare_change(
+                        conn, story_id, change[0], change[1]
+                    )
+                else:
+                    event_offset, event_placed = await scheduled.prepare_change(
+                        conn, story_id, change, None
+                    )
+                planned_events.append((kind, change, event_offset, event_placed))
     applied: dict[str, list[str]] = {
         "facts": [],
         "state_changes": [],
@@ -374,6 +508,14 @@ async def _apply_now(
 
     async def step(conn: AsyncConnection) -> None:
         position = slot_position(op)
+        if lite_fact and fact_limit is not None:
+            # #699: the cap, under the story lock (concurrent requests cannot both pass it).
+            active = await lite_fact_count(conn, story_id, excluding=op.operation_id)
+            if active >= fact_limit:
+                raise AuthorFactLimit(
+                    "the story holds the most lasting author facts it may",
+                    {"active": active, "max": fact_limit},
+                )
         if routed:
             applied["outbox_ids"] = await _route_writes(
                 conn, op, story_id, directive_id, routed, position.slot_k, principal=principal
@@ -431,6 +573,24 @@ async def _apply_now(
             )
             if held.belief is not None:
                 applied["beliefs"].append(held.belief.id)
+        for kind, change, offset, placed in planned_events:
+            # #696: scheduled-event changes through #196's writers, owner ``author``.
+            if kind == "create":
+                event = await scheduled.create_in(conn, op, story_id, change, offset, placed)
+            else:
+                event = await scheduled.change_in(
+                    conn,
+                    op,
+                    story_id,
+                    change[0] if kind == "reschedule" else change,
+                    status=ScheduledStatus.PENDING
+                    if kind == "reschedule"
+                    else ScheduledStatus.CANCELLED,
+                    cause=stops.RESCHEDULED if kind == "reschedule" else stops.CANCELLED,
+                    offset=offset,
+                    placed=placed,
+                )
+            applied["scheduled_events"].append(event.event_id)
         await conn.execute(
             insert(directives).values(
                 id=directive_id,
@@ -456,7 +616,12 @@ async def _apply_now(
         async with op:
             op.append(
                 "directive_applied",
-                {"directive_id": directive_id, "text": request.text, "changes": payload},
+                {
+                    "directive_id": directive_id,
+                    "text": request.text if lite_fact is None else lite_fact,
+                    "changes": payload,
+                    **({"lite": True} if lite_fact else {}),
+                },
                 provenance=Provenance.CONSUMER,
             )
             op.add_commit_step(step)
@@ -543,7 +708,12 @@ async def apply_directive(
             conn, story_id, await load(conn, story_id), margin=settings.rewrite_ambiguity_margin
         )
     if request.kind == "ephemeral":
-        result = DirectiveParseResult(classification="ephemeral", steer_text=request.text)
+        # #696 (Rule 1): the request's text (up to ``TEXT_MAX``) is the steer as sent; the
+        # parse schema's 2,000-character bound is for a model's answer, and building it here
+        # failed a long steer with a 500 before the steer budget could refuse it.
+        result = DirectiveParseResult.model_construct(
+            classification="ephemeral", steer_text=request.text
+        )
     else:
         result = await _parse(models, story, request.text)
     classification = request.kind or result.classification
@@ -553,15 +723,31 @@ async def apply_directive(
     if lite and classification != "ephemeral" and result.temporal_scope != "past":
         # #244 (FR-LITE-8): a lasting author fact (a past one is a Lite rewrite, #245, routed
         # below like a structured story's).
-        fact = (result.steer_text or "").strip() or request.text
+        from epistrel.core import world_clock
+
+        clock = [c for c in result.changes if c.kind == "clock"]
+        async with db.connect() as conn:
+            clock_on = await world_clock.clock_level(conn, story_id) is not None
+        # #699: with the prompt-only clock on, the parse's clock advance moves it in the same
+        # slot (422 ``clock_backward``/``clock_unanchored``, nothing written); off, it is
+        # dropped and the text is the fact.
+        advances = [{"minutes": c.minutes, "to": c.to} for c in clock] if clock and clock_on else []
+        time_only = (
+            bool(advances)
+            and not (result.steer_text or "").strip()
+            and all(c.kind == "clock" for c in result.changes)
+        )
+        fact = "" if time_only else (result.steer_text or "").strip() or request.text
         noted, at, moved = await _apply_now(
             db,
             story_id,
             directive_id,
-            request.model_copy(update={"text": fact}),
-            _Normalized(),
+            request.model_copy(update={"text": fact}) if fact else request,
+            _Normalized(clock=advances),
             payload,
             principal=principal,
+            lite_fact=fact,
+            fact_limit=settings.lite_author_facts_max,
         )
         return DirectiveResult(
             directive_id,
@@ -569,13 +755,24 @@ async def apply_directive(
             "applied",
             position=at,
             applied=noted.model_copy(
-                update={"author_fact": {"id": directive_id, "position": at, "text": fact}}
+                update={
+                    "author_fact": {"id": directive_id, "position": at, "text": fact}
+                    if fact
+                    else None
+                }
             ),
             timeline_revision=moved,
+            hints=(USE_CUSTOM_INSTRUCTIONS,) if result.standing else (),
         )
     if classification == "ephemeral":
         steer = result.steer_text.strip() or request.text
         async with db.begin() as conn:
+            tokens = await _steer_tokens(conn, story_id, steer)
+            if tokens > STEER_BUDGET_TOKENS:
+                raise SteerBudgetExceeded(
+                    "the story's queued steers would pass their token budget",
+                    {"tokens": tokens, "max": STEER_BUDGET_TOKENS},
+                )
             await conn.execute(
                 insert(directives).values(
                     id=directive_id,
@@ -599,9 +796,29 @@ async def apply_directive(
             "steer_queued",
             steer_text=steer,
             timeline_revision=int(revision or 0),
+            hints=(USE_CUSTOM_INSTRUCTIONS,) if result.standing else (),
         )
     async with db.connect() as conn:
         normalized = await _normalize(conn, story, result.changes)
+    if (normalized.clock or normalized.states or normalized.events) and (
+        result.temporal_scope == "past" or normalized.past
+    ):
+        # #696: a rewrite cannot advance the clock, set a value now or move an event: the
+        # author sends the change to the past and the change to now apart.
+        raise DirectiveSplitRequired(
+            "the directive mixes a change to now with a change to the past",
+            {
+                "now": [
+                    k
+                    for k, v in (
+                        ("clock", normalized.clock),
+                        ("state", normalized.states),
+                        ("scheduled_event", normalized.events),
+                    )
+                    if v
+                ]
+            },
+        )
     if result.temporal_scope == "past" or normalized.past or normalized.ambiguous:
         routed = await rewrite_session.open_session(
             db,
@@ -638,7 +855,13 @@ async def apply_directive(
             rewrite_session=routed.session,
             timeline_revision=routed.timeline_revision,
         )
-    if not (normalized.facts or normalized.states or normalized.clock or normalized.beliefs):
+    if not (
+        normalized.facts
+        or normalized.states
+        or normalized.clock
+        or normalized.beliefs
+        or normalized.events
+    ):
         raise DirectiveNoChanges(
             "the directive asks for no change", {"text_length": len(request.text)}
         )
@@ -646,7 +869,8 @@ async def apply_directive(
 
     async with db.connect() as conn:
         judged = await external_guard.classify(conn, story_id, normalized.states)
-    refused = [v for _, v in judged if v.action == "refuse"]
+        facts_judged = await external_guard.classify_facts(conn, story_id, normalized.facts)
+    refused = [v for _, v in [*judged, *facts_judged] if v.action == "refuse"]
     if refused:
         # #242: a game-owned value on a read-only provider: the whole directive is refused.
         raise external_guard.refusal(refused)
@@ -758,13 +982,155 @@ async def author_facts(conn: AsyncConnection, story_id: str, before_turn: int) -
     ]
 
 
-def lite_notes(steers: Sequence[tuple[str, str]], facts: Sequence[str]) -> str:
-    """#244: the Lite prompt's author blocks, as author notes."""
+async def lite_fact_count(
+    conn: AsyncConnection, story_id: str, *, excluding: str | None = None
+) -> int:
+    """#699: the story's active Lite lasting author facts (``directive_applied`` events marked
+    ``lite`` whose slot operation is on the active chain), ``excluding`` an operation's own
+    (the slot being written, whose event is already staged in its transaction)."""
+    from sqlalchemy import func
+
+    from epistrel.core.membership import active_operation
+    from epistrel.core.tables import operations
+
+    o, e = operations.c, events.c
+    found = await conn.scalar(
+        select(func.count())
+        .select_from(events.join(operations, o.operation_id == e.operation_id))
+        .where(
+            e.story_id == story_id,
+            e.type == "directive_applied",
+            e.payload["lite"].as_boolean().is_(True),
+            active_operation(operations),
+            *([e.operation_id != excluding] if excluding is not None else []),
+        )
+    )
+    return int(found or 0)
+
+
+async def lite_facts(conn: AsyncConnection, story_id: str) -> list[tuple[str, int, int, str]]:
+    """#699: the active Lite lasting author facts in narrative order: ``(event id, turn,
+    slot, text)``."""
+    from epistrel.core.membership import active_operation
+    from epistrel.core.tables import operations
+
+    o, e = operations.c, events.c
+    rows = await conn.execute(
+        select(e.id, o.narrative_turn, o.slot_k, e.payload)
+        .join(operations, o.operation_id == e.operation_id)
+        .where(
+            e.story_id == story_id,
+            e.type == "directive_applied",
+            e.payload["lite"].as_boolean().is_(True),
+            active_operation(operations),
+        )
+        .order_by(o.narrative_turn, o.slot_k, e.seq)
+    )
+    return [
+        (str(r.id), int(r.narrative_turn or 0), int(r.slot_k or 0), str(r.payload.get("text")))
+        for r in rows
+        if str(dict(r.payload or {}).get("text", "")).strip()
+    ]
+
+
+async def kept_author_facts(conn: AsyncConnection, story_id: str, before_turn: int) -> str:
+    """#699: under the structured pipeline, the Lite lasting author facts an upgrade kept as
+    text (no completed backfill converted them), set before ``before_turn``: the narrator's
+    "Author facts" block (a character learns them only through its context, NFR-PRIV-4)."""
+    from epistrel.core.tables import story_backfills
+
+    facts = [f for f in await lite_facts(conn, story_id) if f[1] < before_turn]
+    if not facts:
+        return ""
+    converted: set[str] = set()
+    for (report,) in await conn.execute(
+        select(story_backfills.c.report).where(
+            story_backfills.c.story_id == story_id, story_backfills.c.status == "completed"
+        )
+    ):
+        converted.update(str(i) for i in dict(report or {}).get("author_facts", {}).get("ids", []))
+    kept = [
+        f"(after turn {turn}) {text.strip()}" for i, turn, _, text in facts if i not in converted
+    ]
+    if not kept:
+        return ""
+    return lite_notes((), kept)
+
+
+CORRECTIONS_MAX = 50
+"""#700: at most the 50 most recent active corrections in the "Author corrections" block."""
+
+
+async def author_corrections(conn: AsyncConnection, story_id: str) -> list[str]:
+    """#700 (FR-LITE-8): the "Author corrections" block's lines, oldest first: each active
+    ``lite_note`` part's text, and (under Lite, after a downgrade) each active structured
+    rewrite's instruction ("Author correction: ..."), whose record parts already apply through
+    the overlay. Position-less: they survive truncation like any amendment (FR-STORE-21)."""
+    from epistrel.core.tables import amendment_parts, amendments, rewrite_sessions
+
+    a, p, r = amendments.c, amendment_parts.c, rewrite_sessions.c
+    notes = await conn.execute(
+        select(a.tx_time, p.patch_after)
+        .select_from(amendment_parts.join(amendments, a.id == p.amendment_id))
+        .where(
+            p.story_id == story_id,
+            p.kind == "lite_note",
+            p.status == "active",
+            a.status == "active",
+        )
+    )
+    found: list[tuple[Any, str]] = [(t, str((after or {}).get("text") or "")) for t, after in notes]
+    structured = await conn.execute(
+        select(a.tx_time, r.instruction)
+        .select_from(amendments.join(rewrite_sessions, r.id == a.session_id))
+        .where(
+            a.story_id == story_id,
+            a.status == "active",
+            a.kind == "rewrite",
+            r.pipeline == "structured",
+            r.instruction.is_not(None),
+        )
+    )
+    found.extend((t, "Author correction: " + str(text)) for t, text in structured)
+    found = sorted((f for f in found if f[1]), key=lambda f: f[0])[-CORRECTIONS_MAX:]
+    return [text for _, text in found]
+
+
+async def lite_note_parts(conn: AsyncConnection, story_id: str) -> list[tuple[str, str]]:
+    """#700: the story's active ``lite_note`` parts, oldest first: ``(part_id, text)`` (an
+    upgrade converts each like a lasting author fact)."""
+    from epistrel.core.tables import amendment_parts, amendments
+
+    a, p = amendments.c, amendment_parts.c
+    found = await conn.execute(
+        select(p.id, p.patch_after)
+        .select_from(amendment_parts.join(amendments, a.id == p.amendment_id))
+        .where(
+            p.story_id == story_id,
+            p.kind == "lite_note",
+            p.status == "active",
+            a.status == "active",
+        )
+        .order_by(p.tx_from, p.id)
+    )
+    return [(str(i), str((after or {}).get("text") or "")) for i, after in found]
+
+
+def lite_notes(
+    steers: Sequence[tuple[str, str]], facts: Sequence[str], corrections: Sequence[str] = ()
+) -> str:
+    """#244: the Lite prompt's author blocks, as author notes (#700: "Author corrections"
+    right after the facts)."""
     blocks: list[str] = []
     if facts:
         blocks.append(
             "Author facts (true from where each was set; a later fact wins over an earlier "
             "one):\n" + "\n".join(f"- {f}" for f in facts)
+        )
+    if corrections:
+        blocks.append(
+            "Author corrections (the story's history as the author corrected it):\n"
+            + "\n".join(f"- {c}" for c in corrections)
         )
     if steers:
         blocks.append("Author direction (this turn only): " + " ".join(text for _, text in steers))
@@ -784,8 +1150,13 @@ __all__ = [
     "DirectiveRequest",
     "DirectiveResult",
     "apply_directive",
+    "author_corrections",
     "author_facts",
     "consume_steers",
+    "kept_author_facts",
+    "lite_fact_count",
+    "lite_facts",
+    "lite_note_parts",
     "lite_notes",
     "precheck",
     "queued_steers",

@@ -64,3 +64,48 @@ async def test_s_original_at_slot(engine: AsyncEngine) -> None:
     assert "reply 12" not in corrected
     with pytest.raises(CheckpointNotFound):
         await as_originally_recorded(engine, w.story_id, Checkpoint(14, 3))
+
+
+@pytest.mark.part("M7", "FR-STORE-26")
+async def test_s_original_at_slot__derived(
+    engine: AsyncEngine, pg_url: str, drained_embedding_jobs: None
+) -> None:
+    """After turn 14 and its slots ``14⁺1`` and ``14⁺2``, a reflection is computed from turns
+    1-14. Every as-originally-recorded view (``14``, ``14⁺1``, ``14⁺2``) excludes it (no event
+    of the consolidation), while the corrected history through 14 includes it (FR-STORE-26: a
+    derived record from sources at or before the checkpoint)."""
+    from epistrel.core.memory import records
+    from epistrel.core.memory.consolidation import Window
+    from epistrel.orchestrator.jobs.handlers.consolidation import consolidate_window
+    from epistrel.orchestrator.models.access import ModelAccessLayer
+    from tests import consolidation_support as cs
+    from tests.auth_support import auth_settings
+    from tests.event_support import rows
+
+    models = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    models.bind(engine)
+    w = await cs.story(engine, cs.dials(window_memories=1_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(engine, story, 14, actor=bobby, name="Bobby", does=True)
+    await _slot(engine, story, "slot one")
+    await _slot(engine, story, "slot two")
+    models.stub.script(
+        "consolidation",
+        [cs.answer(reflections=[("Bobby kept at it all day.", "observation", [0, 1])])],
+    )
+    await consolidate_window(engine, story, Window(1, 14), models=models)
+    consolidations = {
+        str(r.operation_id)
+        for r in await rows(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'consolidation'",
+            s=story,
+        )
+    }
+    assert consolidations
+    for checkpoint in (Checkpoint(14), Checkpoint(14, 1), Checkpoint(14, 2)):
+        view = await as_originally_recorded(engine, story, checkpoint)
+        assert not consolidations & {e.operation_id for e in view.events}, checkpoint
+    async with engine.connect() as conn:
+        through = {m.text for m in await records.memories_through(conn, story, 14)}
+    assert "Bobby kept at it all day." in through

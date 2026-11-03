@@ -300,3 +300,34 @@ async def test_c_02__m6_admin(pg_url: str, engine: AsyncEngine) -> None:
     found = await provider.read("gold", Binding(story, name, {}), None)
     assert str(found.value) == "42"
     assert fake.reads == [("gold", story, None)]
+
+
+M7_OPERATOR_PATHS = (
+    "/admin/stories/{story_id}/export",
+    "/admin/stories/exports/{job_id}",
+    "/admin/stories/exports/{job_id}/bundle",
+    "/admin/stories/import",
+)
+"""docs/04 C-02 [M7]'s operator endpoints: story export and import (#249, #250)."""
+
+
+@pytest.mark.part("M7", "FR-API-1")
+def test_c_02__m7_bundles(dummy_dsn: str) -> None:
+    """M7's story export and import are served under ``/admin``, each matched by the operator
+    patterns and backed by an Engine operation (REST and the in-process library); nothing
+    operator-shaped is served outside ``/admin``.
+
+    Complement asserted: the same paths outside ``/admin`` would be reported as misplaced."""
+    app = full_app(dummy_dsn)
+    paths = {path for _, path, _ in served(app)}
+    assert set(M7_OPERATOR_PATHS) <= paths
+    assert [path for path in M7_OPERATOR_PATHS if not is_operator_path(path)] == []
+    misplaced = [p for p in paths if is_operator_path(p) and not p.startswith(ADMIN_PREFIX)]
+    assert misplaced == []
+    outside = [path.removeprefix(ADMIN_PREFIX) for path in M7_OPERATOR_PATHS]
+    assert [path for path in outside if not is_operator_path(path)] == []
+    names = operations()
+    for name in ("export_story", "export_status", "import_story"):
+        assert name in names, name
+    assert unreachable(app) == []
+    assert unguarded_routes(app) == []

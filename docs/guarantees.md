@@ -49,6 +49,7 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | NFR-QUAL-10 | `verification` at `extraction` or above | `extraction_backstop` |
 | salience | `salience` | model-dependent | NFR-QUAL-4 | `commitment`; `commitment.salience = rules_and_model` | `salience_detection` |
 | time estimation | `time_estimation` | model-dependent | NFR-QUAL-9 | `clock` at `on` | `time_estimation` |
+| Lite time estimation | `lite_time_estimation` | model-dependent | NFR-QUAL-9 | `pipeline` at `lite`; `clock` at `prompt_only` | `time_estimation` |
 | entailment fallback | `entailment_fallback` | model-dependent | NFR-QUAL-2 | `verification` at `entailment` | `entailment` |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | unmeasured | `partitions`; `testimony` at `model` | `belief_adjudication` |
 | repair rendering | `repair_rendering` | model-dependent | NFR-QUAL-14 | `verification` at `declared` or above; `repair` | `regeneration` |
@@ -63,6 +64,7 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 | history rewrite repair | `rewrite_record` | model-dependent | unmeasured | none (outside stories) | `rewrite_record` |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | unmeasured | none (outside stories) | `lite_rewrite_reach` |
 | directive parse | `directive_parse` | model-dependent | unmeasured | none (outside stories) | `directive_parse` |
+| author directives | `author_directives` | deterministic | — (tested, not measured) | none (outside stories) | — |
 | quality judge | `quality_judge` | model-dependent | NFR-QUAL-14 | none (outside stories) | `quality_judge` |
 
 ## Notes
@@ -79,7 +81,8 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `generation`: Includes a regeneration after an output policy's violation (FR-GUARD).
 - `claim_extraction`: Complete detection is a measured rate, reported per layer and per `extraction_mode` (E-10). Under `gated`, the default, it runs only on the beats a detector flagged, and a shadow sample records what gating missed (FR-OBS-4).
 - `salience`: At `commitment.salience = rules`, salience is detected by rules only.
-- `time_estimation`: Under `lite` no time skip is estimated: the prompt-only clock advances by pacing only.
+- `time_estimation`: Under `lite`, see `lite_time_estimation`.
+- `lite_time_estimation`: With the prompt-only clock, a narrated skip with no stated amount is estimated by at most one call per turn (FR-LITE-7) and bounded by FR-CLOCK-8's rules; a refused or unestimated skip is not applied (Lite has no repair) and the clock moves by pacing only. Due events never stop a Lite skip (FR-CLOCK-9 is structured-only).
 - `belief_adjudication`: At `testimony = defaulted`, every acceptance follows the deterministic default of trust, priors and consistency, and no model is called.
 - `paraphrase_detection`: No purpose of its own is defined: the viewpoint checks of the render's claims (verification, could-have-known) catch what detection finds, and NFR-QUAL-1's zero-leak evals (Q-04's asymmetry, the private-thought suite) measure what reaches the output.
 - `rolling_summary`: NFR-QUAL-3 measures consolidation's reflections, not the rolling summary.
@@ -90,7 +93,8 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `rewrite_parse`: The author's side-channel, never in a turn: its changes are previewed and every ambiguity is asked, with a recommendation, before anything is applied.
 - `rewrite_record`: The author's side-channel, never in a turn: a repaired text passes the output policies before it can be applied, and a failed repair is dropped or asked about.
 - `lite_rewrite_reach`: The author's side-channel, never in a turn: a Lite rewrite's reach is model-searched, not structurally complete; every fix is previewed and a line the player wrote is never rewritten silently.
-- `directive_parse`: The author's side-channel, never in a turn: a request's explicit kind overrides its classification, and a change to the past is previewed as a rewrite.
+- `directive_parse`: The author's side-channel, never in a turn: a request's explicit kind overrides its classification, and a change to the past is previewed as a rewrite. Lite form: the same parse classifies a Lite directive as a nudge or a lasting author fact (FR-LITE-8); whether the model honours the fact in its reply is unmeasured.
+- `author_directives`: The author's directions apply with author authority at the next inter-turn slot (FR-DIRECT-1,2): facts are checked by the contradiction rules, and narrative canon never supersedes them (FR-DIRECT-6). Lite form: prompt-only: a nudge for the next reply, or a lasting author fact in every later prompt, following timeline membership; no contradiction checking (Lite keeps no canon).
 - `quality_judge`: Eval only, never in a turn.
 
 ## Outside the guarantee: voice and plot
@@ -130,6 +134,7 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | not provided |
 | salience | `salience` | model-dependent | not provided |
 | time estimation | `time_estimation` | model-dependent | not provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | not provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
 | repair rendering | `repair_rendering` | model-dependent | not provided |
@@ -144,6 +149,7 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
+| author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Not provided under Lite:** structural knowledge separation, verification, audience filtering, commitment.
@@ -179,6 +185,7 @@ Profile `00000000000000000000PRF003`, version 1 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | not provided |
 | time estimation | `time_estimation` | model-dependent | provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | not provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |
@@ -193,6 +200,7 @@ Profile `00000000000000000000PRF003`, version 1 as seeded.
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
+| author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Provided under Standard:** structural knowledge separation, verification, audience filtering, commitment.
@@ -224,6 +232,7 @@ Profile `00000000000000000000PRF002`, version 4 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | provided |
 | time estimation | `time_estimation` | model-dependent | provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |
@@ -238,6 +247,7 @@ Profile `00000000000000000000PRF002`, version 4 as seeded.
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
+| author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Provided under Full:** structural knowledge separation, verification, audience filtering, commitment.
@@ -267,6 +277,7 @@ Profile `00000000000000000000PRF004`, version 1 as seeded.
 | model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
 | salience | `salience` | model-dependent | provided |
 | time estimation | `time_estimation` | model-dependent | provided |
+| Lite time estimation | `lite_time_estimation` | model-dependent | not provided |
 | entailment fallback | `entailment_fallback` | model-dependent | provided |
 | testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
 | repair rendering | `repair_rendering` | model-dependent | provided |
@@ -281,6 +292,7 @@ Profile `00000000000000000000PRF004`, version 1 as seeded.
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
+| author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Provided under Max:** structural knowledge separation, verification, audience filtering, commitment.

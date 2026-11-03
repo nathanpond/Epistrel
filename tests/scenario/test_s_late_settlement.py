@@ -794,3 +794,198 @@ async def test_s_late_settlement__consumer_listing(
             assert refused.json()["error"]["details"]["reason"] == "no_listing"
         await ls.drop_jobs(engine, story)
         await ss.set_level(engine, story, None)
+
+
+SOLD_OUT = "Mira shrugs: the swords are sold out."
+
+
+@pytest.mark.part("M7", "FR-BELIEF-6; FR-STORE-20; FR-DIRECT-3")
+async def test_s_late_settlement__m7(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#697 (S-LATE-SETTLEMENT M7, #242's backdating clause): Cal's purchase settles (the gold is
+    the game's, the sword the story's); a later line, "the swords are sold out", presupposes the
+    story-owned sword State (#191's owned reading: a ``presupposes`` edge on the State). An
+    author amendment backdating Cal's possession to the story's start goes through the normal
+    blast radius: the line is a conflict (``state_presupposed``) settled under the session's
+    mode, and the externally owned payment (its outbox row and outcome record) is
+    byte-identical before and after."""
+    from epistrel.core import edges
+    from epistrel.core.enums import (
+        DependencyEdgeType,
+        DependencyTarget,
+        OperationKind,
+        Provenance,
+    )
+    from epistrel.core.events import Operation
+    from epistrel.core.membership import Position
+    from tests import rewrite_support as rs
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal, mira = ids["Cal"], ids["Mira"]
+        fake = await ls.bank(engine, epistrel, story)
+        await ls.swords(engine, story, mira, transfer={})
+        conditional = StateContingency.CONDITIONAL
+        payment, _ = await ls.intent(engine, story, fake.name, cal, [ls.Side(cal, 1, conditional)])
+        await ls.turn(engine, story)
+        done = await ls.settle(engine, epistrel, await ls.answer(engine, epistrel, payment))
+        assert done.result == settlement.SETTLED
+        (sword_state,) = await rows(
+            engine,
+            "SELECT id FROM state_definitions WHERE story_id = :s AND name = 'sword'",
+            s=story,
+        )
+        line: dict[str, str] = {}
+        async with Operation(
+            engine, story_id=story, kind=OperationKind.TURN, principal="p-test"
+        ) as op:
+            op.append("player_input", {"text": "Another sword?"}, provenance=Provenance.PLAYER)
+            op.append("message_rendered", {"text": SOLD_OUT})
+
+            async def step(conn: Any) -> None:
+                from sqlalchemy import text
+
+                found = await conn.scalar(
+                    text(
+                        "SELECT id FROM events WHERE operation_id = :o "
+                        "AND type = 'message_rendered'"
+                    ),
+                    {"o": op.operation_id},
+                )
+                line["id"] = str(found)
+                await edges.record_edges(
+                    conn,
+                    op,
+                    [
+                        edges.EdgeSpec(
+                            DependencyEdgeType.PRESUPPOSES,
+                            "events",
+                            str(found),
+                            DependencyTarget.STATE,
+                            str(sword_state.id),
+                            target_subject_id=mira,
+                            position=Position(op.narrative_turn or 0, 0, 0, 1, 0),
+                        )
+                    ],
+                )
+
+            op.add_commit_step(step)
+            await op.commit()
+
+        async def payment_rows() -> list[Any]:
+            outbox = [dict(r._mapping) for r in await ps.outbox_rows(engine, story)]
+            outcomes = [dict(r._mapping) for r in await ps.outbox_outcomes(engine, story)]
+            return [*outbox, *outcomes]
+
+        before = await payment_rows()
+        stub.reset()
+        stub.when(
+            "",
+            '{"changes": [{"kind": "state", "state": "sword", "scope": "Cal", "value": 1, '
+            '"valid": {"from": "0"}}]}',
+            purpose="rewrite_parse",
+        )
+        stub.when(
+            "", '{"text": "Mira shrugs: she has no more swords to sell."}', purpose="rewrite_record"
+        )
+        opened = await rs.open_session(client, story, resolution_mode="best_effort")
+        assert opened.status_code == 201, opened.text
+        session = opened.json()
+        conflicts = {
+            c["record"]["id"]: c["reason"]
+            for c in session["preview"]["blast_radius"]["irreducible"]
+        }
+        assert conflicts.get(line["id"]) == "state_presupposed", session["preview"]
+        applied = await rs.apply(client, story, session["id"], await rs.revision(engine, story))
+        assert applied.status_code == 200, applied.text
+        resolved = {
+            r["records"][0]["id"]: r["action"] for r in applied.json()["report"]["resolutions"]
+        }
+        assert resolved[line["id"]] in ("rewrite", "drop")
+        assert await payment_rows() == before
+        await ls.drop_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M7", "FR-BELIEF-6; FR-STORE-20; FR-DIRECT-3")
+@pytest.mark.parametrize("corrects", ["earlier", "later"])
+async def test_s_late_settlement__m7_lazy(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+    corrects: str,
+) -> None:
+    """#697 (#242's case 6): case 6's story (an exposure at ``h⁺2`` that Jenni resolves lazily,
+    after Cal sold the sword) with an author amendment of Cal's sword applied before the
+    resolution. One correcting history before ``h⁺2`` (valid from the story's start) is in the
+    corrected history the resolution reads through ``h⁺2`` (#221's per-part eligibility at the
+    frame); one correcting only later history (valid from after ``h⁺2``'s story-time) is not.
+    The resolution reads through the frame only, either way."""
+    from epistrel.core import world_clock
+    from epistrel.core.membership import Position
+    from tests import rewrite_support as rs
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Mira", "Jenni")
+        cal, mira, jenni = ids["Cal"], ids["Mira"], ids["Jenni"]
+        await ts.enable_testimony(engine, story, "defaulted")
+        parlor = await perception.place_entity(engine, story, "parlor")
+        kitchen = await perception.place_entity(engine, story, "kitchen")
+        for who, where in ((cal, parlor), (jenni, parlor), (mira, kitchen)):
+            await perception.put(engine, story, who, where)
+        fake = await ls.bank(engine, epistrel, story)
+        await ls.swords(engine, story, mira, transfer={})
+        conditional = StateContingency.CONDITIONAL
+        payment, _ = await ls.intent(engine, story, fake.name, cal, [ls.Side(cal, 1, conditional)])
+        head = (await ls.turn(engine, story)).narrative_turn
+        assert head is not None
+        await set_state(
+            engine,
+            story,
+            "sword",
+            StateSetRequest(value=1, scope_key=mira, reason="restocked"),
+            principal="p-consumer",
+        )
+        done = await ls.settle(engine, epistrel, await ls.answer(engine, epistrel, payment))
+        assert done.result == settlement.SETTLED
+        (exposed,) = await xs.exposure_rows(engine, story)
+        assert exposed.witness_character_id == jenni
+        at_frame = await ls.sword_of(engine, story, cal, head, 2)
+        async with engine.connect() as conn:
+            frame_minute = await world_clock.story_time_at(conn, story, Position(head, 0, 2, 0, 1))
+        await ss.change(engine, story, ss.delta("sword", -1, scope_key=cal, reason="sold it"))
+        await ls.turn(engine, story)
+
+        valid_from = 0 if corrects == "earlier" else frame_minute + 600
+        stub.reset()
+        stub.when(
+            "",
+            '{"changes": [{"kind": "state", "state": "sword", "scope": "Cal", "value": 7, '
+            f'"valid": {{"from": "{valid_from}"}}}}]}}',
+            purpose="rewrite_parse",
+        )
+        amended = await rs.open_session(
+            client, story, resolution_mode="best_effort", preview="apply_directly"
+        )
+        assert amended.status_code == 201, amended.text
+        assert amended.json()["state"] == "applied", amended.json()
+
+        resolution, _ = await xs.resolve(engine, story, exposed.id)
+        frame = (head, 2, 0, 1)
+        assert resolution.reads
+        assert all(r.through is not None and tuple(r.through) <= frame for r in resolution.reads)
+        through_frame = await ls.sword_of(engine, story, cal, head, 2)
+        if corrects == "earlier":
+            assert through_frame != at_frame  # the correction is in the history read there
+        else:
+            assert through_frame == at_frame  # a later correction is not
+        await ls.drop_jobs(engine, story)
+        await ss.set_level(engine, story, None)
+        await ts.forget(engine)

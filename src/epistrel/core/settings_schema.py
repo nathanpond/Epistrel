@@ -626,6 +626,9 @@ class RetentionSettings(BaseModel):
     extraction_shadow_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS, ge=1, le=AUDIT_RETENTION_MAX_DAYS
     )
+    bundle_export_ttl_hours: Annotated[StrictInt, PROSPECTIVE] = Field(default=24, ge=1, le=720)
+    """#704 (FR-STORE-7): how long a story export's archive is kept; ``retention_sweep`` then
+    deletes the file and sets the export ``expired``."""
 
 
 class WorkerHealthSettings(BaseModel):
@@ -943,6 +946,14 @@ class RewriteSettings(BaseModel):
         default=1_440, ge=10, le=30 * 1_440
     )
     rewrite_stale_retries: Annotated[StrictInt, PROSPECTIVE] = Field(default=2, ge=0, le=10)
+    directive_steer_ttl_minutes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=1_440, ge=10, le=30 * 1_440
+    )
+    """#696: an unconsumed ephemeral directive (a steer) older than this is dropped
+    (disposition ``expired``) by the ``rewrite_session_expiry`` sweep."""
+    lite_author_facts_max: Annotated[StrictInt, PROSPECTIVE] = Field(default=50, ge=1, le=1_000)
+    """#699 (FR-LITE-8): the most active lasting author facts a Lite story holds; one more is
+    409 ``author_fact_limit``."""
 
 
 DAY_S = 86_400

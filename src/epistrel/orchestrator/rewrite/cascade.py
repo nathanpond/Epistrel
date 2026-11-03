@@ -7,14 +7,18 @@ registered with ``@rule`` and used identically by the preview and the apply:
   the new value's name for the old one's surface forms);
 - ``presupposes`` → cascaded, ``fix`` (narration that assumed the old value), or #223's conflict
   when the substitution cannot repair it;
-- ``causes`` → cascaded, ``re_evaluate``: a decision the old fact was a reason for is regenerated
-  (#224's ``rewrite_record``) and flagged ``regenerated``; one whose beat committed State
-  effects or an outbox row is never regenerated (``plan`` makes it a conflict recommending
+- ``causes`` → cascaded, ``re_evaluate``: a decision the old fact was a reason for is kept when
+  #140's check under the hypothetical canon still supports one of its other premises (#707,
+  ``hypothetical.decision_supported``: ``plan`` settles it to ``keep``), and otherwise
+  regenerated (#224's ``rewrite_record``) and flagged ``regenerated``; one whose beat committed
+  State effects or an outbox row is never regenerated (``plan`` makes it a conflict recommending
   ``keep``, ``decision_effects_kept``);
 - ``derives`` → by ``acquisition_kind``: a firsthand belief (``observation``, ``discovery``)
   follows the fact (``cascade``: a correction transition to the new proposition, the old
-  confidence kept); a secondhand or attributed one (``testimony``, ``correction``,
-  ``revision``, ``author``, ``resolution``, ``author_fiat``) and an ``inference`` stay
+  confidence kept); an ``inference`` is re-run (#707: ``re_run``, which ``plan`` settles to
+  ``cascade`` when its premises under the hypothetical canon support the new value, else
+  ``keep``); a secondhand or attributed one (``testimony``, ``correction``,
+  ``revision``, ``author``, ``resolution``, ``author_fiat``) stays
   (``keep``: the character believed what they were told; a kept belief canon now contradicts is
   a ``belief_now_false`` notification); derived memories are cascaded through
   ``rewrite_record``;
@@ -36,6 +40,10 @@ from epistrel.core.enums import DependencyEdgeType
 Bucket = Literal["incidental", "cascaded", "relabel"]
 FIRSTHAND = frozenset({"observation", "discovery"})
 """Acquisition kinds whose belief follows the changed fact (#225)."""
+INFERENCE = "inference"
+RE_RUN = "re_run"
+"""#707: an inferred belief's provisional action; ``plan`` settles it to ``cascade`` or
+``keep`` by re-running the inference's premises."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +90,11 @@ def _derives(ctx: PlanContext, dependent: Any) -> Classification:
     kind = getattr(dependent, "acquisition_kind", None)
     if kind in FIRSTHAND:
         return Classification("cascaded", "cascade")
+    if kind == INFERENCE:
+        # #707: the plan re-runs the inference's premises under the hypothetical canon
+        # (``hypothetical.inference_follows``): ``cascade`` when they support the new value,
+        # else ``keep``.
+        return Classification("cascaded", RE_RUN)
     return Classification("cascaded", "keep")
 
 
@@ -100,4 +113,13 @@ def classify(ctx: PlanContext, dependent: Any) -> Classification:
     return CASCADE_RULES[dependent.edge_type](ctx, dependent)
 
 
-__all__ = ["CASCADE_RULES", "FIRSTHAND", "Classification", "PlanContext", "classify", "rule"]
+__all__ = [
+    "CASCADE_RULES",
+    "FIRSTHAND",
+    "INFERENCE",
+    "RE_RUN",
+    "Classification",
+    "PlanContext",
+    "classify",
+    "rule",
+]

@@ -105,7 +105,7 @@ amendment_parts = Table(
     Column("status", Text, nullable=False, server_default=text("'active'")),
     Column("tx_from", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
     Column("tx_to", TIMESTAMP(timezone=True), nullable=True),
-    CheckConstraint("kind IN ('proposition', 'record')", name="kind"),
+    CheckConstraint("kind IN ('proposition', 'record', 'lite_note')", name="kind"),
     CheckConstraint("status IN ('active', 'reverted')", name="status"),
     CheckConstraint(
         "action IS NULL OR action IN ('replace', 'drop', 'relabel', 'set_intent')", name="action"
@@ -122,6 +122,14 @@ amendment_parts = Table(
         "kind <> 'record' OR (record_table IS NOT NULL AND record_id IS NOT NULL "
         "AND action IS NOT NULL AND strategy IS NOT NULL)",
         name="record",
+    ),
+    CheckConstraint(
+        "kind <> 'lite_note' OR (subject_id IS NULL AND predicate_id IS NULL "
+        "AND proposition_id IS NULL AND state_id IS NULL AND record_table IS NULL "
+        "AND record_id IS NULL AND action IS NULL AND strategy IS NULL "
+        "AND written_fact_id IS NULL AND written_state_change_id IS NULL "
+        "AND patch_after ? 'text' AND patch_after - 'text' = '{}'::jsonb)",
+        name="lite_note",
     ),
     Index("ix_amendment_parts_amendment", "story_id", "amendment_id"),
     Index(

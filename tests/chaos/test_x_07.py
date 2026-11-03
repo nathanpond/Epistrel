@@ -1596,3 +1596,70 @@ async def test_x_07__m7_canary(pg_url: str, moved: MovableClock) -> None:
         finally:
             certification.install_harness(None)
             await db.dispose()
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M7", "NFR-REL-5")
+async def test_x_07__m7_prune(pg_url: str, moved: MovableClock) -> None:
+    """#703: with a story opted into a one-day ``prune_policy`` and an aged discarded tail, no
+    worker runs past three of ``prune_run``'s due times. Workers return and race for the due
+    row: the run fires once and prunes the tail once (one ``pruning`` event), late and never
+    skipped. Complement: firing again at once queues nothing, and a rerun of the policy (a
+    worker killed mid-run and run again) prunes nothing further."""
+    from epistrel.core import prune as core_prune
+    from epistrel.core import timeline
+    from epistrel.orchestrator.jobs.handlers import prune_policy
+
+    with migrated_database(pg_url, "epistrel_x07_prune") as url:
+        db = make_engine(auth_settings(url))
+        prune_policy.bind(core_prune.run_policy)
+        try:
+            story = await new_story(db)
+            for n in range(3):
+                await play_turn(db, story, f"turn {n}")
+            await timeline.truncate(
+                db, story, timeline.TruncateRequest(to_turn=1), principal="p-test"
+            )
+            await _execute(
+                db,
+                "UPDATE operations SET membership_tx = membership_tx - interval '3 days' "
+                "WHERE story_id = :s AND membership = 'discarded'",
+                s=story,
+            )
+            await _execute(
+                db,
+                "UPDATE stories SET settings = settings || "
+                '\'{"prune_policy": {"older_than_days": 1}}\'::jsonb WHERE id = :s',
+                s=story,
+            )
+            await timer_api.reconcile(db)
+            await _execute(db, "UPDATE recurring_tasks SET next_run_at = now() + interval '1 day'")
+            await _execute(
+                db,
+                "UPDATE recurring_tasks SET next_run_at = now() - :late WHERE name = :name",
+                late=3 * prune_policy.INTERVAL + timedelta(seconds=5),
+                name=prune_policy.PRUNE_RUN,
+            )
+            results = await asyncio.gather(*(timer_api.fire_due(db) for _ in range(3)))
+            assert [n for r in results for n in r.recurring] == [prune_policy.PRUNE_RUN]
+            worker = Worker(db, _config(timers=False))
+            assert await _drain(db, worker) == 1
+            prunings = await _scalar(
+                db, "SELECT count(*) FROM events WHERE story_id = :s AND type = 'pruning'", s=story
+            )
+            assert prunings == 1
+            assert (await timer_api.fire_due(db)).recurring == []
+            again = await core_prune.run_policy(db, clock.now())
+            assert again == {"stories": 1, "pruned": 0}
+            assert (
+                await _scalar(
+                    db,
+                    "SELECT count(*) FROM events WHERE story_id = :s AND type = 'pruning'",
+                    s=story,
+                )
+                == 1
+            )
+        finally:
+            prune_policy.bind(None)
+            await db.dispose()

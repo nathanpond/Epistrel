@@ -1452,6 +1452,31 @@ class RewriteNoop(EpistrelError):
     http_status = 422
 
 
+class LineNotEditable(EpistrelError):
+    """A line edit names an event that is not a message of the story's transcript (a State
+    change, an ingested non-text event; #700): 422, ``details.event_kind``. Nothing is
+    written."""
+
+    code = "line_not_editable"
+    http_status = 422
+
+
+class BeatRequired(EpistrelError):
+    """A line edit names a turn with several messages and no ``beat`` (#700): 422,
+    ``details.beats`` (``[{beat, event_id, speaker_kind}]``). Nothing is written."""
+
+    code = "beat_required"
+    http_status = 422
+
+
+class RewriteReachFailed(EpistrelError):
+    """A Lite rewrite's reach pass searched no part of the transcript (every chunk's call failed
+    after #53's retries; #700): 503, ``details.retryable``. No session is written."""
+
+    code = "rewrite_reach_failed"
+    http_status = 503
+
+
 class RewriteSessionNotFound(EpistrelError):
     """No rewrite session has this id in this story (#223): 404."""
 
@@ -1579,6 +1604,31 @@ class DirectiveAmbiguous(EpistrelError):
 
     code = "directive_ambiguous"
     http_status = 422
+
+
+class DirectiveSplitRequired(EpistrelError):
+    """A directive mixes a change to now that a rewrite cannot make (a clock advance, a State
+    set, a scheduled-event change) with a change to the past (#696): 422; nothing is written.
+    ``details``: ``now`` (the kinds of the now-changes)."""
+
+    code = "directive_split_required"
+    http_status = 422
+
+
+class SteerBudgetExceeded(EpistrelError):
+    """Queueing the steer would push the story's unconsumed steers past their token budget
+    (#696): 409; nothing is written. ``details``: ``tokens`` and ``max``."""
+
+    code = "steer_budget_exceeded"
+    http_status = 409
+
+
+class AuthorFactLimit(EpistrelError):
+    """A Lite story already holds ``lite_author_facts_max`` active lasting author facts (#699,
+    FR-LITE-8): 409; nothing is written. ``details``: ``active`` and ``max``."""
+
+    code = "author_fact_limit"
+    http_status = 409
 
 
 class AuthorityConflict(EpistrelError):

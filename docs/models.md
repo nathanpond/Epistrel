@@ -528,7 +528,7 @@ Classifies an author's directive as guidance for the next turn or a change to th
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
 - **Template:** `directive_parse.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
-- **Returns:** `DirectiveParseResult` (`classification`, `temporal_scope`, `changes`, `steer_text`, `binding`), validated strictly; its free text is author-facing
+- **Returns:** `DirectiveParseResult` (`classification`, `temporal_scope`, `changes`, `steer_text`, `binding`, `standing`), validated strictly; its free text is author-facing
 
 **Receives**
 

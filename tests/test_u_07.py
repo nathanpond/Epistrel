@@ -182,6 +182,20 @@ async def test_u_07__directives(
         )
         with pytest.raises(AuthorityConflict):
             await c.commit(engine, story, c.at(ed.marcus or "", ed.parlor, 0, None))
+        # #696: verification sees it first. Marcus walking back to the parlor would close the
+        # locked fact (a fluent change): contradicted by rule ``authority``, so #142 repairs
+        # the claim; the author's own claim is a plain change (``novel``).
+        from epistrel.core.readset import KeyedLookup, StructuredReadSet
+        from epistrel.core.verify.rules import Rule, VerdictKind, check_with
+
+        moved = c.at(ed.marcus or "", ed.parlor, 30, None)
+        async with engine.connect() as conn:
+            lookup = KeyedLookup(conn, StructuredReadSet())
+            narrative_verdict = await check_with(lookup, story, moved, mover=ed.marcus)
+            author_verdict = await check_with(lookup, story, moved, mover=ed.marcus, author=True)
+        assert narrative_verdict.kind is VerdictKind.CONTRADICTED
+        assert narrative_verdict.rules == {Rule.AUTHORITY}
+        assert author_verdict.kind is VerdictKind.NOVEL
 
 
 UCLA_AS_A_KID = json.dumps(
@@ -273,3 +287,162 @@ async def test_u_07__lite(pg_url: str, engine: AsyncEngine) -> None:
         assert [c for c in epistrel.models.stub.calls if c.purpose == "directive_parse"] == []
         assert await rs.count(engine, "directives", story) == 1
         assert await rs.revision(engine, story) == revision
+
+
+def _parsed(**fields: Any) -> str:
+    return json.dumps({"classification": "durable", "temporal_scope": "now", **fields})
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-DIRECT-1,2")
+async def test_u_07__follow_ups(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#696 (#226's not-built clauses):
+
+    - **scheduled events**: a durable directive creates an event (owner ``author``), a second
+      reschedules it by name and a third cancels it, each at its own slot; a name that is no
+      single open event is 422 ``directive_ambiguous`` with the candidates;
+    - **split**: a clock advance together with a change to the past is 422
+      ``directive_split_required``, nothing written;
+    - **standing guidance**: a steer the parse reads as standing answers
+      ``hints: [use_custom_instructions]``;
+    - **steer budget**: steers past 500 queued tokens are 409 ``steer_budget_exceeded``
+      ``{tokens, max: 500}``, nothing written;
+    - **TTL**: the sweep expires an unconsumed steer older than
+      ``directive_steer_ttl_minutes`` (disposition ``expired``) and keeps a fresh one."""
+    from epistrel.orchestrator.directives import expire_steers
+    from tests import clock_support as ck
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        ed = await bobby_education(client, engine, witnesses=True, closed_enrollment=False)
+        story = ed.story_id
+        stub = epistrel.models.stub
+        await ck.set_clock(engine, story, "on")
+
+        async def directed(text: str, parsed: str, **extra: object) -> Any:
+            stub.reset()
+            stub.when("", parsed, purpose="directive_parse")
+            return await _directive(client, story, text=text, **extra)
+
+        async def events() -> dict[str, Any]:
+            found = await client.get(
+                f"/stories/{story}/scheduled-events",
+                params={"viewpoint": "omniscient"},
+                headers=WRITE,
+            )
+            assert found.status_code == 200, found.text
+            return {e["name"]: e for e in found.json()["events"]}
+
+        made = await directed(
+            "Bobby has a dentist appointment at minute 600.",
+            _parsed(
+                changes=[
+                    {
+                        "kind": "event",
+                        "name": "the dentist",
+                        "planned": 600,
+                        "participants": ["Bobby"],
+                    }
+                ]
+            ),
+        )
+        assert made.status_code == 200, made.text
+        (event_id,) = made.json()["applied"]["scheduled_events"]
+        event = (await events())["the dentist"]
+        assert (event["owner"], event["planned"], event["participants"]) == (
+            "author",
+            600,
+            [ed.bobby],
+        )
+        moved = await directed(
+            "Move the dentist to minute 900.",
+            _parsed(changes=[{"kind": "reschedule", "event": "the dentist", "planned": 900}]),
+        )
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["applied"]["scheduled_events"] == [event_id]
+        assert (await events())["the dentist"]["planned"] == 900
+        unknown = await directed(
+            "Cancel the opera.", _parsed(changes=[{"kind": "cancel_event", "event": "the opera"}])
+        )
+        assert unknown.status_code == 422, unknown.text
+        assert unknown.json()["error"]["code"] == "directive_ambiguous"
+        assert unknown.json()["error"]["details"]["candidates"] == ["the dentist"]
+        gone = await directed(
+            "Cancel the dentist.",
+            _parsed(changes=[{"kind": "cancel_event", "event": "the dentist"}]),
+        )
+        assert gone.status_code == 200, gone.text
+        assert (await events())["the dentist"]["status"] == "cancelled"
+
+        # A clock advance with a change to the past: split it.
+        revision = await rs.revision(engine, story)
+        mixed = await directed(
+            "It is the next morning, and Bobby went to UCLA as a kid.",
+            _parsed(
+                temporal_scope="past",
+                changes=[
+                    {"kind": "clock", "minutes": 600},
+                    {
+                        "kind": "proposition",
+                        "subject": "Bobby",
+                        "predicate": "attended",
+                        "object": "UCLA",
+                    },
+                ],
+            ),
+        )
+        assert mixed.status_code == 422, mixed.text
+        assert mixed.json()["error"]["code"] == "directive_split_required"
+        assert await rs.revision(engine, story) == revision
+
+        # Standing guidance: a steer, with the hint.
+        standing = await directed(
+            "Always describe the weather.",
+            json.dumps(
+                {
+                    "classification": "ephemeral",
+                    "steer_text": "Describe the weather.",
+                    "standing": True,
+                }
+            ),
+        )
+        assert standing.status_code == 200, standing.text
+        assert standing.json()["hints"] == ["use_custom_instructions"]
+
+        # The steer budget: 500 tokens of queued steers.
+        long = "Keep every reply hushed and slow, with the rain loud on the roof. " * 50
+        refused = await _directive(client, story, text=long, kind="ephemeral")
+        assert refused.status_code == 409, refused.text
+        details = refused.json()["error"]["details"]
+        assert details["max"] == 500
+        assert details["tokens"] > 500
+        (queued,) = await rows(
+            engine,
+            "SELECT count(*) AS n FROM directives WHERE story_id = :s "
+            "AND disposition = 'steer_queued'",
+            s=story,
+        )
+        assert queued.n == 1
+
+        # The TTL: an old unconsumed steer expires; the fresh one stays.
+        fresh = await _directive(client, story, text="Make it tense.", kind="ephemeral")
+        assert fresh.status_code == 200, fresh.text
+        await engine.dispose()
+        async with engine.begin() as conn:
+            from sqlalchemy import text
+
+            await conn.execute(
+                text("UPDATE directives SET created_at = now() - interval '2 days' WHERE id = :d"),
+                {"d": standing.json()["directive_id"]},
+            )
+        assert await expire_steers(engine) >= 1
+        found = {
+            r.id: r.disposition
+            for r in await rows(
+                engine, "SELECT id, disposition FROM directives WHERE story_id = :s", s=story
+            )
+        }
+        assert found[standing.json()["directive_id"]] == "expired"
+        assert found[fresh.json()["directive_id"]] == "steer_queued"

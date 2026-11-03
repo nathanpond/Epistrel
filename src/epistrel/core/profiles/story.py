@@ -381,8 +381,6 @@ async def _write_assignment(
     await coverage.extend_live(conn, story_id)
     await deferred.on_configuration(conn, story_id, principal)  # #231
     await summary_rebuild.on_configuration(conn, story_id, current.settings, principal)  # #232
-    await deferred.on_configuration(conn, story_id, principal)  # #231
-    await summary_rebuild.on_configuration(conn, story_id, current.settings, principal)  # #232
 
 
 async def _write_overrides(
@@ -415,6 +413,7 @@ async def _write_overrides(
             scope_id=story_id,
         )
     await coverage.extend_live(conn, story_id)
+    await deferred.on_configuration(conn, story_id, principal)  # #231, #698
 
 
 async def apply_held(

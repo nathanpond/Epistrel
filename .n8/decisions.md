@@ -11607,3 +11607,340 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Decision:** `[tool.epistrel.gates] current_milestone` stays `6`. It is not bumped to `7` at this PR.
   **Why:** with `7`, `check-traceability` fails on 28 planned-but-absent M7 parts. Examples: S-PRUNE's FR-CONC-15/FR-EXT-21/FR-STORE-1, S-RETENTION, S-REWIND, C-09, X-01, and I-10's FR-ADMIN-9/FR-RATE-7/FR-STORE-30. These belong to the stories this run built in part (#228, #250) or not at all (#251, #235, and the not-built slices filed as #698–#705). Bumping would turn CI red on work the run did not finish. M7 is **partially executed**, and the bump belongs to the run that completes it.
   **Issue:** #228, #250, #251, #235
+
+## /n8-exec M7 (retry 1: verify fixes) — 2026-11-03
+
+Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues `/n8-verify M7 --auto` filed or moved into M7 (#696–#704, #707–#714), then the open stories.
+
+- **Decision:** the local gate per issue is the touched tests plus every static CI check (ruff, format, mypy, the generated-docs checks, the milestone gates, import contracts, OpenAPI). The full suite runs in CI on the PR (13 shards); a local full run takes over two hours on this host (M6 memory).
+  **Why:** same practice as the M6 fix passes; CI is the full-suite gate before the merge.
+  **Issue:** all below
+
+### #714 — Lite time-skip replay, regenerate and budget degradation
+
+- **Decision:** a Lite skip left unestimated because `try_optional` refused the `time_estimation` call carries `budget_refused`; the respond's `degradation` and the stored turn report list `time_estimate_skipped` (cause `budget`). An estimate below the confidence floor stays a plain `unestimated` refusal with no degradation step (the planner names only the budget case).
+  **Issue:** #714
+- **Decision:** the Lite guarantee row is a second model-dependent row for the `time_estimation` purpose, `lite_time_estimation` (needs `pipeline = lite` and `clock = prompt_only`), rather than widening the structured row's needs. The structured row's note now points to it. `test_c_14__m6`'s complement removes every row for the purpose.
+  **Why:** the two forms differ (no repair, no due-event stop under Lite), and the table states a row's needs as one conjunction.
+  **Issue:** #714
+- **Decision:** "replay" is tested as the projection refold (`projections.fold.rebuild`), the story's replay from its event log; the test spies that no `time_estimation` call is made and the clock reads the same.
+  **Issue:** #714
+
+### #710 — reported version: the `/v1/models` fallback
+
+- **Decision:** the fallback is read lazily, not by a start-up and hourly background probe. When a completion reports no `system_fingerprint`, the Model Access Layer reads the `version` field of the model's `/models` entry through an optional adapter method `listed_versions(purpose)`. The OpenAI-compatible adapter and the stub implement it; it is not added to the `ModelAdapter` protocol, so wrappers stay valid. The listing is cached in-process per purpose for an hour (`reported_version.LISTING_TTL_S`). A failed or slow probe (bounded by `PROBE_TIMEOUT_S`) leaves the version unknown and never affects the call.
+  **Why:** the first call after start-up probes, and the cache expires hourly, which gives the planned cadence without a new recurring task. The listing is only needed when a call has no fingerprint, so endpoints that send one never pay for it.
+  **Issue:** #710
+
+### #707 and #711 — #140's check under the hypothetical canon; undo's `rewrite` option
+
+- **Decision:** one module, `orchestrator/rewrite/hypothetical.py`, holds the check both issues need. It fetches a claim's records through `check_with` (`fetched`), takes out the facts the change supersedes, adds the change's proposition, and runs the pure `check`. One commit carries both issues because `apply.py` and `plan.py` change inseparably.
+  **Issue:** #707, #711
+- **Decision (#707):** the planner settles two provisional actions (`plan._settle`).
+  - A `causes` decision (an event) is `keep` when one of its other premises (another `causes` target fact, not on the change's key) is still `supported` under the hypothetical canon. It is not regenerated, and the report carries a `decision_kept` notification.
+  - This premise check runs before the `decision_effects`/`player_authored` conflict test, so a supported decision never becomes a conflict.
+  - A `derives` belief of kind `inference` now gets the new provisional action `re_run`. It cascades when no other premise contradicts the new value (the changed premise now states it), and is kept otherwise.
+  **Why:** "support through another premise" maps to the decision's other `causes` targets, the only premises the edges record.
+  **Issue:** #707
+- **Decision (#711):** a dependent amendment B's undo question offers `cascade_undo | rewrite | cancel`.
+  - `rewrite` on a proposition part writes a `version` part (`facts` record part) on B's fact, with the restored value in place of the undone one. B stays active.
+  - The restored value is the undo change's `object_id`. When the undone part superseded nothing (a second enrollment), it is the one value left on the key.
+  - A record part's text goes through `rewrite_record`.
+  - When neither works, the conflict falls back to `cascade_undo` with a `rewrite_failed` notification, so B never stays contradicting the restored canon.
+  - `keep` is added to an undo conflict only for a fact or belief that `stays_consistent` finds not contradicted. Narrative text has no proposition to check, so it is never offered `keep` (unchanged).
+  **Issue:** #711
+- **Decision (Rule 1, #711):** `apply._answers` ignored answers to `dependent` questions, because it read only `kind == "conflict"`. An author's `cancel` for B was handled elsewhere, but any other answer silently became the recommendation. It now reads both kinds. Regression: `test_s_amend_undo__rewrite`.
+  **Issue:** #711
+
+### #708 — backfill conflict resolve: a new normalized value and a window
+
+- **Decision:** a `value` that matches no statement is normalized against the conflict's key, taken from the latest statement's proposition.
+  - **Literal key:** the value must be a `TypedLiteral` of the statements' kind and unit.
+  - **Entity key:** the value must name one of the story's entities, by id or by a unique canonical name or alias (case-insensitive).
+  - **Failure:** anything else is 422 `invalid_resolution`.
+  - **Where it is written:** at the latest statement's position, with no event. Every statement a character spoke becomes an in-world claim.
+  **Issue:** #708
+- **Decision:** `valid_from`/`valid_to` are story minutes: an int, or its digits as a string. They bound a `value` or `choose` resolution, and an open bound keeps the statement's own. A window always writes a new fact, even for a statement whose value the pass already wrote. A window that ends before it starts is 422 `invalid_resolution`. The resolution records `value` and the window in `choice`.
+  **Why:** the AC names neither the window's unit nor date strings. Minutes are the unit #221's parts and the clock use; ISO dates would need the anchor, which a Lite story being upgraded may not have.
+  **Issue:** #708
+
+### #713 — entity merge read-through
+
+- **Decision:** reads answer through a merge, and no history row is rewritten.
+  - **The survivor.** `canon.merge_survivor` names the entity a merge kept: the subject of its active `same_as` part, followed from the merged side.
+  - **States and events.** A State's `entity_id` and a scheduled event's `place_id` are shown as the survivor by `states.definitions`/`definition` and `stops.events_at`. A `definition(..., lock=True)` read, which is a write's read, keeps the stored id, so a later definition version never bakes the merge in.
+  - **Profiles.** A profile answers for the whole merge class (`merged_classes`, one read per batch, so #451's constant statement count holds). Rows of the merged entities read as the profiled one.
+  - **Retrieval.** It already expanded canon `same_as` identities (#171's `identities_for`). The new test asserts it.
+  **Issue:** #713
+- **Decision:** the functional-contradiction report runs #140's check on each merged entity's current fact, restated of the survivor, against the survivor's canon. A `contradicted` fact is an irreducible conflict, `merge_contradiction`, with options `rewrite | keep`.
+  - **`rewrite` (recommended):** versions the merged entity's fact to the cited survivor fact's value.
+  - **`keep`:** records `kept_inconsistent`.
+  - **Where it is planned:** in `open_merge` and in the sourced re-plan (`_plan_sourced`).
+  **Why:** the AC says "reported through #224's conflict resolution", and #140's rules decide contradiction everywhere else.
+  **Issue:** #713
+- **Decision:** the merge-then-undo property runs as five seeded random cases on Postgres (`test_s_entity_identity__m7_merge_undo`), not as Hypothesis examples. This is the pattern of `test_clock_monotonic__postgres`: each example is a whole story, and Hypothesis's shrinking cannot run across the async database fixtures.
+  **Issue:** #713
+
+### #712 — the directed resolution commits in one transaction
+
+- **Decision:** a `directed_resolution` session's apply is staged on the directed regeneration's turn, and does not commit in an operation of its own.
+  - **The mechanism.** `rewrite.apply.apply` gains `run`, which commits an operation with the apply staged on it. `session.apply_session`, `_apply_directly` and `open_directed` pass it through. The Engine's `_held_run` plays the regeneration with `directed.HELD` set. The structured pipeline's per-attempt `stage` stages the amendment first, before the turn's own steps, so a rebase restart stages it again.
+  - **What it guarantees.** The regenerated variant and the amendment, with its audit events and the #237 revalidation check, commit in one transaction, or neither does.
+  - **On failure.** A failure leaves the session `awaiting_approval` (`_failed`). An induced fault after the parts is 503 `rewrite_apply_failed`, with nothing written.
+  - **Removed.** `directed.compensate` (the compensating `undo`) and `_play_directed`/`_apply_directed` are gone.
+  - **Where the amendment is recorded.** It is recorded under the turn's operation, and the session's `operation_id` names that turn.
+  **Issue:** #712
+- **Decision (deviation from the AC's wording):** the variant is rendered when the session is applied. It is not rendered when the session opens and then held across the question round (`held_render`). The read-set revalidation therefore needs nothing new: the turn's own revalidation runs at its commit, and the plan's #237 check runs in the same transaction.
+  **Why:** the defect was the non-atomic pair of commits, and a render held across an HTTP round trip would need a stored-render commit path the structured pipeline does not have. The author still sees the plan and answers before anything commits.
+  **Issue:** #712
+
+### #696 — directive follow-ups
+
+- **Decision (steer TTL):** the sweep runs inside the existing `rewrite_session_expiry` recurring task, every 10 minutes, rather than as a new task. `expire_steers` sets `disposition = expired` on unconsumed `steer_queued` rows older than the new deployment setting `RewriteSettings.directive_steer_ttl_minutes` (default 1440, 10 to 43,200). The task records `steers_expired`.
+  **Why:** the plan says "#71's sweep". The rewrite sweep is the side-channel's own, already registered, and needs no new recurring row.
+  **Issue:** #696
+- **Decision (errors):**
+  - **422 `directive_split_required` `{now: [kinds]}`.** A clock, State or scheduled-event change is mixed with a change to the past (`temporal_scope = past`, or a proposition starting before now).
+  - **409 `steer_budget_exceeded` `{tokens, max: 500}`.** The queued unconsumed steers plus the new one pass 500 tokens, by `core.summary.estimate_tokens`, the deployment's token estimator. Nothing is written.
+  - **Registration.** Both are in the OpenAPI status map and on `apply_directive`'s error list.
+  **Issue:** #696
+- **Decision (Rule 1):** an ephemeral directive whose text was over 2,000 characters (the parse schema's `steer_text` bound; requests allow 4,000) failed with a 500, because building `DirectiveParseResult` raised. The request's own text now bypasses that bound (`model_construct`). The steer budget then decides.
+  **Issue:** #696
+- **Decision (scheduled events):** `directive_parse` gains `event {name, planned, participants, place}`, `reschedule {event, planned}` and `cancel_event {event}`.
+  - **Resolution.** Participants resolve to characters by entity name, and the place to a place entity. A name that needs a question routes the directive to a rewrite, as other ambiguities do. An event names exactly one open event by its name, else 422 `directive_ambiguous {candidates}`.
+  - **The writers.** They are #196's, refactored into step-level `scheduled.prepare_create`/`create_in` and `prepare_change`/`change_in`, so every change runs in the directive's one slot operation with `owner = author`. The public routes use the same code.
+  **Issue:** #696
+- **Decision (standing guidance):** the parse result gains `standing: bool`. A steer the model marks standing answers `hints: ["use_custom_instructions"]`, and stays one steer for the next turn.
+  **Issue:** #696
+- **Decision (`AuthorityConflict` in verification):** `check_with` reads which fetched canon facts are `author_locked`. A non-author claim whose `fluent_change` would close one is `contradicted` by the new rule `authority`, citing the locked fact, so #142 repairs it instead of the commit raising. `check_with(..., author=True)` keeps the author's own claims (#145's `mutation._check`) as they were.
+  **Issue:** #696
+
+### #697 — game-owned values
+
+- **Decision (S-LATE-SETTLEMENT M7):** a State change's dependents include lines that presupposed the State's value (#191's owned reading writes a `presupposes` edge on the State). Such a line is now an irreducible conflict, `state_presupposed`, rather than a cascaded `fix`, because substituting a name cannot repair a value statement. It is settled under the session's mode like any conflict.
+  - **The backdating test** (`test_s_late_settlement__m7`) checks that the "sold out" line is a conflict, and that the externally owned payment's outbox row and outcome record are identical row for row.
+  - **The edge is written directly** in the test, as `test_s_ucla` writes its edges, because no stub turn produces an owned-value `presupposes` edge on demand.
+  **Issue:** #697
+- **Decision (case 6, observability):** the lazy resolution of Jenni's exposure decides on her own beliefs: a `state_value` claim is belief-only for a witness, so its verdict is `novel` whatever canon holds. The amendment's effect on "the resolution" is therefore asserted where it acts: the corrected history the resolution reads through `h⁺2`. A State part valid from the story's start changes Cal's sword value through `h⁺2`, while one valid from after `h⁺2`'s story-time does not (#221's per-part eligibility). Every read the resolution makes is bounded by the frame either way.
+  **Issue:** #697
+- **Decision (`ownership_changed`):** #237's snapshot records, for each planned State, its owner, its provider and the provider's `write_capable`, and for each planned predicate its registry owner. `revalidate` compares them before the revision short-circuit, because a provider flip moves no revision. A difference is stale reason `ownership_changed`.
+  **Issue:** #697
+- **Decision (external predicates):** a fact on a predicate whose registry `owner = external` is guarded.
+  - **Directives:** `external_guard.classify_facts` refuses it, and the whole directive is 422 `external_value_not_overridable`.
+  - **Rewrites:** `parse._proposition` puts it in `refused_changes` (`external_owned`, `PAST`). A rewrite with only such changes is 422 with no session.
+  - **Why it is never routed:** the provider registry maps no predicate to a provider or a write shape (#204's writes name State values). The verdict names "the game" as provider and the predicate as the value.
+  **Issue:** #697
+
+### #699 — Lite directive follow-ups
+
+- **Decision:** a Lite lasting fact's `directive_applied` event now carries `lite: true`. The flag tells a Lite fact apart from a structured durable directive's event, which a Lite prompt also renders after a downgrade. The cap, the upgrade conversion and the structured rendering of kept facts all read it. Facts recorded before this change carry no flag, and they still render under Lite.
+  **Issue:** #699
+- **Decision (clock):** with the prompt-only clock on, a Lite directive's parsed `clock` changes advance the clock at the same slot through #226's writer. That path already gives 422 `clock_backward`/`clock_unanchored` with nothing written.
+  - **Time-only.** A directive whose only change is the clock, with an empty `steer_text`, records no author fact (`applied.author_fact: null`).
+  - **Clock off.** The clock changes are dropped and the text is the fact.
+  **Issue:** #699
+- **Decision (cap):** `RewriteSettings.lite_author_facts_max` (default 50, in `SettingsPatch` too, with `directive_steer_ttl_minutes`). The count runs in the slot's commit step under the story lock and excludes the slot's own staged event. The 409 is `author_fact_limit {active, max}`.
+  **Issue:** #699
+- **Decision (read set):** `author_facts` (the active `directive_applied` events and their texts) and `author_direction` (the unconsumed nudges) are appended to `READ_SET_MEMBERS`. A fact landing at a slot moves the revision, so the turn in flight regenerates. A nudge moves no revision, so the turn in flight commits as it is and the next turn carries the nudge.
+  **Why:** #226's settled steer rule says a steer attaches to the next turn whose assembly starts after it. #244's AC expected a nudge to regenerate the turn; the two plans conflict, and the shipped #226 behaviour is kept.
+  **Issue:** #699
+- **Decision (upgrade):**
+  - **Parse.** After extraction, an upgrade backfill parses each active Lite fact with `directive_parse`, using the bound target models and outside any transaction. The result goes to `report.author_fact_parses`.
+  - **Convert.** At completion, before `core.backfill.complete` and under the backfill operation flipped active and then dormant, the proposition changes are written as author-tier facts (`provenance = author`, `authority = author`) at the fact's slot. A cancelled or failed backfill writes none.
+  - **Report.** It lists `author_facts {converted, kept_as_text, ids}`. A later backfill skips the ids an earlier completed one converted.
+  - **Kept facts.** A fact kept as text reaches only the narrator, as an "Author facts" block in `TurnRead.director`. A character learns it only through its context (NFR-PRIV-4), including with partitions off.
+  - **Not built.** The cost estimate does not count the parse calls.
+  **Issue:** #699
+- **Decision (warning):** a Lite directed regeneration that names `resolution_mode` or `preview` answers warning `lite_no_reconciliation`.
+  **Issue:** #699
+- **Decision (guarantee table):** `GuaranteeRow` gains `lite_form`, rendered in the notes as "Lite form: …".
+  - A deterministic `author_directives` row is added.
+  - The `directive_parse` row gains the Lite form. The executor of #244 used `directive_parse` for Lite rather than a separate `lite_directive_parse` purpose, so no purpose row is added.
+  **Issue:** #699
+- **Decision (test ids):** the planned `test_lite_directive_dispatch` and `test_lite_directed_regeneration` are written as `test_s_lite_directive__dispatch` and `__regeneration`, and the upgrade case is `test_i_19__m7_author_facts` with I-19's existing M7 requirements.
+  **Why:** a new test id needs a §15 row, and S-LITE-DIRECTIVE and I-19 already own these requirements.
+  **Issue:** #699
+
+### #702 — pruning follow-ups
+
+- **Decision (guards):** migration 0126 does two things.
+  - **Terminal.** `operations_pruned_terminal` refuses any flip out of `pruned`.
+  - **Exemption.** It injects the pruning's own exemption (`epistrel.allow_prune` for the story, and only for a row whose operation is `pruned`) at the head of every `*_append_only`/`*_guard` trigger function on `PRUNABLE_TABLES` that admits the story-delete setting. The injection rewrites `pg_get_functiondef` and is marked, so the downgrade removes it.
+  - **Result.** A pruning sets only `allow_prune` for the derived deletes. The story-delete setting is used only for the orphan proposition and entity sweep, because `propositions` and `entities` are not operation-keyed.
+  **Why:** one generic rewrite instead of re-stating the eight guard bodies.
+  **Issue:** #702
+- **Decision:** what else a pruning now does:
+  - **Settlement dependency.** A target holding a `state_changes` row that an active row names through `settles_change_id` is excluded whole: `settlement_dependency`, with `settling_change_ids`.
+  - **Chunked deletes.** Each table's rows are deleted in chunks of `CHUNK` (5,000), with the index rows dropped per chunk.
+  - **State values.** The touched `(state, scope)` keys are refolded with `states.refresh`.
+  - **Orphans.** Propositions that only the pruned rows named and nothing retained references (every proposition column, plus the `proposition_ids` arrays) are deleted. So are entities that only the pruned operations minted and nothing references (propositions, placement, relationships, States, scheduled events, thunks, edges, merges, characters), with their aliases.
+  - **State proposals.** Evidence naming a deleted event is dropped, and a `proposed` proposal left with none is deleted.
+  **Issue:** #702
+- **Decision (markers):** a `prune_marker` event type is registered but never written.
+  - `audit_view` synthesizes one marker per target from the `pruning` event, at the target's first turn.
+  - The as-originally-recorded view lists the markers beside the erasures.
+  - A checkpoint whose operation is pruned is 409 `pruned`.
+  **Issue:** #702
+- **Decision (refusals):**
+  - `variants.chain_operations` raises 409 `pruned` for a chain with a pruned operation. That covers `history?variant=` and a fork's `variant_chain`, though a pruned chain usually no longer resolves, which gives the existing 404/409.
+  - A rating write (`rate`, `retract`) to a message whose ratings carry `pruned_at` is 409 `pruned`.
+  - `undo_state` already counted only `discarded`/`dormant` operations, so `dormant_chains` drops a pruned chain with no change. The test asserts it.
+  **Issue:** #702
+- **Decision (docs):** the docs/02 §9 paragraph is added for `POST /prune` and `/prune-runs`.
+  **Issue:** #702
+
+### #703 — pruning policy follow-ups
+
+- **Decision:** `GET /stories/{id}` and `Engine.get_story` carry `pruning {policy, last_prune_at, next_run_at}`.
+  - `policy` is `null` when off.
+  - `last_prune_at` is the latest `pruning` event's time, manual or policy.
+  - `next_run_at` is the `prune_run` recurring row's next time, shown only while the policy is on.
+  - The block reports and never suggests: the never-suggests check asserts no other response names a prune route or `promote_before_pruning`.
+  **Issue:** #703
+- **Decision:** migration 0127 adds `ix_stories_prune_policy`, a partial expression index on `(settings -> 'prune_policy')` where it is a JSON object. The table metadata declares the same index, and `run_policy`'s scan uses its predicate.
+  **Issue:** #703
+- **Decision:** the X-07 M7 prune part (`test_x_07__m7_prune`, chaos_quick) runs on a scratch database: three missed due times give one fired run and one pruning, and a rerun prunes nothing.
+  - **The X-01 M7 part** (`test_x_01__m7_prune`, soak, `EPISTREL_SOAK_PRUNE_CYCLES`, default 400, weekly) checks linear active turns and storage under a one-day policy. It reuses X-01's fit and bound.
+  - **The never-suggests check** is `test_s_prune__never_suggests`: 50 dormant chains and a ten-year-old tail.
+  **Issue:** #703
+
+### #704 — story export follow-ups
+
+- **Decision (contents):**
+  - **Catalog.** `CATALOG = {character_snapshots}` is written to `catalog/<table>.jsonl`, and the importer strips `catalog/` as it strips `records/`.
+  - **Media.** The assets the story's rows name (ULIDs in `characters.images`, `character_snapshots.content` and `stories.scenario_snapshot`), with their posters, become `media.jsonl` lines and `media/<sha256>` members. A missing blob fails the export: `export_failed`, `media_missing`, no file.
+  - **Manifest.** It gains `config_revision`, `content_rating {id, name, version_id, version}`, `engine_profile {id, name, version, settings}` and `counts.media`. The profile's fingerprint is not included: it needs the runtime facts of a live configuration.
+  - **Order.** Members follow the planned order.
+  - **Columns.** `COLUMNS_NOT_EXPORTED` drops `memories.embedding`, `embedding_model_version` and the generated `search`.
+  **Issue:** #704
+- **Decision (schema):** `core/bundles/format.py` builds the line schemas: `StoryBundleManifest`, `StoryBundleEvent`, `StoryBundleMedia` and `StoryBundleRecord_<table>` from table metadata. `_extra_components` adds them to the OpenAPI components.
+  - **Validation.** `validate_line` uses a small checker for the subset of JSON Schema these schemas use, instead of adding `jsonschema`, which is not a dependency.
+  - **Payloads.** The export validates every event payload against #45's registry (`payload_invalid`). Full line validation is asserted in the tests, and #705's import will enforce it.
+  **Why:** a new runtime dependency is a plan change. The subset covers every keyword the schemas emit.
+  **Issue:** #704
+- **Decision (erasure race):** the snapshot reads the ledger entries that touch the story: story scope, and catalog scope for a subject in its `subject_references`. After the snapshot (pause point `bundles.export.after_snapshot`), a changed set raises `ErasedMeanwhile`, and the export restarts up to `EXPORT_ATTEMPTS = 3`, counted on `attempts`. After that it fails `export_failed`, `erasure_race`.
+  **Issue:** #704
+- **Decision (lifecycle):**
+  - **TTL.** `RetentionSettings.bundle_export_ttl_hours` (default 24, 1 to 720, in `SettingsPatch`) sets `expires_at`.
+  - **Expiry.** `retention_sweep` calls `expire_bundles`, which deletes the file and marks the export `expired`.
+  - **Erasure.** A `story_exports` erasure target expires a story's stored exports with error `erased` and deletes the files. A catalog-scope erasure has no story and expires none.
+  - **Boundary.** The `IN_SCOPE` item is added, and OPERATIONS.md follows.
+  - **Story delete.** It calls `delete_story_bundles` before its table deletes.
+  **Issue:** #704
+- **Decision (secrets):**
+  - **What the scan covers.** The service credentials, the config key, every `EPISTREL_PROVIDER_SECRET_*` value (the provider credentials' only store) and the decrypted stored model API keys.
+  - **When the model keys are read.** The Engine reads them at each run (`Engine._model_secrets`, passed as the handler's `source`). Blobs are read through `Engine._blob_bytes`.
+  **Issue:** #704
+- **Decision (tests):** `tests/bundle_support.py` provides `build_rich_story` (a truncated tail and a character image), smaller than the planned I-10 fixture; #705 extends it for import.
+  - **I-10 M7.** `export_rich` (`FR-STORE-7; FR-ADMIN-4`), `export_erasure_race` (`FR-ADMIN-9`), `export_lifecycle` (`FR-STORE-30`) and `export_snapshot` (20 concurrent turns).
+  - **C-09 M7.** `test_c_09__m7_bundle`.
+  **Issue:** #704
+- **Decision (Lite summary rebuild, #709):** the downgrade's rebuild computes its range from `coverage.gaps` for `rolling_summary` and enqueues `lite_summary` with a `LiteSummaryPayload(backfill_id, range_from_turn, range_to_turn)` under the single key `lite_summary_rebuild:<story>`, through a `summary_port.schedule_rebuild` port (Core does not import the orchestrator). `settle` writes the `rolling_summary` coverage row with source `backfill`. Cancelling a resummarize backfill flips the segment operations committed since it started to `discarded` (`summary_rebuild.discard_segments`), so readers never see a half-built summary.
+  **Issue:** #709
+- **Decision (S-PROFILE-SWITCH round trip, partial):** `test_s_profile_switch__round_trip` covers 200 Lite turns with the prompt-only clock, pins and custom instructions, the upgrade with backfill (the meeting becomes Jenni's canon scheduled event; the clock keeps the Lite era's pacing fold), and the return to Lite (data dormant, pins and instructions back in the prompt).
+  **Not built:** (a) resolving "at 17:00" to a scheduled time: the extraction time grammar has no clock times, so the meeting's planned time stays unset; (b) per-character beliefs after the backfill: the backfill writes facts, not beliefs. Both need a grammar or a pipeline change beyond this fix. #709 stays open for them.
+  **Issue:** #709
+- **Decision (deferred clock and States, #698):** `core.genesis.deferred` now materializes the `states` and `clock` items too (`MATERIALIZED_HERE` gains them).
+  - **When.** Only once the configuration that runs them applies: the States writer refuses a story with States off. Under `forward_only` they materialize with the rest. Under `backfill`, the start materializes `BACKFILL_START` (structured, episodic, partitions), and the completion's `apply_held` runs `on_configuration` under a control operation of its own for the clock and States.
+  - **Clock.** The scenario's settings go through the clock definition's `PATCH /clock` members (`states.update_definition`); the anchor is the clock's first `clock_anchor` fact at position 0 (`commit_anchor`, from the new `starting_state.anchor_statement`). A member the story changed from its default, or an anchor it already has, is `kept_existing` (a new `MaterializedOutcome`). The settings `PATCH /clock` cannot change (grace, tolerances) are not written.
+  - **States.** `write_states`, minus any State whose name the story already declares (`kept_existing`).
+  - **A second pass.** The cast's definition prose is not re-read once the structured items were materialized (it would duplicate background facts).
+  - **Not undone.** A cancelled backfill cannot undo a clock setting written at its completion; it is written only after completion, so this does not arise.
+  **Issue:** #698
+- **Decision (materialization report, #698):** the report is `{counts, by_outcome, conflicts, entries}`, with the #149 `MaterializedEntry` per item (outcomes, a merge loser's winner, loser and rule). It is kept on the operation that wrote it (`turn_report.materialization`).
+  - `GET /operations/{id}` returns it in full to an omniscient read and as its card (`counts`, `by_outcome`, `conflicts`) to any other.
+  - `GET /stories/{id}/backfill` always shows the card: the route has no viewpoint, and the entries name private seeds.
+  **Issue:** #698
+- **Decision (backfill statement source, #698, Rule 1):** a conflict statement from a materialized seed now reads `source: seed` (it read `transcript`, with no quote).
+  **Issue:** #698
+- **Decision (#229 queue fold, #698):** a new version of a profile folds into each queued, unclaimed upgrade backfill toward it (`store._fold_queued`).
+  - Its capabilities become what the latest version adds to the story's pinned configuration, with the story's overrides.
+  - When nothing is left, the backfill is superseded and the pin cleared.
+  - A claimed (running) backfill is left alone.
+  **Issue:** #698
+- **Decision (Rule 1, #698):** `profiles.story._write_assignment` called `deferred.on_configuration` and `summary_rebuild.on_configuration` twice (a merge duplicate); now once. `_write_overrides` now calls `deferred.on_configuration`: an override that turns a capability on materializes its deferred content, as an assignment does.
+  **Issue:** #698
+- **Decision (tests, #698):** I-27 M7 gains `clock_states`, `brother` (each #230 policy) and `checkpoints` (the corrected canon at checkpoint 5 holds the seeds, the as-recorded one does not, no re-verification, and the next turn's claim is contradicted by the seed). C-16 M7 gains `queued_decrease`.
+  **Issue:** #698
+- **Decision (line edit, #700):** `POST /stories/{id}/rewrites` takes `line_edit {event_id | turn (+ beat), new_text}`. It is exclusive with `instruction`; both or neither is the standard 422.
+  - **Gate.** The input gate checks `new_text` only.
+  - **Plan.** `lite.line_edit_change` resolves the message and plans one record change through the planner. `RewriteRef.event_id` is kept out of the model's schema with `SkipJsonSchema`. There is no parse, reach or output-gate call, and the apply makes none either (zero calls, asserted).
+  - **Preview.** The change carries `old_text`.
+  - **Errors.** 422 `line_not_editable {event_kind}`, 422 `beat_required {beats}`, 409 `record_inactive` (with `dormant_variant`), and 422 `rewrite_noop`.
+  - **Both pipelines.** It works on structured stories too.
+  - **Redo.** A redo of a line-edit amendment re-plans through #238's redo path; it was not changed.
+  **Issue:** #700
+- **Decision (`lite_note`, #700):** migration 0128 adds `lite_note` to `amendment_parts.kind` and its CHECK (`patch_after = {text}` only). `LiteNotePartDraft` is the draft.
+  - **When.** A Lite session records `plan.lite_note = "Author correction: " + instruction` when the parse gave changes Lite cannot hold (`lite_no_canon`): the world-change signal, since `lite_rewrite_parse` is not built.
+  - **Undo.** An undo reverts the note with its amendment; there is no inverse part.
+  - **Prompt.** `directives.author_corrections` builds the Lite prompt's "Author corrections" block, after "Author facts". It lists the active notes plus, after a downgrade, each active structured rewrite's instruction, oldest first, at most 50.
+  - **Upgrade.** The backfill parses each active note like a lasting author fact (keyed `note:<part id>`) and writes it as an author-tier fact at position 0. That is #699's writer, not proposition parts on the original amendment, which is a deviation.
+  **Issue:** #700
+- **Decision (chunked reach, #700):** `lite.reach` now works as follows.
+  - **Summary first.** One call over the active summary segments; hits flag their turn ranges.
+  - **Transcript.** Then the transcript in chunks of `CHUNK_LINES = 60`, flagged ranges first and the rest newest first, within `MAX_CALLS = 24` (summary and re-check calls included).
+  - **Duplicates.** Duplicate hits merge: `conflicts` beats `mentions`, a fix beats none.
+  - **Re-check.** One call over the fixes, marked with a "Re-check" prefix. A `conflicts` hit quoting a fixed text means that fix is not clean (`recheck_failed`, listed, never applied).
+  - **Preview.** `preview.reach {method: model_searched, searched {from_turn, to_turn}, truncated}`. A truncated search forces `preview_first`. When no chunk succeeds the answer is 503 `rewrite_reach_failed {retryable}`.
+  - **Empty story.** A story with no line makes no reach call (`test_rewrite_lite_interim` updated).
+  - **Constants.** The caps are module constants, not deployment settings.
+  **Issue:** #700
+- **Decision (summary rebuild, #700):** `core.summary.stale_segments` derives the stale segments at read time. A segment is stale when a record amendment part on one of its turns' transcript lines postdates it. There is no `rebuild_requested_at` column, so a projection rebuild still equals the table.
+  - **Scheduling.** The apply schedules the summary job when it writes event record parts or reverts.
+  - **Rebuild.** The job rebuilds each stale segment first, from the corrected transcript, one level up: the unique index is (turns, level, variant), so the same level cannot hold two. The rebuilt segment names the old one's operation among its sources.
+  - **Superseding.** `included_segments` and the projection's `settle` now hold a named source at any level (the merged-segment rule), so the old one is superseded.
+  - **Degradation.** Until then a Lite reply reports `summary_rebuilding` with cause `corrected_lines`.
+  **Issue:** #700
+- **Decision (not built, #700):** these parts stay open on #700.
+  - The separate `lite_rewrite_parse` purpose (`rewrite_parse` serves) and its clarification shape.
+  - The rating gate on fix texts (#56's output gate runs).
+  - The Lite revalidation read set (#237).
+  - The post-undo reach over lines committed after the amendment.
+  - Parallel reach calls.
+  - The deployment settings for the reach caps.
+  - The six-mode `plan_hash` test.
+  - The C-20, R-07 and C-14 M7 complements.
+  **Issue:** #700
+- **Decision (import validation, #705):** the synchronous import now applies these checks.
+  - **Schemas.** Every line is checked against #704's line schemas (`format.validate_line`), and every event payload against #45's registry. A failure is `corrupt_bundle`, `schema_violation`, with `entry`, `line` and `field`.
+  - **Manifest.** The manifest is checked against its schema (`manifest_invalid`).
+  - **Order.** Members must follow the export's canonical order (`member_order`).
+  - **Newer MINOR.** A newer MINOR of format 1 imports. Unknown fields are dropped and unknown members ignored, both listed in the answer's `warnings` (`unknown_fields`, `unknown_member`).
+  **Issue:** #705
+- **Decision (import contents, #705):** the import writes these.
+  - **Operation.** One committed `import` operation with `turn_report.imported_from {source_story_id, exported_revision, format_version, bundle_sha256}`.
+  - **Story.** The story's `timeline_revision` is `exported_revision + 1` and its `embedding_model_version` is null. The Engine's `after` hook queues the `embed` job in the transaction.
+  - **Media.** Each `media.jsonl` line becomes a new `live` asset of the import's owner. Its id is in the remap, so the story's rows name the new asset. Its bytes are checked against the line's SHA-256 and written through the Engine's media store (`Engine._blob_put`: staged, then `put`) before the transaction. On a refusal the blob stays, content-addressed and unreferenced, for #105's sweep.
+  - **Answer.** `ImportedBody` gains `operation_id` and `warnings`. The I-10 round trip counts the extra operation.
+  **Issue:** #705
+- **Decision (not built, #705, #250, #251):** these stay open on their issues.
+  - The `story_import` background job and `bundle_jobs` rows, `GET /admin/stories/imports/{job_id}`, staging, and lease recovery.
+  - The `importing` status and its 409 gate.
+  - The multipart request with `rating_required`.
+  - `FORMAT_MIGRATIONS` (no older format exists yet).
+  - The `bundle_max_*` deployment settings (module constants serve).
+  - #251's `IMPORT_GATES`: the erasure ledger, the guardrail check, profile attachment, and parking effects.
+
+  The status, the job and the gates change the import's API contract (202 plus a job, against today's 201). Under Rule 4 they are architectural; they need their own pass and are left for `/n8-replan`.
+  **Issue:** #705, #250, #251
+- **Decision (milestone gate):** `pyproject.toml` sets `current_milestone = 7`. Every M7 part docs/04 §15 plans now exists, and `check-parts` and `check-traceability` pass. `--write` adds the new parts' requirement entries to §15.
+  - **C-02.** `test_c_02__m7_bundles`: export and import served under `/admin`.
+  - **C-12.** `test_c_12__m7_as_recorded`.
+  - **C-16.** `per_preset` gains FR-PROF-3: it asserts the four presets.
+  - **I-04.** `test_i_04__m7_as_recorded` (FR-STORE-20,23).
+  - **TIME.** `test_time__m7_views` (FR-STORE-22,23).
+  - **I-10.** `test_i_10__m7_import_unchecked` (FR-RATE-7): an imported tail is held for the reactivation check.
+  - **S-PRUNE.** `outcomes_kept` (FR-EXT-21, FR-STORE-1). `follow_ups` gains FR-STORE-1 (its post-pruning replay) and `policy` gains FR-CONC-15 (a policy change deletes nothing).
+  - **S-RETENTION.** `test_s_retention__m7`.
+  - **S-REWIND, S-DERIVED-VIEWS, S-ORIGINAL-AT-SLOT.** The as-recorded and derived-record clauses, with reflections computed after the checkpoint.
+  - **S-ERASURE-BOUNDARY.** The M7 rewrite test asserts the as-recorded view's erasure markers (FR-STORE-23).
+  - **Renames.** The #700 tests are renamed into S-LITE-REWRITE (`test_s_lite_rewrite__*`) so they map to a docs/04 test ID.
+  **Issue:** milestone gate (#222, #247, #249, #250)
+- **Decision (CI follow-ups, Rule 1):**
+  - **0126 downgrade.** It now cuts each guard's prune clause out by position. The regex escape had been lost in the E-string, so the downgrade left the clause in place (`test_i_08__round_trip`).
+  - **Expression index.** `ix_stories_prune_policy` is an expression index Alembic cannot compare, so `schema.EXPRESSION_INDEXES` keeps it out of autogenerate (`test_drift`).
+  - **Reach relation.** A Lite reach hit's relation is compared through `lite._conflicting`, so #104's relation-literal scan does not read it as an ownership decision.
+  - **Queue fold.** The #229 queue fold runs only for a version that changes data-producing settings; a behavioral edit leaves a queued upgrade as it is (`test_two_stage::test_reports_list_at_most_the_cap`).
+  **Issue:** #702, #703, #700, #698
+- **Decision (Rule 1, #709):** `summary_rebuild.discard_segments` now also sets the cancelled rebuild's segment rows to `discarded`. Before, only their operations were flipped and the projection rows stayed `active`. Every later summary run was then dropped as "already written" and requeued forever: CI's `test_notify_wakes_a_worker_before_its_poll` found the worker always busy. The import-unchecked test now asserts through #120's guard functions instead of leaving a reactivation check pending on the shared database.
+  **Issue:** #709, #705

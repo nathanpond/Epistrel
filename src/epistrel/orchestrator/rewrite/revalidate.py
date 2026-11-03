@@ -21,6 +21,9 @@ what the plan was computed against (its stored read set, extended at plan time b
 - ``membership_changed`` / ``record_changed``: a planned record's operation changed membership
   (a truncate, untruncate or swap), or #236's ``record_version`` of it moved (an amendment
   corrected it);
+- ``ownership_changed`` (#697): a planned State's owner, its provider or the provider's write
+  capability, or a planned predicate's registry owner, changed since the plan (checked even
+  when the revision has not moved);
 - ``new_dependent`` (FR-CONC-13): the planner, re-run under the lock, finds a dependent the
   preview did not have (a belief formed meanwhile from the old fact). Skipped under the fault
   point ``rewrite.revalidate.skip_research`` (``RESEARCH``).
@@ -161,7 +164,49 @@ async def snapshot(
         "operations": {op: list(versions.get(op) or []) for op in ops},
         "prop_keys": props,
         "state_keys": states,
+        "ownership": await _ownership(conn, story_id, states, props),
     }
+
+
+async def _ownership(
+    conn: AsyncConnection,
+    story_id: str,
+    states: Sequence[Sequence[str]],
+    props: Sequence[Sequence[str]],
+) -> dict[str, list[Any]]:
+    """#697: who owns what the plan changes: each State's owner, its provider and whether the
+    provider takes writes, and each predicate's registry owner. An owner or write capability
+    that changes before the apply makes the plan stale (``ownership_changed``)."""
+    from epistrel.core import providers as core_providers
+    from epistrel.core.propositions.registry import load
+    from epistrel.core.tables import state_definitions
+
+    found: dict[str, list[Any]] = {}
+    d = state_definitions.c
+    for state_id in dict.fromkeys(str(s[0]) for s in states):
+        row = (
+            await conn.execute(select(d.owner, d.provider_id).where(d.id == state_id).limit(1))
+        ).one_or_none()
+        if row is None:
+            continue
+        writable = None
+        if row.provider_id is not None:
+            provider = await core_providers.find_provider(conn, str(row.provider_id))
+            writable = None if provider is None else bool(provider.write_capable)
+        found[f"state:{state_id}"] = [
+            str(row.owner),
+            None if row.provider_id is None else str(row.provider_id),
+            writable,
+        ]
+    if props:
+        registry = await load(conn, story_id)
+        for predicate_id in dict.fromkeys(str(p[1]) for p in props):
+            predicate = registry.get(predicate_id)
+            if predicate is not None:
+                found[f"predicate:{predicate_id}"] = [
+                    str(getattr(predicate.owner, "value", predicate.owner))
+                ]
+    return found
 
 
 def _refs(items: Iterable[dict[str, str]]) -> list[dict[str, str]]:
@@ -233,6 +278,24 @@ async def revalidate(
         refs.append({"table": "stories", "id": story_id})
     if refs:
         reasons.append({"kind": "config_changed", "refs": _refs(refs)})
+
+    # #697: an owner or a provider's write capability changed since the plan (neither moves
+    # the revision).
+    owned = dict(read_set.get("ownership") or {})
+    if owned:
+        states_now = [k.split(":", 1)[1] for k in owned if k.startswith("state:")]
+        props_now = [["", k.split(":", 1)[1]] for k in owned if k.startswith("predicate:")]
+        now = await _ownership(conn, story_id, [[s] for s in states_now], props_now)
+        moved_refs = [
+            {
+                "table": "state_definitions" if key.startswith("state:") else "predicates",
+                "id": key.split(":", 1)[1],
+            }
+            for key, was in owned.items()
+            if list(now.get(key) or []) != list(was)
+        ]
+        if moved_refs:
+            reasons.append({"kind": "ownership_changed", "refs": _refs(moved_refs)})
 
     if current_revision == base_revision:
         return Stale(reasons) if reasons else Fresh()

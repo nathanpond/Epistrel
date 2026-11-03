@@ -1106,6 +1106,10 @@ async def read_turn(
                 director.append(value.strip())
             elif isinstance(value, list):
                 director.extend(str(v) for v in value if isinstance(v, str) and v.strip())
+    kept = await author_directives.kept_author_facts(conn, story_id, turn)
+    if kept:
+        # #699: Lite lasting author facts an upgrade kept as text, the narrator's alone.
+        director.append(kept)
     return TurnRead(
         inputs=inputs,
         resolved=resolved,
@@ -6150,6 +6154,14 @@ async def play(
         else:
             op.turn_stage = None
             op.drop_turn_stages()
+        if regenerating is not None:
+            from epistrel.orchestrator.commit.directed import HELD
+
+            held = HELD.get()
+            if held is not None:
+                # #712: a directed resolution's amendment commits in this attempt's
+                # transaction, before the turn's own steps (a restart stages it again).
+                held(op)
         input_labels = (
             BeatLabels(
                 objective_relation=_relation(checked.input_claims, SAY),

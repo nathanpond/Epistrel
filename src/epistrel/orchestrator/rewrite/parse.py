@@ -453,6 +453,25 @@ async def _proposition(conn: AsyncConnection, ctx: _Context, n: int, change: Rew
             }
         )
         return
+    owned = ctx.story.registry.get(str(predicate))
+    if owned is not None and str(getattr(owned.owner, "value", owned.owner)) == "external":
+        # #697 (FR-EXT-8): a predicate the registry gives an external owner is the game's:
+        # its past cannot be rewritten (as an externally owned State's).
+        from epistrel.orchestrator.external_guard import CODE, PAST
+
+        ctx.parsed.refused.append(
+            {
+                "index": n,
+                "reason": "external_owned",
+                "code": CODE,
+                "explanation": PAST,
+                "predicate": owned.name,
+                "provider": None,
+                "value_name": owned.name,
+                "change": _dump(change),
+            }
+        )
+        return
     key = prop_key(subject, predicate)
     absolute = timing.absolute(change.valid.from_)
     uncertain, bound = False, None
@@ -588,11 +607,13 @@ def _normal(text: str) -> str:
 
 async def _record(conn: AsyncConnection, ctx: _Context, n: int, change: RewriteChange) -> None:
     ref = change.ref
-    if ref is None or (ref.quote is None and ref.turn is None):
+    if ref is None or (ref.quote is None and ref.turn is None and ref.event_id is None):
         ctx.parsed.refused.append({"index": n, "reason": "no_record", "change": _dump(change)})
         return
     lines = await _active_lines(conn, ctx.story.story_id)
-    if ref.quote is not None:
+    if ref.event_id is not None:  # #700: a line edit names its message
+        matched = [line for line in lines if str(line.message_id) == ref.event_id]
+    elif ref.quote is not None:
         quote = _normal(ref.quote)
         matched = [line for line in lines if quote and quote in _normal(str(line.text or ""))]
     else:
@@ -651,6 +672,10 @@ async def _record(conn: AsyncConnection, ctx: _Context, n: int, change: RewriteC
         "action": action,
         "new_text": change.new_text if action == "replace" else None,
     }
+    if ref.event_id is not None:  # #700: the line edit's preview shows before and after
+        summary["old_text"] = next(
+            (str(line.text or "") for line in lines if str(line.message_id) == record_id), None
+        )
     draft = RecordPartDraft("events", record_id, action, patch)
     ctx.parsed.changes.append(Normalized(key, "record", draft, summary))
 

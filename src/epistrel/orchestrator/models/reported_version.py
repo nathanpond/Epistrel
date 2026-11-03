@@ -7,11 +7,18 @@ skips the write while the value holds). A configuration's fingerprint names the 
 version of each model (``latest``, read with the model configuration at a turn's start, never the
 value a call observes mid-turn), so a reported version change is a new fingerprint
 (``uncertified``), and drift under an unchanged version is a canary's to catch (``stale``).
+
+#710: when a completion reports no ``system_fingerprint`` (common for local OpenAI-compatible
+servers), the version is the ``version`` field of the model's ``/models`` entry, when the
+adapter lists one (``ModelAccessLayer._listed_version``). The listing is probed at the first
+such call and then at most once an hour per purpose (``LISTING_TTL_S``, an in-process cache:
+``listing``/``remember_listing``); neither reported, the version stays null.
 """
 
 from __future__ import annotations
 
 import hashlib
+import time
 from typing import Any
 
 from sqlalchemy import select, text
@@ -20,6 +27,24 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.tables import model_reported_versions
 
 _SEEN: dict[tuple[str, str], str] = {}
+_LISTINGS: dict[str, tuple[float, dict[str, str]]] = {}
+LISTING_TTL_S = 3600.0
+"""#710: how long one ``/models`` listing of a purpose's endpoint is reused (hourly)."""
+
+
+def listing(purpose: str) -> dict[str, str] | None:
+    """The cached ``/models`` versions of ``purpose``'s endpoint, or ``None`` when absent or
+    older than ``LISTING_TTL_S``."""
+    found = _LISTINGS.get(purpose)
+    if found is None or time.monotonic() - found[0] > LISTING_TTL_S:
+        return None
+    return found[1]
+
+
+def remember_listing(purpose: str, versions: dict[str, str]) -> dict[str, str]:
+    """Cache ``versions`` as ``purpose``'s listing (see ``listing``)."""
+    _LISTINGS[purpose] = (time.monotonic(), dict(versions))
+    return _LISTINGS[purpose][1]
 
 
 def endpoint_hash(base_url: str | None) -> str:
@@ -62,8 +87,17 @@ async def latest(conn: AsyncConnection) -> dict[str, str]:
 
 
 def forget() -> None:
-    """Drop the in-process memo (tests)."""
+    """Drop the in-process memos (tests)."""
     _SEEN.clear()
+    _LISTINGS.clear()
 
 
-__all__ = ["endpoint_hash", "forget", "latest", "observe"]
+__all__ = [
+    "LISTING_TTL_S",
+    "endpoint_hash",
+    "forget",
+    "latest",
+    "listing",
+    "observe",
+    "remember_listing",
+]

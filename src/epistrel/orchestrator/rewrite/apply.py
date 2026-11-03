@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.amendments.store import (
     AmendmentKind,
+    LiteNotePartDraft,
     PropositionPartDraft,
     RecordPartDraft,
     record_amendment,
@@ -95,6 +96,8 @@ class Prepared:
     rationale: list[dict[str, str]] = field(default_factory=list)
     """#241: the records a directed resolution's amendment rests on (its conflicting records,
     never the regenerated message)."""
+    notes: list[str] = field(default_factory=list)
+    """#700: a Lite rewrite's world note (one ``lite_note`` part)."""
 
 
 def _excerpt(text: str | None) -> str | None:
@@ -219,7 +222,9 @@ def _answers(questions: Sequence[Any]) -> dict[str, tuple[str, bool, str | None]
     """Each conflict question's chosen action by its key: ``(action, auto, guidance)``."""
     chosen: dict[str, tuple[str, bool, str | None]] = {}
     for q in questions:
-        if q.kind != "conflict":
+        if q.kind not in ("conflict", "dependent"):
+            # #711: an undo's dependent-amendment question is a conflict question too; its
+            # answer was read as the recommendation before.
             continue
         options = {str(o["id"]): o for o in q.options or []}
         option = options.get(str(q.answer_option_id or q.recommended_option_id))
@@ -244,6 +249,8 @@ async def prepare(
     preview = dict(plan.get("preview") or {})
     radius = dict(preview.get("blast_radius") or {})
     prepared = Prepared()
+    if isinstance(plan.get("lite_note"), str):
+        prepared.notes.append(str(plan["lite_note"]))
     if plan.get("undo") is not None:
         # #238: an undo reverts its amendment (the inverse parts are #221's), so its changes
         # write no part of their own.
@@ -305,6 +312,11 @@ async def prepare(
                         prepared.notifications.append(
                             {"kind": "belief_now_false", "record": entry["record"]}
                         )
+                elif entry.get("action") == "keep" and record[0] == "events":
+                    # #707: a decision another premise still supports under the new canon.
+                    prepared.notifications.append(
+                        {"kind": "decision_kept", "record": entry["record"]}
+                    )
                 elif entry.get("action") in ("re_evaluate", "regenerate") and record[0] in (
                     "events",
                     "memories",
@@ -407,7 +419,31 @@ async def prepare(
         action, auto, guidance = chosen.get(key, (least_change(conflict), True, None))
         before = texts.get(record)
         after: str | None = None
-        if action == "rewrite":
+        if action == "rewrite" and conflict.get("reason") == "merge_contradiction":
+            # #713: the merged entity's fact takes the value the survivor's canon holds.
+            async with db.connect() as conn:
+                agreed = await _merge_agreed(conn, story_id, record[1], conflict)
+            if agreed is None:
+                action = "keep"
+            else:
+                prepared.parts.append(("resolutions", agreed, {"record": conflict["record"]}))
+                after = "rewritten"
+        elif action == "rewrite" and record[0] == "amendment_parts":
+            # #711: B is rewritten into this undo's parts and stays active; what cannot be
+            # rewritten is cascade-undone, so B never stays contradicting restored canon.
+            rewrites = await _rewrite_dependent(
+                db, models, story_id, record[1], changes, olds, canon, guidance or ""
+            )
+            if rewrites is None:
+                action = "cascade_undo"
+                prepared.notifications.append(
+                    {"kind": "rewrite_failed", "record": conflict["record"]}
+                )
+            else:
+                for draft, label in rewrites:
+                    prepared.parts.append(("resolutions", draft, label))
+                after = "rewritten"
+        elif action == "rewrite":
             rewritten = (
                 None
                 if before is None
@@ -477,6 +513,73 @@ async def prepare(
     for entity in plan.get("preview", {}).get("new_entities") or []:
         prepared.notifications.append({"kind": "new_entity", "name": entity.get("name")})
     return prepared
+
+
+async def _merge_agreed(
+    conn: AsyncConnection, story_id: str, fact_id: str, conflict: Mapping[str, Any]
+) -> Any:
+    """#713: a ``version`` part of a merged entity's fact with the object (or literal) of the
+    survivor's fact it contradicted; ``None`` when either is gone."""
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.canon.errors import FactNotFound
+
+    agree = conflict.get("agree_with")
+    if not isinstance(agree, str):
+        return None
+    try:
+        mine, mine_current = await canon._load(conn, story_id, fact_id)
+        theirs, theirs_current = await canon._load(conn, story_id, agree)
+    except FactNotFound:
+        return None
+    if not (mine_current and theirs_current):
+        return None
+    held = theirs.proposition
+    agreed = mine.proposition.model_copy(
+        update={
+            "object_id": held.object_id,
+            "literal": held.literal,
+            "object_set": held.object_set,
+            "polarity": held.polarity,
+        }
+    )
+    return RecordPartDraft("facts", mine.id, "replace", {"proposition": agreed})
+
+
+async def _rewrite_dependent(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    part_id: str,
+    changes: Sequence[Any],
+    olds: Mapping[str, tuple[str, ...]],
+    canon: Mapping[str, list[str]],
+    guidance: str,
+) -> list[tuple[Any, dict[str, Any]]] | None:
+    """#711: a dependent amendment part rewritten to agree with the restored canon: a
+    proposition part deterministically (``undo.rewrite_dependent``), a record part's text by
+    ``rewrite_record``; ``None`` when neither applies or the repair fails."""
+    from epistrel.orchestrator.rewrite import undo
+
+    async with db.connect() as conn:
+        found = await undo.rewrite_dependent(conn, part_id, changes)
+        if found is not None:
+            return found
+        target = await undo.record_text_of(conn, part_id)
+    if target is None:
+        return None
+    table, record_id, text = target
+    undone = [c for c in changes if c.summary.get("undo")]
+    old = tuple(dict.fromkeys(f for c in undone for f in olds.get(c.key, ())))
+    new = [line for c in undone for line in canon.get(c.key, [])]
+    rewritten = await _rewrite_text(db, models, story_id, text, table, old, new, guidance)
+    if rewritten is None:
+        return None
+    return [
+        (
+            _fix_draft(table, record_id, rewritten),
+            {"record": {"table": table, "id": record_id}, "rewrites": part_id},
+        )
+    ]
 
 
 async def _now_false(conn: AsyncConnection, belief_id: str, change: Mapping[str, Any]) -> bool:
@@ -890,6 +993,13 @@ class Applied:
     timeline_revision: int
 
 
+Stage = Callable[[Operation], None]
+"""#712: stages an apply on an operation another path commits (``apply``'s ``run``)."""
+Run = Callable[[Stage], Awaitable[tuple[str, int]]]
+"""#712: commits an operation with the apply staged on it and answers its operation id and
+the timeline revision it committed at (a directed regeneration's turn)."""
+
+
 async def apply(
     db: AsyncEngine,
     story_id: str,
@@ -899,17 +1009,17 @@ async def apply(
     principal: str,
     audit: Sequence[tuple[str, Mapping[str, Any]]],
     check: Callable[[AsyncConnection], Awaitable[None]] | None = None,
+    run: Run | None = None,
 ) -> Applied:
     """The one atomic apply (see the module docstring). ``check`` runs first in the commit,
-    under the story row lock (#237's revalidation); raising rolls the apply back whole."""
+    under the story row lock (#237's revalidation); raising rolls the apply back whole.
+
+    ``run`` (#712): when given, the apply is staged on an operation ``run`` commits (a directed
+    regeneration's turn: the regenerated variant and its ``directed_resolution`` amendment
+    commit in one transaction, or neither does) instead of an operation of its own."""
     found: dict[str, Any] = {}
-    async with Operation(
-        db,
-        story_id=story_id,
-        kind=OperationKind.REWRITE_SESSION,
-        principal=principal,
-        bumps_revision=True,
-    ) as op:
+
+    def stage(op: Operation) -> None:
         for type_, payload in audit:
             op.append(type_, dict(payload))
         op.append(
@@ -927,6 +1037,7 @@ async def apply(
             for draft in created:
                 parts.insert(0, draft)
                 labels.insert(0, ("changes", {"created": True}))
+            parts.extend(LiteNotePartDraft(text) for text in prepared.notes)  # after labels
             made = await record_amendment(
                 conn,
                 op,
@@ -940,6 +1051,14 @@ async def apply(
             )
             for target in prepared.undo:
                 await revert_amendment(conn, op, target, by_amendment_id=made.amendment_id)
+            if prepared.undo or any(
+                isinstance(d, RecordPartDraft) and d.table == "events" for d in parts
+            ):
+                # #700: a Lite summary segment over a corrected line is rebuilt (the job
+                # finds the stale segments; under structured the summary is off).
+                from epistrel.orchestrator.jobs.handlers import lite_summary
+
+                await lite_summary.schedule_in(conn, story_id)
             found["beliefs"] = await _cascade_beliefs(
                 conn, op, story_id, prepared.beliefs, made.written_fact_ids, made.event_id
             )
@@ -957,13 +1076,26 @@ async def apply(
             found["applied"] = applied
 
         op.add_commit_step(step)
-        await op.commit()
+
+    if run is None:
+        async with Operation(
+            db,
+            story_id=story_id,
+            kind=OperationKind.REWRITE_SESSION,
+            principal=principal,
+            bumps_revision=True,
+        ) as op:
+            stage(op)
+            await op.commit()
+        operation_id, revision = op.operation_id, int(op.timeline_revision or 0)
+    else:
+        operation_id, revision = await run(stage)
     report = {
         "resolutions": prepared.resolutions,
         "applied": {**found["applied"], "beliefs": found["beliefs"]},
         "notifications": [*prepared.notifications, *found.get("belief_notes", [])],
     }
-    return Applied(found["amendment_id"], op.operation_id, report, int(op.timeline_revision or 0))
+    return Applied(found["amendment_id"], operation_id, report, revision)
 
 
 async def close_audit(

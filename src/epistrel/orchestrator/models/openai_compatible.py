@@ -84,6 +84,17 @@ def request_body(
     return body
 
 
+def versions_of(models: Sequence[Any]) -> dict[str, str]:
+    """#710: each listed model's ``version`` field (an extra field of the SDK's ``Model``),
+    when it carries a non-empty one; at most 200 characters."""
+    found: dict[str, str] = {}
+    for model in models:
+        version = (getattr(model, "model_extra", None) or {}).get("version")
+        if isinstance(version, str | int | float) and str(version).strip():
+            found[str(model.id)] = str(version).strip()[:200]
+    return found
+
+
 def reported_cost(usage: object) -> float | None:
     """``usage.cost`` when the endpoint reports one (some gateways do; the SDK keeps it as an
     extra field), else ``None``: cost is never estimated (FR-MODEL-12)."""
@@ -246,6 +257,21 @@ class OpenAICompatibleAdapter:
             await self._release(client)
         result = await self.complete(purpose, PROBE_MESSAGES, ModelParams(max_tokens=16))
         return ProbeResult(models=listed, model=result.model)
+
+    async def listed_versions(self, purpose: str) -> dict[str, str]:
+        """#710 (FR-PROF-16): the ``version`` field of each ``GET /models`` entry of
+        ``purpose``'s endpoint that carries one (an OpenAI-compatible extension; the OpenAI API
+        itself sends none). Failures escape as the SDK's exceptions."""
+        config = await self._resolve(purpose)
+        if config.base_url is None or config.api_key_ciphertext is None:
+            return {}
+        secret = self._keybox.decrypt(config.api_key_ciphertext, purpose=purpose)
+        client = await self._acquire(config, config.base_url, secret.get_secret_value())
+        try:
+            page = await client.sdk.models.list(timeout=config.params.timeout or PROBE_TIMEOUT_S)
+        finally:
+            await self._release(client)
+        return versions_of(page.data)
 
     async def aclose(self) -> None:
         clients, self._clients = list(self._clients.values()), {}

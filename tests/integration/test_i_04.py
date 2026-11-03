@@ -984,3 +984,47 @@ async def test_i_04__m7_conflict_check(pg_url: str, engine: AsyncEngine) -> None
     assert on_fork is not None
     assert on_fork["count"] == 1
     assert on_source is None
+
+
+@pytest.mark.part("M7", "FR-STORE-20,23")
+async def test_i_04__m7_as_recorded(engine: AsyncEngine) -> None:
+    """I-04 M7: the as-originally-recorded view at a checkpoint returns the right records, and
+    the corrected view folds each amendment part by its own eligibility (FR-STORE-20).
+
+    Six turns; then one amendment corrects turn 3's reply and turn 6's reply. Through turn 4:
+    the corrected view shows turn 3's fix (its record is in the view) and has no turn 6 (its
+    part falls away with the record); the as-recorded view at 4 shows turn 3's original text,
+    holds exactly the turns 1..4 replies, and no event of the later amendment. Truncated to 4,
+    the amendment survives and the as-recorded view at 4 is unchanged."""
+    from epistrel.core.amendments.store import RecordPartDraft
+    from epistrel.core.views import Checkpoint, as_originally_recorded, corrected_history
+    from tests import amendment_support as am
+    from tests import canon_support as c
+
+    w = await c.world(engine)
+    replies = await am.play(engine, w.story_id, 6, start=1)
+    await am.amend(
+        engine,
+        w.story_id,
+        [
+            RecordPartDraft("events", replies[3], "replace", {"text": "fixed 3"}),
+            RecordPartDraft("events", replies[6], "replace", {"text": "fixed 6"}),
+        ],
+    )
+
+    def texts(found: list[Any]) -> dict[str, Any]:
+        return {e.id: e.payload.model_dump().get("text") for e in found}
+
+    corrected = texts(await corrected_history(engine, w.story_id, through_turn=4))
+    assert corrected[replies[3]] == "fixed 3"
+    assert replies[6] not in corrected
+    recorded = await as_originally_recorded(engine, w.story_id, Checkpoint(4))
+    shown = texts(recorded.events)
+    assert shown[replies[3]] == "reply 3"
+    assert {replies[n] for n in range(1, 5)} <= set(shown)
+    assert replies[5] not in shown
+    assert not [e for e in recorded.events if e.type == "amendment_recorded"]
+    assert await projection_support.truncate(engine, w.story_id, 4) is not None
+    again = await as_originally_recorded(engine, w.story_id, Checkpoint(4))
+    assert texts(again.events) == shown
+    assert await am.table_rows(engine, "amendments", w.story_id)

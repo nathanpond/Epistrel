@@ -7267,6 +7267,13 @@
             "title": "Disposition",
             "type": "string"
           },
+          "hints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hints",
+            "type": "array"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -11611,7 +11618,7 @@
         "type": "object"
       },
       "Excluded": {
-        "description": "A target left out and why (``amendment_ids``: the amendments that name its records).",
+        "description": "A target left out and why (``amendment_ids``: the amendments that name its records;\n``settling_change_ids``: #702, the active changes that settle one of its ``state_changes``\nrows, #218).",
         "properties": {
           "amendment_ids": {
             "items": {
@@ -11623,10 +11630,18 @@
           "reason": {
             "enum": [
               "amendment_dependency",
+              "settlement_dependency",
               "in_flight"
             ],
             "title": "Reason",
             "type": "string"
+          },
+          "settling_change_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Settling Change Ids",
+            "type": "array"
           },
           "target": {
             "title": "Target",
@@ -17054,6 +17069,18 @@
             ],
             "title": "Idempotency Key"
           },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#705: the story's `import` operation (its `turn_report.imported_from`: the source story, the exported revision, the format version and the bundle's SHA-256).",
+            "title": "Operation Id"
+          },
           "source_story_id": {
             "title": "Source Story Id",
             "type": "string"
@@ -17061,6 +17088,15 @@
           "story_id": {
             "title": "Story Id",
             "type": "string"
+          },
+          "warnings": {
+            "description": "#705: what a bundle of a newer format MINOR carried that this deployment ignored (`unknown_member`, `unknown_fields`), or `media_not_imported`.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -17926,6 +17962,60 @@
         "title": "LikesDislikesPatch",
         "type": "object"
       },
+      "LineEdit": {
+        "additionalProperties": false,
+        "description": "#700 (FR-LITE-8, FR-REWRITE-12): a direct correction of one line: the message's\n``event_id``, or its ``turn`` (and ``beat`` when the turn has several messages), and its\n``new_text``. Planned with no model call.",
+        "properties": {
+          "beat": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "minLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "new_text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "New Text",
+            "type": "string"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Turn"
+          }
+        },
+        "required": [
+          "new_text"
+        ],
+        "title": "LineEdit",
+        "type": "object"
+      },
       "ListedMemory": {
         "description": "A memory as the omniscient list reads it (#531): ``MemoryView`` and, on a consolidation\noutput, its ``consolidation`` provenance (``None`` on every other memory).",
         "properties": {
@@ -18358,7 +18448,8 @@
                 "seed_audience_unfilled",
                 "state",
                 "clock",
-                "event"
+                "event",
+                "kept_existing"
               ],
               "type": "string"
             },
@@ -21097,6 +21188,19 @@
                 "type": "null"
               }
             ]
+          },
+          "materialization": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#698 (FR-PROF-18): the deferred genesis content the operation materialized (a backfill's operation, or a configuration change's control operation): to a read naming `omniscient`, the full report (`counts` by capability, `by_outcome`, `conflicts`, and `entries`: each item's `field_ref`, `location` and `outcomes`, a merge loser's `winner`, `loser` and `rule`); to any other read, its card (`counts`, `by_outcome`, `conflicts`). Absent for any other operation.",
+            "title": "Materialization"
           },
           "narrative_turn": {
             "anyOf": [
@@ -31058,6 +31162,52 @@
         "title": "PruneTarget",
         "type": "object"
       },
+      "PruningBody": {
+        "description": "#703: a story's automatic pruning: its policy (``null``: off), when it last pruned\n(manually or by the policy; ``null``: never) and when the daily run comes next (``null``\nwhile the policy is off).",
+        "properties": {
+          "last_prune_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Prune At"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          }
+        },
+        "required": [
+          "policy",
+          "last_prune_at",
+          "next_run_at"
+        ],
+        "title": "PruningBody",
+        "type": "object"
+      },
       "PublishRequest": {
         "additionalProperties": false,
         "description": "``POST /catalog/{characters|scenarios}/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
@@ -34821,7 +34971,7 @@
       },
       "RewriteRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/rewrites``: an instruction about the story's past, how conflicts\nresolve (``synchronous`` by default) and whether to preview first (the default).",
+        "description": "``POST /stories/{id}/rewrites``: an instruction about the story's past (or, #700, a\ndirect ``line_edit``: exactly one of the two), how conflicts resolve (``synchronous`` by\ndefault) and whether to preview first (the default).",
         "examples": [
           {
             "instruction": "Bobby actually went to UCLA.",
@@ -34831,10 +34981,27 @@
         ],
         "properties": {
           "instruction": {
-            "maxLength": 4000,
-            "minLength": 1,
-            "title": "Instruction",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "line_edit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LineEdit"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "preview": {
             "default": "preview_first",
@@ -34862,9 +35029,6 @@
             "title": "Resolution Mode"
           }
         },
-        "required": [
-          "instruction"
-        ],
         "title": "RewriteRequest",
         "type": "object"
       },
@@ -38695,6 +38859,13 @@
             "title": "Audit Retention Days",
             "type": "integer"
           },
+          "bundle_export_ttl_hours": {
+            "default": 24,
+            "maximum": 720.0,
+            "minimum": 1.0,
+            "title": "Bundle Export Ttl Hours",
+            "type": "integer"
+          },
           "cascade_threshold": {
             "default": 5,
             "maximum": 1000.0,
@@ -38777,6 +38948,13 @@
             "maximum": 100000.0,
             "minimum": 1.0,
             "title": "Dependency Search Max Results",
+            "type": "integer"
+          },
+          "directive_steer_ttl_minutes": {
+            "default": 1440,
+            "maximum": 43200.0,
+            "minimum": 10.0,
+            "title": "Directive Steer Ttl Minutes",
             "type": "integer"
           },
           "embedding_batch_max": {
@@ -38937,6 +39115,13 @@
             "minItems": 1,
             "title": "Listing Status Values",
             "type": "array"
+          },
+          "lite_author_facts_max": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Lite Author Facts Max",
+            "type": "integer"
           },
           "lite_summary_chunk": {
             "default": 10,
@@ -40050,6 +40235,17 @@
             ],
             "title": "Audit Retention Days"
           },
+          "bundle_export_ttl_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Export Ttl Hours"
+          },
           "cascade_threshold": {
             "anyOf": [
               {
@@ -40170,6 +40366,17 @@
               }
             ],
             "title": "Dependency Search Max Results"
+          },
+          "directive_steer_ttl_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Directive Steer Ttl Minutes"
           },
           "embedding_batch_max": {
             "anyOf": [
@@ -40397,6 +40604,17 @@
               }
             ],
             "title": "Listing Status Values"
+          },
+          "lite_author_facts_max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lite Author Facts Max"
           },
           "lite_summary_chunk": {
             "anyOf": [
@@ -43593,6 +43811,16 @@
               }
             ]
           },
+          "pruning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PruningBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "scenario": {
             "anyOf": [
               {
@@ -43645,6 +43873,4614 @@
           "variant_chains"
         ],
         "title": "StoryBody",
+        "type": "object"
+      },
+      "StoryBundleEvent": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `events.jsonl`: an event as recorded, its payload valid for its type (FR-STORE-7).",
+        "properties": {
+          "authority": {
+            "enum": [
+              "authoritative",
+              "non_authoritative"
+            ],
+            "type": "string"
+          },
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "category": {
+            "enum": [
+              "amendment",
+              "audit",
+              "control",
+              "derived",
+              "input",
+              "narrative_state"
+            ],
+            "type": "string"
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload": {},
+          "principal": {
+            "type": "string"
+          },
+          "provenance": {
+            "enum": [
+              "consumer",
+              "engine",
+              "player",
+              "system"
+            ],
+            "type": "string"
+          },
+          "redacted_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "valid_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_time_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "authority",
+          "category",
+          "id",
+          "operation_id",
+          "payload",
+          "principal",
+          "provenance",
+          "seq",
+          "type"
+        ],
+        "title": "StoryBundleEvent",
+        "type": "object"
+      },
+      "StoryBundleManifest": {
+        "additionalProperties": false,
+        "description": "A story bundle's `manifest.json`: its format version, the source story and revision, the content rating and engine profile, every member with its SHA-256, and the counts (FR-STORE-7).",
+        "properties": {
+          "config_revision": {
+            "type": "integer"
+          },
+          "content_rating": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object"
+          },
+          "engine_profile": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "exported_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "exported_by": {
+            "type": "string"
+          },
+          "exported_revision": {
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "records": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "path",
+                "sha256",
+                "size",
+                "records"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "format_version": {
+            "pattern": "^\\d+\\.\\d+\\.\\d+$",
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "source_story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "schema_version",
+          "source_story_id",
+          "exported_revision",
+          "exported_at",
+          "exported_by",
+          "files",
+          "counts"
+        ],
+        "title": "StoryBundleManifest",
+        "type": "object"
+      },
+      "StoryBundleMedia": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `media.jsonl`: a media asset the story's rows name, its bytes the member `media/<sha256>` (FR-STORE-7).",
+        "properties": {
+          "alt_text": {},
+          "caption": {},
+          "content_rating_version_id": {},
+          "depicted_subjects": {},
+          "duration_ms": {},
+          "generation_metadata": {},
+          "height": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {},
+          "mime_type": {},
+          "poster_media_id": {},
+          "sha256": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "size": {},
+          "source": {},
+          "width": {}
+        },
+        "required": [
+          "alt_text",
+          "caption",
+          "content_rating_version_id",
+          "depicted_subjects",
+          "duration_ms",
+          "generation_metadata",
+          "height",
+          "id",
+          "kind",
+          "mime_type",
+          "poster_media_id",
+          "sha256",
+          "size",
+          "source",
+          "width"
+        ],
+        "title": "StoryBundleMedia",
+        "type": "object"
+      },
+      "StoryBundleRecord_amendment_parts": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/amendment_parts.jsonl` (or `catalog/amendment_parts.jsonl`): a `amendment_parts` row as exported (FR-STORE-7).",
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amendment_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "patch_after": {},
+          "patch_before": {},
+          "position_bound": {},
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "qualifiers": {},
+          "record_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "record_table": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scope_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "strategy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "superseded_fact_ids": {
+            "type": "array"
+          },
+          "timing_uncertain": {
+            "type": "boolean"
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_spec": {},
+          "valid_to_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "written_fact_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "written_state_change_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "amendment_id",
+          "id",
+          "kind",
+          "ordinal",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_amendment_parts",
+        "type": "object"
+      },
+      "StoryBundleRecord_amendments": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/amendments.jsonl` (or `catalog/amendments.jsonl`): a `amendments` row as exported (FR-STORE-7).",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "authority": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload": {},
+          "rationale_record_ids": {},
+          "redoes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reverted_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "tx_time": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "undoes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "author",
+          "id",
+          "kind",
+          "operation_id",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_amendments",
+        "type": "object"
+      },
+      "StoryBundleRecord_belief_transitions": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/belief_transitions.jsonl` (or `catalog/belief_transitions.jsonl`): a `belief_transitions` row as exported (FR-STORE-7).",
+        "properties": {
+          "accessibility": {
+            "type": "string"
+          },
+          "antecedent_kind": {
+            "enum": [
+              "record",
+              "render_step",
+              "resolution",
+              "staged_beat"
+            ],
+            "type": "string"
+          },
+          "antecedent_ref": {},
+          "belief_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "confidence_level": {
+            "enum": [
+              "believed",
+              "known",
+              "suspected",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "confidence_scalar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "holder_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "author",
+              "author_fiat",
+              "correction",
+              "discovery",
+              "forgetting",
+              "inference",
+              "observation",
+              "resolution",
+              "revision",
+              "testimony"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position_beat": {
+            "type": "integer"
+          },
+          "position_slot_k": {
+            "type": "integer"
+          },
+          "position_step": {
+            "type": "integer"
+          },
+          "position_turn": {
+            "type": "integer"
+          },
+          "position_variant": {
+            "type": "integer"
+          },
+          "prior": {},
+          "prior_belief_ids": {
+            "type": "array"
+          },
+          "source_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "corrected",
+              "decayed",
+              "held"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "antecedent_kind",
+          "antecedent_ref",
+          "belief_id",
+          "confidence_level",
+          "holder_character_id",
+          "id",
+          "kind",
+          "membership_tx",
+          "operation_id",
+          "position_turn",
+          "story_id",
+          "tx_from"
+        ],
+        "title": "StoryBundleRecord_belief_transitions",
+        "type": "object"
+      },
+      "StoryBundleRecord_beliefs": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/beliefs.jsonl` (or `catalog/beliefs.jsonl`): a `beliefs` row as exported (FR-STORE-7).",
+        "properties": {
+          "accessibility": {
+            "type": "string"
+          },
+          "attributed_confidence_level": {
+            "enum": [
+              "believed",
+              "known",
+              "suspected",
+              "unknown",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attributed_confidence_scalar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attributed_held_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attributed_held_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attributed_holder_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "confidence_level": {
+            "enum": [
+              "believed",
+              "known",
+              "suspected",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "confidence_scalar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "corrected_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "depth": {
+            "type": "integer"
+          },
+          "disclosure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "held_from_beat": {
+            "type": "integer"
+          },
+          "held_from_slot_k": {
+            "type": "integer"
+          },
+          "held_from_step": {
+            "type": "integer"
+          },
+          "held_from_turn": {
+            "type": "integer"
+          },
+          "held_from_variant": {
+            "type": "integer"
+          },
+          "held_to_beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "held_to_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "holder_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "inner_belief_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "attributed",
+              "first_order",
+              "nested",
+              "speech_act"
+            ],
+            "type": "string"
+          },
+          "lineage_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "perceived_intent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "polarity": {
+            "type": "string"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "provenance": {
+            "type": "string"
+          },
+          "resolution_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "speaker_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "staged_ref": {},
+          "state": {
+            "enum": [
+              "corrected",
+              "decayed",
+              "held"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "utterance_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_span": {},
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "visibility": {}
+        },
+        "required": [
+          "confidence_level",
+          "held_from_turn",
+          "holder_character_id",
+          "id",
+          "lineage_id",
+          "membership_tx",
+          "operation_id",
+          "polarity",
+          "proposition_id",
+          "provenance",
+          "story_id",
+          "tx_from",
+          "valid_span",
+          "visibility"
+        ],
+        "title": "StoryBundleRecord_beliefs",
+        "type": "object"
+      },
+      "StoryBundleRecord_capability_coverage": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/capability_coverage.jsonl` (or `catalog/capability_coverage.jsonl`): a `capability_coverage` row as exported (FR-STORE-7).",
+        "properties": {
+          "capability": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "from_turn": {
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "to_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "capability",
+          "from_turn",
+          "id",
+          "source",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_capability_coverage",
+        "type": "object"
+      },
+      "StoryBundleRecord_certification_runs": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/certification_runs.jsonl` (or `catalog/certification_runs.jsonl`): a `certification_runs` row as exported (FR-STORE-7).",
+        "properties": {
+          "certification_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "checks_certification_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimate": {},
+          "fingerprint": {
+            "type": "string"
+          },
+          "finished_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "job_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "profile_version": {
+            "type": "integer"
+          },
+          "reference": {
+            "type": "boolean"
+          },
+          "report": {},
+          "requested_by": {
+            "type": "string"
+          },
+          "sample": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "seeds": {
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suites": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "id",
+          "profile_id",
+          "profile_version",
+          "requested_by",
+          "seeds",
+          "suites"
+        ],
+        "title": "StoryBundleRecord_certification_runs",
+        "type": "object"
+      },
+      "StoryBundleRecord_character_snapshots": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/character_snapshots.jsonl` (or `catalog/character_snapshots.jsonl`): a `character_snapshots` row as exported (FR-STORE-7).",
+        "properties": {
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "content": {},
+          "content_rating_version_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "published_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "source_catalog_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "character_id",
+          "content",
+          "published_at",
+          "source_catalog_id",
+          "story_id",
+          "version"
+        ],
+        "title": "StoryBundleRecord_character_snapshots",
+        "type": "object"
+      },
+      "StoryBundleRecord_characters": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/characters.jsonl` (or `catalog/characters.jsonl`): a `characters` row as exported (FR-STORE-7).",
+        "properties": {
+          "age_recorded_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "definition": {
+            "type": "string"
+          },
+          "deflection_style": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "images": {},
+          "is_player": {
+            "type": "boolean"
+          },
+          "languages": {
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "modeled_beat": {
+            "type": "integer"
+          },
+          "modeled_slot_k": {
+            "type": "integer"
+          },
+          "modeled_step": {
+            "type": "integer"
+          },
+          "modeled_turn": {
+            "type": "integer"
+          },
+          "modeled_variant": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ordinal": {
+            "type": "integer"
+          },
+          "participation_fixed": {
+            "type": "boolean"
+          },
+          "participation_role": {
+            "type": "string"
+          },
+          "persona_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "persona_snapshot": {},
+          "promoted_to": {},
+          "role_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "safe_fallback_text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_catalog_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_catalog_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "true_age": {
+            "type": "integer"
+          },
+          "true_age_source": {
+            "type": "string"
+          },
+          "weight": {
+            "enum": [
+              "major",
+              "minor"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "definition",
+          "id",
+          "name",
+          "ordinal",
+          "story_id",
+          "true_age"
+        ],
+        "title": "StoryBundleRecord_characters",
+        "type": "object"
+      },
+      "StoryBundleRecord_client_events": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/client_events.jsonl` (or `catalog/client_events.jsonl`): a `client_events` row as exported (FR-STORE-7).",
+        "properties": {
+          "client_event_id": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload_hash": {
+            "type": "string"
+          },
+          "result": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client_event_id",
+          "operation_id",
+          "payload_hash",
+          "result",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_client_events",
+        "type": "object"
+      },
+      "StoryBundleRecord_closed_sets": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/closed_sets.jsonl` (or `catalog/closed_sets.jsonl`): a `closed_sets` row as exported (FR-STORE-7).",
+        "properties": {
+          "asserted_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "key": {},
+          "key_set": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "members": {},
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "valid_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "asserted_by",
+          "id",
+          "key",
+          "members",
+          "predicate_id",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_closed_sets",
+        "type": "object"
+      },
+      "StoryBundleRecord_dependency_edges": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/dependency_edges.jsonl` (or `catalog/dependency_edges.jsonl`): a `dependency_edges` row as exported (FR-STORE-7).",
+        "properties": {
+          "acquisition_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dependent_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "dependent_table": {
+            "type": "string"
+          },
+          "edge_type": {
+            "enum": [
+              "asserts",
+              "causes",
+              "derives",
+              "mentions",
+              "presupposes"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "position_beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_step": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "position_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "target_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "target_kind": {
+            "enum": [
+              "amendment_part",
+              "entity",
+              "fact",
+              "proposition",
+              "state"
+            ],
+            "type": "string"
+          },
+          "target_predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target_subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "dependent_id",
+          "dependent_table",
+          "edge_type",
+          "id",
+          "membership_tx",
+          "operation_id",
+          "story_id",
+          "target_id",
+          "target_kind"
+        ],
+        "title": "StoryBundleRecord_dependency_edges",
+        "type": "object"
+      },
+      "StoryBundleRecord_directives": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/directives.jsonl` (or `catalog/directives.jsonl`): a `directives` row as exported (FR-STORE-7).",
+        "properties": {
+          "changes": {},
+          "classified_by": {
+            "type": "string"
+          },
+          "consumed_by_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "disposition": {
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "rewrite_session_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "temporal_scope": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "classified_by",
+          "disposition",
+          "id",
+          "kind",
+          "principal",
+          "story_id",
+          "text"
+        ],
+        "title": "StoryBundleRecord_directives",
+        "type": "object"
+      },
+      "StoryBundleRecord_divergences": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/divergences.jsonl` (or `catalog/divergences.jsonl`): a `divergences` row as exported (FR-STORE-7).",
+        "properties": {
+          "asserted_proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "attribution_objective_relation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "believed_belief_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "believed_proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "position_beat": {
+            "type": "integer"
+          },
+          "position_slot_k": {
+            "type": "integer"
+          },
+          "position_step": {
+            "type": "integer"
+          },
+          "position_turn": {
+            "type": "integer"
+          },
+          "position_variant": {
+            "type": "integer"
+          },
+          "revealed_by_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "speaker_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "utterance_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "asserted_proposition_id",
+          "id",
+          "membership_tx",
+          "operation_id",
+          "position_turn",
+          "speaker_character_id",
+          "story_id",
+          "utterance_id"
+        ],
+        "title": "StoryBundleRecord_divergences",
+        "type": "object"
+      },
+      "StoryBundleRecord_entities": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/entities.jsonl` (or `catalog/entities.jsonl`): a `entities` row as exported (FR-STORE-7).",
+        "properties": {
+          "canonical_name": {
+            "type": "string"
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "descriptors": {},
+          "gender": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "merged_into": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_name",
+          "id",
+          "kind",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_entities",
+        "type": "object"
+      },
+      "StoryBundleRecord_entity_aliases": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/entity_aliases.jsonl` (or `catalog/entity_aliases.jsonl`): a `entity_aliases` row as exported (FR-STORE-7).",
+        "properties": {
+          "alias": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias",
+          "entity_id",
+          "id",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_entity_aliases",
+        "type": "object"
+      },
+      "StoryBundleRecord_erasure_ledger": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/erasure_ledger.jsonl` (or `catalog/erasure_ledger.jsonl`): a `erasure_ledger` row as exported (FR-STORE-7).",
+        "properties": {
+          "applied_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "applied_note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "copied_from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counts": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "ledger_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ledger_hash_prev": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "scan_term_hashes": {
+            "type": "array"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "story_ref": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_id": {
+            "type": "string"
+          },
+          "subject_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "counts",
+          "id",
+          "principal",
+          "scope",
+          "subject_id",
+          "subject_kind"
+        ],
+        "title": "StoryBundleRecord_erasure_ledger",
+        "type": "object"
+      },
+      "StoryBundleRecord_exposures": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/exposures.jsonl` (or `catalog/exposures.jsonl`): a `exposures` row as exported (FR-STORE-7).",
+        "properties": {
+          "fidelity": {
+            "enum": [
+              "full",
+              "partial"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "inferred": {
+            "type": "boolean"
+          },
+          "kind": {
+            "enum": [
+              "content",
+              "envelope"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "position_beat": {
+            "type": "integer"
+          },
+          "position_slot_k": {
+            "type": "integer"
+          },
+          "position_step": {
+            "type": "integer"
+          },
+          "position_turn": {
+            "type": "integer"
+          },
+          "position_variant": {
+            "type": "integer"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "resolution_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by_transition": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "resolved",
+              "unresolved"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "witness_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fidelity",
+          "id",
+          "kind",
+          "membership_tx",
+          "operation_id",
+          "position_turn",
+          "proposition_id",
+          "source_event_id",
+          "story_id",
+          "witness_character_id"
+        ],
+        "title": "StoryBundleRecord_exposures",
+        "type": "object"
+      },
+      "StoryBundleRecord_external_effect_outbox": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/external_effect_outbox.jsonl` (or `catalog/external_effect_outbox.jsonl`): a `external_effect_outbox` row as exported (FR-STORE-7).",
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "beat": {
+            "type": "integer"
+          },
+          "claim_lease_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "claimed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "compensates": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "effect": {},
+          "erased_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "executable": {
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "outcome_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider_name": {
+            "type": "string"
+          },
+          "scope_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sent_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "status": {
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "effect",
+          "id",
+          "membership_tx",
+          "operation_id",
+          "provider_name",
+          "story_id",
+          "value_name"
+        ],
+        "title": "StoryBundleRecord_external_effect_outbox",
+        "type": "object"
+      },
+      "StoryBundleRecord_facts": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/facts.jsonl` (or `catalog/facts.jsonl`): a `facts` row as exported (FR-STORE-7).",
+        "properties": {
+          "amendment_part_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "anchored_to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "author_locked": {
+            "type": "boolean"
+          },
+          "authority": {
+            "enum": [
+              "author",
+              "engine",
+              "external"
+            ],
+            "type": "string"
+          },
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "closed_set_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "commit_state": {
+            "enum": [
+              "committed",
+              "introduced",
+              "pending",
+              "revised"
+            ],
+            "type": "string"
+          },
+          "committed_at_position": {},
+          "holder": {
+            "enum": [
+              "canon"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "lineage_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provenance": {
+            "enum": [
+              "author",
+              "backfill",
+              "director",
+              "external",
+              "in_world",
+              "player",
+              "render",
+              "resolution",
+              "seed",
+              "system_consolidated"
+            ],
+            "type": "string"
+          },
+          "resolution_level": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "superseded_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "type": "array"
+          },
+          "thunk_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "tx_to": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "valid_from": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_from_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_span": {},
+          "valid_to": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_to_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "visibility": {}
+        },
+        "required": [
+          "authority",
+          "id",
+          "lineage_id",
+          "membership_tx",
+          "operation_id",
+          "predicate_id",
+          "provenance",
+          "story_id",
+          "subject_id",
+          "tx_from",
+          "valid_span"
+        ],
+        "title": "StoryBundleRecord_facts",
+        "type": "object"
+      },
+      "StoryBundleRecord_feedback_history": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/feedback_history.jsonl` (or `catalog/feedback_history.jsonl`): a `feedback_history` row as exported (FR-STORE-7).",
+        "properties": {
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "rated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "rating": {
+            "type": "integer"
+          },
+          "redacted_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "replaced_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "tags": {
+            "type": "array"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn": {
+            "type": "integer"
+          },
+          "variant": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "message_id",
+          "principal",
+          "rated_at",
+          "rating",
+          "replaced_at",
+          "story_id",
+          "turn",
+          "variant"
+        ],
+        "title": "StoryBundleRecord_feedback_history",
+        "type": "object"
+      },
+      "StoryBundleRecord_genesis_deferred": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/genesis_deferred.jsonl` (or `catalog/genesis_deferred.jsonl`): a `genesis_deferred` row as exported (FR-STORE-7).",
+        "properties": {
+          "capability_needed": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "field_class": {
+            "type": "string"
+          },
+          "field_ref": {
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "location": {},
+          "materialized_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "materialized_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "payload": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability_needed",
+          "field_class",
+          "field_ref",
+          "id",
+          "location",
+          "operation_id",
+          "payload",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_genesis_deferred",
+        "type": "object"
+      },
+      "StoryBundleRecord_memories": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/memories.jsonl` (or `catalog/memories.jsonl`): a `memories` row as exported (FR-STORE-7).",
+        "properties": {
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "channel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "covered_by": {
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fidelity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "holder_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "implication_count": {
+            "type": "integer"
+          },
+          "importance": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "importance_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "inputs_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "episodic",
+              "reflection",
+              "semantic"
+            ],
+            "type": "string"
+          },
+          "last_accessed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "modality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "participants": {
+            "type": "array"
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "pinned_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prompt_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposition_ids": {
+            "type": "array"
+          },
+          "provenance": {
+            "enum": [
+              "author",
+              "backfill",
+              "director",
+              "external",
+              "in_world",
+              "player",
+              "render",
+              "resolution",
+              "seed",
+              "system_consolidated"
+            ],
+            "type": "string"
+          },
+          "quarantine_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quarantined_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quarantined_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "retrieval_tier": {
+            "enum": [
+              "hot",
+              "retired"
+            ],
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "trust_tier": {
+            "enum": [
+              "author",
+              "backfill",
+              "engine",
+              "external",
+              "in_world"
+            ],
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "visibility": {}
+        },
+        "required": [
+          "id",
+          "kind",
+          "membership_tx",
+          "operation_id",
+          "provenance",
+          "story_id",
+          "text",
+          "trust_tier"
+        ],
+        "title": "StoryBundleRecord_memories",
+        "type": "object"
+      },
+      "StoryBundleRecord_message_feedback": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/message_feedback.jsonl` (or `catalog/message_feedback.jsonl`): a `message_feedback` row as exported (FR-STORE-7).",
+        "properties": {
+          "config_fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "message_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "models": {},
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "profile_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pruned_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "quality_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rating": {
+            "type": "integer"
+          },
+          "rating_version_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redacted_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "tags": {
+            "type": "array"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "variant": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "created_at",
+          "id",
+          "message_id",
+          "operation_id",
+          "principal",
+          "rating",
+          "story_id",
+          "turn",
+          "updated_at",
+          "variant"
+        ],
+        "title": "StoryBundleRecord_message_feedback",
+        "type": "object"
+      },
+      "StoryBundleRecord_operations": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/operations.jsonl` (or `catalog/operations.jsonl`): a `operations` row as exported (FR-STORE-7).",
+        "properties": {
+          "attempts": {},
+          "base_revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "checked_guardrails": {},
+          "committed_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_revisions": {},
+          "error": {},
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "backfill",
+              "consolidation",
+              "control",
+              "genesis",
+              "import",
+              "inter_turn",
+              "maintenance",
+              "rewrite_session",
+              "turn"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "parent_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "principal": {
+            "type": "string"
+          },
+          "read_set": {},
+          "slot_k": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source_window": {},
+          "stage_log": {},
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "abandoned",
+              "committed",
+              "failed",
+              "in_flight",
+              "queued"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timeline_revision": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "turn_report": {},
+          "turn_stage": {
+            "enum": [
+              "abandoned",
+              "awaiting_outcome",
+              "completed",
+              "intent_committed",
+              "outcome_recorded",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "viewpoint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "operation_id",
+          "principal"
+        ],
+        "title": "StoryBundleRecord_operations",
+        "type": "object"
+      },
+      "StoryBundleRecord_outbox_outcomes": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/outbox_outcomes.jsonl` (or `catalog/outbox_outcomes.jsonl`): a `outbox_outcomes` row as exported (FR-STORE-7).",
+        "properties": {
+          "effect_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "outbox_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {},
+          "raw_hash": {
+            "type": "string"
+          },
+          "received_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "received_via": {
+            "type": "string"
+          },
+          "settled": {
+            "type": "boolean"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "received_at",
+          "received_via",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_outbox_outcomes",
+        "type": "object"
+      },
+      "StoryBundleRecord_policies": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/policies.jsonl` (or `catalog/policies.jsonl`): a `policies` row as exported (FR-STORE-7).",
+        "properties": {
+          "age_condition": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "applies_to": {
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "retired_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "retired_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rule": {},
+          "scope": {
+            "type": "string"
+          },
+          "scope_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updated_by": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "applies_to",
+          "created_by",
+          "id",
+          "kind",
+          "message",
+          "name",
+          "rule",
+          "scope",
+          "updated_by"
+        ],
+        "title": "StoryBundleRecord_policies",
+        "type": "object"
+      },
+      "StoryBundleRecord_predicate_proposals": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/predicate_proposals.jsonl` (or `catalog/predicate_proposals.jsonl`): a `predicate_proposals` row as exported (FR-STORE-7).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision": {},
+          "filed_by": {
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "object_entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposed": {},
+          "status": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "filed_by",
+          "id",
+          "predicate_id",
+          "proposed",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_predicate_proposals",
+        "type": "object"
+      },
+      "StoryBundleRecord_predicates": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/predicates.jsonl` (or `catalog/predicates.jsonl`): a `predicates` row as exported (FR-STORE-7).",
+        "properties": {
+          "cardinality": {
+            "type": "string"
+          },
+          "containment_of": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "docs": {
+            "type": "string"
+          },
+          "exclusions": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "implications": {},
+          "inverse_of": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "key_qualifiers": {
+            "type": "array"
+          },
+          "layer": {
+            "type": "string"
+          },
+          "max_cardinality": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "object_type": {
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "projection": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "qualifiers": {},
+          "set_object": {
+            "type": "boolean"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "subject_type": {
+            "type": "string"
+          },
+          "symmetric": {
+            "type": "boolean"
+          },
+          "temporal_kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cardinality",
+          "id",
+          "layer",
+          "name",
+          "temporal_kind"
+        ],
+        "title": "StoryBundleRecord_predicates",
+        "type": "object"
+      },
+      "StoryBundleRecord_promissory_ledger": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/promissory_ledger.jsonl` (or `catalog/promissory_ledger.jsonl`): a `promissory_ledger` row as exported (FR-STORE-7).",
+        "properties": {
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "discharged_by_operation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "discharged_mode": {
+            "enum": [
+              "dependence",
+              "minimal",
+              "render",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "salient_reference"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "thunk_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "membership_tx",
+          "operation_id",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_promissory_ledger",
+        "type": "object"
+      },
+      "StoryBundleRecord_propositions": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/propositions.jsonl` (or `catalog/propositions.jsonl`): a `propositions` row as exported (FR-STORE-7).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_exact": {
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "instant_granularity": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "literal": {},
+          "object_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "object_set": {},
+          "polarity": {
+            "type": "string"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "qualifiers": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "to_exact": {
+            "type": "boolean"
+          },
+          "valid_from_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_from_outer": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_span": {},
+          "valid_to_inner": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_to_outer": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "from_exact",
+          "id",
+          "polarity",
+          "predicate_id",
+          "story_id",
+          "subject_id",
+          "to_exact",
+          "valid_span"
+        ],
+        "title": "StoryBundleRecord_propositions",
+        "type": "object"
+      },
+      "StoryBundleRecord_reconciliation_marks": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/reconciliation_marks.jsonl` (or `catalog/reconciliation_marks.jsonl`): a `reconciliation_marks` row as exported (FR-STORE-7).",
+        "properties": {
+          "detail": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "outbox_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "request_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "since": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_reconciliation_marks",
+        "type": "object"
+      },
+      "StoryBundleRecord_scheduled_events": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/scheduled_events.jsonl` (or `catalog/scheduled_events.jsonl`): a `scheduled_events` row as exported (FR-STORE-7).",
+        "properties": {
+          "amendment_part_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "beat": {
+            "type": "integer"
+          },
+          "grace_minutes": {
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "owner": {
+            "type": "string"
+          },
+          "participants": {
+            "type": "array"
+          },
+          "place_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planned_anchor": {},
+          "planned_offset_minutes": {
+            "type": "integer"
+          },
+          "proposition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "refinement_pause_anchor_rev": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "shared_owners": {
+            "type": "array"
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "cancelled",
+              "completed",
+              "due",
+              "missed",
+              "pending",
+              "possibly_due",
+              "surfaced"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "stopped_clock_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "grace_minutes",
+          "id",
+          "membership_tx",
+          "operation_id",
+          "owner",
+          "planned_offset_minutes",
+          "proposition_id",
+          "status",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_scheduled_events",
+        "type": "object"
+      },
+      "StoryBundleRecord_state_changes": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/state_changes.jsonl` (or `catalog/state_changes.jsonl`): a `state_changes` row as exported (FR-STORE-7).",
+        "properties": {
+          "amendment_part_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "beat": {
+            "type": "integer"
+          },
+          "contingency": {
+            "enum": [
+              "conditional",
+              "reservation",
+              "unconditional"
+            ],
+            "type": "string"
+          },
+          "delta": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "estimate_meta": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "delta",
+              "set",
+              "transfer_in",
+              "transfer_out"
+            ],
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "new_value": {},
+          "old_value": {},
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "paused_for_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "prerequisite_effect_ids": {
+            "type": "array"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scope_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "settles_change_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "author",
+              "consumer",
+              "declared_skip",
+              "estimate",
+              "external",
+              "pacing",
+              "player",
+              "rule",
+              "seed",
+              "settlement",
+              "turn"
+            ],
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "committed",
+              "converted",
+              "dropped",
+              "held",
+              "pending",
+              "released"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "stopped_by_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tx_from": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "valid_time_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "value": {}
+        },
+        "required": [
+          "id",
+          "kind",
+          "membership_tx",
+          "operation_id",
+          "reason",
+          "source",
+          "state_id",
+          "story_id",
+          "tx_from"
+        ],
+        "title": "StoryBundleRecord_state_changes",
+        "type": "object"
+      },
+      "StoryBundleRecord_state_definitions": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/state_definitions.jsonl` (or `catalog/state_definitions.jsonl`): a `state_definitions` row as exported (FR-STORE-7).",
+        "properties": {
+          "aliases": {
+            "type": "array"
+          },
+          "anchor": {},
+          "authorization": {},
+          "bands": {},
+          "calendar": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "constraints": {},
+          "created_by": {
+            "enum": [
+              "author",
+              "consumer",
+              "genesis",
+              "proposal"
+            ],
+            "type": "string"
+          },
+          "elapsed_tolerance_factor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "external_value_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grace_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "initial_value": {},
+          "max_unprompted_skip_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "external",
+              "manual",
+              "paced",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "external",
+              "story"
+            ],
+            "type": "string"
+          },
+          "pacing_table": {},
+          "provider_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reservation_expiry_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rules": {},
+          "scope": {
+            "enum": [
+              "character",
+              "story"
+            ],
+            "type": "string"
+          },
+          "silent": {
+            "type": "boolean"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "stop_at_due_events": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "time_awareness": {
+            "enum": [
+              "approximate",
+              "exact",
+              "none",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "time_statement_tolerance_minutes": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "transfer": {},
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "type": {
+            "enum": [
+              "boolean",
+              "clock",
+              "enum",
+              "number",
+              "text"
+            ],
+            "type": "string"
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "visibility": {
+            "enum": [
+              "hidden",
+              "player_visible"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "created_by",
+          "id",
+          "membership_tx",
+          "name",
+          "operation_id",
+          "owner",
+          "scope",
+          "story_id",
+          "type",
+          "visibility"
+        ],
+        "title": "StoryBundleRecord_state_definitions",
+        "type": "object"
+      },
+      "StoryBundleRecord_state_proposals": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/state_proposals.jsonl` (or `catalog/state_proposals.jsonl`): a `state_proposals` row as exported (FR-STORE-7).",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "decided_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decided_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "definition_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "approved",
+              "dismissed",
+              "proposed"
+            ],
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "suggested_entity_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "suggested_scope": {
+            "enum": [
+              "character",
+              "story"
+            ],
+            "type": "string"
+          },
+          "suggested_type": {
+            "enum": [
+              "boolean",
+              "clock",
+              "enum",
+              "number",
+              "text"
+            ],
+            "type": "string"
+          },
+          "suggested_unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "created_by_operation_id",
+          "id",
+          "name",
+          "story_id",
+          "suggested_scope",
+          "suggested_type"
+        ],
+        "title": "StoryBundleRecord_state_proposals",
+        "type": "object"
+      },
+      "StoryBundleRecord_stories": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/stories.jsonl` (or `catalog/stories.jsonl`): a `stories` row as exported (FR-STORE-7).",
+        "properties": {
+          "archived_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chain_unchecked": {
+            "type": "boolean"
+          },
+          "changes_pruned_through_revision": {
+            "type": "integer"
+          },
+          "config_revision": {
+            "type": "integer"
+          },
+          "content_rating_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "embedding_model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine_profile_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "engine_profile_version_pin": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hot_counts": {},
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "in_flight_lease_until": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "in_flight_turn": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_control_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_control_revision": {
+            "type": "integer"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "next_turn_index": {
+            "type": "integer"
+          },
+          "owner_principal": {
+            "type": "string"
+          },
+          "paused_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "policy_erasure_revision": {
+            "type": "integer"
+          },
+          "predicate_rules": {},
+          "scenario_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scenario_snapshot": {},
+          "scenario_version": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "settings": {},
+          "status": {
+            "type": "string"
+          },
+          "status_before_block": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_epoch": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "story_minute_zero": {
+            "type": "integer"
+          },
+          "summary_epoch": {
+            "type": "integer"
+          },
+          "summary_inclusion": {},
+          "timeline_revision": {
+            "type": "integer"
+          },
+          "turn_concurrency": {
+            "type": "string"
+          },
+          "turn_queue_max": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "engine_profile_id",
+          "id",
+          "owner_principal"
+        ],
+        "title": "StoryBundleRecord_stories",
+        "type": "object"
+      },
+      "StoryBundleRecord_story_profile_overrides": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/story_profile_overrides.jsonl` (or `catalog/story_profile_overrides.jsonl`): a `story_profile_overrides` row as exported (FR-STORE-7).",
+        "properties": {
+          "revision": {
+            "type": "integer"
+          },
+          "settings": {},
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revision",
+          "settings",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_story_profile_overrides",
+        "type": "object"
+      },
+      "StoryBundleRecord_story_provider_bindings": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/story_provider_bindings.jsonl` (or `catalog/story_provider_bindings.jsonl`): a `story_provider_bindings` row as exported (FR-STORE-7).",
+        "properties": {
+          "bound_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "external_ids": {},
+          "provider_name": {
+            "type": "string"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "external_ids",
+          "provider_name",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_story_provider_bindings",
+        "type": "object"
+      },
+      "StoryBundleRecord_thunks": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/thunks.jsonl` (or `catalog/thunks.jsonl`): a `thunks` row as exported (FR-STORE-7).",
+        "properties": {
+          "beat": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "introduced_event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "object_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "open_slot": {
+            "enum": [
+              "literal",
+              "object",
+              "subject"
+            ],
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "predicate_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_sketch": {},
+          "resolution_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_fact_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "salient": {
+            "type": "boolean"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "expired",
+              "open",
+              "resolved"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "subject_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "valid_time": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "membership_tx",
+          "open_slot",
+          "operation_id",
+          "predicate_id",
+          "proposition_sketch",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_thunks",
+        "type": "object"
+      },
+      "StoryBundleRecord_utterances": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/utterances.jsonl` (or `catalog/utterances.jsonl`): a `utterances` row as exported (FR-STORE-7).",
+        "properties": {
+          "attribution_objective_relation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "belief_relation": {
+            "type": "string"
+          },
+          "classification": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objective_relation": {
+            "type": "string"
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "proposition_ids": {
+            "type": "array"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "speaker_character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "event_id",
+          "id",
+          "membership_tx",
+          "objective_relation",
+          "operation_id",
+          "speaker_character_id",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_utterances",
         "type": "object"
       },
       "StoryCertificationRunBody": {
@@ -47886,7 +52722,7 @@
       },
       "epistrel__core__backfill__conflicts__ResolveRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/backfill/conflicts/{cid}``: exactly one of ``choose`` (a statement\nid), ``value`` (a value one of the statements states) or ``accept_recommendation``.",
+        "description": "``POST /stories/{id}/backfill/conflicts/{cid}``: exactly one of ``choose`` (a statement\nid), ``value`` (a normalized value: one a statement states, or a new one, #708) or\n``accept_recommendation``; ``valid_from``/``valid_to`` (story minutes) bound a ``choose``\nor ``value`` resolution.",
         "examples": [
           {
             "accept_recommendation": true
@@ -48148,6 +52984,19 @@
             "title": "Plan Hash",
             "type": "string"
           },
+          "reach": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#700 (FR-LITE-8): a Lite rewrite's reach: `method` (`model_searched`), the turns `searched` (`from_turn`, `to_turn`) and whether the call cap or a failed call left lines `truncated` (the session then previews first).",
+            "title": "Reach"
+          },
           "refused_changes": {
             "items": {
               "additionalProperties": true,
@@ -48198,7 +53047,7 @@
     }
   },
   "info": {
-    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+    "description": "Epistrel runs behind the consumer and must never be exposed to end users. It authenticates only the calling service, which sends one of the deployment's service credentials as `Authorization: Bearer <credential>`, and it holds no user roles, grants, or permissions: which end user may call which operation, act as which character, or request which output viewpoint is the consumer's decision, made before it calls. Its privacy guarantee is relative to the request: output is produced for the output viewpoint the request names, and Epistrel does not verify that the consumer was entitled to request that viewpoint, so Epistrel by itself does not stop a player from reaching another character's secrets. Every mutating call carries an opaque requesting principal in `X-Epistrel-Principal`, which Epistrel records for attribution and never interprets; use opaque IDs rather than names or email addresses, so recorded attribution identifies no one without your own records. Ownership and relations are labels the consumer defines; the engine never grants or withholds an action because of them. Ownership exists for listing, attribution and offboarding only.\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story exports not yet expired (a story-scope erasure expires and deletes them)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
     "title": "Epistrel Engine",
     "version": "m6"
   },
@@ -48528,6 +53377,7 @@
                       {
                         "enum": [
                           "audit_retention_days",
+                          "bundle_export_ttl_hours",
                           "cascade_threshold",
                           "certification_canary_enabled",
                           "certification_canary_interval_s",
@@ -48539,6 +53389,7 @@
                           "default_safe_fallback",
                           "dependency_search_max_depth",
                           "dependency_search_max_results",
+                          "directive_steer_ttl_minutes",
                           "embedding_batch_max",
                           "embedding_hnsw_ef_construction",
                           "embedding_hnsw_ef_search",
@@ -48558,6 +53409,7 @@
                           "idempotency_result_window",
                           "job_retention_days",
                           "listing_status_values",
+                          "lite_author_facts_max",
                           "lite_generation_defaults",
                           "lite_generation_defaults.length",
                           "lite_generation_defaults.temperature",
@@ -49751,7 +54603,7 @@
     },
     "/admin/erasure/boundary": {
       "get": {
-        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
+        "description": "What an erasure covers and what it cannot reach (FR-ADMIN-8), as data. The same text is in `docs/OPERATIONS.md` and at the end of this API's description:\n\n## Erasure boundary\n\n**In scope.** An erasure removes or redacts the subject in:\n\n- events and beats (redacted in place; each deleted record leaves an erasure marker)\n- projections: transcript, story texts and heads, rebuilt from the redacted events\n- rolling-summary segments (summarised again from the redacted window, or left redacted)\n- pinned memories and custom instructions\n- stored idempotency results\n- catalog drafts and published versions, and scenario reports\n- personas\n- media metadata and bytes (declared subjects, captions, alt text and prompts)\n- media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata\n- message feedback and its history\n- feedback exports not yet downloaded (the subject is redacted in their cases)\n- story exports not yet expired (a story-scope erasure expires and deletes them)\n- story snapshots (scenario, characters, persona) and deferred genesis items\n- the story's creation report: the subject's deferred genesis items, and her cast card (see below for what a story-scope erasure keeps of a catalog character's card)\n- the subject-reference index\n- a backup restored after the erasure: its stories are not served until the erasure ledger, kept outside the database and copied into every backup, has been reapplied\n\n**Out of scope.** An erasure cannot reach:\n\n- exports already delivered\n- data retained by external model/image/data providers (including hosted guardrail or image check providers)\n- subjects appearing in images only visually with no declared or named reference\n- backups taken before the erasure, until restored and reconciled\n- logs, which never carry story content\n- mentions the matcher classes as ambiguous (a name word that is also a common word, capitalised at the start of a sentence) unless the operator confirms them, and nicknames never declared as aliases; an erasure reports how many candidates remain (`candidates_remaining`). A word of the subject's name on its own is not matched when another character in the same scope also uses it (a shared surname) or when it is a title or particle (`Dr`, `de`); a common word (`will`, `rose`) is matched only capitalised. Names match in any case, fully case-folded (`Strauß` is `STRAUSS`, `Yılmaz` is `YILMAZ`), a hyphenated name by its halves at any dash, and a soft hyphen inside a word is ignored (ADR-154, ADR-155, ADR-156)\n- a cast catalog character's public card in the creation report of a story she was erased from at story scope: its labels and public description stay, with its structural fields (its kind, ids, source, version and status values), while its name is redacted and its images and content rating are emptied, because the card is public catalog data, until a catalog-scope erasure of that catalog character empties it too (docs/04 C-15)\n\n**Logs.** Operational logs contain no story content by default (NFR-SEC-4).",
         "operationId": "erasure_boundary",
         "responses": {
           "200": {
@@ -54075,7 +58927,7 @@
     },
     "/admin/stories/import": {
       "post": {
-        "description": "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, checked against its manifest (format `1.x`, every member's SHA-256), every id it owns remapped, and written as a new story in one transaction, owned by `owner` (default: the caller) under `engine_profile_id` (default: its bundle profile when this deployment has it, else the default profile); projections and the subject index are rebuilt. 201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` (`details.reason`) or `unsupported_format_version`. A refusal writes nothing.",
+        "description": "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, checked against its manifest (format `1.x`, every member's SHA-256), every id it owns remapped, every line checked against its schema (`components.schemas` `StoryBundle*`) and every event payload against its type, the members in the export's order, and written as a new story in one transaction, owned by `owner` (default: the caller) under `engine_profile_id` (default: its bundle profile when this deployment has it, else the default profile); projections and the subject index are rebuilt, its media written as new assets of the owner, its revision the exported one plus one (an `import` operation records `imported_from`), and the embed job queued. 201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` (`details.reason`) or `unsupported_format_version`. A refusal writes nothing.",
         "operationId": "import_story",
         "parameters": [
           {
@@ -71386,7 +76238,7 @@
     },
     "/stories/{story_id}/amendments/{amendment_id}/undo": {
       "post": {
-        "description": "Undo is a new, checked amendment (FR-REWRITE-10): a rewrite session of kind `undo` whose changes take back the amendment's parts and whose blast radius is planned against the restored canon. A later amendment relying on it is asked about (`cascade_undo`, recommended, or `cancel`, which cancels the undo); a record that would contradict the restored canon is repaired. Applied, it records an `undo` amendment and the undone one is `reverted`, never deleted. 409 `amendment_already_reverted`; 422 `use_redo` for an `undo` amendment. The answer is the rewrite session (201), answered and applied through `/stories/{id}/rewrites/{rid}`, revalidated at its final commit like any rewrite. 409 `story_paused`, `rewrite_session_limit`, `revision_conflict` for a stale `X-Epistrel-Expected-Revision`, `module_off` (`module: lite_rewrites`) for a Lite story. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `amendment_not_found` for an unknown amendment or another story's.",
+        "description": "Undo is a new, checked amendment (FR-REWRITE-10): a rewrite session of kind `undo` whose changes take back the amendment's parts and whose blast radius is planned against the restored canon. A later amendment relying on it is asked about (`cascade_undo`, recommended; `rewrite`, which rewrites its contradicted parts into the undo and keeps it active; or `cancel`, which cancels the undo); a record that would contradict the restored canon is repaired, and `keep` is offered only for a fact or belief the deterministic check finds consistent without it. Applied, it records an `undo` amendment and the undone one is `reverted`, never deleted. 409 `amendment_already_reverted`; 422 `use_redo` for an `undo` amendment. The answer is the rewrite session (201), answered and applied through `/stories/{id}/rewrites/{rid}`, revalidated at its final commit like any rewrite. 409 `story_paused`, `rewrite_session_limit`, `revision_conflict` for a stale `X-Epistrel-Expected-Revision`, `module_off` (`module: lite_rewrites`) for a Lite story. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `amendment_not_found` for an unknown amendment or another story's.",
         "operationId": "undo_amendment",
         "parameters": [
           {
@@ -71984,7 +76836,7 @@
         ]
       },
       "get": {
-        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report. #230: `conflict_list` lists its conflicts with their statements (`statement_id`, `event_id`, `turn`, `position`, `speaker`, `source`, the quoted transcript `quote`, `value`), each open one with its `recommended` answer (the `last_mention` statement): the open ones by default, every one with `conflicts=all`; at most `limit` (50, at most 200). A backfill under `backfill_conflict_policy: ask` ends its pass `paused_for_conflicts` and the story stays paused (409 `story_paused`, `cause: backfill_conflicts`, `conflicts_open`) until they are resolved. 404 `backfill_not_found` when the story never had one.",
+        "description": "The story's latest backfill of any kind (#228): its status (`queued`, `extracting`, `reconciling`, `completed`, `cancelled`, `failed`), the capabilities it re-derives over its turn range, its progress (`phase`, `chunks_done` of `chunks_total`, `reconciled_through_turn`, `last_turn`), its contradictions by status and its report (#698: a `materialization` of deferred genesis content as its card, `counts`, `by_outcome` and `conflicts`; the entries are on its operation, to an omniscient read). #230: `conflict_list` lists its conflicts with their statements (`statement_id`, `event_id`, `turn`, `position`, `speaker`, `source`, the quoted transcript `quote`, `value`), each open one with its `recommended` answer (the `last_mention` statement): the open ones by default, every one with `conflicts=all`; at most `limit` (50, at most 200). A backfill under `backfill_conflict_policy: ask` ends its pass `paused_for_conflicts` and the story stays paused (409 `story_paused`, `cause: backfill_conflicts`, `conflicts_open`) until they are resolved. 404 `backfill_not_found` when the story never had one.",
         "operationId": "get_backfill",
         "parameters": [
           {
@@ -75210,7 +80062,7 @@
     },
     "/stories/{story_id}/directives": {
       "post": {
-        "description": "An author's direction (FR-DIRECT-1,2): **ephemeral** guidance for the next reply (\"make this scene tense\": `steer_queued`, carried by the next turn's renders and consumed by its commit; nothing else is written) or a **durable** change to the world (\"it starts raining\", \"the next morning, 08:00\", \"Bobby believes he graduated from Florida\"), applied at the next inter-turn slot with the author's authority: facts, State sets, a clock advance and beliefs (`applied`, its `position` `N⁺k`; the revision moves by one). A change to the past is routed into a rewrite session of kind `directive` under `resolution_mode` and `preview` (202, `routed_to_rewrite`). `kind` overrides the classification. Authority comes from this route, never from text claiming it (FR-DIRECT-6). On a Lite story (FR-LITE-8, #244) the same request is a **nudge** (an author note in the next Lite prompt only) or a **lasting author fact** (the author's text recorded at the next slot and in every later Lite prompt, following timeline membership: `applied.author_fact {id, position, text}`); one about the past opens a Lite rewrite session (#245, 202 `routed_to_rewrite`). 422 `guardrail_violation` (nothing written), `directive_unparseable`, `directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 `story_paused`, `revision_conflict`; 423 `story_busy`. An omniscient call: 403 `omniscient_required` for a character.",
+        "description": "An author's direction (FR-DIRECT-1,2): **ephemeral** guidance for the next reply (\"make this scene tense\": `steer_queued`, carried by the next turn's renders and consumed by its commit; nothing else is written) or a **durable** change to the world (\"it starts raining\", \"the next morning, 08:00\", \"Bobby believes he graduated from Florida\"), applied at the next inter-turn slot with the author's authority: facts, State sets, a clock advance and beliefs (`applied`, its `position` `N⁺k`; the revision moves by one). A change to the past is routed into a rewrite session of kind `directive` under `resolution_mode` and `preview` (202, `routed_to_rewrite`). `kind` overrides the classification. Authority comes from this route, never from text claiming it (FR-DIRECT-6). On a Lite story (FR-LITE-8, #244) the same request is a **nudge** (an author note in the next Lite prompt only) or a **lasting author fact** (the author's text recorded at the next slot and in every later Lite prompt, following timeline membership: `applied.author_fact {id, position, text}`); one about the past opens a Lite rewrite session (#245, 202 `routed_to_rewrite`). 422 `guardrail_violation` (nothing written), `directive_unparseable`, `directive_no_changes`, `directive_split_required` (a clock, State or scheduled-event change to now mixed with a change to the past), `directive_ambiguous`, `state_constraint_violation`, `clock_backward`; 409 `story_paused`, `revision_conflict`, `steer_budget_exceeded` (the queued steers would pass 500 tokens); 423 `story_busy`. Scheduled events are created, rescheduled and cancelled with the author as owner; standing guidance answers `hints: [use_custom_instructions]`. An omniscient call: 403 `omniscient_required` for a character.",
         "operationId": "apply_directive",
         "parameters": [
           {
@@ -75394,7 +80246,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+            "description": "Conflict; nothing was written: `author_fact_limit`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `steer_budget_exceeded`, `story_paused`."
           },
           "422": {
             "content": {
@@ -75404,7 +80256,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_no_changes`, `directive_unparseable`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_ambiguous`, `directive_no_changes`, `directive_split_required`, `directive_unparseable`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -83746,7 +88598,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_inactive`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
           },
           "422": {
             "content": {
@@ -83756,7 +88608,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `beat_required`, `budget_below_safety_minimum`, `external_value_not_overridable`, `guardrail_violation`, `line_not_editable`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {
@@ -83784,7 +88636,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`.",
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`, `rewrite_reach_failed`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",

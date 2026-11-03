@@ -17,9 +17,11 @@ reconciliation check of FR-COMMIT-14:
 - **Conflict**: the author's choice stands, but proceeds as an amendment
   (``rewrite.session.open_directed``: a ``directed_resolution`` session whose changes are the
   binding's implied obligations at the thunk's time and whose conflicts are the conflicting
-  records and the bound character's later lines). Applied, the amendment commits and the
-  directed regeneration runs; the resolution then commits even though the recorded history it
-  settled conflicted (``lifecycle.AUTHOR_DIRECTED``).
+  records and the bound character's later lines). Applied, the directed regeneration is
+  played with the amendment staged on its turn (``HELD``, #712): the regenerated variant and
+  the amendment commit in one transaction, or neither does (a failed regeneration leaves the
+  session ``awaiting_approval``, nothing written). The resolution commits even though the
+  recorded history it settled conflicted (``lifecycle.AUTHOR_DIRECTED``).
 
 A direction with no binding, or a binding that matches no open thunk, is a steer for this
 regeneration only (warning ``binding_unmatched``).
@@ -28,7 +30,7 @@ regeneration only (warning ``binding_unmatched``).
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -53,6 +55,11 @@ log = logging.getLogger(__name__)
 DECISION: ContextVar[str | None] = ContextVar("epistrel_author_decision", default=None)
 """The "Author decision" steer of the regeneration being played (``None``: not directed)."""
 BINDING_UNMATCHED = "binding_unmatched"
+HELD: ContextVar[Callable[[Any], None] | None] = ContextVar("epistrel_held_amendment", default=None)
+"""#712: the ``directed_resolution`` amendment staged on the directed regeneration's turn
+(``rewrite.apply.apply``'s ``Stage``): the structured regenerate stages it on its operation
+before the turn's own commit steps, so the variant and the amendment commit in one
+transaction."""
 
 
 @dataclass(frozen=True)
@@ -242,31 +249,6 @@ async def head_variant(conn: AsyncConnection, story_id: str) -> dict[str, int]:
     return {"turn": int(row.narrative_turn or 0), "variant": int(row.turn_variant or 0)}
 
 
-async def compensate(db: AsyncEngine, story_id: str, amendment_id: str, *, principal: str) -> None:
-    """Revert a directed resolution's amendment whose regeneration failed: an ``undo``
-    amendment reverting it, in its own operation (the two stand or fall together)."""
-    from epistrel.core.amendments.store import AmendmentKind, record_amendment, revert_amendment
-    from epistrel.core.enums import OperationKind
-    from epistrel.core.events import Operation
-
-    async with Operation(
-        db,
-        story_id=story_id,
-        kind=OperationKind.REWRITE_SESSION,
-        principal=principal,
-        bumps_revision=True,
-    ) as op:
-
-        async def step(conn: AsyncConnection) -> None:
-            made = await record_amendment(
-                conn, op, kind=AmendmentKind.UNDO, parts=[], undoes=amendment_id
-            )
-            await revert_amendment(conn, op, amendment_id, by_amendment_id=made.amendment_id)
-
-        op.add_commit_step(step)
-        await op.commit()
-
-
 async def record(db: AsyncEngine, story_id: str, directed: Directed, *, principal: str) -> str:
     """The ``directives`` row of a committed directed regeneration (disposition
     ``directed_regeneration``)."""
@@ -337,9 +319,9 @@ def conflict_document(directed: Directed, overrides: dict[str, Any]) -> dict[str
 __all__ = [
     "BINDING_UNMATCHED",
     "DECISION",
+    "HELD",
     "Directed",
     "DirectedPending",
-    "compensate",
     "conflict_document",
     "decision",
     "directing",

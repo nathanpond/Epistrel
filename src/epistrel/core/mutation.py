@@ -672,7 +672,7 @@ async def _check(conn: AsyncConnection, story_id: str, claim: Proposition) -> li
     """#140's deterministic check of an author claim, read through a throwaway keyed lookup:
     an ``uncertain`` verdict and a contradiction the write does not resolve are warnings."""
     lookup = KeyedLookup(conn, StructuredReadSet())
-    verdict = await check_with(lookup, story_id, claim)
+    verdict = await check_with(lookup, story_id, claim, author=True)
     if verdict.kind is VerdictKind.UNCERTAIN:
         reason = None if verdict.reason is None else verdict.reason.value
         return [FactWarning(kind="uncertain", reason=reason)]

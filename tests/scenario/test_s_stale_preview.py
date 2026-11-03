@@ -234,3 +234,56 @@ async def test_s_stale_preview__states(engine: AsyncEngine, states_delivered: No
     assert isinstance(found, revalidate.Stale)
     assert [r["kind"] for r in found.reasons] == ["state_changed"]
     assert found.reasons[0]["refs"][0]["table"] == "state_changes"
+
+
+@pytest.mark.part("M7", "FR-CONC-7; FR-REWRITE-4")
+async def test_s_stale_preview__ownership(engine: AsyncEngine, states_delivered: None) -> None:
+    """#697: ``ownership_changed``: the State the plan writes becomes game-owned between the
+    preview and the apply (no revision moves); complement: unchanged ownership is fresh."""
+    from sqlalchemy import text
+
+    w = await c.world(engine)
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    (purse,) = await ss.define_all(engine, story, ss.gold(name="purse"))
+    base = await rs.revision(engine, story)
+    async with engine.connect() as conn:
+        read_set = {
+            "entity_ids": [bobby],
+            **await revalidate.snapshot(
+                conn,
+                story,
+                {"entity_ids": [bobby]},
+                [{"kind": "state", "state_id": str(purse.id), "scope_key": bobby}],
+            ),
+        }
+    assert read_set["ownership"] == {f"state:{purse.id}": ["story", None, None]}
+
+    async def replan(_: Any) -> None:
+        return None
+
+    async def outcome() -> revalidate.Outcome:
+        async with engine.connect() as conn:
+            return await revalidate.revalidate(
+                conn,
+                story,
+                base_revision=base,
+                current_revision=await rs.revision(engine, story),
+                read_set=read_set,
+                replan=replan,
+            )
+
+    assert isinstance(await outcome(), revalidate.Fresh)
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE state_definitions SET owner = 'external', provider_id = 'a-bank', "
+                "external_value_name = 'purse' WHERE id = :i"
+            ),
+            {"i": str(purse.id)},
+        )
+    found = await outcome()
+    assert isinstance(found, revalidate.Stale)
+    assert [r["kind"] for r in found.reasons] == ["ownership_changed"]
+    assert found.reasons[0]["refs"] == [{"table": "state_definitions", "id": str(purse.id)}]

@@ -307,6 +307,21 @@ class Pruning(EventPayload):
     """#248: the run's impact report (identifiers, ranges and counts only)."""
 
 
+@register("prune_marker", category=EventCategory.CONTROL)
+class PruneMarker(EventPayload):
+    """#702 (FR-STORE-1,32): where a pruning removed records, as ``audit_view`` and the
+    as-originally-recorded view show it: the pruning, the target's kind and range and how many
+    operations it held. Never written to the log (the ``pruning`` event is); no content."""
+
+    prune_id: str
+    target_kind: str
+    from_: dict[str, int] = Field(alias="from")
+    to: dict[str, int]
+    operations: int
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid", frozen=True)
+
+
 @register("untruncate", category=EventCategory.CONTROL)
 class Untruncate(EventPayload):
     """Reactivate the operations the truncation ``truncate_operation_id`` discarded (#65)."""
@@ -1114,6 +1129,9 @@ class DirectiveAppliedEvent(EventPayload):
     directive_id: str
     text: str
     changes: tuple[dict[str, Any], ...] = ()
+    lite: bool = False
+    """#699: a Lite story's lasting author fact (FR-LITE-8): its ``text`` is the fact the Lite
+    prompt carries, and an upgrade converts it (or keeps it as text)."""
 
 
 @register("rewrite_question", category=EventCategory.AUDIT)

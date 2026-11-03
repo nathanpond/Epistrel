@@ -38,6 +38,10 @@ RUNTIME_INDEXES = frozenset({"ix_memories_embedding_hnsw"})
 """Indexes the engine creates at run time, not in a migration: the HNSW index over
 ``memories.embedding``, built when the first embedding pins the dimension (#138,
 ``core.embeddings.retype``)."""
+EXPRESSION_INDEXES = frozenset({"ix_stories_prune_policy"})
+"""Expression indexes declared in the metadata and created by their migration (#703's
+``stories ((settings -> 'prune_policy'))``): Alembic cannot compare an expression index with
+its reflection, so autogenerate leaves them out; ``test_s_prune__policy`` asserts it exists."""
 RUNTIME_TYPED_COLUMNS = frozenset({("memories", "embedding")})
 """Columns whose type the engine sets at run time: ``memories.embedding`` is the untyped
 ``vector`` until the first embedding retypes it to ``vector(d)`` (#138)."""
@@ -50,9 +54,10 @@ def include_object(
     reflected: bool,
     compare_to: Any,
 ) -> bool:
-    """Alembic ``include_object`` hook: ignore Alembic's own bookkeeping table and the indexes
-    the engine creates at run time (``RUNTIME_INDEXES``)."""
-    if type_ == "index" and name in RUNTIME_INDEXES:
+    """Alembic ``include_object`` hook: ignore Alembic's own bookkeeping table, the indexes
+    the engine creates at run time (``RUNTIME_INDEXES``) and the expression indexes
+    (``EXPRESSION_INDEXES``)."""
+    if type_ == "index" and (name in RUNTIME_INDEXES or name in EXPRESSION_INDEXES):
         return False
     return not (type_ == "table" and name == ALEMBIC_VERSION_TABLE)
 

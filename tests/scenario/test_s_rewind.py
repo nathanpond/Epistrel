@@ -177,3 +177,56 @@ async def test_s_rewind__reflections(
         (1, 299),
         (300, CHECKPOINT),
     ]
+
+
+@pytest.mark.part("M7", "FR-STORE-23,26")
+async def test_s_rewind__m7(engine: AsyncEngine, pg_url: str, drained_embedding_jobs: None) -> None:
+    """S-REWIND M7 (scaled: 10 turns, checkpoint 8): with no amendment, the narrative records
+    of the corrected history through 8 are exactly those of the as-originally-recorded state at
+    8 (ids and payloads); a reflection computed later from turns 1-8 is in the corrected view
+    through 8 (FR-STORE-26) and is the only difference: it is not in the as-recorded view."""
+    from epistrel.core.views import Checkpoint, as_originally_recorded
+
+    checkpoint = 8
+    models = ModelAccessLayer.from_settings(auth_settings(pg_url, model_adapter="stub"))
+    models.bind(engine)
+    w = await cs.story(engine, cs.dials(window_memories=1_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await cs.bulk_turns(engine, story, 10, actor=bobby, name="Bobby", does=True)
+    narrative = {"player_input", "message_rendered", "beat_say", "beat_do", "beat_narration"}
+
+    async def corrected() -> dict[str, Any]:
+        return {
+            e.id: e.payload.model_dump()
+            for e in await corrected_history(engine, story, checkpoint)
+            if e.type in narrative
+        }
+
+    async def recorded() -> dict[str, Any]:
+        view = await as_originally_recorded(engine, story, Checkpoint(checkpoint))
+        return {e.id: e.payload.model_dump() for e in view.events if e.type in narrative}
+
+    assert await corrected() == await recorded()
+    models.stub.script(
+        "consolidation",
+        [cs.answer(reflections=[("Bobby works every day.", "observation", [0, 1])])],
+    )
+    await consolidate_window(engine, story, Window(1, checkpoint), models=models)
+    async with engine.connect() as conn:
+        through = {m.text for m in await records.memories_through(conn, story, checkpoint)}
+    assert "Bobby works every day." in through
+    assert await corrected() == await recorded()
+    later = {
+        e.operation_id
+        for e in (await as_originally_recorded(engine, story, Checkpoint(checkpoint))).events
+    }
+    consolidations = {
+        str(r.operation_id)
+        for r in await rows(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'consolidation'",
+            s=story,
+        )
+    }
+    assert consolidations
+    assert not consolidations & later

@@ -362,10 +362,16 @@ async def _begin(ctx: JobContext, row: Any) -> JobOutput | None:
         # its earliest statements.
         materialization: dict[str, Any] | None = None
         settings = await _target_settings(conn, row)
-        if await deferred.pending(conn, story_id, settings):
+        if await deferred.pending(conn, story_id, settings, deferred.BACKFILL_START):
             materialization = await deferred.materialize_deferred(
-                conn, story_id, settings, operation_id, principal=str(row.requested_by)
+                conn,
+                story_id,
+                settings,
+                operation_id,
+                principal=str(row.requested_by),
+                only=deferred.BACKFILL_START,
             )
+            await deferred.record_report(conn, operation_id, materialization)  # #698
             await flip_membership(conn, [operation_id], Membership.DORMANT, story_id=story_id)
         report: dict[str, Any] = {
             **dict(row.report or {}),
@@ -479,6 +485,141 @@ async def _after_complete(conn: AsyncConnection, story_id: str) -> None:
     await reembed.schedule(conn, reembed.EMBED, story_id)
 
 
+AUTHOR_FACT_PARSES = "author_fact_parses"
+NOTE_KEY = "note:"
+"""#700: a Lite world note's key among the parsed author facts (``note:<part id>``)."""
+NOTE_PREFIX = "Author correction: "
+"""#699: the report key holding each Lite lasting author fact's ``directive_parse`` changes
+(``None``: kept as text), parsed after extraction (model calls outside any transaction)."""
+
+
+async def _converted_before(conn: AsyncConnection, story_id: str) -> set[str]:
+    """#699: the Lite fact events earlier completed backfills of the story converted (a
+    re-upgrade never converts one twice)."""
+    rows = await conn.execute(
+        select(story_backfills.c.report).where(
+            story_backfills.c.story_id == story_id, story_backfills.c.status == "completed"
+        )
+    )
+    found: set[str] = set()
+    for (report,) in rows:
+        found.update(str(i) for i in dict(report or {}).get("author_facts", {}).get("ids", []))
+    return found
+
+
+async def _parse_author_facts(ctx: JobContext, row: Any) -> dict[str, Any]:
+    """#699 (FR-LITE-8): on an upgrade, each active Lite lasting author fact's text parsed by
+    ``directive_parse`` with ``durable`` forced and present scope (#226), with the target
+    configuration's models; ``None`` for one that yields no structured change (it stays a
+    lasting author fact, as text)."""
+    from epistrel.orchestrator import directives
+    from epistrel.orchestrator.rewrite import parse as parsing
+
+    story_id = str(row.story_id)
+    if str(row.kind) != "upgrade":
+        return {}
+    async with ctx.db.connect() as conn:
+        facts = await directives.lite_facts(conn, story_id)
+        # #700: each active Lite world note ("Author correction: ...") converts the same way,
+        # at the story's start, keyed by its part.
+        facts += [
+            (f"{NOTE_KEY}{part_id}", 0, 0, text.removeprefix(NOTE_PREFIX))
+            for part_id, text in await directives.lite_note_parts(conn, story_id)
+        ]
+        done = await _converted_before(conn, story_id)
+        if not facts:
+            return {}
+        story = await parsing.load_story(
+            conn, story_id, await load_registry(conn, story_id), margin=0.15
+        )
+    models = _models[0]
+    parsed: dict[str, Any] = {}
+    for event_id, _turn, _slot, text in facts:
+        if event_id in done:
+            continue
+        found = None
+        if models is not None:
+            try:
+                answer = await directives._parse(models, story, text)
+            except Exception:  # an unparseable fact stays text; it never fails the backfill
+                answer = None
+            if answer is not None:
+                changes = [
+                    c.model_dump(mode="json", by_alias=True)
+                    for c in answer.changes
+                    if c.kind == "proposition"
+                ]
+                found = changes or None
+        parsed[event_id] = found
+    return parsed
+
+
+async def _convert_author_facts(conn: AsyncConnection, row: Any) -> dict[str, Any] | None:
+    """#699: the parsed Lite facts written as author facts at their slots, under the
+    backfill's operation (dormant until completion, so a cancel discards them): #226's
+    durable-now fact writer (``provenance = author``, ``authority = author``). Answers the
+    report's ``author_facts {converted, kept_as_text, ids}`` (``None``: nothing to convert)."""
+    from types import SimpleNamespace
+
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.enums import FactAuthority, RecordProvenance
+    from epistrel.orchestrator import directives
+    from epistrel.orchestrator.models.registry import DirectiveChange
+    from epistrel.orchestrator.rewrite import parse as parsing
+
+    parsed = dict(dict(row.report or {}).get(AUTHOR_FACT_PARSES) or {})
+    if not parsed:
+        return None
+    story_id = str(row.story_id)
+    story = await parsing.load_story(
+        conn, story_id, await load_registry(conn, story_id), margin=0.15
+    )
+    positions = {
+        event_id: (turn, slot)
+        for event_id, turn, slot, _ in await directives.lite_facts(conn, story_id)
+    }
+    positions.update(
+        (f"{NOTE_KEY}{part_id}", (0, 0))
+        for part_id, _ in await directives.lite_note_parts(conn, story_id)
+    )
+    converted: list[str] = []
+    kept = 0
+    for event_id, changes in parsed.items():
+        if event_id not in positions:
+            continue  # rewound since the parse
+        if not changes:
+            kept += 1
+            continue
+        normalized = await directives._normalize(
+            conn, story, [DirectiveChange.model_validate(c) for c in changes]
+        )
+        if not normalized.facts or normalized.ambiguous:
+            kept += 1
+            continue
+        turn, slot = positions[event_id]
+        op = SimpleNamespace(
+            operation_id=str(row.operation_id),
+            story_id=story_id,
+            principal=str(row.requested_by),
+            narrative_turn=turn,
+            turn_variant=0,
+            slot_k=slot,
+            base_revision=None,
+        )
+        for proposition in normalized.facts:
+            await canon.commit_fact(
+                conn,
+                story_id,
+                proposition,
+                provenance=RecordProvenance.AUTHOR,
+                authority=FactAuthority.AUTHOR,
+                operation=op,
+                valid_time=proposition.valid_time,
+            )
+        converted.append(event_id)
+    return {"converted": len(converted), "kept_as_text": kept, "ids": converted}
+
+
 async def _complete(ctx: JobContext, row: Any) -> None:
     from epistrel.core.profiles.story import apply_held
 
@@ -499,6 +640,20 @@ async def _complete(ctx: JobContext, row: Any) -> None:
             )
             log.info("backfill awaits its conflicts", backfill_id=str(locked.id))
             return
+        story_id = str(locked.story_id)
+        if locked.operation_id is not None:
+            # #699: the converted author facts, under the operation, before it turns active.
+            op = str(locked.operation_id)
+            with pause.holding(str(locked.id)):
+                await flip_membership(conn, [op], Membership.ACTIVE, story_id=story_id)
+                summary = await _convert_author_facts(conn, locked)
+                await flip_membership(conn, [op], Membership.DORMANT, story_id=story_id)
+            if summary is not None:
+                await conn.execute(
+                    update(story_backfills)
+                    .where(story_backfills.c.id == locked.id)
+                    .values(report={**dict(locked.report or {}), "author_facts": summary})
+                )
         await core_backfill.complete(
             conn, locked, apply_target=apply_held, after_complete=_after_complete
         )
@@ -573,11 +728,15 @@ async def _run(ctx: JobContext) -> JobOutput:
             if pending:
                 await _extract(ctx, row, pending[0], settings)
                 return JobOutput(result={**result, "step": "extract"}, requeue_in=0)
+            parsed = await _parse_author_facts(ctx, row)
             async with ctx.db.begin() as conn:
                 await conn.execute(
                     update(story_backfills)
                     .where(story_backfills.c.id == row.id, story_backfills.c.status == "extracting")
-                    .values(status="reconciling")
+                    .values(
+                        status="reconciling",
+                        report={**dict(row.report or {}), AUTHOR_FACT_PARSES: parsed},
+                    )
                 )
             return JobOutput(result={**result, "step": "extracted"}, requeue_in=0)
         if row.status == "reconciling":

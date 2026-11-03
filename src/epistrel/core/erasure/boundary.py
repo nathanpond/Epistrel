@@ -61,6 +61,7 @@ IN_SCOPE: tuple[str, ...] = (
     SHARED_MEDIA,
     "message feedback and its history",
     "feedback exports not yet downloaded (the subject is redacted in their cases)",
+    "story exports not yet expired (a story-scope erasure expires and deletes them)",
     "story snapshots (scenario, characters, persona) and deferred genesis items",
     "the story's creation report: the subject's deferred genesis items, and her cast card "
     "(see below for what a story-scope erasure keeps of a catalog character's card)",

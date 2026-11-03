@@ -12081,3 +12081,54 @@ Branch `milestone/m7-verify-fixes-2`, PR #719. This pass takes the open `bug`/`c
 - **#235**: I did not build the `evals certify --presets` tooling. A draft depended on runner/report APIs that are shaped differently, and the owner's multi-hour live run gates it anyway. #235 stays blocked/needs-owner-action; the tooling and the live run are both named on the issue.
 - **#228**: partial (clock, scheduled times, inferred observations). It stays open and is not in the PR's Closes list.
 - **#250/#251**: closed by the PR. The hardening follow-ups (imported_unsettled compensation, erasure-candidate translation, streaming batches and crash points) are filed as #720 (needs-triage), not built inline.
+
+## /n8-exec M7 (retry 3: verify fixes) — 2026-11-03
+
+Scope: the four `bug, confirmed` issues `/n8-verify M7 --auto` filed at 2e8bced (#720, #721, #722, #723). Branch `milestone/m7-verify-fixes-3`.
+
+### #723 — the as-recorded view's beliefs section
+
+- **Decision:** `test_s_audit_view__beliefs` builds the beliefs from #160's transitions (`partition_support.believe`) and #164's exposure/lazy resolution (`exposure_support`), and checks four boundaries. A belief closed (corrected) before the boundary is absent. A lazily resolved belief held from turn 5 but recorded at turn 6 is absent at 5 and present at 6.
+  **Why:** the complement must exercise both of `_beliefs_at`'s filters. A mutation that dropped the `tx_to` condition fails the test. The `tx_from` filter is also enforced by the active-at-boundary fold, so a mutation of that filter alone does not fail it; the lazy-belief case asserts the effect.
+  **Issue:** #723, #222
+- **Decision:** the runtime spy now also covers a lazy belief resolution (`_lazy_resolution`: an exposure, then a later turn resolving it), the fourth path #222's AC names.
+  **Issue:** #723
+
+### #722 — the missing import tests
+
+- **Decision:** two crash points were added to `epistrel.testing.crash.IMPORT_POINTS` instead of one:
+  - `bundles.import.mid_records` (#250's name), hit after each table inside the insert transaction;
+  - `bundles.import.after_insert`, hit after the insert committed and before any gate.
+  **Why:** a kill inside the transaction leaves no rows of its own, so the purge-then-restart path is only exercised by a crash after the commit. `test_i_10__m7_crash_resume` kills a child `EngineProcess` worker at each point. It then expires the job's lease (instead of waiting out its full length), restarts the worker and checks the recovered import.
+  **Issue:** #722, #250
+- **Decision (Rule 1):** a resumed import ended `ready` with its `bundle_jobs.story_id` null. `_reset` purges and recreates the story row, and the deletion cleared the record's FK (`ON DELETE SET NULL`). `_reset` now sets it again. Found by the crash test.
+  **Issue:** #722, #250
+- **Decision:** the pause point `bundles.import.before_ready` sits after `rebuilding`/`embedding` begins and before the finishing transaction. `test_i_10__m7_importing__running` enumerates every route under `/stories/{story_id}` and `/admin/stories/{story_id}` from `app.routes` (more than 60). For each it sends the ownership matrix's minimal request (`CALLS`), or else the committed OpenAPI body example and required query parameters. All answer 409 `story_importing` with no writes.
+  **Why:** the gate runs in the Engine method, after FastAPI's validation, so a route given an invalid body would answer 422 and prove nothing.
+  **Issue:** #722
+- **Decision:** `_nothing_left` takes the refused story's id and checks every `STORY_TABLES` table. `test_i_10__m7_refusal_leaves_nothing` checks the media complement after a gate's refusal (the rich story with its image, refused by a global wordlist policy):
+  - the import's asset is `retired`, and gone after `media.sweep` with the clock 2 h on;
+  - the source's asset with the same checksum keeps its row and its blob.
+  **Issue:** #722
+- **Decision:** `test_i_10__m7_retention` writes the aged audit events straight into the source's log, as S-RETENTION does, because the log is append-only. It changes the deployment's `audit_retention_days` through `/admin/settings` (365, then 90) and restores 90 in a `finally`.
+  **Issue:** #722
+
+### #720 / #721 — the import gates' behaviour and slices
+
+- **Decision (owner decision 5):** `compensate` accepts a row parked `imported_unsettled`. `_listed_for_action(parked=True)` requires the row's status and the open mark. `settle-now` still refuses it (404 `no_listing`), per #251's Discretion. The compensating row's confirmation resolves the parked row's marks through the existing #218 path. The compensate route's description is updated and `docs/openapi.json` regenerated.
+  **Issue:** #720, #251
+- **Decision (ADR-154):** a bundle's confirmed erasure candidates are translated, not dropped (`import_gates._translated_candidates`):
+  - A dry run of the erasure on the imported story lists the candidates it meets.
+  - Each is confirmed when `candidate_id(table, <record id mapped back>, field, start, rule)` is among the entry's `confirmed_candidates`. `redact.Candidate` gains `start` (default 0; the REST shape lists fields explicitly, so it is unchanged).
+  - A confirmed id of a rebuilt projection row (new id, not in the map) is skipped. Its text follows the redacted event when the projections are refolded.
+  **Why:** the dry run's ids are the real run's by construction, so this adds no second matcher.
+  **Issue:** #720, #251
+- **Decision (Rule 1):** a catalog-scope ledger entry applied to an import runs as a story-scope erasure of the story character, and so kept the public card (name redacted). It now also empties that card in the imported story's genesis creation report (`catalog_erased_report`, #382). Found by the catalog-scope variant test.
+  **Issue:** #721, #251
+- **Decision (Rule 1):** a turn of an imported story whose provider this deployment has not registered answered 404 `not_found` from the external read. `bindings.require_bound`, the turn-start guard, now answers 422 `provider_unregistered` before checking bindings, as #251's AC asks. `provider_unregistered` is listed on respond, regenerate and correct.
+  **Why:** the imported bindings satisfy `unbound`, so `provider_unbound` never fired.
+  **Issue:** #721, #251
+- **Decision:** the inactive-reactivation and guardrail slices reuse helpers from `tests/integration/test_rating_change.py` (`_held`, `_ended`, `_edit`, …) and `test_i_27.py` (`_cast_june`, `_card`, `_report`), imported by name, instead of copying them. The "gate removed" run monkeypatches `IMPORT_GATES` without `check_guardrails` for one import.
+  **Issue:** #721
+- **Decision:** not built: #250's streaming COPY in 5,000-row batches. It is a Claude's Discretion line, not an AC, and #720's verify comment says it does not block. The import still inserts in one transaction under the frozen memory limits. #720 is closed by this PR with that item named as not built.
+  **Issue:** #720

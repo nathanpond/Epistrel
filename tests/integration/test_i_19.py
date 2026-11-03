@@ -492,6 +492,36 @@ async def test_i_19__m7_conflicts(stub_settings: Any, engine: AsyncEngine) -> No
         ] == "completed"
 
 
+@pytest.mark.part("M7", "FR-PROF-10")
+async def test_i_19__m7_conflict_value(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#708 (#230's resolve clause): under ``ask``, a resolution with a value neither statement
+    states (thirty-three) and a ``valid_from`` window is normalized against the age predicate
+    and written as canon; both statements become in-world claims and the conflict records the
+    value and window. Complements: a value that does not normalize (text for an int age) and a
+    window that ends before it starts are 422 ``invalid_resolution``, and nothing changes."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        asked, _ = await _policy_story(client, engine, lib, "ask")
+        (listed,) = (await ok(await client.get(f"/stories/{asked}/backfill", headers=READ)))[
+            "conflict_list"
+        ]
+        path = f"/stories/{asked}/backfill/conflicts/{listed['id']}"
+        for wrong in ({"value": "thirty-three"}, {"value": 33, "valid_from": 9, "valid_to": 3}):
+            refused = await client.post(path, json=wrong, headers=WRITE)
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "invalid_resolution"
+        done = await ok(await client.post(path, json={"value": 33, "valid_from": 0}, headers=WRITE))
+        assert done["backfill"] == {"status": "completed", "conflicts_open": 0}
+        assert done["conflict"]["resolution"]["via"] == "value"
+        assert done["conflict"]["resolution"]["choice"] == {
+            "statement_id": None,
+            "value": 33,
+            "valid_from": 0,
+            "valid_to": None,
+        }
+        assert 33 in _current(await _ages(engine, asked))
+        assert await _claims(engine, asked) == [lls.EARLY, lls.LATE]
+
+
 @pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
 async def test_i_19__m7_downgrade(stub_settings: Any, engine: AsyncEngine) -> None:
     """#232: a 400-turn Lite story upgraded to Full (backfilled), then switched back to Lite:

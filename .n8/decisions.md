@@ -11651,3 +11651,15 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #711
 - **Decision (Rule 1, #711):** `apply._answers` ignored answers to `dependent` questions, because it read only `kind == "conflict"`. An author's `cancel` for B was handled elsewhere, but any other answer silently became the recommendation. It now reads both kinds. Regression: `test_s_amend_undo__rewrite`.
   **Issue:** #711
+
+### #708 — backfill conflict resolve: a new normalized value and a window
+
+- **Decision:** a `value` that matches no statement is normalized against the conflict's key, taken from the latest statement's proposition.
+  - **Literal key:** the value must be a `TypedLiteral` of the statements' kind and unit.
+  - **Entity key:** the value must name one of the story's entities, by id or by a unique canonical name or alias (case-insensitive).
+  - **Failure:** anything else is 422 `invalid_resolution`.
+  - **Where it is written:** at the latest statement's position, with no event. Every statement a character spoke becomes an in-world claim.
+  **Issue:** #708
+- **Decision:** `valid_from`/`valid_to` are story minutes: an int, or its digits as a string. They bound a `value` or `choose` resolution, and an open bound keeps the statement's own. A window always writes a new fact, even for a statement whose value the pass already wrote. A window that ends before it starts is 422 `invalid_resolution`. The resolution records `value` and the window in `choice`.
+  **Why:** the AC names neither the window's unit nor date strings. Minutes are the unit #221's parts and the clock use; ISO dates would need the anchor, which a Lite story being upgraded may not have.
+  **Issue:** #708

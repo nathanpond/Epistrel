@@ -47886,7 +47886,7 @@
       },
       "epistrel__core__backfill__conflicts__ResolveRequest": {
         "additionalProperties": false,
-        "description": "``POST /stories/{id}/backfill/conflicts/{cid}``: exactly one of ``choose`` (a statement\nid), ``value`` (a value one of the statements states) or ``accept_recommendation``.",
+        "description": "``POST /stories/{id}/backfill/conflicts/{cid}``: exactly one of ``choose`` (a statement\nid), ``value`` (a normalized value: one a statement states, or a new one, #708) or\n``accept_recommendation``; ``valid_from``/``valid_to`` (story minutes) bound a ``choose``\nor ``value`` resolution.",
         "examples": [
           {
             "accept_recommendation": true

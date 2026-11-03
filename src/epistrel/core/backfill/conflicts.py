@@ -8,8 +8,11 @@ backfill_conflicts``, ``conflicts_open``) until the author settles them:
 - **listing** (``listing``): each conflict with its statements (position, speaker, the quoted
   transcript text, the value) and a **recommended** answer (owner decision 4): the
   ``last_mention`` statement, ``reason: "last_mention"``;
-- **resolve** (``resolve``: ``choose`` a statement, a ``value`` one of them states, or
-  ``accept_recommendation``): the chosen statement is canon for the overlap (written under the
+- **resolve** (``resolve``: ``choose`` a statement, a ``value``, or ``accept_recommendation``):
+  a ``value`` none of the statements states is normalized against the conflict's key (#708: a
+  literal of the statements' kind and unit, or the story's entity by id, name or alias; 422
+  ``invalid_resolution`` otherwise), and ``valid_from``/``valid_to`` (story minutes) bound the
+  value written; the chosen statement is canon for the overlap (written under the
   backfill's operation with provenance ``author``: a principal chose it) and the others, when
   a character spoke them, are recorded as in-world claims. Resolving the last open conflict
   runs the backfill's completion in the same request (``complete``);
@@ -55,8 +58,14 @@ from epistrel.core.errors import (
     InvalidResolution,
 )
 from epistrel.core.membership import flip_membership
-from epistrel.core.propositions.model import Proposition
-from epistrel.core.tables import backfill_conflicts, story_backfills, transcript_messages
+from epistrel.core.propositions.model import Interval, Proposition
+from epistrel.core.tables import (
+    backfill_conflicts,
+    entities,
+    entity_aliases,
+    story_backfills,
+    transcript_messages,
+)
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -110,7 +119,9 @@ class Conflict(BaseModel):
 
 class ResolveRequest(BaseModel):
     """``POST /stories/{id}/backfill/conflicts/{cid}``: exactly one of ``choose`` (a statement
-    id), ``value`` (a value one of the statements states) or ``accept_recommendation``."""
+    id), ``value`` (a normalized value: one a statement states, or a new one, #708) or
+    ``accept_recommendation``; ``valid_from``/``valid_to`` (story minutes) bound a ``choose``
+    or ``value`` resolution."""
 
     model_config = ConfigDict(
         extra="forbid", json_schema_extra={"examples": [{"accept_recommendation": True}]}
@@ -267,6 +278,97 @@ def _awaiting(row: Any) -> None:
         )
 
 
+def _minutes(value: str | int | None, field: str) -> int | None:
+    """A window bound: story minutes (an int, or its digits as a string)."""
+    if value is None or isinstance(value, int):
+        return value
+    text_value = value.strip()
+    if text_value.lstrip("-").isdigit():
+        return int(text_value)
+    raise InvalidResolution("a resolution's window is in story minutes", {"field": f"body.{field}"})
+
+
+async def _entity(conn: AsyncConnection, story_id: str, value: str) -> str | None:
+    """The story's entity ``value`` names: its id, or its one canonical name or alias
+    (case-insensitive); ``None`` when none or several match."""
+    e, a = entities.c, entity_aliases.c
+    found = await conn.scalar(select(e.id).where(e.story_id == story_id, e.id == value))
+    if found is not None:
+        return str(found)
+    named = {
+        str(i)
+        for (i,) in await conn.execute(
+            select(e.id).where(
+                e.story_id == story_id, func.lower(e.canonical_name) == value.lower()
+            )
+        )
+    } | {
+        str(i)
+        for (i,) in await conn.execute(
+            select(a.entity_id).where(a.story_id == story_id, func.lower(a.alias) == value.lower())
+        )
+    }
+    return next(iter(named)) if len(named) == 1 else None
+
+
+async def _normalized(
+    conn: AsyncConnection, story_id: str, statements: Sequence[dict[str, Any]], value: Any
+) -> dict[str, Any]:
+    """#708: a resolution's new value, normalized against the conflict's key (a literal of the
+    statements' kind and unit, or an entity of the story named by id, name or alias): a
+    statement of no event, at the latest statement's position. 422 ``invalid_resolution`` when
+    it does not normalize."""
+    from pydantic import ValidationError
+
+    from epistrel.core.propositions.model import TypedLiteral
+
+    latest = _ordered(statements)[-1]
+    base = Proposition.model_validate(latest["proposition"])
+    invalid = InvalidResolution(
+        "the value does not normalize against the conflict's predicate", {"field": "body.value"}
+    )
+    if base.literal is not None:
+        try:
+            literal = TypedLiteral(kind=base.literal.kind, value=value, unit=base.literal.unit)
+        except ValidationError:
+            raise invalid from None
+        made = base.model_copy(update={"literal": literal})
+    elif base.object_id is not None and isinstance(value, str):
+        entity = await _entity(conn, story_id, value)
+        if entity is None:
+            raise invalid
+        made = base.model_copy(update={"object_id": entity})
+    else:
+        raise invalid
+    return {
+        **latest,
+        "statement_id": None,
+        "event_id": None,
+        "speaker": None,
+        "fact_id": None,
+        "value": value,
+        "proposition": made.model_dump(mode="json"),
+    }
+
+
+def _windowed(chosen: dict[str, Any], request: ResolveRequest) -> dict[str, Any]:
+    """#708: the chosen value over the request's ``valid_from``/``valid_to`` window (story
+    minutes; an open bound stays the statement's), always written as a new fact."""
+    start = _minutes(request.valid_from, "valid_from")
+    end = _minutes(request.valid_to, "valid_to")
+    if start is None and end is None:
+        return chosen
+    if start is not None and end is not None and end <= start:
+        raise InvalidResolution("the window ends before it starts", {"field": "body.valid_to"})
+    proposition = Proposition.model_validate(chosen["proposition"])
+    possible = proposition.valid_time.possible()
+    window = Interval.of(
+        start if start is not None else possible[0], end if end is not None else possible[1]
+    )
+    made = proposition.model_copy(update={"valid_time": window})
+    return {**chosen, "fact_id": None, "proposition": made.model_dump(mode="json")}
+
+
 def _chosen(statements: Sequence[dict[str, Any]], request: ResolveRequest) -> dict[str, Any]:
     if request.accept_recommendation:
         found = recommended(statements)
@@ -316,7 +418,14 @@ async def resolve(
                 {"conflict_id": conflict_id, "status": str(found.status)},
             )
         statements = list(found.statements or [])
-        chosen = _chosen(statements, request)
+        try:
+            chosen = _chosen(statements, request)
+        except InvalidResolution:
+            if request.value is None:
+                raise
+            chosen = await _normalized(conn, story_id, statements, request.value)
+        if request.value is not None or request.choose is not None:
+            chosen = _windowed(chosen, request)
         op = str(row.operation_id)
         await flip_membership(conn, [op], Membership.ACTIVE, story_id=story_id)
         if chosen.get("fact_id") is None:
@@ -343,7 +452,18 @@ async def resolve(
             .values(
                 status="resolved",
                 resolution={
-                    "choice": {"statement_id": chosen.get("statement_id")},
+                    "choice": {
+                        "statement_id": chosen.get("statement_id"),
+                        **({"value": request.value} if chosen.get("statement_id") is None else {}),
+                        **(
+                            {
+                                "valid_from": _minutes(request.valid_from, "valid_from"),
+                                "valid_to": _minutes(request.valid_to, "valid_to"),
+                            }
+                            if request.valid_from is not None or request.valid_to is not None
+                            else {}
+                        ),
+                    },
                     "via": via,
                     "by": principal,
                 },

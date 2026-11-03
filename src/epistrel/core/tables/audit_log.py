@@ -35,6 +35,11 @@ class AuditKind(StrEnum):
     ERASURE = "erasure"
     STORY_IMPORT = "story_import"
     """#250: a finished import, ready or refused (job id, bundle checksum, story id)."""
+    BACKFILL_CANCELLED = "backfill_cancelled"
+    """#228: a backfill cancelled (its id, kind, capabilities, range and progress counts)."""
+    BACKFILL_FAILED = "backfill_failed"
+    """#228: a backfill ended ``failed`` after its last attempt (the same, and the error's
+    exception name)."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

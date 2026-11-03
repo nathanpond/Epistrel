@@ -67,7 +67,9 @@ only (invariant 3); this module logs nothing.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -1262,6 +1264,20 @@ async def _scope_key_ok(conn: AsyncConnection, story_id: str, scope_key: str | N
         )
 
 
+INFERRED: ContextVar[bool] = ContextVar("epistrel_state_change_inferred", default=False)
+
+
+@contextmanager
+def inferring() -> Iterator[None]:
+    """#228: write the State changes made inside the block ``inferred`` (a backfill's, read
+    from the transcript by #190's detector, not declared by a render)."""
+    token = INFERRED.set(True)
+    try:
+        yield
+    finally:
+        INFERRED.reset(token)
+
+
 async def apply_change(
     conn: AsyncConnection, op: Operation, change: StateChange
 ) -> Applied | Violation:
@@ -1362,6 +1378,7 @@ async def apply_change(
         "stopped_by_event_id": change.stopped_by_event_id,
         "paused_for_event_id": change.paused_for_event_id,
         "settles_change_id": change.settles_change_id,
+        "inferred": INFERRED.get(),
     }
     await insert_derived(conn, state_changes, [row])
     await index_records(conn, [state_change_record(SimpleNamespace(**row))])
@@ -1450,6 +1467,7 @@ __all__ = [
     "fold_state",
     "folded_at",
     "follow_operations",
+    "inferring",
     "numeric_states",
     "operation_position",
     "refresh",

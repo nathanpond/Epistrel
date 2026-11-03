@@ -62,7 +62,7 @@ from epistrel.core.tables import (
     story_backfills,
     transcript_messages,
 )
-from epistrel.core.verify.normalize import normalize
+from epistrel.core.verify.normalize import ClaimSketch, normalize
 from epistrel.core.world_clock import clock_off_basis
 from epistrel.observability.logging import get_logger
 from epistrel.orchestrator.budget import TurnBudget
@@ -139,6 +139,70 @@ async def _names(conn: AsyncConnection, story_id: str) -> dict[str, list[str]]:
     return found
 
 
+async def _places(conn: AsyncConnection, story_id: str) -> dict[str, list[str]]:
+    """#228: each place entity's name and aliases (the words a turn names a place by)."""
+    found: dict[str, list[str]] = {}
+    rows = await conn.execute(
+        select(entities.c.id, entities.c.canonical_name).where(
+            entities.c.story_id == story_id,
+            entities.c.kind == "place",
+            entities.c.merged_into.is_(None),
+        )
+    )
+    for row in rows:
+        found.setdefault(str(row.id), []).append(str(row.canonical_name))
+    aliases = await conn.execute(
+        select(entity_aliases.c.entity_id, entity_aliases.c.alias)
+        .join(entities, entities.c.id == entity_aliases.c.entity_id)
+        .where(entities.c.story_id == story_id, entities.c.kind == "place")
+    )
+    for row in aliases:
+        if str(row.entity_id) in found:
+            found[str(row.entity_id)].append(str(row.alias))
+    return found
+
+
+def _place(texts: list[str], places: dict[str, list[str]]) -> str | None:
+    """#228: the place the turn's texts name last (where the turn ends), or ``None``."""
+    joined = "\n".join(texts)
+    best: tuple[int, str] | None = None
+    for place, words in places.items():
+        for word in words:
+            if not word:
+                continue
+            for hit in re.finditer(rf"(?<!\w){re.escape(word)}(?!\w)", joined, re.IGNORECASE):
+                if best is None or hit.end() > best[0]:
+                    best = (hit.end(), place)
+    return None if best is None else best[1]
+
+
+def _placements(
+    turn: reconcile.ReadTurn,
+    place: str | None,
+    present: list[str],
+    *,
+    registry: Any,
+    context: ResolutionContext,
+) -> None:
+    """#228: the turn's inferred placements (``ReadTurn.placements``), normalized as genesis
+    normalizes a placement (``core.genesis.structured``)."""
+    if place is None:
+        return
+    for character in present:
+        found = normalize(
+            ClaimSketch(relation_text="located_at", subject_id=character, object_id=place),
+            NARRATOR,
+            (turn.turn, 0),
+            registry=registry,
+            context=context,
+            basis=clock_off_basis(),
+        )
+        if isinstance(found, Proposition):
+            turn.placements.append(
+                reconcile.ReadProposition(proposition=found.model_dump(mode="json"))
+            )
+
+
 def _present(texts: list[str], names: dict[str, list[str]], speakers: set[str]) -> list[str]:
     """The characters named in the turn's texts, and its speakers."""
     joined = "\n".join(texts)
@@ -182,6 +246,122 @@ def _kind(row: Any) -> tuple[str, str | None]:
     return "narration", None
 
 
+def _offsets(text: str, words: str | None, near: tuple[int, int] | None) -> tuple[int, int] | None:
+    """#228: where ``words`` sit in ``text`` (case-insensitive; inside ``near`` first), or
+    ``None``."""
+    if not words or not words.strip():
+        return None
+    pattern = re.compile(re.escape(words.strip()), re.IGNORECASE)
+    hits = list(pattern.finditer(text))
+    if not hits:
+        return None
+    if near is not None:
+        inside = [h for h in hits if h.start() >= near[0] and h.end() <= near[1]]
+        if inside:
+            return inside[0].start(), inside[0].end()
+    return hits[0].start(), hits[0].end()
+
+
+def _reference(
+    text: str,
+    *,
+    relation: str,
+    subject: str | None,
+    object_: str | None,
+    time: str | None,
+    span: tuple[int, int] | None,
+    negated: bool,
+    source: str,
+    registry: Any,
+) -> reconcile.ReadReference | None:
+    """#228: a salient reference as the checkpoint keeps it (``reconcile.ReadReference``): the
+    resolved predicate and its words' offsets; ``None`` when the predicate is not registered or
+    a word the sketch names is not in the message."""
+    from epistrel.core.verify.normalize import predicate_for
+
+    predicate = predicate_for(registry, relation)
+    if predicate is None:
+        return None
+    found: dict[str, tuple[int, int] | None] = {}
+    for name, words in (("subject", subject), ("object", object_), ("time", time)):
+        at = _offsets(text, words, span)
+        if words and words.strip() and at is None:
+            return None
+        found[name] = at
+    return reconcile.ReadReference(
+        predicate_id=predicate.id,
+        span=span,
+        subject=found["subject"],
+        object=found["object"],
+        time=found["time"],
+        negated=negated,
+        source=source,
+    )
+
+
+def _opens(sketch: ClaimSketch) -> bool:
+    """The rules mode's test (``orchestrator.commit.salience.rules_salient``): the claim leaves
+    an argument open."""
+    from epistrel.core.commit.sketch import open_phrase
+
+    return (sketch.subject_id is None and open_phrase(sketch.subject_text)) or (
+        sketch.object_id is None and sketch.literal is None and open_phrase(sketch.object_text)
+    )
+
+
+async def _salient_references(
+    models: ModelAccessLayer | None,
+    messages: list[reconcile.ReadMessage],
+    *,
+    settings: ProfileSettings,
+    present: list[str],
+    names: dict[str, list[str]],
+    registry: Any,
+    budget: TurnBudget,
+) -> None:
+    """#228 (#146): under ``rules_and_model`` salience, the turn's reply read by the
+    ``salience_detection`` purpose (the live entry point, ``detect_salience``), each salient
+    span kept as a reference on its message (in place). The player's input is never read."""
+    from epistrel.orchestrator.commit import salience
+    from epistrel.orchestrator.models.registry import SceneContext
+
+    if salience.salience_mode(settings) != "rules_and_model":
+        return
+    read = [(n, m) for n, m in enumerate(messages) if m.kind in salience.RULE_KINDS]
+    if not read:
+        return
+    beats = [salience.Beat(index=n, kind=m.kind, text=m.text) for n, m in read]
+    scene = SceneContext(
+        present_entities=[names[c][0] for c in present if names.get(c)], last_beats=[]
+    )
+    verdict = await salience.detect_salience(
+        beats,
+        scene,
+        mode="rules_and_model",
+        models=models,
+        budget=budget,
+        bias=salience.salience_bias(settings),
+    )
+    for item in verdict.salient:
+        if not 0 <= item.span.beat < len(messages):
+            continue
+        message = messages[item.span.beat]
+        sketch = item.proposition_sketch
+        found = _reference(
+            message.text,
+            relation=sketch.relation,
+            subject=sketch.subject,
+            object_=sketch.object,
+            time=sketch.time,
+            span=(item.span.start, item.span.end),
+            negated=False,
+            source="model",
+            registry=registry,
+        )
+        if found is not None:
+            message.references.append(found)
+
+
 async def _extract_turn(
     models: ModelAccessLayer | None,
     messages: list[reconcile.ReadMessage],
@@ -190,8 +370,11 @@ async def _extract_turn(
     registry: Any,
     context: ResolutionContext,
     budget: TurnBudget,
+    references: bool = False,
 ) -> None:
-    """The turn's claims, normalized onto ``messages`` (in place)."""
+    """The turn's claims, normalized onto ``messages`` (in place); with ``references`` (#228:
+    commitment gained), a narration claim that leaves an argument open is kept as a salient
+    reference (the rules mode's)."""
     if models is None or not messages:
         return
     beats = [
@@ -229,6 +412,20 @@ async def _extract_turn(
                     time_text=full.time_text,
                 )
             )
+        elif references and message.kind in reconcile.REFERENCE_KINDS and _opens(full):
+            found = _reference(
+                message.text,
+                relation=full.relation_text,
+                subject=full.subject_text,
+                object_=full.object_text,
+                time=full.time_text,
+                span=span,
+                negated=claim.polarity == "negated",
+                source="rules",
+                registry=registry,
+            )
+            if found is not None:
+                message.references.append(found)
 
 
 async def _extract(ctx: JobContext, row: Any, chunk: Any, settings: ProfileSettings) -> None:
@@ -236,6 +433,7 @@ async def _extract(ctx: JobContext, row: Any, chunk: Any, settings: ProfileSetti
     async with ctx.db.connect() as conn:
         found = await _turns(conn, story_id, int(chunk.from_turn), int(chunk.to_turn))
         names = await _names(conn, story_id)
+        places = await _places(conn, story_id)
         registry = await load_registry(conn, story_id)
         index = await load_index(conn, story_id)
     context = ResolutionContext(index=index, beats=())
@@ -261,13 +459,33 @@ async def _extract(ctx: JobContext, row: Any, chunk: Any, settings: ProfileSetti
         )
         for message in turn.messages:
             message.present = present
-        if wanted:
+        if set(row.capabilities) & reconcile.PLACEMENT_CAPABILITIES:
+            _placements(
+                turn,
+                _place([m.text for m in turn.messages], places),
+                present,
+                registry=registry,
+                context=context,
+            )
+        committing = bool(set(row.capabilities) & reconcile.COMMITMENT_CAPABILITIES)
+        if wanted or committing:
             await _extract_turn(
                 bound(),
                 turn.messages,
                 turn=turn.turn,
                 registry=registry,
                 context=context,
+                budget=budget,
+                references=committing,
+            )
+        if committing:
+            await _salient_references(
+                bound(),
+                turn.messages,
+                settings=settings,
+                present=present,
+                names=names,
+                registry=registry,
                 budget=budget,
             )
     for turn in turns.values():

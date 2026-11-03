@@ -6648,10 +6648,10 @@ class Engine:
         """Cancel the story's running backfill (#228): its rows discarded, its chunks dropped, the
         story resumed on its configuration. 404 ``backfill_not_found``, 409
         ``backfill_not_cancellable`` once it has ended."""
-        self.require_principal(ctx)
+        principal = self.require_principal(ctx)
 
         async def run(_: RequestContext) -> core_backfill.BackfillCancelled:
-            found = await core_backfill.cancel(self.db, story_id)
+            found = await core_backfill.cancel(self.db, story_id, principal=principal)
             async with self.db.connect() as conn:
                 revision = await conn.scalar(
                     select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)

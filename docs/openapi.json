@@ -6923,6 +6923,55 @@
         "title": "DetectedClaimModel",
         "type": "object"
       },
+      "DirectedPendingBody": {
+        "description": "#241: a directed regeneration held for its ``directed_resolution`` session (202): the\nsession (its preview lists the conflicting lines and records), the variant still active,\nand any warnings (``binding_unmatched``).",
+        "properties": {
+          "disposition": {
+            "default": "awaiting_rewrite",
+            "title": "Disposition",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "previous_variant": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Previous Variant",
+            "type": "object"
+          },
+          "rewrite_session": {
+            "$ref": "#/components/schemas/RewriteSession"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "rewrite_session",
+          "previous_variant"
+        ],
+        "title": "DirectedPendingBody",
+        "type": "object"
+      },
       "DirectiveApplied": {
         "additionalProperties": false,
         "description": "What a durable directive applied at its slot.",
@@ -31559,6 +31608,23 @@
         "title": "ReferencingStoryBody",
         "type": "object"
       },
+      "RegenerateDirective": {
+        "additionalProperties": false,
+        "description": "#241: an author's direction for one regeneration.",
+        "properties": {
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "RegenerateDirective",
+        "type": "object"
+      },
       "RegenerateRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/regenerate`` and ``Engine.regenerate`` (#66, FR-STORE-12).\n\nThe recorded ``player_input`` of the head turn is reused, never re-sent. ``turn``, when\ngiven, must be the head turn (422 otherwise). ``render_character_ids``,\n``output_viewpoint`` and ``prompt_params`` override the values the turn was played with;\nomitted, the recorded (resolved) ones are reused. ``budget`` is this call's own (#69).",
@@ -31581,6 +31647,16 @@
               }
             ]
           },
+          "directive": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RegenerateDirective"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "output_viewpoint": {
             "anyOf": [
               {
@@ -31592,6 +31668,15 @@
               }
             ],
             "title": "Output Viewpoint"
+          },
+          "preview": {
+            "default": "preview_first",
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview",
+            "type": "string"
           },
           "prompt_params": {
             "anyOf": [
@@ -31619,6 +31704,22 @@
               }
             ],
             "title": "Render Character Ids"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "default": "synchronous",
+            "title": "Resolution Mode"
           },
           "turn": {
             "anyOf": [
@@ -79469,7 +79570,7 @@
     },
     "/stories/{story_id}/regenerate": {
       "post": {
-        "description": "Play the latest turn again: its recorded input (never re-sent by you, and checked by the input policies again) is answered anew as the next variant of the same turn, and the old variant becomes `dormant` (swap back to it with `POST /stories/{id}/swap`). `turn`, when given, must be the latest turn (422). `render_character_ids`, `output_viewpoint` and `prompt_params` override the values the turn was played with; omitted, the recorded ones are reused. A latest turn without a reply (an ingested player turn, a narration turn) is 422 `nothing_to_regenerate`. The answer is the respond body plus `previous_variant`. While another turn of the story runs the regenerate is 423 `story_busy` (it is never queued); queued turns fail with `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional.",
+        "description": "Play the latest turn again: its recorded input (never re-sent by you, and checked by the input policies again) is answered anew as the next variant of the same turn, and the old variant becomes `dormant` (swap back to it with `POST /stories/{id}/swap`). `turn`, when given, must be the latest turn (422). `render_character_ids`, `output_viewpoint` and `prompt_params` override the values the turn was played with; omitted, the recorded ones are reused. A latest turn without a reply (an ingested player turn, a narration turn) is 422 `nothing_to_regenerate`. The answer is the respond body plus `previous_variant`. While another turn of the story runs the regenerate is 423 `story_busy` (it is never queued); queued turns fail with `timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional. `directive` (#241, FR-COMMIT-12: structured stories; a Lite story is 409 `module_off`) directs the outcome (\"the knocker is George\"): it is checked by the input policies, and a binding of an open question is reconciled with recorded history before anything commits. Without a conflict the regeneration commits steered to the author's decision. With one, the author's choice proceeds as a `directed_resolution` amendment under `resolution_mode` and `preview`: 202 with the session, nothing committed until it is applied (the regenerated reply and the amendment then commit together).",
         "operationId": "regenerate",
         "parameters": [
           {
@@ -79557,6 +79658,32 @@
               }
             },
             "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectedPendingBody"
+                }
+              }
+            },
+            "description": "A directed regeneration whose binding conflicts with recorded history, held for its `directed_resolution` session (#241).",
             "headers": {
               "Idempotency-Key": {
                 "description": "The request's key, echoed (generated if absent).",

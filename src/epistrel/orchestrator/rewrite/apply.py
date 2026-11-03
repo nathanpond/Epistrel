@@ -88,9 +88,13 @@ class Prepared:
     resolutions: list[dict[str, Any]] = field(default_factory=list)
     notifications: list[dict[str, Any]] = field(default_factory=list)
     kind: str = "rewrite"
-    """The amendment kind the apply records (#238: ``undo``, ``redo``)."""
+    """The amendment kind the apply records (#238: ``undo``, ``redo``; #241:
+    ``directed_resolution``)."""
     undoes: str | None = None
     redoes: str | None = None
+    rationale: list[dict[str, str]] = field(default_factory=list)
+    """#241: the records a directed resolution's amendment rests on (its conflicting records,
+    never the regenerated message)."""
 
 
 def _excerpt(text: str | None) -> str | None:
@@ -249,6 +253,11 @@ async def prepare(
     elif plan.get("redo") is not None:
         prepared.kind = "redo"
         prepared.redoes = str(plan["redo"]["amendment_id"])
+    elif plan.get("directed") is not None:
+        prepared.kind = "directed_resolution"
+        prepared.rationale = [
+            {"table": "facts", "id": str(r)} for r in plan["directed"].get("records") or []
+        ]
     seen: set[tuple[str, str]] = set()
     by_key = {c.key: c for c in changes}
     for change in changes:
@@ -420,7 +429,13 @@ async def prepare(
                 prepared.parts.append(
                     ("resolutions", _fix_draft(*record, rewritten), {"record": conflict["record"]})
                 )
-        if action == "drop":
+        if action == "drop" and record[0] == "facts":
+            # #241: a recorded fact the directed binding contradicts is not removed by a part:
+            # the author's resolution supersedes it when the regenerated turn commits it.
+            prepared.notifications.append(
+                {"kind": "superseded_by_resolution", "record": conflict["record"]}
+            )
+        elif action == "drop":
             after = ""
             prepared.parts.append(
                 ("resolutions", _drop_draft(*record), {"record": conflict["record"]})
@@ -921,6 +936,7 @@ async def apply(
                 payload={"parts": len(parts), "session_id": session_id},
                 undoes=prepared.undoes,
                 redoes=prepared.redoes,
+                rationale_record_ids=prepared.rationale,
             )
             for target in prepared.undo:
                 await revert_amendment(conn, op, target, by_amendment_id=made.amendment_id)

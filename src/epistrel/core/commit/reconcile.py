@@ -444,12 +444,6 @@ async def reconcile(
     )
 
 
-async def author_directed(*_: object, **__: object) -> Reconciliation:
-    """An author-directed resolution (FR-COMMIT-12) goes through the amendment feature, which is
-    M7's: not available in M4."""
-    raise NotImplementedError("author-directed resolution (FR-COMMIT-12) arrives with M7")
-
-
 __all__ = [
     "CONTEXT_DEPTH",
     "LINE_TYPES",
@@ -461,7 +455,6 @@ __all__ = [
     "ObligationKind",
     "Ok",
     "Reconciliation",
-    "author_directed",
     "bound_entity",
     "contradicts",
     "introduced_at",

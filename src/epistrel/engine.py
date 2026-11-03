@@ -94,6 +94,7 @@ from epistrel.core.errors import (
     LedgerUnavailable,
     ModuleOff,
     PrincipalRequired,
+    RewriteApplyFailed,
     StoryNotFound,
     SubjectNotFound,
     refuse_nul,
@@ -168,6 +169,7 @@ from epistrel.orchestrator.budget import (
     TurnBudget,
     effective_max_calls,
 )
+from epistrel.orchestrator.commit import directed
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
@@ -301,7 +303,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
         fork.Forked | rating_change.RatingCheckStarted,
         status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 201,
     ),
-    "regenerate": ResultCodec.of(RegenerateResult),
+    # #241: a directed regeneration held on a ``directed_resolution`` session answers 202.
+    "regenerate": ResultCodec.of(
+        RegenerateResult | directed.DirectedPending,
+        status=lambda found: 202 if isinstance(found, directed.DirectedPending) else 200,
+    ),
     # #598 (FR-RESP-14): the latest turn replaced with new input.
     "correct": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
@@ -2837,16 +2843,49 @@ class Engine:
         request: RegenerateRequest | None = None,
         *,
         output_viewpoint: str | None = None,
-    ) -> RegenerateResult:
+    ) -> RegenerateResult | directed.DirectedPending:
         """Play the latest turn again as a new variant from its recorded input (FR-STORE-12,
         #66); the old variant goes dormant in the same commit and can be swapped back. The
         input is re-gated (#56); a busy story is 423 ``story_busy``; queued turns fail with
         ``timeline_changed``. Omitted overrides reuse the recorded render set, viewpoint and
         generation settings. A structured story's regenerate (#154) reverts what the replaced
-        variant committed and reopens the thunks it resolved."""
+        variant committed and reopens the thunks it resolved.
+
+        #241 (FR-COMMIT-12): ``request.directive`` directs the outcome. It is gated (422
+        ``guardrail_violation``), structured stories only (a Lite story 409 ``module_off``,
+        ``lite_directives``, until #244), and parsed; a binding of an open question is
+        reconciled with recorded history before anything commits. No conflict: the regeneration
+        commits steered to the author's decision. A conflict proceeds as a
+        ``directed_resolution`` amendment under ``resolution_mode`` and ``preview``: the answer
+        is ``DirectedPending`` (REST 202) and nothing is committed until the session is applied
+        (``apply_rewrite`` then plays the directed regeneration); under ``best_effort`` +
+        ``apply_directly`` both commit in this call."""
         principal = self.require_principal(ctx)
         request = request or RegenerateRequest()
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
+
+        async def run(ctx: RequestContext) -> RegenerateResult | directed.DirectedPending:
+            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
+            if request.directive is not None:
+                return await self._directed_regenerate(ctx, story_id, request, principal)
+            return await self._regenerate(ctx, story_id, request, principal)
+
+        return await self._keyed(
+            ctx,
+            "regenerate",
+            run,
+            story_id=story_id,
+            material={
+                "story_id": story_id,
+                "body": _body(request),
+                "viewpoint": ctx.viewpoint,
+            },
+        )
+
+    async def _regenerate(
+        self, ctx: RequestContext, story_id: str, request: RegenerateRequest, principal: str
+    ) -> RegenerateResult:
+        """The regeneration itself (see ``regenerate``)."""
 
         async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
             return await self.gate_input(
@@ -2860,37 +2899,96 @@ class Engine:
                 reserve_output_for=renders,
             )
 
-        async def run(ctx: RequestContext) -> RegenerateResult:
-            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
-            if await self._plays_structured(story_id):
-                # A structured story's regenerate (#154): the commit boundary reverts what the
-                # replaced variant committed.
-                return await structured_turn.regenerate(
-                    self.db,
-                    self.models,
-                    ctx,
-                    story_id,
-                    request,
-                    principal=principal,
-                    gate=gate,
-                    lexical=lexical_backend(self.settings.lexical_backend),
-                    providers=self.in_process_providers,
-                )
-            return await lite.regenerate(
-                self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
+        if await self._plays_structured(story_id):
+            # A structured story's regenerate (#154): the commit boundary reverts what the
+            # replaced variant committed.
+            return await structured_turn.regenerate(
+                self.db,
+                self.models,
+                ctx,
+                story_id,
+                request,
+                principal=principal,
+                gate=gate,
+                lexical=lexical_backend(self.settings.lexical_backend),
+                providers=self.in_process_providers,
             )
-
-        return await self._keyed(
-            ctx,
-            "regenerate",
-            run,
-            story_id=story_id,
-            material={
-                "story_id": story_id,
-                "body": _body(request),
-                "viewpoint": ctx.viewpoint,
-            },
+        return await lite.regenerate(
+            self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
         )
+
+    async def _directed_regenerate(
+        self, ctx: RequestContext, story_id: str, request: RegenerateRequest, principal: str
+    ) -> RegenerateResult | directed.DirectedPending:
+        """#241: a directed regeneration (see ``regenerate``)."""
+        assert request.directive is not None  # noqa: S101 - the caller checked
+        await self.gate_input(
+            ctx,
+            story_id,
+            EntryPoint.DIRECTIVE,
+            [GateText("body.directive.text", request.directive.text)],
+        )
+        if not await self._plays_structured(story_id):
+            raise ModuleOff(
+                "a Lite story takes no regeneration directive yet",
+                {"module": author_directives.LITE_DIRECTIVES},
+            )
+        prepared = await directed.prepare(self.db, self.models, story_id, request.directive.text)
+        amendment_id: str | None = None
+        if prepared.conflicting:
+            overrides = request.model_dump(
+                mode="json", exclude={"directive", "resolution_mode", "preview"}, exclude_none=True
+            )
+            written = await rewrite_session.open_directed(
+                self.db,
+                self.models,
+                story_id,
+                directed.conflict_document(prepared, overrides),
+                resolution_mode=request.resolution_mode,
+                preview=request.preview,
+                principal=principal,
+            )
+            if written.apply is None:
+                async with self.db.connect() as conn:
+                    head = await directed.head_variant(conn, story_id)
+                return directed.DirectedPending(
+                    rewrite_session=written.session,
+                    previous_variant=head,
+                    timeline_revision=written.timeline_revision,
+                    warnings=list(prepared.warnings),
+                )
+            amendment_id = written.apply.amendment_id
+        return await self._play_directed(
+            ctx, story_id, request, principal, prepared, amendment_id=amendment_id
+        )
+
+    async def _play_directed(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: RegenerateRequest,
+        principal: str,
+        prepared: directed.Directed,
+        *,
+        amendment_id: str | None,
+    ) -> RegenerateResult:
+        """Play the directed regeneration; when its amendment already committed and the
+        regeneration fails, the amendment is reverted (``directed.compensate``) and the call
+        is 503 ``rewrite_apply_failed``: the two stand or fall together."""
+        replay = request.model_copy(update={"directive": None})
+        try:
+            with directed.directing(prepared):
+                result = await self._regenerate(ctx, story_id, replay, principal)
+        except Exception as failed:
+            if amendment_id is None:
+                raise
+            await directed.compensate(self.db, story_id, amendment_id, principal=principal)
+            raise RewriteApplyFailed(
+                "the directed regeneration failed; its amendment was reverted",
+                {"retryable": True, "amendment_id": amendment_id},
+            ) from failed
+        await directed.record(self.db, story_id, prepared, principal=principal)
+        return result
 
     async def correct(
         self,
@@ -6475,6 +6573,31 @@ class Engine:
             material={"story_id": story_id, "amendment_id": amendment_id, "body": _body(request)},
         )
 
+    async def _apply_directed(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        written: rewrite_api.RewriteWrite,
+        principal: str,
+    ) -> None:
+        """#241: after a ``directed_resolution`` session's amendment applied, play the directed
+        regeneration it held (reverting the amendment if the regeneration fails)."""
+        assert written.apply is not None  # noqa: S101 - the caller checked
+        async with self.db.connect() as conn:
+            stored = await rewrite_session.stored_plan(conn, story_id, session_id)
+        document = dict(stored.get("directed") or {})
+        prepared = directed.Directed.of(document)
+        replay = RegenerateRequest.model_validate(document.get("regenerate") or {})
+        await self._play_directed(
+            ctx,
+            story_id,
+            replay,
+            principal,
+            prepared,
+            amendment_id=written.apply.amendment_id,
+        )
+
     async def apply_rewrite(
         self,
         ctx: RequestContext,
@@ -6497,10 +6620,14 @@ class Engine:
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         inspection.omniscient_read(ctx.viewpoint)
 
-        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
-            return await rewrite_session.apply_session(
+        async def run(ctx_: RequestContext) -> rewrite_api.RewriteWrite:
+            written = await rewrite_session.apply_session(
                 self.db, self.models, story_id, session_id, request, principal=principal
             )
+            if written.session.kind == "directed_resolution" and written.apply is not None:
+                # #241: the amendment committed; the directed regeneration plays now.
+                await self._apply_directed(ctx_, story_id, session_id, written, principal)
+            return written
 
         return await self._keyed(
             ctx,

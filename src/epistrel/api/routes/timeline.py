@@ -30,7 +30,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Response
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
@@ -48,7 +48,9 @@ from epistrel.core.timeline import (
     Untruncation,
 )
 from epistrel.core.variants import Chain, ChainRef, SwapRequest
+from epistrel.orchestrator.commit.directed import DirectedPending
 from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RegenerateResult
+from epistrel.orchestrator.rewrite.api import RewriteSession
 
 router = APIRouter(prefix="/stories", tags=["timeline"])
 
@@ -206,6 +208,26 @@ class RegeneratedBody(RespondResponse):
     def of_regenerate(cls, result: RegenerateResult) -> RegeneratedBody:
         return cls(
             **RespondResponse.of(result).model_dump(), previous_variant=result.previous_variant
+        )
+
+
+class DirectedPendingBody(MutationResponse):
+    """#241: a directed regeneration held for its ``directed_resolution`` session (202): the
+    session (its preview lists the conflicting lines and records), the variant still active,
+    and any warnings (``binding_unmatched``)."""
+
+    disposition: str = "awaiting_rewrite"
+    rewrite_session: RewriteSession
+    previous_variant: dict[str, int]
+    warnings: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def of(cls, found: DirectedPending) -> DirectedPendingBody:
+        return cls(
+            rewrite_session=found.rewrite_session,
+            previous_variant=found.previous_variant,
+            warnings=found.warnings,
+            timeline_revision=found.timeline_revision,
         )
 
 
@@ -413,6 +435,13 @@ async def swap(
 @router.post(
     "/{story_id}/regenerate",
     response_model=RegeneratedBody,
+    responses={
+        http_status.HTTP_202_ACCEPTED: {
+            "model": DirectedPendingBody,
+            "description": "A directed regeneration whose binding conflicts with recorded "
+            "history, held for its `directed_resolution` session (#241).",
+        }
+    },
     operation_id="regenerate",
     summary="Regenerate the latest reply",
     description=(
@@ -425,7 +454,14 @@ async def swap(
         "player turn, a narration turn) is 422 `nothing_to_regenerate`. The answer is the "
         "respond body plus `previous_variant`. While another turn of the story runs the "
         "regenerate is 423 `story_busy` (it is never queued); queued turns fail with "
-        "`timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional."
+        "`timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional. "
+        "`directive` (#241, FR-COMMIT-12: structured stories; a Lite story is 409 `module_off`) "
+        'directs the outcome ("the knocker is George"): it is checked by the input policies, '
+        "and a binding of an open question is reconciled with recorded history before anything "
+        "commits. Without a conflict the regeneration commits steered to the author's decision. "
+        "With one, the author's choice proceeds as a `directed_resolution` amendment under "
+        "`resolution_mode` and `preview`: 202 with the session, nothing committed until it is "
+        "applied (the regenerated reply and the amendment then commit together)."
     ),
 )
 async def regenerate(
@@ -434,8 +470,15 @@ async def regenerate(
     ctx: ContextDep,
     engine: EngineDep,
     body: Annotated[RegenerateRequest | None, Body()] = None,
-) -> RegeneratedBody:
+) -> RegeneratedBody | JSONResponse:
     result = await engine.regenerate(ctx, story_id, body or RegenerateRequest())
+    if isinstance(result, DirectedPending):
+        held = answered(DirectedPendingBody.of(result), ctx, response, replayed=result.replayed)
+        return JSONResponse(
+            held.model_dump(mode="json"),
+            status_code=http_status.HTTP_202_ACCEPTED,
+            headers=dict(response.headers),
+        )
     return answered(RegeneratedBody.of_regenerate(result), ctx, response, replayed=result.replayed)
 
 

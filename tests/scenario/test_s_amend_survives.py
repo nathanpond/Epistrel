@@ -110,3 +110,95 @@ async def test_s_amend_survives(engine: AsyncEngine) -> None:
         if r["id"] == made.amendment_id
     ]
     assert (head["status"], head["reverted_by"]) == ("reverted", undo.amendment_id)
+
+
+@pytest.mark.part("M7", "FR-STORE-21; FR-REWRITE-9")
+async def test_s_amend_survives__directed(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#241: a directed regeneration is an ordinary narrative event. The S-DIRECT-GEORGE house:
+    the author directs Bobby as the knocker against his recorded "I never knocked", applied
+    best-effort (a ``directed_resolution`` amendment and the regenerated turn 3 commit
+    together). Truncating to turn 1 discards the regenerated variant (Bobby as the knocker is
+    in no view), while the ``directed_resolution`` amendment stays ``active``, its rows
+    untouched."""
+    from tests import rewrite_support as rs
+    from tests.auth_support import auth_settings
+    from tests.respond_support import body, played, respond_client
+    from tests.scenario.test_s_direct_george import BOBBY, NEVER, _parsed, _regenerate
+    from tests.scenario.test_s_knock import _house, _knock
+    from tests.structured_turn_support import beat, claim, render
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _house(client, engine)
+        await _knock(client, engine, stub, story, ids)
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "say",
+                        NEVER,
+                        intent="sincere",
+                        propositions=[claim("I", "knocked_at", "the door", negated=True)],
+                    )
+                )
+            ],
+        )
+        await played(
+            client,
+            story,
+            body(ids["Wren"], "Bobby, did you knock?", render_character_ids=[ids["Bobby"]]),
+        )
+        stub.reset()
+        stub.script("generation", [render(beat("narration", "Nobody answers."))])
+        await played(client, story, body(ids["Wren"], "Hello?"))
+        stub.reset()
+        stub.when("", _parsed("Bobby"), purpose="directive_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        stub.script(
+            "generation",
+            [
+                render(
+                    beat(
+                        "do",
+                        "Jenni opens the door: Bobby stands there, knuckles still raised.",
+                        propositions=[claim("Bobby", "knocked_at", "the door")],
+                    )
+                )
+            ],
+        )
+        applied = await _regenerate(
+            client,
+            story,
+            directive={"text": BOBBY},
+            resolution_mode="best_effort",
+            preview="apply_directly",
+        )
+        assert applied.status_code == 200, applied.text
+        assert await _affirmed(engine, story, ids)
+        before = await am.table_rows(engine, "amendments", story)
+        assert [r["kind"] for r in before] == ["directed_resolution"]
+
+    assert await projections.truncate(engine, story, 1) is not None
+    affirmed = await _affirmed(engine, story, ids)
+    assert affirmed == []
+    assert await am.table_rows(engine, "amendments", story) == before
+
+
+async def _affirmed(engine: AsyncEngine, story: str, ids: dict[str, str]) -> list[object]:
+    """The active facts that Bobby knocked."""
+    return list(
+        await rows(
+            engine,
+            "SELECT f.id FROM facts f JOIN propositions p ON p.id = f.proposition_id "
+            "WHERE f.story_id = :s AND f.predicate_id = :k AND p.subject_id = :b "
+            "AND p.polarity = 'affirmed' AND f.membership = 'active'",
+            s=story,
+            k=ids["knocked_at"],
+            b=ids["Bobby"],
+        )
+    )

@@ -1208,9 +1208,20 @@ class DirectiveChange(BaseModel):
     """The proposition's key qualifiers (``{"degree_id": "bobby_ba"}``), when it has any."""
 
 
+class DirectiveBinding(BaseModel):
+    """#241: who or what an open question of the scene is, as the author directs it ("the
+    knocker is George"): the entity's name, and what it answers when the direction says."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    entity: str = Field(min_length=1, max_length=200)
+    about: str | None = Field(default=None, max_length=200)
+
+
 class DirectiveParseResult(BaseModel):
     """What ``directive_parse`` answers: ``ephemeral`` guidance (``steer_text``) or a
-    ``durable`` change, about ``now`` or the ``past``, and the changes."""
+    ``durable`` change, about ``now`` or the ``past``, and the changes; on a directed
+    regeneration (#241), the ``binding`` of an open question."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -1218,6 +1229,7 @@ class DirectiveParseResult(BaseModel):
     temporal_scope: Literal["now", "past"] = "now"
     changes: list[DirectiveChange] = Field(default_factory=list, max_length=REWRITE_MAX_CHANGES)
     steer_text: str = Field(default="", max_length=2_000)
+    binding: list[DirectiveBinding] = Field(default_factory=list, max_length=4)
 
 
 # -- purposes ---------------------------------------------------------------------------------

@@ -976,9 +976,14 @@ async def _flagged(conn: AsyncConnection, story_id: str, turn: int) -> bool:
 
 def _steering(read: TurnRead) -> str:
     """The renders' ``resolution_steering`` line(s): the deferral bias (#154) and the knowledge
-    steer after a could-have-known flag (#165)."""
+    steer after a could-have-known flag (#165). #241: a directed regeneration's "Author
+    decision" replaces the deferral bias (FR-COMMIT-12: author authority overrides the
+    insignificance presumption)."""
+    from epistrel.orchestrator.commit import directed
+
+    decision = directed.DECISION.get()
     lines = [
-        prompts.RESOLUTION_STEERING if read.deferred else "",
+        decision if decision else (prompts.RESOLUTION_STEERING if read.deferred else ""),
         prompts.KNOWLEDGE_STEERING if read.flagged else "",
         author_directives.steering_line(read.steers),
     ]

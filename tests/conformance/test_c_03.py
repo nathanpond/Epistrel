@@ -255,7 +255,12 @@ from epistrel.evals.certify import install
 from epistrel.orchestrator.directives import DirectiveRequest
 from epistrel.orchestrator.jobs.handlers.certification_run import CertificationRunRequest
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
-from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RespondRequest
+from epistrel.orchestrator.lite.schemas import (
+    CorrectRequest,
+    RegenerateRequest,
+    RegenerateResult,
+    RespondRequest,
+)
 from epistrel.orchestrator.models.config import ConfigReplacement
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
@@ -3213,6 +3218,7 @@ async def _feedback_exports(engine: Engine) -> dict[str, Any]:
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
+    assert isinstance(result, RegenerateResult)  # no directive: never held (#241)
     return dump(RegeneratedBody.of_regenerate(result))
 
 

@@ -11302,3 +11302,25 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - **ownership matrix:** the rewrite, merge, directive and amendment routes are added to `CALLS`;
   - **deployment-level purposes:** `rewrite_parse`, `rewrite_record` and `directive_parse` are now `story_scoped=True`. This was the #226 plan's call ("a profile may route it"), and it was wrong at #223. It also left them out of the Lite preset's routed purposes (`LITE_ROUTED`) and out of the model matrix (`model_matrix.SIDE_CHANNEL`: no turn calls them).
   **Issue:** #223, #226, #238
+
+### #241 — author-directed regeneration, 2026-11-02
+
+- **Decision:** the Ok path (no conflict).
+  - The directed thunk travels by context variable (`lifecycle.AUTHOR_DIRECTED`, `directed.DECISION`), not by new parameters through the structured pipeline.
+  - The resolution screen accepts the directed claim as novel. When verification contradicted it, nothing re-steers the binding: the author's decision overrides the insignificance presumption, and recorded history was settled first.
+  - `depend` commits the resolution with `authority = author`.
+  - The renders carry "Author decision: …" in place of the deferral bias.
+  **Issue:** #241
+- **Decision:** the conflict path does not hold the render. It stores the direction on the `directed_resolution` session and plays the directed regeneration at apply, after the amendment commits.
+  - The two are not one transaction: a failed regeneration reverts the amendment (`directed.compensate`, an `undo` amendment) and the call is 503 `rewrite_apply_failed`. The plan's held render, with its read-set revalidation and the two operations in one transaction, was not built: the structured pipeline has no way to stage a turn and commit it later.
+  - The resolution itself is the turn's fact. Contradicted recorded facts are superseded by it (`superseded_by_resolution` notification, no part), and contradicted lines get `rewrite | drop | keep` record parts.
+  - Knowledge transitions are written on the Ok path only.
+  **Issue:** #241
+- **Decision:** the thunk is matched to the latest thunk the head turn reads open, or one the head's active variant resolved. A binding to an unknown name creates the entity (a person). The binding is reconciled against the story as it stands, so the replaced variant's own records count. Regeneration is not a support-check cause (#239).
+  **Issue:** #241
+- **Decision:** the API.
+  - REST answers 202 with `DirectedPendingBody` as a `JSONResponse`; the route's model stays the 200 body, with the 202 declared in `responses`.
+  - `Engine.regenerate` returns `RegenerateResult | DirectedPending`, and its idempotency codec answers 202 for the latter.
+  - A Lite story's directive is 409 `module_off` (`lite_directives`), the engine-wide status.
+  - #154's `author_directed` stub is removed from `core/commit/reconcile.py` (`test_no_author_directed_stub`).
+  **Issue:** #241

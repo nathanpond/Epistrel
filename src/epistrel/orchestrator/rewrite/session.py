@@ -94,6 +94,12 @@ LIST_LIMIT = 50
 # -- reading ---------------------------------------------------------------------------------------
 
 
+async def stored_plan(conn: AsyncConnection, story_id: str, session_id: str) -> dict[str, Any]:
+    """The session's stored plan (#241: a directed resolution's direction is replayed from
+    it)."""
+    return dict((await _row(conn, story_id, session_id)).plan or {})
+
+
 async def _row(conn: AsyncConnection, story_id: str, session_id: str, *, lock: bool = False) -> Any:
     query = select(rewrite_sessions).where(rewrite_sessions.c.id == session_id)
     if lock:
@@ -866,6 +872,72 @@ async def open_amendment_session(
     return await _apply_directly(db, models, story_id, written, principal=principal)
 
 
+async def open_directed(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    document: Mapping[str, Any],
+    *,
+    resolution_mode: Any,
+    preview: str,
+    principal: str,
+) -> RewriteWrite:
+    """#241 (FR-COMMIT-12): an author-directed binding that conflicts with recorded history
+    proceeds as an amendment: a ``directed_resolution`` session (``instruction``: the
+    direction) whose changes are the binding's obligations and whose conflicts are the lines
+    and records it contradicts, under the request's modes. ``document``: the direction
+    (``orchestrator.commit.directed.Directed.document``) with its ``obligations``, ``lines``,
+    ``records`` and the ``regenerate`` overrides to replay at apply."""
+    from epistrel.core import pause
+
+    mode = "threshold" if isinstance(resolution_mode, ThresholdMode) else str(resolution_mode)
+    threshold = resolution_mode.threshold if isinstance(resolution_mode, ThresholdMode) else None
+    async with db.begin() as conn:
+        settings = await read_section(conn, RewriteSettings)
+        locked = await _story(conn, story_id, lock=True)
+        await pause.refuse(conn, story_id, locked.status)
+        await _limit(conn, story_id, settings)
+        pipeline = await pipeline_of(conn, story_id)
+        _planner_of(pipeline)
+        stored_source = {"directed": dict(document)}
+        sourced = await _sourced(conn, story_id, stored_source)
+        assert sourced is not None  # noqa: S101 - a directed resolution is sourced
+        parsed, plan, revision = await _plan_sourced(
+            conn, story_id, pipeline, sourced, settings, stored_source, mode, threshold
+        )
+        session_id = new_ulid()
+        stored = _stored_plan(RewriteParseResult(), {}, [], parsed, plan)
+        stored.update(stored_source)
+        await conn.execute(
+            insert(rewrite_sessions).values(
+                id=session_id,
+                story_id=story_id,
+                kind="directed_resolution",
+                instruction=str(document.get("text") or ""),
+                principal=principal,
+                resolution_mode=mode,
+                threshold_severity=threshold,
+                preview=preview,
+                state="awaiting_answers",
+                pipeline=pipeline,
+                base_revision=revision,
+                plan=stored,
+                plan_hash=plan.plan_hash,
+                plan_read_set=plan.read_set,
+                expires_at=await _expires(conn, settings),
+            )
+        )
+        await _write_questions(conn, story_id, session_id, parsed.questions)
+        await conn.execute(
+            update(rewrite_sessions)
+            .where(rewrite_sessions.c.id == session_id)
+            .values(state=await _state_of(conn, session_id))
+        )
+        await _index(conn, session_id)
+        written = await _answer(conn, story_id, session_id)
+    return await _apply_directly(db, models, story_id, written, principal=principal)
+
+
 # -- answers ---------------------------------------------------------------------------------------
 
 
@@ -1147,7 +1219,7 @@ async def _all_questions(conn: AsyncConnection, session_id: str) -> list[Any]:
 
 UNDO_DEPTH = 3
 """How many levels of dependent amendments an undo's blast radius follows."""
-SOURCES = ("merge", "undo", "redo")
+SOURCES = ("merge", "undo", "redo", "directed")
 """Sessions whose changes come from the engine, not a parse: an identity merge (#225), an undo
 and a redo (#238); the stored plan names the source."""
 
@@ -1164,7 +1236,79 @@ async def _sourced(
         return await undo.undo_parsed(conn, story_id, str(stored["undo"]["amendment_id"]))
     if stored.get("redo") is not None:
         return await undo.redo_parsed(conn, story_id, str(stored["redo"]["amendment_id"]))
+    if stored.get("directed") is not None:
+        return _directed_parsed(stored["directed"])
     return None
+
+
+def _directed_parsed(document: Mapping[str, Any]) -> parsing.Parsed:
+    """#241: a directed resolution's changes: the binding's implied obligations at the thunk's
+    time, as proposition parts (the resolution fact itself is the regenerated turn's)."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from epistrel.core.propositions.model import Proposition
+
+    parsed = parsing.Parsed()
+    for raw in document.get("obligations") or []:
+        proposition = Proposition.model_validate(raw)
+        key = parsing.prop_key(proposition.subject_id, proposition.predicate_id)
+        valid = proposition.valid_time
+        start = getattr(getattr(valid, "start", None), "inner", None)
+        end = getattr(getattr(valid, "end", None), "inner", None)
+        summary = {
+            "kind": "proposition",
+            "key": key,
+            "subject_id": proposition.subject_id,
+            "predicate_id": proposition.predicate_id,
+            "object_id": proposition.object_id,
+            "literal": None,
+            "polarity": proposition.polarity.value,
+            "valid_from_minutes": start,
+            "valid_to_minutes": end,
+            "superseded_object_id": None,
+            "directed": True,
+        }
+        draft = PropositionPartDraft(proposition, valid_from_minutes=start, valid_to_minutes=end)
+        parsed.changes.append(parsing.Normalized(key, "proposition", draft, summary))
+    return parsed
+
+
+async def _directed_conflicts(
+    conn: AsyncConnection, document: Mapping[str, Any], plan: Plan
+) -> list[dict[str, Any]]:
+    """#241: the directed binding's conflicts, beside the plan's own: each conflicting line of
+    the bound character (``rewrite | drop | keep``) and each conflicting record
+    (``drop | keep``), recommended by #224's least change."""
+    from epistrel.orchestrator.rewrite.apply import _text_of
+    from epistrel.orchestrator.rewrite.plan import _conflict_id
+
+    known = {(c["record"]["table"], c["record"]["id"]) for c in plan.irreducible}
+    change_key = plan.changes[0]["key"] if plan.changes else "directed"
+    found: list[dict[str, Any]] = []
+    for table, ids, options in (
+        ("events", document.get("lines") or [], ["rewrite", "drop", "keep"]),
+        ("facts", document.get("records") or [], ["drop", "keep"]),
+    ):
+        for record_id in ids:
+            if (table, str(record_id)) in known:
+                continue
+            text = await _text_of(conn, table, str(record_id)) if table == "events" else None
+            found.append(
+                {
+                    "record": {"table": table, "id": str(record_id)},
+                    "edge_type": "asserts" if table == "events" else "presupposes",
+                    "edges": [],
+                    "change_key": change_key,
+                    "target": {"kind": "fact", "id": str(record_id)},
+                    "action": "fix",
+                    "conflict_id": _conflict_id(change_key, table, str(record_id)),
+                    "reason": "directed_conflict",
+                    "severity": "high",
+                    "options": options,
+                    "excerpt": None if text is None else text[:160],
+                    "before_excerpt": None if text is None else text[:160],
+                }
+            )
+    return found
 
 
 async def _plan_sourced(
@@ -1209,6 +1353,11 @@ async def _plan_sourced(
         ]
         plan.cascaded = [c for c in plan.cascaded if not await _own_part(conn, c, mine)]
         plan.incidental = [c for c in plan.incidental if not await _own_part(conn, c, mine)]
+    if stored.get("directed") is not None:
+        plan.irreducible = [
+            *plan.irreducible,
+            *await _directed_conflicts(conn, stored["directed"], plan),
+        ]
     asked = dispose(plan.irreducible, mode, threshold).questions
     if stored.get("undo") is not None:
         dependent = {

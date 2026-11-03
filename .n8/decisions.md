@@ -11985,3 +11985,45 @@ Branch `milestone/m7-verify-fixes-2`, PR #719. This pass takes the open `bug`/`c
   - `decide` regenerates on a touched member when the revision has not moved.
   - Cost if wrong: one condition in `Operation._revalidate`.
   **Issue:** #716
+
+### #700 — the Lite rewrite's remaining parts
+
+- **Decision:** `lite_rewrite_parse`'s answer is `{change_statement, world_change, ambiguities}`. An empty statement falls back to the instruction (the stub's default answer). With an ambiguity no reach runs until the answer, which reads the instruction again (a second parse call) and then searches.
+  **Why:** #245's Discretion schema. Searching before the statement is settled would spend up to 24 calls on a reading the author may reject.
+  **Issue:** #700
+- **Decision:** the "rating gate" is #56's output gate. Its policy set is the story's effective guardrails: global, the rating's (nearest source first) and the story's own. No second gate exists; a C-20 test drives a rating policy against a Lite fix.
+  **Issue:** #700
+- **Decision:** Lite conflicts are fed to the planner as extra `irreducible` entries (stored as `plan.lite_conflicts`, kept across re-plans), the way #713 adds merge contradictions. #224's dispose and apply then handle them: `rewrite` goes through `rewrite_record` with the change statement as the canon and the hit's reason as the guidance; `drop` is an overlay drop; `keep` is a notification.
+  **Why:** one conflict machinery for both pipelines, with no Lite copy of the apply.
+  **Issue:** #700
+- **Decision (#237's Lite read set):** the plan stores `lite_read {statement, seen_seq}` (the last event position the reach saw). Positions are used instead of times, so a turn committed in the same second is not missed.
+  - **At apply,** when the revision moved, the reach searches only `seq > seen_seq` (no summary call). New hits merge into the stored plan, and the apply raises #237's `Stale` (`new_reach_hits`), so `_restale` recomputes and re-previews.
+  - **With no new hit,** the existing checks under the lock decide (planned lines' membership and versions).
+  **Issue:** #700
+- **Decision:** the post-undo reach makes every hit that conflicts or carries a fix an `after_undo` conflict. A fix is offered through `rewrite`, never applied silently, because the undo restores text the model never saw.
+  **Issue:** #700
+- **Decision:** the six-mode test holds back `_apply_directly` so every combination plans against the same story. Each session is cancelled before the next opens (the limit is 5).
+  **Issue:** #700
+- **Decision (Rule 1):** `rewrite.lite` read a player's line as the narrator's (`role != "user"`). The transcript projection's role is `player`. `PLAYER_ROLES = {"player"}` now drives the speaker label, `beat_required`'s `speaker_kind` and the player-line conflicts.
+  **Issue:** #700
+- **Decision:** `tests/docs/test_lite_rewrite_rows.py` carries no part marker. docs/04's C-14 has no M7 slot, so the complement #245 names (`test_c_14__m7_lite_rows`) runs as a plain test rather than adding a C-14 M7 part.
+  **Issue:** #700
+
+### #709 — S-PROFILE-SWITCH's meeting, beliefs and clock
+
+- **Decision:** reconciliation runs inside `profiles.effective.deriving(story, target_settings)`, a ContextVar that every `effective_configuration` read honours for that story. The clock's gate (`clock_level`), its time basis and the live writers then act as the target configuration does, while nothing is stored until the completion.
+  **Why:** the backfill writes "through the same writers live turns use" (#228). Without it, the clock writers refuse with `module_off` on a story still stored as Lite.
+  **Issue:** #709, #228
+- **Decision:** a new `state_change_source` value `backfill` (migration 0129; `CLOCK_SOURCES` includes it). How the minutes were derived goes in `estimate_meta.derived` (`pacing`, `declared_skip`, `estimate`).
+  **Why:** #228's AC names `source = backfill`. Reusing `pacing` would make a backfilled advance indistinguishable from a live one.
+  **Issue:** #709, #228
+- **Decision:** clock steps are planned in the job outside any transaction. The planner reads the reconciled clock in a rolled-back transaction with the operation's rows flipped active, then walks the turns in order. `time_estimation` is called with the running time of day, then the reconcile transaction writes the steps.
+  **Why:** FR-CONC-2 forbids holding a transaction across a model call; #228's replan requires the estimate in order, with the reconciled clock.
+  **Issue:** #709, #228
+- **Decision:** "presence inferred from the text" stands in for #161's routing when a Lite era is backfilled. The characters a turn names observe its narrated claims at `content` fidelity, through `observation.observe`. Says keep the inferred, lazily resolved exposures.
+  **Why:** a Lite era has no placements, so #161's router would find no perceiver. The placements themselves (inferred `located_at`) and testimony stay open on #228.
+  **Issue:** #709, #228
+- **Decision:** S-PROFILE-SWITCH's clock is checked in both tests.
+  - **Round trip** (a `prompt_only` Lite era): nothing is re-derived (owner decision 2), and the clock equals the fold of its advances.
+  - **Main test** (Lite preset, clock off): turns 3 and 4 are planted with a paced render and a player-invited "two hours" skip, so the derivation is exercised.
+  **Issue:** #709

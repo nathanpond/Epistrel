@@ -1436,6 +1436,148 @@ class ScheduleNotAmendable(EpistrelError):
     http_status = 422
 
 
+class RewriteUnparseable(EpistrelError):
+    """A rewrite instruction (or a free-text answer to a new session) could not be parsed into
+    changes after #53's retries (#223): 422; no session is written."""
+
+    code = "rewrite_unparseable"
+    http_status = 422
+
+
+class RewriteNoop(EpistrelError):
+    """A rewrite instruction parsed into no change, or only changes already true in canon
+    (#223): 422; no session is written."""
+
+    code = "rewrite_noop"
+    http_status = 422
+
+
+class RewriteSessionNotFound(EpistrelError):
+    """No rewrite session has this id in this story (#223): 404."""
+
+    code = "rewrite_session_not_found"
+    http_status = 404
+
+
+class RewriteSessionClosed(EpistrelError):
+    """An action on a session that has ended (applied, cancelled, expired or abandoned; #223):
+    409. ``details``: ``session_id`` and ``state``."""
+
+    code = "rewrite_session_closed"
+    http_status = 409
+
+
+class RewriteSessionLimit(EpistrelError):
+    """The story already has ``rewrite_max_open_sessions`` open sessions (#223): 409.
+    ``details``: ``limit`` and ``open``."""
+
+    code = "rewrite_session_limit"
+    http_status = 409
+
+
+class InvalidAnswer(EpistrelError):
+    """An answer names a question the session does not ask, an option the question does not
+    have, or free text that parses to nothing (#223): 422; nothing is stored."""
+
+    code = "invalid_answer"
+    http_status = 422
+
+
+class BaseRevisionRequired(EpistrelError):
+    """An apply names no ``base_revision`` (#224): 422; nothing is written."""
+
+    code = "base_revision_required"
+    http_status = 422
+
+
+class RewriteStale(EpistrelError):
+    """The story moved since the session's preview, or its pipeline changed (#224; #237 enriches
+    the details): 409. ``details``: ``reason`` (``revision`` or ``pipeline_changed``),
+    ``base_revision`` and ``current_revision``. Nothing is written."""
+
+    code = "rewrite_stale"
+    http_status = 409
+
+
+class RewriteQuestionsPending(EpistrelError):
+    """An apply while required questions are unanswered (#224): 409. ``details``:
+    ``question_ids``."""
+
+    code = "rewrite_questions_pending"
+    http_status = 409
+
+
+class RewriteApplyInProgress(EpistrelError):
+    """An action on a session whose apply is running (#224): 409."""
+
+    code = "rewrite_apply_in_progress"
+    http_status = 409
+
+
+class RewriteApplyFailed(EpistrelError):
+    """A rewrite's apply failed transiently and wrote nothing (#224): 503, ``retryable``. The
+    session is back in ``awaiting_approval`` with ``last_error``."""
+
+    code = "rewrite_apply_failed"
+    http_status = 503
+
+
+class RecordInFlight(EpistrelError):
+    """An apply would correct a record of a staged turn that has not completed (#224, #212):
+    409. ``details``: ``record_table`` and ``record_id``."""
+
+    code = "record_in_flight"
+    http_status = 409
+
+
+class IntentNotRetconnable(EpistrelError):
+    """A part other than an explicit intent change touched an utterance's intent (#225,
+    FR-DIRECT-8): a bug guard, never expected (500)."""
+
+    code = "intent_not_retconnable"
+    http_status = 500
+
+
+class MergeInvalid(EpistrelError):
+    """An identity merge that cannot be (#225): fewer than two entities, one not of the story,
+    entities of different kinds, or entities already one referent. ``details``: ``reason``
+    (``too_few``, ``not_in_story``, ``type_mismatch``, ``already_same``) and ``entity_ids``."""
+
+    code = "merge_invalid"
+    http_status = 422
+
+
+class DirectiveUnparseable(EpistrelError):
+    """A directive's text could not be parsed (#226): 422; nothing is written."""
+
+    code = "directive_unparseable"
+    http_status = 422
+
+
+class DirectiveNoChanges(EpistrelError):
+    """A durable directive parsed into no change (#226): 422; nothing is written."""
+
+    code = "directive_no_changes"
+    http_status = 422
+
+
+class DirectiveAmbiguous(EpistrelError):
+    """A directive names something the engine cannot pin down (#226, #241, #242): 422.
+    ``details``: ``candidates``."""
+
+    code = "directive_ambiguous"
+    http_status = 422
+
+
+class AuthorityConflict(EpistrelError):
+    """A write of a lower authority tier would supersede a fact a higher tier holds (#226,
+    FR-DIRECT-6): narrative canon never supersedes the author's locked canon. Internal: the
+    verifier reads the claim as contradicted (409 if it ever surfaces)."""
+
+    code = "authority_conflict"
+    http_status = 409
+
+
 class StateNotAmendable(EpistrelError):
     """A State proposition part on a State an amendment may not correct (#236): the
     ``world_clock`` (clock advances are corrected with forward directives, the owner's decision

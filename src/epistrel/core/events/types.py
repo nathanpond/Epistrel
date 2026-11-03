@@ -1087,6 +1087,57 @@ class AmendmentRecorded(EventPayload):
     transcript: tuple[TranscriptPatch, ...] = ()
 
 
+@register("directive_applied", category=EventCategory.CONTROL)
+class DirectiveAppliedEvent(EventPayload):
+    """A durable directive applied at an inter-turn slot (FR-DIRECT-1; #226): its id, the
+    author's text and the changes parsed from it; the changes themselves are the slot's facts,
+    State changes, clock advance and beliefs."""
+
+    directive_id: str
+    text: str
+    changes: tuple[dict[str, Any], ...] = ()
+
+
+@register("rewrite_question", category=EventCategory.AUDIT)
+class RewriteQuestionAsked(EventPayload):
+    """A question a rewrite session asked the author (FR-REWRITE-8; #224), recorded when the
+    session ends: its kind, prompt, options, recommendation and severity, and whether a re-plan
+    superseded it. Audit only: no corrected view, retrieval or prompt reads it."""
+
+    session_id: str
+    question_id: str
+    kind: str
+    prompt: str
+    options: tuple[dict[str, Any], ...] = ()
+    recommended_option_id: str
+    recommendation_reason: str
+    severity: str | None = None
+    superseded: bool = False
+
+
+@register("rewrite_answer", category=EventCategory.AUDIT)
+class RewriteAnswered(EventPayload):
+    """The answer a rewrite question got (FR-REWRITE-8; #224): the option or the text, whether
+    it was the recommendation, and who answered (``engine`` for an auto-resolution)."""
+
+    session_id: str
+    question_id: str
+    option_id: str | None = None
+    text: str | None = None
+    accepted_recommendation: bool | None = None
+    principal: str
+
+
+@register("rewrite_closed", category=EventCategory.AUDIT)
+class RewriteClosed(EventPayload):
+    """A rewrite session ended (FR-REWRITE-8; #224): ``applied``, ``cancelled``, ``expired`` or
+    ``abandoned``, with the amendment an apply recorded."""
+
+    session_id: str
+    state: str
+    amendment_id: str | None = None
+
+
 @register("amendment_reverted", category=EventCategory.AMENDMENT)
 class AmendmentReverted(EventPayload):
     """An amendment was reverted by amendment ``by`` (#221's revert primitive), and the

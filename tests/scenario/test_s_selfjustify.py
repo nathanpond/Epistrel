@@ -392,3 +392,72 @@ async def test_s_selfjustify__forged_cite(
             edu = await _story(client, engine)
             said = await _misinform(engine, edu, eager=True, ahead=2)
             await unlicensed(edu, [said] if cited else None, ("after", cited))
+
+
+@pytest.mark.part("M7", "FR-VERIFY-10; FR-DIRECT-1")
+async def test_s_selfjustify__m7(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """(d) An author directive (#226) "Bobby believes he graduated from Florida" established
+    the false belief: Bobby's later "I remember graduating from Florida" and his say are
+    accepted as an established false belief (a sincere error), never repaired. Complement: the
+    same think and say without the directive is a hallucination, repaired (variant (a))."""
+    import json
+
+    from tests import rewrite_support as rs
+    from tests.story_support import WRITE
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        edu = await _story(client, engine)
+        stub.when(
+            "",
+            json.dumps(
+                {
+                    "classification": "durable",
+                    "temporal_scope": "now",
+                    "changes": [
+                        {
+                            "kind": "belief",
+                            "holder": "Bobby",
+                            "subject": "Bobby",
+                            "predicate": "degree_awarded",
+                            "object": "University of Florida",
+                            "qualifiers": {"degree_id": "bobby_ba"},
+                            "valid": {"from": str(GRADUATION)},
+                            "confidence": "believed",
+                        }
+                    ],
+                }
+            ),
+            purpose="directive_parse",
+        )
+        directed = await client.post(
+            f"/stories/{edu.story_id}/directives",
+            params=rs.OMNISCIENT,
+            json={"text": "Bobby believes he graduated from Florida."},
+            headers=WRITE,
+        )
+        assert directed.status_code == 200, directed.text
+        assert directed.json()["applied"]["beliefs"]
+        stub.reset()
+        played = await _play(
+            client,
+            edu,
+            beat("think", REMEMBER),
+            beat("say", FLORIDA_LINE, intent="sincere", propositions=[_degree("Florida")]),
+            stub=stub,
+        )
+        found = await _speech(engine, edu.story_id)
+        assert found["classification"] == "sincere_error"
+        assert "repairs" not in await turn_report(engine, edu.story_id)
+        assert played["turn"]
+        said = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s AND type = 'beat_say' "
+            "ORDER BY seq DESC LIMIT 1",
+            s=edu.story_id,
+        )
+        assert said[0].payload["text"] == FLORIDA_LINE  # kept as said, not repaired

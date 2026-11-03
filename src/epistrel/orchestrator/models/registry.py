@@ -107,6 +107,10 @@ class ContentCategory(StrEnum):
     heard Bobby say …"). The rendering character's partition only, never another's, never a
     scalar, a provenance or a divergence."""
     UTTERANCE_TEXT = "utterance_text"
+    AUTHOR_INSTRUCTION = "author_instruction"
+    """An author's history-rewrite instruction and free-text answers (#223), and the names it
+    is normalized against (the story's entities, predicates and States, and the clock): what
+    ``rewrite_parse`` reads. Never a character's private record, a memory or transcript text."""
     TRACKED_VALUES = "tracked_values"
     """A structured render's ``## Tracked values`` (#187, FR-TURN-11): for a character's render,
     the player-visible States it may change (name, type, scope, unit, aliases, allowed values)
@@ -1044,6 +1048,178 @@ class TimeEstimate(BaseModel):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+REWRITE_INSTRUCTION_MAX = 4_000
+REWRITE_SUMMARY_MAX = 200
+REWRITE_MAX_CHANGES = 20
+
+
+class RewriteEntity(InputSchema):
+    """One entity the instruction may name: its name, kind and aliases (#223)."""
+
+    name: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=200)
+    kind: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=40)
+    aliases: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(default_factory=list, max_length=16)
+
+
+class RewriteState(InputSchema):
+    """One State the instruction may correct: its name, type, scope, unit, aliases and owner."""
+
+    name: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=80)
+    type: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=20)
+    scope: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=20)
+    unit: Annotated[str | None, C.AUTHOR_INSTRUCTION] = Field(default=None, max_length=40)
+    aliases: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(default_factory=list, max_length=16)
+    owner: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(default="story", max_length=20)
+
+
+class RewriteParseInputs(InputSchema):
+    """A history-rewrite instruction (FR-REWRITE-1,2; #223), the answers given so far and the
+    story's names it is normalized against: the entities its mentions may bind, the registered
+    predicates, the States and the clock. Never transcript text, a memory or a belief."""
+
+    instruction: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=REWRITE_INSTRUCTION_MAX)
+    answers: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(default_factory=list, max_length=20)
+    entities: Annotated[list[RewriteEntity], C.AUTHOR_INSTRUCTION] = Field(
+        default_factory=list, max_length=REWRITE_SUMMARY_MAX
+    )
+    predicates: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(
+        default_factory=list, max_length=REWRITE_SUMMARY_MAX
+    )
+    states: Annotated[list[RewriteState], C.AUTHOR_INSTRUCTION] = Field(
+        default_factory=list, max_length=REWRITE_SUMMARY_MAX
+    )
+    clock: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(default="", max_length=200)
+
+
+class RewriteValid(BaseModel):
+    """When a parsed change holds: ``from``/``to`` as the author put it (``null``: open)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    from_: str | None = Field(default=None, alias="from", max_length=200)
+    to: str | None = Field(default=None, max_length=200)
+
+
+class RewriteRef(BaseModel):
+    """A record an instruction points at: a turn (and beat), or a quote of its text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    turn: int | None = Field(default=None, ge=1)
+    beat: int | None = Field(default=None, ge=0)
+    quote: str | None = Field(default=None, max_length=2_000)
+
+
+class RewriteChange(BaseModel):
+    """One structured change the instruction asks for: a ``proposition`` (subject, predicate,
+    object or literal, polarity), a ``record`` (its ``ref``, ``action`` and ``new_text``), a
+    ``state`` (a State's ``value`` or ``delta``), each over ``valid``, or an ``intent`` (what
+    the speaker of the line at ``ref`` meant, #225)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["proposition", "record", "state", "intent"]
+    subject: str | None = Field(default=None, max_length=200)
+    predicate: str | None = Field(default=None, max_length=120)
+    object: str | None = Field(default=None, max_length=200)
+    literal: str | float | bool | None = None
+    polarity: Literal["affirmed", "negated"] = "affirmed"
+    valid: RewriteValid = Field(default_factory=RewriteValid)
+    ref: RewriteRef | None = None
+    action: Literal["replace", "drop"] | None = None
+    new_text: str | None = Field(default=None, max_length=4_000)
+    state: str | None = Field(default=None, max_length=80)
+    scope: str | None = Field(default=None, max_length=200)
+    value: str | float | bool | None = None
+    delta: float | None = None
+    intent: Literal["sincere", "deceptive", "joking", "unspecified"] | None = None
+    """An ``intent`` change (#225): what the speaker of the line at ``ref`` meant."""
+
+
+class RewriteAmbiguity(BaseModel):
+    """Something the model could not decide: what it is about, the question, the options and
+    the one it recommends (an index into ``options``)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    about: str = Field(max_length=200)
+    question: str = Field(max_length=500)
+    options: list[str] = Field(min_length=1, max_length=8)
+    recommended: int = Field(default=0, ge=0)
+
+
+class RewriteParseResult(BaseModel):
+    """What ``rewrite_parse`` answers: the structured changes and the ambiguities."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    changes: list[RewriteChange] = Field(default_factory=list, max_length=REWRITE_MAX_CHANGES)
+    ambiguities: list[RewriteAmbiguity] = Field(default_factory=list, max_length=8)
+
+
+REWRITE_RECORD_TEXT_MAX = 4_000
+
+
+class RewriteRecordInputs(InputSchema):
+    """One record a history rewrite must repair (FR-REWRITE-3; #224): its text, its kind, the
+    value the rewrite replaces and the new canon, under the constraints (change only the
+    conflicting span, keep speaker, voice and intent, length within 20 percent)."""
+
+    record_text: Annotated[str, C.CHECKED_TEXT] = Field(max_length=REWRITE_RECORD_TEXT_MAX)
+    record_kind: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=40)
+    old_value: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(default="", max_length=500)
+    new_canon: Annotated[list[str], C.AUTHOR_INSTRUCTION] = Field(
+        default_factory=list, max_length=20
+    )
+    guidance: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(default="", max_length=2_000)
+
+
+class RewrittenRecord(BaseModel):
+    """What ``rewrite_record`` answers: the repaired text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: str = Field(default="", max_length=REWRITE_RECORD_TEXT_MAX)
+
+
+class DirectiveChange(BaseModel):
+    """One change a durable directive makes (#226): a ``proposition`` (as a rewrite's), a
+    ``state`` set (a value or a delta), a ``clock`` advance (``minutes`` or ``to``, a time of
+    day "HH:MM"), or a ``belief`` a character comes to hold (``holder`` and the proposition)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["proposition", "state", "clock", "belief"]
+    subject: str | None = Field(default=None, max_length=200)
+    predicate: str | None = Field(default=None, max_length=120)
+    object: str | None = Field(default=None, max_length=200)
+    literal: str | float | bool | None = None
+    polarity: Literal["affirmed", "negated"] = "affirmed"
+    valid: RewriteValid = Field(default_factory=RewriteValid)
+    state: str | None = Field(default=None, max_length=80)
+    scope: str | None = Field(default=None, max_length=200)
+    value: str | float | bool | None = None
+    delta: float | None = None
+    minutes: int | None = Field(default=None, ge=0)
+    to: str | None = Field(default=None, pattern=CLOCK_TIME_PATTERN)
+    holder: str | None = Field(default=None, max_length=200)
+    confidence: Literal["suspected", "believed", "known"] | None = None
+    qualifiers: dict[str, str | int | float | bool] | None = None
+    """The proposition's key qualifiers (``{"degree_id": "bobby_ba"}``), when it has any."""
+
+
+class DirectiveParseResult(BaseModel):
+    """What ``directive_parse`` answers: ``ephemeral`` guidance (``steer_text``) or a
+    ``durable`` change, about ``now`` or the ``past``, and the changes."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    classification: Literal["ephemeral", "durable"] = "ephemeral"
+    temporal_scope: Literal["now", "past"] = "now"
+    changes: list[DirectiveChange] = Field(default_factory=list, max_length=REWRITE_MAX_CHANGES)
+    steer_text: str = Field(default="", max_length=2_000)
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -1385,6 +1561,69 @@ TIME_ESTIMATION = Purpose(
 """``time_estimation`` (#199): one call per undeclared narrated skip
 (``orchestrator.structured.time_estimation.estimate``)."""
 
+REWRITE_PARSE = Purpose(
+    name="rewrite_parse",
+    description=(
+        "Parses an author's history-rewrite instruction into structured proposition, record "
+        "and State changes, and names what it cannot decide, on the author's side-channel, "
+        "never in a turn (FR-REWRITE-1,2)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=RewriteParseInputs,
+    template="rewrite_parse.j2",
+    hot_path=False,
+    # The instruction, the answers and the names it is normalized against only: never
+    # transcript text, a memory, a belief, a definition, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION},
+    response_schema=RewriteParseResult,
+    # The author side-channel: not routed by a story's profile, so a story's runtime facts and
+    # certifications are unchanged by it (#223's deviation, logged).
+    story_scoped=False,
+)
+"""``rewrite_parse`` (#223): one call per opened session and per free-text answer
+(``orchestrator.rewrite.parse``)."""
+
+REWRITE_RECORD = Purpose(
+    name="rewrite_record",
+    description=(
+        "Repairs one record a history rewrite contradicts: the least change that makes its "
+        "text agree with the new canon, keeping its speaker, voice and intent, on the author's "
+        "side-channel, never in a turn (FR-REWRITE-3)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=RewriteRecordInputs,
+    template="rewrite_record.j2",
+    hot_path=False,
+    # The record being repaired and the change: never another record, a memory, a belief, a
+    # definition, a policy, an age or eval text.
+    never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION, C.CHECKED_TEXT},
+    response_schema=RewrittenRecord,
+    story_scoped=False,
+)
+"""``rewrite_record`` (#224): one call per conflicting record the apply rewrites
+(``orchestrator.rewrite.apply``)."""
+
+DIRECTIVE_PARSE = Purpose(
+    name="directive_parse",
+    description=(
+        "Classifies an author's directive as guidance for the next turn or a change to the "
+        "world, now or in the past, and parses its changes, on the author's side-channel, "
+        "never in a turn (FR-DIRECT-1,2)."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=RewriteParseInputs,
+    template="directive_parse.j2",
+    hot_path=False,
+    never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION},
+    response_schema=DirectiveParseResult,
+    story_scoped=False,
+)
+"""``directive_parse`` (#226): one call per directive whose kind or changes the request does
+not settle (``orchestrator.directives``)."""
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
@@ -1550,6 +1789,9 @@ DELIVERED: Mapping[str, Purpose] = _build(
         EXTRACTION_BACKSTOP,
         REGENERATION,
         TIME_ESTIMATION,
+        REWRITE_PARSE,
+        REWRITE_RECORD,
+        DIRECTIVE_PARSE,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -1582,6 +1824,7 @@ __all__ = [
     "CONSOLIDATION_STATEMENTS_MAX",
     "DEFAULT_MODEL_KEY",
     "DELIVERED",
+    "DIRECTIVE_PARSE",
     "EMBEDDING",
     "ENTAILMENT",
     "ENTAILMENT_MAX_RECORDS",
@@ -1596,6 +1839,8 @@ __all__ = [
     "REGENERATION",
     "REGENERATION_MAX_RECORDS",
     "RESERVED",
+    "REWRITE_PARSE",
+    "REWRITE_RECORD",
     "RULE_DEFAULT_MARKER",
     "SALIENCE_DETECTION",
     "SALIENCE_LAST_BEATS",
@@ -1623,6 +1868,8 @@ __all__ = [
     "ConsolidationStatement",
     "ConstraintKind",
     "ContentCategory",
+    "DirectiveChange",
+    "DirectiveParseResult",
     "DirectorCandidate",
     "ElementKind",
     "EmbeddingFloor",
@@ -1659,6 +1906,11 @@ __all__ = [
     "RegistryError",
     "RepairConstraint",
     "ReservedPurpose",
+    "RewriteChange",
+    "RewriteParseInputs",
+    "RewriteParseResult",
+    "RewriteRecordInputs",
+    "RewrittenRecord",
     "SalienceBeat",
     "SalienceInputs",
     "SalienceQuote",

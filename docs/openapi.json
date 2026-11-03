@@ -312,6 +312,83 @@
         "title": "AnalysisQueuedBody",
         "type": "object"
       },
+      "AnswerItem": {
+        "additionalProperties": false,
+        "description": "One answer: an option of the question, free text, or the recommended option.",
+        "properties": {
+          "accept_recommended": {
+            "default": false,
+            "title": "Accept Recommended",
+            "type": "boolean"
+          },
+          "option_id": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Option Id"
+          },
+          "question_id": {
+            "maxLength": 26,
+            "minLength": 26,
+            "title": "Question Id",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "question_id"
+        ],
+        "title": "AnswerItem",
+        "type": "object"
+      },
+      "AnswerRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/rewrites/{rid}/answers``: answers to the session's questions,\nvalidated all together.",
+        "examples": [
+          {
+            "answers": [
+              {
+                "option_id": "o1",
+                "question_id": "01JQ0000000000000000000000"
+              }
+            ]
+          }
+        ],
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/AnswerItem"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Answers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "title": "AnswerRequest",
+        "type": "object"
+      },
       "ApiKeyBody": {
         "additionalProperties": false,
         "description": "``PUT /admin/model-config/{purpose}/api-key``: the key, trimmed, 1..512 characters.",
@@ -334,6 +411,97 @@
           "api_key"
         ],
         "title": "ApiKeyBody",
+        "type": "object"
+      },
+      "Applied": {
+        "additionalProperties": false,
+        "description": "An apply's answer (#224): the amendment it recorded, its report and the story's new\nrevision.",
+        "properties": {
+          "amendment_id": {
+            "title": "Amendment Id",
+            "type": "string"
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "amendment_id",
+          "report",
+          "timeline_revision"
+        ],
+        "title": "Applied",
+        "type": "object"
+      },
+      "AppliedBody": {
+        "description": "``POST …/apply``'s answer: the session, the amendment, the report and the new\nrevision.",
+        "properties": {
+          "amendment_id": {
+            "title": "Amendment Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "report": {
+            "additionalProperties": true,
+            "title": "Report",
+            "type": "object"
+          },
+          "session": {
+            "$ref": "#/components/schemas/RewriteSession"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "session",
+          "amendment_id",
+          "report"
+        ],
+        "title": "AppliedBody",
+        "type": "object"
+      },
+      "ApplyRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/rewrites/{rid}/apply``: the revision the preview was computed\nagainst (required; it must be the story's current one).",
+        "examples": [
+          {
+            "base_revision": 7
+          }
+        ],
+        "properties": {
+          "base_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          }
+        },
+        "title": "ApplyRequest",
         "type": "object"
       },
       "ApproveRequest": {
@@ -1248,6 +1416,38 @@
           "external_ids"
         ],
         "title": "BindingRequest",
+        "type": "object"
+      },
+      "BlastRadius": {
+        "additionalProperties": false,
+        "description": "What a plan touches (FR-DIRECT-3): incidental mentions, cascaded justifications and\nirreducible conflicts.",
+        "properties": {
+          "cascaded": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Cascaded",
+            "type": "array"
+          },
+          "incidental": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Incidental",
+            "type": "array"
+          },
+          "irreducible": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Irreducible",
+            "type": "array"
+          }
+        },
+        "title": "BlastRadius",
         "type": "object"
       },
       "Bound": {
@@ -6418,6 +6618,197 @@
           "category"
         ],
         "title": "DetectedClaimModel",
+        "type": "object"
+      },
+      "DirectiveApplied": {
+        "additionalProperties": false,
+        "description": "What a durable directive applied at its slot.",
+        "properties": {
+          "beliefs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Beliefs",
+            "type": "array"
+          },
+          "clock": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Clock",
+            "type": "array"
+          },
+          "facts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "scheduled_events": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scheduled Events",
+            "type": "array"
+          },
+          "state_changes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "State Changes",
+            "type": "array"
+          }
+        },
+        "title": "DirectiveApplied",
+        "type": "object"
+      },
+      "DirectiveBody": {
+        "description": "A directive's answer: its id, classification and disposition (``steer_queued``,\n``applied`` or ``routed_to_rewrite``), the slot it applied at and what it applied, or the\nrewrite session it routed to.",
+        "properties": {
+          "applied": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DirectiveApplied"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "classification": {
+            "title": "Classification",
+            "type": "string"
+          },
+          "directive_id": {
+            "title": "Directive Id",
+            "type": "string"
+          },
+          "disposition": {
+            "title": "Disposition",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position"
+          },
+          "rewrite_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RewriteSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "steer_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Steer Text"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "directive_id",
+          "classification",
+          "disposition"
+        ],
+        "title": "DirectiveBody",
+        "type": "object"
+      },
+      "DirectiveRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/directives``: the author's text, optionally its ``kind`` (which\noverrides the classification), and the modes a rewrite it routes to runs with.",
+        "examples": [
+          {
+            "kind": "durable",
+            "text": "It starts raining."
+          },
+          {
+            "text": "Make this scene tense."
+          }
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ephemeral",
+                  "durable"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "preview": {
+            "default": "preview_first",
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview",
+            "type": "string"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "default": "synchronous",
+            "title": "Resolution Mode"
+          },
+          "text": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "DirectiveRequest",
         "type": "object"
       },
       "Dispositions": {
@@ -12886,7 +13277,7 @@
           "backfill": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Preview"
+                "$ref": "#/components/schemas/epistrel__core__backfill__Preview"
               },
               {
                 "type": "null"
@@ -18020,6 +18411,82 @@
         "title": "MentionBody",
         "type": "object"
       },
+      "MergeRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/entities/merge``: entities the author reveals to be one referent\n(#225, FR-PROP-7): the first is the survivor, each other ``same_as`` it; the modes as a\nrewrite's; ``identity_proposal_id`` the #171 proposal it settles, when there is one.",
+        "examples": [
+          {
+            "entity_ids": [
+              "01JBOBBY000000000000000000",
+              "01JSTRANGER000000000000000"
+            ],
+            "preview": "preview_first",
+            "resolution_mode": "synchronous"
+          }
+        ],
+        "properties": {
+          "entity_ids": {
+            "items": {
+              "maxLength": 26,
+              "minLength": 26,
+              "type": "string"
+            },
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Entity Ids",
+            "type": "array"
+          },
+          "identity_proposal_id": {
+            "anyOf": [
+              {
+                "maxLength": 26,
+                "minLength": 26,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Proposal Id"
+          },
+          "preview": {
+            "default": "preview_first",
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview",
+            "type": "string"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "default": "synchronous",
+            "title": "Resolution Mode"
+          },
+          "visibility": {
+            "const": "objective",
+            "default": "objective",
+            "title": "Visibility",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_ids"
+        ],
+        "title": "MergeRequest",
+        "type": "object"
+      },
       "MessageBody": {
         "description": "The finished reply: the id of its transcript row and its text. A structured turn's says\nhow it was composed (`mode`): `polished` (the polish passed the composition check) or\n`deterministic` (the checked beats assembled as they are); absent for a Lite reply. A\nstructured turn's composed narrative is also `narrative` (#177, FR-MULTI-4: the same text,\ncomposed from exactly the returned `beats`; empty when the viewpoint perceived nothing).",
         "properties": {
@@ -23017,36 +23484,6 @@
           "config_revision"
         ],
         "title": "PredicateListBody",
-        "type": "object"
-      },
-      "Preview": {
-        "description": "A gap fill's preview: whether one is needed, its estimate, range and capabilities.",
-        "properties": {
-          "capabilities": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Capabilities",
-            "type": "array"
-          },
-          "estimate": {
-            "$ref": "#/components/schemas/Estimate"
-          },
-          "needed": {
-            "title": "Needed",
-            "type": "boolean"
-          },
-          "range": {
-            "$ref": "#/components/schemas/TurnRange"
-          }
-        },
-        "required": [
-          "needed",
-          "estimate",
-          "range",
-          "capabilities"
-        ],
-        "title": "Preview",
         "type": "object"
       },
       "PrincipalLookup": {
@@ -29502,6 +29939,31 @@
         "title": "QueryKeyBody",
         "type": "object"
       },
+      "QuestionOption": {
+        "additionalProperties": false,
+        "description": "One option of a question: its id (``o1``…), label and what choosing it does.",
+        "properties": {
+          "effect": {
+            "additionalProperties": true,
+            "title": "Effect",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "title": "QuestionOption",
+        "type": "object"
+      },
       "QueuedTurn": {
         "description": "A turn that waits in the story's queue (FR-CONC-5): its operation and its place in the\nqueue. ``GET /operations/{id}`` (the ``Location``) reports it once it has played.",
         "properties": {
@@ -32819,6 +33281,623 @@
           "do"
         ],
         "title": "ReviewedPlayerInput",
+        "type": "object"
+      },
+      "RewriteList": {
+        "additionalProperties": false,
+        "description": "``GET /stories/{id}/rewrites``: newest first, a page at a time.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RewriteSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RewriteList",
+        "type": "object"
+      },
+      "RewriteQuestion": {
+        "additionalProperties": false,
+        "description": "A question the session asks the author, always with a recommended option and the reason\nfor it (owner decision 4, 2026-10-10).",
+        "properties": {
+          "accepted_recommendation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Recommendation"
+          },
+          "answer_option_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Option Id"
+          },
+          "answer_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer Text"
+          },
+          "answered_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered At"
+          },
+          "answered_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answered By"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/QuestionOption"
+            },
+            "title": "Options",
+            "type": "array"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "recommendation_reason": {
+            "title": "Recommendation Reason",
+            "type": "string"
+          },
+          "recommended_option_id": {
+            "title": "Recommended Option Id",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "high",
+                  "low"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "prompt",
+          "options",
+          "recommended_option_id",
+          "recommendation_reason"
+        ],
+        "title": "RewriteQuestion",
+        "type": "object"
+      },
+      "RewriteRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/rewrites``: an instruction about the story's past, how conflicts\nresolve (``synchronous`` by default) and whether to preview first (the default).",
+        "examples": [
+          {
+            "instruction": "Bobby actually went to UCLA.",
+            "preview": "preview_first",
+            "resolution_mode": "synchronous"
+          }
+        ],
+        "properties": {
+          "instruction": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Instruction",
+            "type": "string"
+          },
+          "preview": {
+            "default": "preview_first",
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview",
+            "type": "string"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "default": "synchronous",
+            "title": "Resolution Mode"
+          }
+        },
+        "required": [
+          "instruction"
+        ],
+        "title": "RewriteRequest",
+        "type": "object"
+      },
+      "RewriteSession": {
+        "additionalProperties": false,
+        "description": "A rewrite session as the author sees it: its instruction, the modes it runs with, its\nstate, its preview (``null`` while a question blocks the plan) and its questions.",
+        "properties": {
+          "base_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "pipeline": {
+            "enum": [
+              "structured",
+              "lite"
+            ],
+            "title": "Pipeline",
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/epistrel__orchestrator__rewrite__api__Preview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preview_mode": {
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview Mode",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/RewriteQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "title": "Resolution Mode"
+          },
+          "result_amendment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Amendment Id"
+          },
+          "stale_count": {
+            "default": 0,
+            "title": "Stale Count",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "story_id",
+          "kind",
+          "state",
+          "instruction",
+          "resolution_mode",
+          "preview_mode",
+          "pipeline",
+          "principal",
+          "created_at",
+          "updated_at",
+          "expires_at"
+        ],
+        "title": "RewriteSession",
+        "type": "object"
+      },
+      "RewriteSessionBody": {
+        "additionalProperties": false,
+        "description": "A session write's answer: the session and the story's revision, which only an apply\nmoves; ``apply`` when the call applied (``apply_directly``, #224).",
+        "properties": {
+          "apply": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Applied"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Revision"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "pipeline": {
+            "enum": [
+              "structured",
+              "lite"
+            ],
+            "title": "Pipeline",
+            "type": "string"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/epistrel__orchestrator__rewrite__api__Preview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preview_mode": {
+            "enum": [
+              "preview_first",
+              "apply_directly"
+            ],
+            "title": "Preview Mode",
+            "type": "string"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/RewriteQuestion"
+            },
+            "title": "Questions",
+            "type": "array"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "resolution_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "synchronous",
+                  "best_effort"
+                ],
+                "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/ThresholdMode"
+              }
+            ],
+            "title": "Resolution Mode"
+          },
+          "result_amendment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Amendment Id"
+          },
+          "stale_count": {
+            "default": 0,
+            "title": "Stale Count",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "id",
+          "story_id",
+          "kind",
+          "state",
+          "instruction",
+          "resolution_mode",
+          "preview_mode",
+          "pipeline",
+          "principal",
+          "created_at",
+          "updated_at",
+          "expires_at"
+        ],
+        "title": "RewriteSessionBody",
+        "type": "object"
+      },
+      "RewriteSummary": {
+        "additionalProperties": false,
+        "description": "A session in a list: no preview, no questions.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "instruction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instruction"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "open_questions": {
+            "title": "Open Questions",
+            "type": "integer"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "instruction",
+          "open_questions",
+          "created_at",
+          "updated_at",
+          "expires_at"
+        ],
+        "title": "RewriteSummary",
         "type": "object"
       },
       "RoleBody": {
@@ -37449,6 +38528,27 @@
             "title": "Retrieval Vector K",
             "type": "integer"
           },
+          "rewrite_ambiguity_margin": {
+            "default": 0.15,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Rewrite Ambiguity Margin",
+            "type": "number"
+          },
+          "rewrite_max_open_sessions": {
+            "default": 5,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Rewrite Max Open Sessions",
+            "type": "integer"
+          },
+          "rewrite_session_ttl_minutes": {
+            "default": 1440,
+            "maximum": 43200.0,
+            "minimum": 10.0,
+            "title": "Rewrite Session Ttl Minutes",
+            "type": "integer"
+          },
           "structured_retry_budget": {
             "default": 2,
             "maximum": 10.0,
@@ -39009,6 +40109,39 @@
               }
             ],
             "title": "Retrieval Vector K"
+          },
+          "rewrite_ambiguity_margin": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewrite Ambiguity Margin"
+          },
+          "rewrite_max_open_sessions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewrite Max Open Sessions"
+          },
+          "rewrite_session_ttl_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewrite Session Ttl Minutes"
           },
           "structured_retry_budget": {
             "anyOf": [
@@ -43043,6 +44176,25 @@
         "title": "ThreatResponseDispositionPatch",
         "type": "object"
       },
+      "ThresholdMode": {
+        "additionalProperties": false,
+        "description": "``{\"threshold\": \"high\" | \"low\"}``: ask only about conflicts at or above the severity.",
+        "properties": {
+          "threshold": {
+            "enum": [
+              "high",
+              "low"
+            ],
+            "title": "Threshold",
+            "type": "string"
+          }
+        },
+        "required": [
+          "threshold"
+        ],
+        "title": "ThresholdMode",
+        "type": "object"
+      },
       "ThunkBody": {
         "description": "One thunk: its proposition sketch (texts, the predicate and the known arguments by id,\nthe open slot, the candidates), its effective ``state`` (``resolved`` only while the\nresolving turn is in the timeline), where it was introduced, whether it was made salient,\nthe story-minute it is about, the fact that resolved it and its resolution level\n(FR-COMMIT-9: ``consequential`` or ``incidental``), the bindings reconciliation rejected\n(#154) and the could-have-known soft flags its resolution raised (#165).",
         "properties": {
@@ -44935,6 +46087,36 @@
         "title": "Backfill",
         "type": "object"
       },
+      "epistrel__core__backfill__Preview": {
+        "description": "A gap fill's preview: whether one is needed, its estimate, range and capabilities.",
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/Estimate"
+          },
+          "needed": {
+            "title": "Needed",
+            "type": "boolean"
+          },
+          "range": {
+            "$ref": "#/components/schemas/TurnRange"
+          }
+        },
+        "required": [
+          "needed",
+          "estimate",
+          "range",
+          "capabilities"
+        ],
+        "title": "Preview",
+        "type": "object"
+      },
       "epistrel__core__memory__consolidation__Scope": {
         "additionalProperties": false,
         "description": "One viewpoint scope: shared (``characters`` ``None``) or the characters named.",
@@ -45044,6 +46226,90 @@
           "levels"
         ],
         "title": "RequiredModule",
+        "type": "object"
+      },
+      "epistrel__orchestrator__rewrite__api__Preview": {
+        "additionalProperties": false,
+        "description": "A session's plan (FR-REWRITE-4): the ``timeline_revision`` it was computed against, its\nhash (identical across modes, FR-REWRITE-5), the normalized changes and their blast\nradius.",
+        "properties": {
+          "base_revision": {
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "blast_radius": {
+            "$ref": "#/components/schemas/BlastRadius"
+          },
+          "blast_radius_truncated": {
+            "default": false,
+            "title": "Blast Radius Truncated",
+            "type": "boolean"
+          },
+          "changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "new_entities": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "New Entities",
+            "type": "array"
+          },
+          "notifications": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Notifications",
+            "type": "array"
+          },
+          "plan_hash": {
+            "title": "Plan Hash",
+            "type": "string"
+          },
+          "refused_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Refused Changes",
+            "type": "array"
+          },
+          "relabels": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Relabels",
+            "type": "array"
+          },
+          "suggested_ports": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Suggested Ports",
+            "type": "array"
+          },
+          "timing_uncertain": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Timing Uncertain",
+            "type": "array"
+          }
+        },
+        "required": [
+          "base_revision",
+          "plan_hash"
+        ],
+        "title": "Preview",
         "type": "object"
       }
     },
@@ -45540,6 +46806,9 @@
                           "retrieval_rehydrate_max_rows",
                           "retrieval_rrf_k",
                           "retrieval_vector_k",
+                          "rewrite_ambiguity_margin",
+                          "rewrite_max_open_sessions",
+                          "rewrite_session_ttl_minutes",
                           "structured_retry_budget",
                           "thunks_max_open",
                           "timer_lag_alert",
@@ -70328,6 +71597,252 @@
         ]
       }
     },
+    "/stories/{story_id}/directives": {
+      "post": {
+        "description": "An author's direction (FR-DIRECT-1,2): **ephemeral** guidance for the next reply (\"make this scene tense\": `steer_queued`, carried by the next turn's renders and consumed by its commit; nothing else is written) or a **durable** change to the world (\"it starts raining\", \"the next morning, 08:00\", \"Bobby believes he graduated from Florida\"), applied at the next inter-turn slot with the author's authority: facts, State sets, a clock advance and beliefs (`applied`, its `position` `N⁺k`; the revision moves by one). A change to the past is routed into a rewrite session of kind `directive` under `resolution_mode` and `preview` (202, `routed_to_rewrite`). `kind` overrides the classification. Authority comes from this route, never from text claiming it (FR-DIRECT-6). 422 `guardrail_violation` (nothing written), `directive_unparseable`, `directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 `story_paused`, `module_off` (a Lite story), `revision_conflict`; 423 `story_busy`. An omniscient call: 403 `omniscient_required` for a character.",
+        "operationId": "apply_directive",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DirectiveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectiveBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DirectiveBody"
+                }
+              }
+            },
+            "description": "Routed to a rewrite session.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_no_changes`, `directive_unparseable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Direct the story as its author",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/effective-config": {
       "get": {
         "description": "The story's effective configuration (FR-PROF-5,16): `deployment_defaults` (every delivered setting at the deployment's default, `profile_defaults` in `/admin/settings`), the engine profile and the version it runs on (the profile's latest, or with `pinned` an earlier one it kept because a data-producing edit could not apply to its history), its `overrides` (the settings it overrides, with their `revision`), `effective`: every delivered setting at its effective value (the defaults, then the profile's version, then the overrides, validated as a whole), the configuration's `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables and its `quality_status` (`uncertified` until a certification matches the fingerprint). A turn captures this configuration when it starts and runs under it to the end.",
@@ -70645,6 +72160,226 @@
         "summary": "Assign a story's engine profile",
         "tags": [
           "profiles"
+        ]
+      }
+    },
+    "/stories/{story_id}/entities/merge": {
+      "post": {
+        "description": "The author reveals that entities are one referent (FR-PROP-7): the first of `entity_ids` survives and each other is `same_as` it. This opens a rewrite session of kind `entity_merge` (no instruction is parsed) with a preview of what the merge touches, under `resolution_mode` and `preview` as `POST /stories/{id}/rewrites` takes them; it is applied like any session (an `identity_proposal` for the pair is approved with it). What people said keeps its text, intent and belief relation; only its objective relation follows canon. 422 `merge_invalid` (`too_few`, `not_in_story`, `type_mismatch`, `already_same`); 409 `story_paused`, `rewrite_session_limit`. An omniscient call: 403 `omniscient_required` for a character.",
+        "operationId": "merge_entities",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSessionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `merge_invalid`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Merge entities into one referent",
+        "tags": [
+          "stories"
         ]
       }
     },
@@ -77743,6 +79478,1222 @@
           }
         ],
         "summary": "Show what a structured render would retrieve for a query",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/rewrites": {
+      "get": {
+        "description": "The story's rewrite sessions, newest first, without previews or questions: each session's state and its count of unanswered required questions. `state` (repeatable) filters; `cursor` is the previous page's `next_cursor`. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "operationId": "list_rewrites",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a story's rewrite sessions",
+        "tags": [
+          "stories"
+        ]
+      },
+      "post": {
+        "description": "An author's instruction about the story's past (FR-REWRITE-1,2), such as \"Bobby actually went to UCLA\": checked against the input guardrails (422 `guardrail_violation`, nothing written), parsed into structured changes, and planned into a `preview` at the story's revision: the changes and their blast radius (incidental mentions, cascaded justifications, irreducible conflicts with a `severity`). When the instruction is ambiguous the session asks (`questions`), each question with a recommended option and the reason for it, and waits in `awaiting_answers`; otherwise it is `awaiting_approval`. `resolution_mode` (`synchronous` by default, `best_effort` or `{\"threshold\": \"high\"|\"low\"}`) and `preview` (`preview_first` by default, or `apply_directly`) are recorded for the apply. Nothing about the story changes (FR-REWRITE-7). 409 `story_paused`, `rewrite_session_limit`, `revision_conflict` for a stale `X-Epistrel-Expected-Revision`, and `module_off` (`module: lite_rewrites`) for a Lite story; 422 `rewrite_unparseable` and `rewrite_noop`. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "operationId": "open_rewrite",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RewriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSessionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open a history rewrite session",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/rewrites/{session_id}": {
+      "get": {
+        "description": "A rewrite session with its `preview` (`base_revision`, `plan_hash`, `changes`, `blast_radius`, `relabels`, `refused_changes`, `notifications`, `timing_uncertain`, `suggested_ports`; null while a required question is unanswered) and its questions. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "operationId": "get_rewrite",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The rewrite session's id.",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "description": "The rewrite session's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `rewrite_session_not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a rewrite session",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/rewrites/{session_id}/answers": {
+      "post": {
+        "description": "Answers to the session's questions, validated all together (422 `invalid_answer`, nothing stored): an `option_id`, free `text` (checked against the input guardrails and parsed with the instruction), or `accept_recommended`. The session re-plans at the story's current revision. Allowed on a paused story. 409 `rewrite_session_closed` once the session ended. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "operationId": "answer_rewrite",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The rewrite session's id.",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "description": "The rewrite session's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnswerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSessionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `rewrite_session_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `rewrite_session_closed`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `invalid_answer`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Answer a rewrite session's questions",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/rewrites/{session_id}/apply": {
+      "post": {
+        "description": "Apply the session's plan (#224, FR-REWRITE-6) as one atomic amendment: the planned changes, the incidental and cascaded repairs, the conflicts' resolutions (as answered, or the least change the mode chose) and any cascade undo, all or nothing; the story's `timeline_revision` moves by exactly one. The questions and answers are recorded as audit events. The answer is the session, the `amendment_id` and the `report` (`resolutions`, `applied`, `notifications`). 409 `rewrite_session_closed`, `rewrite_apply_in_progress`, `story_paused`, `rewrite_stale` (a moved revision, or a changed pipeline: the session is then abandoned), `rewrite_questions_pending`, `record_in_flight`; 422 `base_revision_required`; 503 `rewrite_apply_failed` (retryable; nothing was written and the session awaits approval again). An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "operationId": "apply_rewrite",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The rewrite session's id.",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "description": "The rewrite session's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppliedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `rewrite_session_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `record_in_flight`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_questions_pending`, `rewrite_session_closed`, `rewrite_stale`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `base_revision_required`, `invalid_amendment_part`, `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`, `rewrite_apply_failed`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Apply a rewrite session",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
+    "/stories/{story_id}/rewrites/{session_id}/cancel": {
+      "post": {
+        "description": "Cancel the session: `cancelled`, nothing committed. 409 `rewrite_session_closed` once the session ended. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "operationId": "cancel_rewrite",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The rewrite session's id.",
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "description": "The rewrite session's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "viewpoint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Viewpoint"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RewriteSessionBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `rewrite_session_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_session_closed`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel a rewrite session",
         "tags": [
           "stories"
         ]

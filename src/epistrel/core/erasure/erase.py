@@ -192,6 +192,8 @@ from epistrel.core.tables import (
     operations,
     personas,
     policies,
+    rewrite_questions,
+    rewrite_sessions,
     scenario_catalog,
     scenario_versions,
     stories,
@@ -970,6 +972,46 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
         amendment_parts.c.id,
         refs.get(amendment_parts.name, ()),
         ("patch_before", "patch_after", "valid_spec"),
+        redactor,
+        tally,
+        write=write,
+    )
+    # #223: a rewrite session's instruction, plan, held render and error, and its questions'
+    # prompts, options, recommendations and answers, in place.
+    from epistrel.core.erasure.records import (
+        DIRECTIVE_TEXTS,
+        REWRITE_QUESTION_TEXTS,
+        REWRITE_SESSION_TEXTS,
+    )
+    from epistrel.core.tables import directives
+
+    await _redact_json_rows(
+        conn,
+        directives,
+        directives.c.id,
+        refs.get(directives.name, ()),
+        DIRECTIVE_TEXTS,
+        redactor,
+        tally,
+        write=write,
+    )
+
+    await _redact_json_rows(
+        conn,
+        rewrite_sessions,
+        rewrite_sessions.c.id,
+        refs.get(rewrite_sessions.name, ()),
+        REWRITE_SESSION_TEXTS,
+        redactor,
+        tally,
+        write=write,
+    )
+    await _redact_json_rows(
+        conn,
+        rewrite_questions,
+        rewrite_questions.c.id,
+        refs.get(rewrite_questions.name, ()),
+        REWRITE_QUESTION_TEXTS,
         redactor,
         tally,
         write=write,

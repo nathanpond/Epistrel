@@ -67,7 +67,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # extraction_backstop (#148) and the repair ladder's regeneration (#151), which shares
     # generation's row (docs/02 §5: usually the same model). M5 delivers testimony's
     # belief_adjudication (#162), which defaults to entailment's row (FR-MODEL-2). M6 delivers
-    # the clock's time_estimation (#199), which defaults to extraction_backstop's row.
+    # the clock's time_estimation (#199), which defaults to extraction_backstop's row. M7
+    # delivers the history side-channel's rewrite_parse (#223), deployment-level.
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
@@ -82,6 +83,9 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "extraction_backstop",
         "regeneration",
         "time_estimation",
+        "rewrite_parse",
+        "rewrite_record",
+        "directive_parse",
     }
     for purpose in DELIVERED.values():
         parents = {

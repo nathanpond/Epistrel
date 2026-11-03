@@ -17,7 +17,9 @@ from epistrel.api.routes import (
     catalog_scenarios,
     certifications,
     clock,
+    directives,
     engine_profiles,
+    entities,
     feedback,
     feedback_reports,
     health,
@@ -32,6 +34,7 @@ from epistrel.api.routes import (
     reconciliation,
     respond,
     retrieval,
+    rewrites,
     scene,
     scheduled_events,
     state_proposals,
@@ -71,6 +74,9 @@ router.include_router(personas.router)
 router.include_router(principals.router)
 router.include_router(story_profile.router)
 router.include_router(backfill.router)
+router.include_router(rewrites.router)
+router.include_router(entities.router)
+router.include_router(directives.router)
 router.include_router(story_rating.router)
 router.include_router(clock.router)
 router.include_router(scheduled_events.router)

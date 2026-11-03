@@ -65,8 +65,13 @@ if TYPE_CHECKING:
 type UncertainReason = Literal["parse_error", "schema_error", "low_confidence", "budget_exhausted"]
 type DeterministicFirst[T] = Callable[[], T | None]
 
-DETERMINISTIC_FIRST_EXEMPT = frozenset({"generation", "lite_summary"})
-"""Purposes with no deterministic path (FR-MODEL-5's residual is the whole call)."""
+DETERMINISTIC_FIRST_EXEMPT = frozenset(
+    {"generation", "lite_summary", "rewrite_parse", "rewrite_record", "directive_parse"}
+)
+"""Purposes with no deterministic path (FR-MODEL-5's residual is the whole call).
+``rewrite_parse`` (#223) reads the author's free-text instruction; everything after it
+(normalization, the questions, the plan) is deterministic code. ``rewrite_record`` (#224) is
+called only for a record the deterministic substitution cannot repair."""
 
 SCHEMA_INSTRUCTION = (
     "Respond with only a JSON object, and nothing else, that validates against this JSON Schema:"

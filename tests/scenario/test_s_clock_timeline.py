@@ -783,3 +783,106 @@ async def test_s_clock_timeline__same_turn_anchor(
         assert here.weekday == Exact("friday")
         assert [(s.lo, s.hi) for s in here.segments] == [(555, 556)]
         assert len(await _anchor_facts(engine, story)) == 2
+
+
+@pytest.mark.part("M7", "FR-CLOCK-12")
+async def test_s_clock_timeline__m7_rewrite(
+    stub_settings: Settings, engine: AsyncEngine, clock_delivered: None
+) -> None:
+    """A history-rewrite conversation does not move the clock (#223): opening a session,
+    answering its question and cancelling it leave the story's ``state_changes`` (the clock's
+    included), its clock value and its ``timeline_revision`` exactly as they were."""
+    asks = json.dumps(
+        {
+            "changes": [],
+            "ambiguities": [
+                {
+                    "about": "when",
+                    "question": "When?",
+                    "options": ["dawn", "dusk"],
+                    "recommended": 0,
+                }
+            ],
+        }
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, _ = await structured_story(client, "Cal", "Bobby")
+        await ck.set_level(engine, story, "on")
+        moved = await _advance(client, story, {"minutes": 45, "reason": "a walk"})
+        assert moved.status_code == 200, moved.text
+
+        async def snapshot() -> tuple[Any, ...]:
+            count = await rows(
+                engine, "SELECT count(*) AS n FROM state_changes WHERE story_id = :s", s=story
+            )
+            revision = await rows(
+                engine, "SELECT timeline_revision AS r FROM stories WHERE id = :s", s=story
+            )
+            return count[0].n, (await _clock(client, story))["offset"], revision[0].r
+
+        before = await snapshot()
+        epistrel.models.stub.when("", asks, purpose="rewrite_parse")
+        omniscient = {"viewpoint": "omniscient"}
+        opened = await client.post(
+            f"/stories/{story}/rewrites",
+            params=omniscient,
+            json={"instruction": "It was dawn when they met."},
+            headers=WRITE,
+        )
+        assert opened.status_code == 201, opened.text
+        session = opened.json()
+        path = f"/stories/{story}/rewrites/{session['id']}"
+        answered = await client.post(
+            f"{path}/answers",
+            params=omniscient,
+            json={"answers": [{"question_id": session["questions"][0]["id"], "option_id": "o1"}]},
+            headers=WRITE,
+        )
+        assert answered.status_code == 200, answered.text
+        cancelled = await client.post(f"{path}/cancel", params=omniscient, headers=WRITE)
+        assert cancelled.status_code == 200, cancelled.text
+        assert await snapshot() == before
+        assert before[1] == 45
+
+
+@pytest.mark.part("M7", "FR-CLOCK-12; FR-DIRECT-1")
+async def test_s_clock_timeline__m7_directive(
+    stub_settings: Settings, engine: AsyncEngine, clock_delivered: None
+) -> None:
+    """An author directive "the next morning" (#226, ``directive_parse`` scripted: ten hours)
+    advances the clock at the next inter-turn slot with ``source = author``. Complement: an
+    ephemeral directive "it feels late" advances nothing."""
+    later = json.dumps(
+        {
+            "classification": "durable",
+            "temporal_scope": "now",
+            "changes": [{"kind": "clock", "minutes": 600}],
+        }
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, _ = await structured_story(client, "Cal", "Bobby")
+        await ck.set_level(engine, story, "on")
+        omniscient = {"viewpoint": "omniscient"}
+        before = (await _clock(client, story))["offset"]
+        felt = await client.post(
+            f"/stories/{story}/directives",
+            params=omniscient,
+            json={"text": "It feels late.", "kind": "ephemeral"},
+            headers=WRITE,
+        )
+        assert felt.status_code == 200, felt.text
+        assert (await _clock(client, story))["offset"] == before
+        epistrel.models.stub.when("", later, purpose="directive_parse")
+        moved = await client.post(
+            f"/stories/{story}/directives",
+            params=omniscient,
+            json={"text": "The next morning."},
+            headers=WRITE,
+        )
+        assert moved.status_code == 200, moved.text
+        (change_id,) = moved.json()["applied"]["clock"]
+        (row,) = await rows(
+            engine, "SELECT source::text AS source FROM state_changes WHERE id = :c", c=change_id
+        )
+        assert row.source == "author"
+        assert (await _clock(client, story))["offset"] == before + 600

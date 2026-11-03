@@ -343,6 +343,7 @@ from epistrel.observability.metrics import (
     count_perception_repair,
     count_repair,
 )
+from epistrel.orchestrator import directives as author_directives
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
@@ -931,6 +932,9 @@ class TurnRead:
     scene_doings: tuple[str, ...] = ()
     """#199 (FR-CLOCK-8): the ``do`` beats of the working-memory window (the player's inputs'
     included), oldest first: what the scene established as under way."""
+    steers: tuple[tuple[str, str], ...] = ()
+    """#226 (FR-DIRECT-2): the author's queued ephemeral directives ``(id, text)``, oldest
+    first: every render of this turn carries them, and its commit consumes them."""
     output_viewpoint: str = OMNISCIENT
     """#623 (owner decision): the viewpoint the turn is delivered to; a narrated hidden State's
     value is verified at it, so one the viewpoint holds no belief about is repaired, not
@@ -976,6 +980,7 @@ def _steering(read: TurnRead) -> str:
     lines = [
         prompts.RESOLUTION_STEERING if read.deferred else "",
         prompts.KNOWLEDGE_STEERING if read.flagged else "",
+        author_directives.steering_line(read.steers),
     ]
     return " ".join(x for x in lines if x)
 
@@ -1116,6 +1121,7 @@ async def read_turn(
         deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
         characters=tuple(current.get(c.id, c) for c in cast_.render),
+        steers=tuple(await author_directives.queued_steers(conn, story_id)),
     )
 
 
@@ -6260,6 +6266,15 @@ async def play(
         references = external_facts.references(pins, checked.checked)
         if references:
             op.add_commit_step(partial(external_facts.commit, op=op, references=references))
+        if read.steers:
+            # #226: the turn that carried the author's steers consumes them as it commits.
+            op.add_commit_step(
+                partial(
+                    author_directives.consume_steers,
+                    ids=[i for i, _ in read.steers],
+                    operation_id=op.operation_id,
+                )
+            )
         if regenerating is not None:
             op.add_commit_step(fail_queue)
 

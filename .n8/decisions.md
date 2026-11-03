@@ -11090,3 +11090,130 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - EXPOSURE-FRAME M7 and S-POLLUTION M7 correct the witness's trust (an amendment that they were always friends) rather than the claim itself: the corrected fact changes the resolution (`believed` instead of `suspected`), while every key stays bounded at the frame.
   - S-WORKER-AMEND-RACE uses turns 100–140, not 700–800, and corrects both the turn's event (overlay) and its memory (in place), so the recomputed reflection reads the amended text.
   **Issue:** #236
+
+### #223 — rewrite sessions, parse and preview, 2026-11-02
+
+- **Decision:** the two tables use `Text` columns with CHECK constraints for their kinds, states, modes and severities (`core.tables.rewrites`, migration 0116), not Postgres enums, as `amendments` and `story_backfills` do. Migration 0116 also adds `fk_amendments_session`.
+  **Issue:** #223
+- **Decision:** the session view names the request's `preview` setting `preview_mode`. `preview` is the plan, as the AC's `preview: {base_revision, …}` asks. `pipeline` is shown too.
+  **Issue:** #223
+- **Decision:** `rewrite_parse` is a delivered purpose with `story_scoped = False`, unlike the plan's `True`. A story-scoped purpose's template hash joins every story's runtime facts, which would change the fingerprint behind every certification #233 recorded. The author side-channel is not in a turn, so a profile need not route it. Other changes for it:
+  - a new content category `author_instruction` (the instruction, answers and the names it is normalized against);
+  - it is in `DETERMINISTIC_FIRST_EXEMPT`: the free-text parse has no deterministic path, and everything after it is code;
+  - a guarantee row (`rewrite_parse`, not measured, outside stories);
+  - regenerated `docs/models.md` and `docs/guarantees.md`.
+  **Issue:** #223
+- **Decision:** normalization details:
+  - **Entities.** Candidates are scored by name and alias: exact 1.0, every word contained 0.8, else word overlap scaled to 0.7, at least 0.5 kept. #139's resolver reads mentions in context, not a bare name. A tie inside `rewrite_ambiguity_margin` asks; no candidate means a new entity, listed in `new_entities` and created at apply (#224).
+  - **Names sent to the model.** All entities (capped at 200, sorted by name) instead of the top 20 candidates per mention, because the mentions are only known after the parse.
+  - **Times.** A time is a number of minutes or "before the story began"; anything else is a `timing` question. The recommendation is "before the story began" when the expression names a past life stage, else the story's current time.
+  - **State deltas.** A relative State change is converted with the key's current fold, not the fold at the valid time; the plan's "fold at that time" needs a time-to-position inverse the clock does not offer.
+  **Issue:** #223
+- **Decision:** blast radius and conflicts. There is no hypothetical `check()` overlay: `verify.rules.check` is pure over fetched records, and a dependent text record carries no normalized claim to check. A `presupposes` or `derives` text record (event or memory) is an irreducible conflict when either:
+  - it is player- or consumer-authored, or narrated by the player (`player_authored`);
+  - its text does not name the superseded value's canonical name or any alias (`not_substitutable`).
+
+  A dependent amendment part tied the same way is a conflict too (`dependent_amendment`, plus `cascade_undo`). Untyped `fact_neighborhood` neighbours do not enter.
+
+  Severity is `high` for events (delivered messages), memories a player character holds and player-visible State changes; `low` otherwise.
+
+  `plan_read_set.records` has no version, `config_revisions` is the registry's only, and `anchor_revision` is null. #237 adds what its recheck needs.
+  **Issue:** #223
+- **Decision:** a session with a required unanswered question stores no plan (`preview: null`). The plan is computed once every required question is answered.
+  **Issue:** #223
+- **Decision:** a Lite story is refused with 409 `module_off`, the engine-wide status of that code (`ModuleOff.http_status`, `ERROR_STATUS`), not the plan's 422. One code with two statuses would break the error table.
+  **Issue:** #223
+- **Decision:** the model's `new_text` for a record change passes #56's output policies (`output_gate.check_output`) before normalization. A violation removes the change and lists it in `refused_changes` with reason `guardrail` and the policy ids only (asserted in `test_c_20__m7_rewrite`).
+  **Issue:** #223
+- **Decision:** `test_rewrite_session` and `test_rewrite_lite_interim` (one file, `tests/scenario/test_rewrite_session.py`) carry no part marker, because check-traceability refuses a part whose test name maps to no docs/04 test ID. The detection-identical test is U-09's M7 part (`tests/test_u_09.py`, FR-REWRITE-5), which #224 extends.
+  **Issue:** #223
+- **Decision:** the expiry task `rewrite_session_expiry` runs every 10 minutes. The limit counts `awaiting_answers`, `awaiting_approval` and `applying` sessions, and never `support_check` ones.
+  **Issue:** #223
+- **Console:** the Engine gained the rewrite session routes. The matching surface for nathanpond/Epistrel-Console is a rewrite panel: instruction, questions with their recommended answers, and the preview's buckets.
+  **Issue:** #223
+
+### #224 — dispositions, the atomic apply and the Q&A audit, 2026-11-02
+
+- **Decision:** `rewrite_record` is registered like `rewrite_parse`: deployment-level (`story_scoped = False`), exempt from deterministic-first, with a guarantee row. It is called only for a conflict the author (or the mode) resolves with `rewrite`. Incidental and cascaded fixes are a deterministic substitution: whole words, case-insensitive, the superseded value's canonical name and aliases replaced by the new value's name.
+  **Issue:** #224
+- **Decision:** a repaired text is checked against the story's output policies (#56) and the erased subjects (`guard.check_content`). It is not re-detected and re-verified (#148/#142), because a single record's text has no turn context to verify against. A failed repair (no usable answer, a policy, an erased subject) falls back to `drop`. Texts are generated at apply, not at answer time, so a `preview_first` preview shows the chosen actions, not the rewritten lines.
+  **Issue:** #224
+- **Decision:** how each action becomes parts:
+  - `drop` of an event is #221's overlay `drop`. Memories take `replace` only, so a dropped memory's text is emptied.
+  - Cascaded beliefs (`cascade`), re-evaluated causes and later State changes become `regenerated` notifications rather than parts: #221 refuses belief record parts, and those readers re-derive.
+  - A relabel sets the utterance's `objective_relation` to `false`.
+  - A change that would register a predicate is not applied.
+  - An entity the instruction names for the first time is created (kind `other`) in the apply transaction.
+  **Issue:** #224
+- **Decision:** the induced mid-apply failure is an in-process fault, `epistrel.testing.faults.rewrite_apply_failing()` (`apply.FAIL_AFTER_PARTS`), not a crash-harness point. It fails the commit after the parts and the cascade undo are written, so the whole transaction rolls back. 503 `rewrite_apply_failed` is raised only for that fault and `OperationalError`; any other failure (e.g. #221's 422) is re-raised as itself. In both cases the session returns to `awaiting_approval` with `last_error`.
+  **Issue:** #224
+- **Decision:** the `rewrite_closed` event in the amendment's operation carries `amendment_id: null`, because the id is minted inside the commit step after the events are staged; the session row holds `result_amendment_id`. The cancelled, expired and abandoned audit operations are non-bumping `rewrite_session` operations whose principal is the caller (`engine` for expiry and abandonment).
+  **Issue:** #224
+- **Decision:** what is not built here:
+  - `rewrite_max_record_rewrites`.
+  - The `locked_changed` preview list (an applied part on an `author_locked` fact goes through `commit_fact` as before).
+  - Carrying conflict free text as guidance at answer time: it is passed to `rewrite_record` at apply.
+
+  The pipeline-changed refusal is U-09's `test_u_09__pipeline_changed`. `test_apply_pipeline_changed` would be an unmappable part name, so it is not a separate file.
+  **Issue:** #224
+- **Decision:** `S-REWRITE-MODES`'s "detection identical" clause is asserted on one story in `test_u_09__detection`. Each scenario case uses a fresh fixture story, whose entity ids differ.
+  **Issue:** #224
+
+### #225 — cascade by dependency type, intent, identity merges, 2026-11-02
+
+- **Decision:** `CASCADE_RULES` classify:
+  - `derives` by `acquisition_kind`: `observation` and `discovery` cascade; every other kind keeps; a derived memory is regenerated.
+  - `causes` stays `re_evaluate`.
+  - Only `presupposes` text escalates to a conflict by substitution (not `derives`).
+
+  A `causes` decision is never regenerated when its beat committed State changes or an outbox row. It becomes a `decision_effects` conflict whose least change is `keep`, with a `decision_effects_kept` notification carrying the ids. A player-authored decision is a conflict too. "Another premise still supports it" (a #140 check under an overlay) is not built: every other `causes` dependent is regenerated through `rewrite_record`, and flagged `regenerated`.
+  **Issue:** #225
+- **Decision:** a firsthand belief follows the change in two transitions. A `forgetting` transition (antecedent: the belief itself, at the step after it) is followed by the belief's own first acquisition again (`observation`/`discovery`, same antecedent and source), held from the same position with the old confidence.
+
+  This deviates from the plan's #221 `version` part with an `author`/`amendment` transition. #221 refuses belief record parts. An `author` transition must cite an event, and the amendment's own event is refused as `self_attestation`. A `correction` needs a contradicting belief, which a non-functional key does not have. A belief that cannot follow is reported (`cascaded: false` with the refusal), not failed.
+  **Issue:** #225
+- **Decision:** the relabel is a pure function (`apply.relabelled`).
+  - The objective relation is re-evaluated against the new value.
+  - The belief relation is re-evaluated only when the speaker's own firsthand belief on the key follows in the same amendment.
+  - Intent never changes.
+  - The label moves only between `sincere` and `sincere_error`.
+
+  `scene_meaning_may_change` is emitted when the label changes or when a lie's objective relation flips. The planner's discretion said label change only, but the AC's own example (an attempted lie that happened to be true) keeps the label `lie`, so the flip has to notify too.
+  **Issue:** #225
+- **Decision:** explicit intent changes:
+  - an amendment part action `set_intent`, under its own transaction setting `epistrel.allow_intent_correction`;
+  - migration 0118 widens `ck_amendment_parts_action` and patches the utterances guard to admit `intent` and `classification` under that setting;
+  - `rewrite_parse` gains `{kind: intent, subject?, ref, intent}`, where `subject` narrows the utterance to its speaker.
+
+  Any other part naming `intent` raises `IntentNotRetconnable` (500, a bug guard).
+  **Issue:** #225
+- **Decision:** a revert takes out what an amendment part wrote, even when the part superseded nothing, through `_not_reverted` in `canon`'s open-version predicate. A version whose part is reverted (`tx_to` set) is out now, and out at a `record_time` after the revert. #221's revert of a proposition part on a non-functional key had left the written fact canon. This is the reversibility half of #694 (`retract`), which stays open for "X was never true".
+  **Issue:** #225, #694
+- **Decision:** identity merges. `POST /stories/{id}/entities/merge` opens an `entity_merge` session:
+  - one timeless `same_as(first, other)` change per other entity, built with no `rewrite_parse` call (`plan.merge` holds the ids);
+  - `merge_invalid` reasons `too_few`, `not_in_story`, `type_mismatch`, `already_same` (transitive over canon `same_as`);
+  - only `visibility: objective`; the holder-scoped visibility is not built.
+
+  Supporting changes:
+  - `commit_fact` writes `same_as` between two characters when an amendment part writes it, and approves the pair's identity proposal; `identity_proposal_id` in the request is recorded only.
+  - What people said about the merged-away entity keeps its text, intent and belief relation; its objective relation is re-checked with the entity read as the survivor (`_merged_speech`, `check_with` on the swapped claim).
+  - The S-ENTITY-IDENTITY M5 test's "no merge route" assertion now expects the route.
+  **Issue:** #225
+- **Decision:** test coverage:
+  - S-SPEECH-DIMENSIONS replays (a), (c), (d), (e) and (g), the explicit intent change and its complement. (b), (f) and (h) are #166's labelling, already asserted by I-12/U-05; they are cited, not replayed.
+  - SPEECH-ACT-INDEPENDENCE is a Hypothesis property over `relabelled`. Its DB complement (`IntentNotRetconnable`) is in S-SPEECH-DIMENSIONS.
+  - X-02 M7 retcons the truth every 7 turns: `test_x_02__m7`, soak; `test_x_02__m7_pr`, 50 turns.
+  - The merge route and the notification kinds are documented in docs/02 §9.
+  **Issue:** #225
+- **Decision:** directives (#226) dispatch by pipeline in the service (`require_pipeline`): only `structured` is registered, and a Lite story is 409 `module_off {module: lite_directives}`, the engine-wide status of `module_off` (the plan said 422; same deviation as #223's `lite_rewrites`). `U-07 __lite_interim` asserts it; #244 inverts it.
+  **Issue:** #226
+- **Decision:** the hierarchy. `core/authority.py` orders `author > canon > in_world`; external outranks only within its own domain (`external_domain`).
+  - Canon's `_write` raises `AuthorityConflict` only when a non-author write would supersede an `author_locked` author fact. An unlocked author fact is superseded by later narrative canon as before (the plan's "a later story event beginning after the directive's time closes the author fact normally").
+  - `AuthorityConflict` is 409 when it escapes, not internal-only: no caller maps it to a `contradicted` verdict yet, since narrative commits do not yet reach a locked fact through verify. Logged as a gap rather than built.
+  **Issue:** #226
+- **Decision:** durable-now directives run one `inter_turn` slot operation with operation provenance `CONSUMER` (the `Provenance` enum has no `author` value), and facts written with `RecordProvenance.AUTHOR` / `FactAuthority.AUTHOR`. A belief about the past is held from now (the author directs what the character believes now); only a proposition change before now routes to a rewrite. The routed path opens a #223 session of kind `directive` through `rewrite_parse` (the plan's "no `rewrite_parse`" was not built: the session's changes come from the instruction like any rewrite).
+  **Issue:** #226
+- **Decision:** not built in #226, left for a follow-up if wanted: the steer TTL sweep (`expired` disposition), `directive_split_required` and `steer_budget_exceeded` errors, scheduled-event changes in `directive_parse` (`event`/`reschedule`/`cancel_event`), and the `use_custom_instructions` hint. Steers enter the turn through the structured pipeline's steering lines ("Author direction (this turn only)") and are consumed by the turn's commit.
+  **Issue:** #226
+- **Decision:** test placement (`check-parts` derives test IDs from names, so `test_directive_routing`/`test_directive_lite_interim` would not map): the routing and Lite-interim tests are `test_u_07__routing` and `test_u_07__lite_interim` in `tests/test_u_07.py`. The S-TRUST-BOUNDARY directive part is `FR-AUTH-1` only, because FR-AUTH-3 is not in S-TRUST-BOUNDARY's §15 row (R-06 carries FR-AUTH-3). The R-06 corpus is `tests/redteam/corpora/forged_authority.yaml` (23 cases); the external-domain half is a pure check of `in_domain` and `outranks`.
+  **Issue:** #226

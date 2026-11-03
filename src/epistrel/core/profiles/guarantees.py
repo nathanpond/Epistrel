@@ -404,6 +404,42 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         note="Advisory, outside stories (it reviews catalog entries), never a verdict.",
     ),
     _row(
+        "rewrite_parse",
+        "history rewrite parse",
+        M,
+        UNMEASURED,
+        purposes=("rewrite_parse",),
+        in_story=False,
+        note=(
+            "The author's side-channel, never in a turn: its changes are previewed and every "
+            "ambiguity is asked, with a recommendation, before anything is applied."
+        ),
+    ),
+    _row(
+        "rewrite_record",
+        "history rewrite repair",
+        M,
+        UNMEASURED,
+        purposes=("rewrite_record",),
+        in_story=False,
+        note=(
+            "The author's side-channel, never in a turn: a repaired text passes the output "
+            "policies before it can be applied, and a failed repair is dropped or asked about."
+        ),
+    ),
+    _row(
+        "directive_parse",
+        "directive parse",
+        M,
+        UNMEASURED,
+        purposes=("directive_parse",),
+        in_story=False,
+        note=(
+            "The author's side-channel, never in a turn: a request's explicit kind overrides "
+            "its classification, and a change to the past is previewed as a rewrite."
+        ),
+    ),
+    _row(
         "quality_judge",
         "quality judge",
         M,

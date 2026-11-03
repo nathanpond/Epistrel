@@ -915,3 +915,61 @@ async def test_state_integrity__m7_amend_postgres(
         "state_not_amendable",
         "external",
     )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-STATE-4")
+async def test_state_integrity__m7_directives(engine: AsyncEngine, states_delivered: None) -> None:
+    """With directive State sets in the sequence (#226): turns' random changes interleaved with
+    the author's sets and deltas at inter-turn slots (``source = author``); after every step
+    every State's value is the fold of its active changes and no committed value breaks its
+    constraints. A directive whose change would break one is 422 ``state_constraint_violation``
+    with nothing written."""
+    import dataclasses
+
+    from epistrel.core.errors import EpistrelError
+    from epistrel.core.ids import new_ulid
+    from epistrel.orchestrator import directives
+
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(engine, story, *DEFINITIONS, ss.gold(name="purse", constraints={"max": 30}))
+    cast = {name: w.characters[name] for name in ("Cal", "Ann")}
+    chosen = random.Random(SEED + 7)  # noqa: S311 - a seeded sequence, not a secret
+    refused = 0
+    authored = 0
+    for _ in range(24):
+        if chosen.random() < 0.5:
+            await _turn(engine, story, chosen, cast)
+        else:
+            change = dataclasses.replace(
+                _random_change(chosen, cast),
+                source=StateChangeSource.AUTHOR,
+                status=StateChangeStatus.COMMITTED,
+            )
+            before = await ss.change_rows(engine, story)
+            failure: EpistrelError | None = None
+            try:
+                await directives._apply_now(
+                    engine,
+                    story,
+                    new_ulid(),
+                    directives.DirectiveRequest(text="The author sets a value.", kind="durable"),
+                    directives._Normalized(states=[change]),
+                    [],
+                    principal="p-author",
+                )
+            except EpistrelError as failed:
+                failure = failed
+            if failure is None:
+                authored += 1
+            else:
+                assert failure.code in ("state_constraint_violation", "validation_error"), failure
+                assert await ss.change_rows(engine, story) == before
+                refused += failure.code == "state_constraint_violation"
+        await _check(engine, story, cast)
+    assert authored > 0
+    sources = {r.source for r in await ss.change_rows(engine, story)}
+    assert "author" in sources

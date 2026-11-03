@@ -66,6 +66,10 @@ from epistrel.orchestrator.jobs.handlers.retirement import (
     RECONCILE_TASK,
     RETIREMENT_HANDLER,
 )
+from epistrel.orchestrator.jobs.handlers.rewrite_expiry import (
+    REWRITE_EXPIRY_HANDLER,
+    REWRITE_EXPIRY_TASK,
+)
 from epistrel.orchestrator.jobs.handlers.state_proposals import STATE_PROPOSAL_HANDLER
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
@@ -121,6 +125,7 @@ for _handler in (
     CERTIFICATION_CANARY_HANDLER,
     CERTIFICATION_RECERTIFY_HANDLER,
     BACKFILL_HANDLER,
+    REWRITE_EXPIRY_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -135,6 +140,7 @@ for _task in (
     OUTBOX_RECOVERY_TASK,
     CERTIFICATION_CANARY_TASK_DEFINITION,
     CERTIFICATION_RECERTIFY_TASK_DEFINITION,
+    REWRITE_EXPIRY_TASK,
 ):
     register_recurring(_task)
 

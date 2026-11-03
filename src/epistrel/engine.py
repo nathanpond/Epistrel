@@ -158,6 +158,7 @@ from epistrel.core.viewpoint import (
 from epistrel.core.world_clock import scheduled as scheduled_events
 from epistrel.core.world_clock import service as clock_service
 from epistrel.observability import instrument
+from epistrel.orchestrator import directives as author_directives
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
     DEFAULT_TURN_DEADLINE_S,
@@ -226,6 +227,8 @@ from epistrel.orchestrator.providers import in_process as provider_in_process
 from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
+from epistrel.orchestrator.rewrite import api as rewrite_api
+from epistrel.orchestrator.rewrite import session as rewrite_session
 from epistrel.orchestrator.structured import pipeline as structured_turn
 from epistrel.orchestrator.structured import staged as staged_turns
 from epistrel.orchestrator.verify import extraction as extraction_job
@@ -333,6 +336,17 @@ CODECS: dict[str, ResultCodec[Any]] = {
         core_backfill.GapFill, status=lambda found: 202 if found.backfill is not None else 200
     ),
     "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
+    # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
+    "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    "answer_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
+    "cancel_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
+    "apply_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
+    "merge_entities": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    # Directives (#226): story-scoped; one routed to a rewrite answers 202.
+    "apply_directive": ResultCodec.of(
+        author_directives.DirectiveResult,
+        status=lambda found: 202 if found.disposition == "routed_to_rewrite" else 200,
+    ),
     # Certification runs and imported records (#233): deployment-scoped.
     "request_certification_run_profile": ResultCodec.of(
         certification_run.CertificationRunAnswer,
@@ -6118,6 +6132,254 @@ class Engine:
 
         return await self._keyed(
             ctx, "cancel_backfill", run, story_id=story_id, material={"story_id": story_id}
+        )
+
+    # -- history rewrite sessions (FR-REWRITE-1,2,4,7; #223) ---------------------------------------
+
+    async def open_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: rewrite_api.RewriteRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Open a rewrite session on the story (#223): the instruction is checked against the
+        input guardrails, parsed into changes (asking when it is ambiguous, always with a
+        recommended answer) and planned into a preview at the story's revision. Nothing about
+        the story changes (FR-REWRITE-7). An omniscient call (403 ``omniscient_required``);
+        404 story; 409 ``story_paused``; a stale expected revision 409 ``revision_conflict``;
+        409 ``rewrite_session_limit``; 422 ``guardrail_violation``; a Lite story 409
+        ``module_off``; 422 ``rewrite_unparseable`` or ``rewrite_noop``."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            await rewrite_session.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            await self.gate_input(
+                ctx,
+                story_id,
+                EntryPoint.REWRITE,
+                [GateText("body.instruction", request.instruction)],
+            )
+            await rewrite_session.require_planner(self.db, story_id)
+            return await rewrite_session.open_session(
+                self.db, self.models, story_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "open_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def get_rewrite(
+        self, ctx: RequestContext, story_id: str, session_id: str, *, viewpoint: str | None = None
+    ) -> rewrite_api.RewriteSession:
+        """A rewrite session with its preview and questions (#223); an omniscient read. 404
+        ``rewrite_session_not_found`` for an unknown id or another story's."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await rewrite_session.get(self.db, story_id, session_id)
+
+    @refuses_nul()
+    async def list_rewrites(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        states: Sequence[str] = (),
+        cursor: str | None = None,
+        limit: int = rewrite_session.LIST_LIMIT,
+    ) -> rewrite_api.RewriteList:
+        """The story's rewrite sessions, newest first, filtered by ``states`` (#223); an
+        omniscient read."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await rewrite_session.list_sessions(
+            self.db, story_id, states=states, cursor=cursor, limit=limit
+        )
+
+    async def answer_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        request: rewrite_api.AnswerRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Answer a rewrite session's questions (#223): validated all together (422
+        ``invalid_answer``, nothing stored); free text is gated like the instruction; the
+        session re-plans at the story's current revision. Allowed on a paused story (it
+        changes no story truth). 409 ``rewrite_session_closed`` once the session ended."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            texts = rewrite_session.free_texts(request)
+            if texts:
+                await self.gate_input(
+                    ctx,
+                    story_id,
+                    EntryPoint.REWRITE,
+                    [GateText(f"body.answers[{n}].text", text) for n, text in enumerate(texts)],
+                )
+            return await rewrite_session.answer(
+                self.db, self.models, story_id, session_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "answer_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "session_id": session_id, "body": _body(request)},
+        )
+
+    async def cancel_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Cancel a rewrite session (#223): ``cancelled``, nothing committed. 409
+        ``rewrite_session_closed`` once the session ended."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            return await rewrite_session.cancel(self.db, story_id, session_id, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "cancel_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "session_id": session_id},
+        )
+
+    async def apply_directive(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: author_directives.DirectiveRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> author_directives.DirectiveResult:
+        """An author's directive (#226, FR-DIRECT-1,2,6): ephemeral guidance for the next reply,
+        a durable change applied at the next inter-turn slot with the author's authority, or a
+        change to the past routed into a rewrite session (REST 202). An omniscient call; 404;
+        409 ``story_paused``; a stale expected revision 409 ``revision_conflict``; 422
+        ``guardrail_violation`` before anything else is written; a Lite story 409
+        ``module_off``; 422 ``directive_unparseable`` or ``directive_no_changes``; the State,
+        clock and turn-slot refusals of the changes it applies."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> author_directives.DirectiveResult:
+            await author_directives.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            await self.gate_input(
+                ctx, story_id, EntryPoint.DIRECTIVE, [GateText("body.text", request.text)]
+            )
+            await author_directives.require_pipeline(self.db, story_id)
+            return await author_directives.apply_directive(
+                self.db, self.models, story_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "apply_directive",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def merge_entities(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: rewrite_api.MergeRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Merge entities the author reveals to be one referent (#225, FR-PROP-7): a rewrite
+        session of kind ``entity_merge`` (each other entity ``same_as`` the first), planned and
+        cascaded like any rewrite under the request's modes. 422 ``merge_invalid``; otherwise
+        the statuses of ``open_rewrite`` (ids only, so no input gate)."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            await rewrite_session.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            return await rewrite_session.open_merge(
+                self.db, self.models, story_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "merge_entities",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def apply_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        request: rewrite_api.ApplyRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Apply a rewrite session (#224): one atomic amendment with every part, repair and
+        resolution, its questions and answers recorded as audit events; the revision moves by
+        exactly one. 409 ``rewrite_session_closed``, ``rewrite_apply_in_progress``,
+        ``story_paused``, ``rewrite_stale`` (a moved revision, or a changed pipeline: the
+        session is abandoned), ``rewrite_questions_pending``, ``record_in_flight``; 422
+        ``base_revision_required``; 503 ``rewrite_apply_failed`` (retryable, nothing
+        written)."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            return await rewrite_session.apply_session(
+                self.db, self.models, story_id, session_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "apply_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "session_id": session_id, "body": _body(request)},
         )
 
     # -- message feedback (FR-FB-1,2; #112) --------------------------------------------------------

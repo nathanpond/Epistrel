@@ -824,6 +824,22 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     SubjectWriter(
         "amendment_parts", ("epistrel.core.amendments.store",), f"{_RECORDS}:read_amendment_parts"
     ),
+    # #223: a rewrite session's instruction, plan and held render, and its questions' prompts,
+    # options and answers.
+    SubjectWriter(
+        "rewrite_sessions",
+        ("epistrel.orchestrator.rewrite.session",),
+        f"{_RECORDS}:read_rewrite_sessions",
+    ),
+    # #226: a directive's text and the changes parsed from it.
+    SubjectWriter(
+        "directives", ("epistrel.orchestrator.directives",), f"{_RECORDS}:read_directives"
+    ),
+    SubjectWriter(
+        "rewrite_questions",
+        ("epistrel.orchestrator.rewrite.session",),
+        f"{_RECORDS}:read_rewrite_questions",
+    ),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 

@@ -886,6 +886,24 @@ class DependencySettings(BaseModel):
     )
 
 
+class RewriteSettings(BaseModel):
+    """The history side-channel's dials (FR-REWRITE-1,2; #223), stored under
+    ``deployment_state.settings``: two entity candidates whose resolution scores are within
+    ``rewrite_ambiguity_margin`` of each other are asked about, not guessed; a story has at most
+    ``rewrite_max_open_sessions`` open sessions; a session idle ``rewrite_session_ttl_minutes``
+    expires. Prospective: a session reads them when it is opened or written."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    rewrite_ambiguity_margin: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=0.15, ge=0.0, le=1.0
+    )
+    rewrite_max_open_sessions: Annotated[StrictInt, PROSPECTIVE] = Field(default=5, ge=1, le=100)
+    rewrite_session_ttl_minutes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=1_440, ge=10, le=30 * 1_440
+    )
+
+
 DAY_S = 86_400
 DEFAULT_CANARY_INTERVAL_S = 7 * DAY_S
 
@@ -1299,6 +1317,7 @@ class DeploymentSettings(
     DependencySettings,
     ModelTierSettings,
     CertificationCanarySettings,
+    RewriteSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

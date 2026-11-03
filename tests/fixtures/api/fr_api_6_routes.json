@@ -959,6 +959,46 @@
       "method": "GET",
       "path": "/admin/evals/runs/{run_id}",
       "why": "#532: one eval run"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites",
+      "why": "FR-REWRITE-1: open a history rewrite session (#223)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/rewrites",
+      "why": "FR-REWRITE-1: list a story's rewrite sessions (#223)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/rewrites/{session_id}",
+      "why": "FR-REWRITE-4: a rewrite session and its preview (#223)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites/{session_id}/answers",
+      "why": "FR-REWRITE-2: answer a rewrite session's questions (#223)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites/{session_id}/cancel",
+      "why": "FR-REWRITE-4: cancel a rewrite session (#223)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites/{session_id}/apply",
+      "why": "FR-REWRITE-6: apply a rewrite session as one amendment (#224)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/entities/merge",
+      "why": "FR-PROP-7: identity merge"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/directives",
+      "why": "FR-DIRECT-1: an author's directive (#226)"
     }
   ],
   "outside": [

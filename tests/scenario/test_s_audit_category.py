@@ -232,3 +232,54 @@ async def test_s_audit_category__structured(
             s=story,
         )
         assert [m.membership for m in memberships] == ["discarded"]
+
+
+@pytest.mark.part("M7", "FR-STORE-25")
+async def test_s_audit_category__m7(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """The questions and answers of a rewrite session are audit records (#224): those of an
+    applied session are in the amendment's operation, those of a cancelled one in a
+    ``rewrite_session`` operation that did not move the revision; both are in ``audit_view``
+    and absent from ``corrected_history``, and the next turn's prompt never carries them."""
+    from tests import rewrite_support as rs
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        world = await rs.story(client, engine)
+        story = world.story_id
+        stub = epistrel.models.stub
+        stub.when("", rs.UCLA, purpose="rewrite_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+
+        cancelled = (await rs.open_session(client, story)).json()
+        revision = await rs.revision(engine, story)
+        closed = await client.post(
+            f"/stories/{story}/rewrites/{cancelled['id']}/cancel",
+            params=rs.OMNISCIENT,
+            headers=WRITE,
+        )
+        assert closed.status_code == 200, closed.text
+        assert await rs.revision(engine, story) == revision
+
+        applied = (await rs.open_session(client, story, resolution_mode="best_effort")).json()
+        done = await rs.apply(client, story, applied["id"], revision)
+        assert done.status_code == 200, done.text
+
+        audit = [e for e in await audit_view(engine, story) if e.type.startswith("rewrite_")]
+        by_session: dict[str, list[str]] = {}
+        for event in audit:
+            by_session.setdefault(str(getattr(event.payload, "session_id", "")), []).append(
+                event.type
+            )
+        assert "rewrite_question" in by_session[cancelled["id"]]
+        assert by_session[cancelled["id"]].count("rewrite_closed") == 1
+        assert "rewrite_answer" in by_session[applied["id"]]
+        assert {e.category.value for e in audit} == {"audit"}
+        corrected = await corrected_history(engine, story)
+        assert not [e for e in corrected if e.type.startswith("rewrite_")]
+        prompt = next(q["prompt"] for q in applied["questions"])
+
+        stub.reset()
+        stub.when("", st.render(st.beat("say", "Mm.")), purpose="generation")
+        await played(client, story, body(world.ed.cal, "And now?"))
+        assert prompt not in everything_sent(stub)

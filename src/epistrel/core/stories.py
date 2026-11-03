@@ -136,6 +136,7 @@ from epistrel.core.tables import (
     content_ratings,
     dependency_edges,
     deployment_state,
+    directives,
     engine_profiles,
     events,
     genesis_deferred,
@@ -149,6 +150,8 @@ from epistrel.core.tables import (
     policies,
     rating_check_jobs,
     relationships,
+    rewrite_questions,
+    rewrite_sessions,
     scene_state,
     stories,
     story_backfills,
@@ -303,6 +306,12 @@ STORY_TABLES: tuple[Table, ...] = (
     # (FR-STORE-21), and a fork copies the amendments of its copied operations.
     amendment_parts,
     amendments,
+    # Rewrite sessions (#223): the questions before their sessions, after the amendments that
+    # name a session; neither is copied by a fork.
+    rewrite_questions,
+    rewrite_sessions,
+    # Directives (#226): an author's directions; not copied by a fork.
+    directives,
     # Backfill (#228): the chunks and conflicts before the backfill they belong to, and the
     # coverage (no foreign key); a fork copies only the coverage, clipped to its fork point.
     backfill_chunks,
@@ -340,6 +349,9 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         backfill_chunks.name,
         backfill_conflicts.name,
         story_backfills.name,
+        rewrite_questions.name,
+        rewrite_sessions.name,
+        directives.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,

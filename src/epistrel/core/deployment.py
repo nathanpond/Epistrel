@@ -176,6 +176,9 @@ class SettingsPatch(BaseModel):
     max_characters_at_start_default: StrictInt | None = None
     max_characters_at_start_ceiling: StrictInt | None = None
     # #234: the certification canary (off by default) and re-certification.
+    rewrite_ambiguity_margin: StrictFloat | None = None
+    rewrite_max_open_sessions: StrictInt | None = None
+    rewrite_session_ttl_minutes: StrictInt | None = None
     certification_canary_enabled: StrictBool | None = None
     certification_canary_interval_s: StrictInt | None = None
     certification_canary_sample_size: StrictInt | None = None

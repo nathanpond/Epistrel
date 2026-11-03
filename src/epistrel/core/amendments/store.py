@@ -64,6 +64,7 @@ from epistrel.core.errors import (
     AmendmentAlreadyReverted,
     AmendmentInvalidPart,
     AmendmentTargetInactive,
+    IntentNotRetconnable,
     ScheduleNotAmendable,
     StateNotAmendable,
 )
@@ -102,7 +103,9 @@ class AmendmentKind(StrEnum):
 
 
 Strategy = Literal["overlay", "version", "in_place"]
-Action = Literal["replace", "drop", "relabel"]
+Action = Literal["replace", "drop", "relabel", "set_intent"]
+INTENT_SETTING = "epistrel.allow_intent_correction"
+"""Set to the utterance's id for an explicit intent change (#225; migration 0118's guard)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +126,7 @@ CORRECTABLE_TABLES: Mapping[str, Correctable] = MappingProxyType(
         "memories": Correctable("in_place", frozenset({"replace"}), frozenset({"text"})),
         "utterances": Correctable(
             "in_place",
-            frozenset({"replace", "relabel"}),
+            frozenset({"replace", "relabel", "set_intent"}),
             frozenset(
                 {
                     "objective_relation",
@@ -642,12 +645,41 @@ async def _apply_record(
         raise _invalid(ordinal, "wrong_story", record_id=draft.record_id)
     if not await _row_active(conn, table, draft.record_id):
         raise _inactive(draft.table, draft.record_id)
+    if draft.table == "utterances" and draft.action == "set_intent":
+        await _set_intent(conn, ordinal, draft, row)
+        return {
+            **common,
+            "patch_before": {"intent": str(row.intent)},
+            "patch_after": dict(draft.patch),
+        }
+    if "intent" in draft.patch:
+        # FR-DIRECT-8: only an explicit intent change writes intent (a bug guard).
+        raise IntentNotRetconnable(
+            "an utterance's intent changes only through an explicit intent change",
+            {"ordinal": ordinal, "record_id": draft.record_id},
+        )
     _check_columns(ordinal, spec, draft.patch)
     if draft.table == "state_changes":
         await _check_state_change(conn, story_id, ordinal, row, draft.patch)
     before = {k: _jsonable(getattr(row, k)) for k in draft.patch}
     await _write_in_place(conn, story_id, table, draft.record_id, dict(draft.patch), row)
     return {**common, "patch_before": before, "patch_after": dict(draft.patch)}
+
+
+INTENTS = ("sincere", "deceptive", "joking", "unspecified")
+
+
+async def _set_intent(conn: AsyncConnection, ordinal: int, draft: Any, row: Any) -> None:
+    """An explicit intent change (#225): the utterance's ``intent`` (and its classification,
+    when the patch names one) rewritten under ``INTENT_SETTING``."""
+    allowed = {"intent", "classification"}
+    if set(draft.patch) - allowed or draft.patch.get("intent") not in INTENTS:
+        raise _invalid(ordinal, "column_not_allowed", columns=sorted(draft.patch))
+    await conn.execute(select(func.set_config(INTENT_SETTING, draft.record_id, True)))
+    await conn.execute(
+        update(utterances).where(utterances.c.id == draft.record_id).values(**dict(draft.patch))
+    )
+    await conn.execute(select(func.set_config(INTENT_SETTING, "", True)))
 
 
 def _jsonable(value: Any) -> Any:
@@ -883,6 +915,7 @@ async def record_amendment(
     payload: Mapping[str, Any] | None = None,
     undoes: str | None = None,
     redoes: str | None = None,
+    session_id: str | None = None,
 ) -> RecordedAmendment:
     """Record one amendment of ``parts`` in ``op``'s commit (see the module docstring)."""
     story_id = op.story_id
@@ -901,6 +934,7 @@ async def record_amendment(
             payload=dict(payload or {"parts": len(parts), "plan": None}),
             undoes=undoes,
             redoes=redoes,
+            session_id=session_id,
             rationale_record_ids=[dict(r) for r in rationale_record_ids],
         )
     )

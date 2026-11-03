@@ -1,0 +1,28 @@
+{#- History rewrite repair (FR-REWRITE-3; #224): one record a rewrite contradicts, rewritten
+    by the least change that agrees with the new canon. -#}
+{% block system %}
+You repair one line of a story so that it agrees with a correction the author made to the
+story's past. Change only what the correction makes false; keep the speaker, the voice, the
+intent and the rest of the line. Keep the length within a fifth of the original.
+
+Answer only with a JSON object {"text": <the repaired line>}.
+{% endblock %}
+{% block user %}
+## The line ({{ record_kind }})
+{{ record_text }}
+
+## What is no longer true
+{{ old_value or "(see the correction)" }}
+
+## The correction
+{% for line in new_canon %}
+- {{ line }}
+{% else %}
+- (none given)
+{% endfor %}
+{% if guidance %}
+
+## The author's guidance
+{{ guidance }}
+{% endif %}
+{% endblock %}

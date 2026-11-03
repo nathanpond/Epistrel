@@ -141,6 +141,11 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "The say a witness heard (#162): the speaker's name, the words as the witness perceived "
         "them, the visible manner, the claims they carry and the intent the witness reads."
     ),
+    ContentCategory.AUTHOR_INSTRUCTION: (
+        "An author's history-rewrite instruction and free-text answers (#223, FR-REWRITE-1,2), "
+        "and the story's names it is normalized against: its entities, the registered "
+        "predicates, its States and the clock. Never transcript text, a memory or a belief."
+    ),
     ContentCategory.TRACKED_VALUES: (
         "A structured render's tracked values (#187, FR-TURN-11): for a character's render, the "
         "player-visible States it may change (name, type, scope, unit, aliases, allowed values) "

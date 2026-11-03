@@ -470,3 +470,113 @@ async def test_s_trust_boundary__m4(
         assert refused.status_code == 400
         assert refused.json()["error"]["code"] == "principal_required"
         assert await count(engine, "SELECT count(*) FROM operations") == before
+
+
+@pytest.mark.part("M7", "FR-AUTH-1,2")
+async def test_s_trust_boundary__m7(pg_url: str, engine: AsyncEngine) -> None:
+    """A history rewrite succeeds under any principal id (#223): the same instruction opened
+    under two principals gives the same session apart from the recorded principal, and a
+    session one principal opened is answered and cancelled under another. A rewrite read that
+    names a character viewpoint is 403 ``omniscient_required``, and so is an as-originally-
+    recorded history read that does not name ``omniscient`` (#222)."""
+    import json as _json
+
+    from tests.structured_turn_support import structured_story
+
+    asks = _json.dumps(
+        {
+            "changes": [],
+            "ambiguities": [
+                {"about": "x", "question": "Which?", "options": ["a", "b"], "recommended": 0}
+            ],
+        }
+    )
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, ids = await structured_story(client, "Cal", "Bobby")
+        epistrel.models.stub.when("", asks, purpose="rewrite_parse")
+        omniscient = {"viewpoint": "omniscient"}
+        seen = []
+        for principal in ("p-one", "p-two"):
+            headers = {**bearer(), "X-Epistrel-Principal": principal}
+            opened = await client.post(
+                f"/stories/{story}/rewrites",
+                params=omniscient,
+                json={"instruction": "Bobby was always shy."},
+                headers=headers,
+            )
+            assert opened.status_code == 201, opened.text
+            seen.append(opened.json())
+        first, second = seen
+        assert (first["principal"], second["principal"]) == ("p-one", "p-two")
+        assert [q["prompt"] for q in first["questions"]] == [
+            q["prompt"] for q in second["questions"]
+        ]
+        assert first["state"] == second["state"] == "awaiting_answers"
+        other = {**bearer(), "X-Epistrel-Principal": "p-three"}
+        path = f"/stories/{story}/rewrites/{first['id']}"
+        answered = await client.post(
+            f"{path}/answers",
+            params=omniscient,
+            json={"answers": [{"question_id": first["questions"][0]["id"], "option_id": "o1"}]},
+            headers=other,
+        )
+        assert answered.status_code == 200, answered.text
+        assert answered.json()["questions"][0]["answered_by"] == "p-three"
+        cancelled = await client.post(f"{path}/cancel", params=omniscient, headers=other)
+        assert cancelled.json()["state"] == "cancelled"
+        character = {"viewpoint": ids["Bobby"]}
+        for refused in (
+            await client.get(path, params=character, headers=other),
+            await client.get(f"/stories/{story}/rewrites", params=character, headers=other),
+            await client.get(
+                f"/stories/{story}/history", params={"view": "as_recorded"}, headers=other
+            ),
+        ):
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["error"]["code"] == "omniscient_required"
+
+
+@pytest.mark.part("M7", "FR-AUTH-1")
+async def test_s_trust_boundary__m7_directive(pg_url: str, engine: AsyncEngine) -> None:
+    """A directive succeeds under any principal id (#226): the same ephemeral directive sent
+    under two principals gives the same answer apart from its id, and each ``directives`` row
+    records its requesting principal. A directive that names a character viewpoint is 403
+    ``omniscient_required`` and writes nothing."""
+    from tests.structured_turn_support import structured_story
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, _):
+        story, ids = await structured_story(client, "Cal", "Bobby")
+        answers = []
+        for principal in ("p-one", "p-two"):
+            headers = {**bearer(), "X-Epistrel-Principal": principal}
+            sent = await client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": "Make this scene tense.", "kind": "ephemeral"},
+                headers=headers,
+            )
+            assert sent.status_code == 200, sent.text
+            answers.append(sent.json())
+        first, second = (
+            {k: v for k, v in a.items() if k not in ("directive_id", "idempotency_key")}
+            for a in answers
+        )
+        assert first == second
+        recorded = await count(
+            engine,
+            "SELECT count(DISTINCT principal) FROM directives WHERE story_id = :s",
+            s=story,
+        )
+        assert recorded == 2
+        refused = await client.post(
+            f"/stories/{story}/directives",
+            params={"viewpoint": ids["Bobby"]},
+            json={"text": "Make this scene tense.", "kind": "ephemeral"},
+            headers={**bearer(), "X-Epistrel-Principal": "p-three"},
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["error"]["code"] == "omniscient_required"
+        rows_ = "SELECT count(*) FROM directives WHERE story_id = :s"
+        assert await count(engine, rows_, s=story) == 2

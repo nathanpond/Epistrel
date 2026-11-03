@@ -92,6 +92,7 @@ from epistrel.api.routes.certifications import (
     StoryCertificationRunBody,
 )
 from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
+from epistrel.api.routes.directives import DirectiveBody
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
     ProfileDeletedBody,
@@ -133,6 +134,7 @@ from epistrel.api.routes.reconciliation import (
 )
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
+from epistrel.api.routes.rewrites import AppliedBody, RewriteSessionBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.scheduled_events import ScheduledEventsBody, ScheduledEventWrittenBody
 from epistrel.api.routes.state_proposals import (
@@ -250,6 +252,7 @@ from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledE
 from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
 from epistrel.evals.certify import install
+from epistrel.orchestrator.directives import DirectiveRequest
 from epistrel.orchestrator.jobs.handlers.certification_run import CertificationRunRequest
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
 from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RespondRequest
@@ -257,6 +260,12 @@ from epistrel.orchestrator.models.config import ConfigReplacement
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
+from epistrel.orchestrator.rewrite.api import (
+    AnswerRequest,
+    ApplyRequest,
+    MergeRequest,
+    RewriteRequest,
+)
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
 from tests.character_support import complete as complete_character
@@ -293,12 +302,13 @@ ZEROED = frozenset(
         "request_id",
         "policy_set",
         "timings",
+        "plan_hash",
     }
 )
 """Durations (#76: a turn's queue wait and first-call delay too; #141: a retrieval's stage
 timings), and hashes over ids: the
-stub's request id (of the prompt) and an operation's ``config_revisions.policy_set`` (of the
-policy ids in force)."""
+stub's request id (of the prompt), an operation's ``config_revisions.policy_set`` (of the
+policy ids in force) and a rewrite preview's ``plan_hash`` (of its record ids, #223)."""
 
 Ids = dict[str, Any]
 Rendered = tuple[int, dict[str, Any]]
@@ -1522,6 +1532,156 @@ def _steps() -> list[Step]:
                     ids["fork"],
                     BeliefRequest(holder=ids["fork_ada"], proposition=_knows(ids, "fork")),
                 )
+            ),
+        ),
+        # #223: a history rewrite session on the structured fork: opened (its parse asks a
+        # question), read, listed, answered with the recommendation, and cancelled.
+        Step(
+            "open_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites",
+                {"instruction": REWRITE_INSTRUCTION},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.open_rewrite(
+                    CTX,
+                    ids["fork"],
+                    RewriteRequest(instruction=REWRITE_INSTRUCTION),
+                    viewpoint="omniscient",
+                )
+            ),
+            _both(_keep("rewrite", "id"), _keep("rewrite_q", "questions", 0, "id")),
+            status=lambda body: 201,
+            prepare=_script_rewrite,
+        ),
+        Step(
+            "get_rewrite",
+            lambda ids: Rest("GET", "/stories/{fork}/rewrites/{rewrite}", params=OMNISCIENT_QUERY),
+            lambda e, ids: _dumped(
+                e.get_rewrite(CTX, ids["fork"], ids["rewrite"], viewpoint="omniscient")
+            ),
+        ),
+        Step(
+            "list_rewrites",
+            lambda ids: Rest("GET", "/stories/{fork}/rewrites", params=OMNISCIENT_QUERY),
+            lambda e, ids: _dumped(e.list_rewrites(CTX, ids["fork"], viewpoint="omniscient")),
+        ),
+        Step(
+            "answer_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites/{rewrite}/answers",
+                {"answers": [{"question_id": ids["rewrite_q"], "accept_recommended": True}]},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.answer_rewrite(
+                    CTX,
+                    ids["fork"],
+                    ids["rewrite"],
+                    AnswerRequest.model_validate(
+                        {"answers": [{"question_id": ids["rewrite_q"], "accept_recommended": True}]}
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            _keep("rewrite_base", "base_revision"),
+        ),
+        # #224: the session applied as one amendment.
+        Step(
+            "apply_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites/{rewrite}/apply",
+                {"base_revision": ids["rewrite_base"]},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _applied(
+                e.apply_rewrite(
+                    CTX,
+                    ids["fork"],
+                    ids["rewrite"],
+                    ApplyRequest(base_revision=ids["rewrite_base"]),
+                    viewpoint="omniscient",
+                )
+            ),
+        ),
+        # #225: two of the fork's entities merged (best_effort, applied in the call).
+        Step(
+            "merge_entities",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/entities/merge",
+                {
+                    "entity_ids": [ids["merge_a"], ids["merge_b"]],
+                    "resolution_mode": "best_effort",
+                    "preview": "apply_directly",
+                },
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.merge_entities(
+                    CTX,
+                    ids["fork"],
+                    MergeRequest(
+                        entity_ids=[ids["merge_a"], ids["merge_b"]],
+                        resolution_mode="best_effort",
+                        preview="apply_directly",
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            status=lambda body: 201,
+            prepare=_merge_pair,
+        ),
+        # #226: an author's ephemeral directive on the fork (no model call: the kind is given).
+        Step(
+            "apply_directive",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/directives",
+                {"text": "Make this scene tense.", "kind": "ephemeral"},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _directed(
+                e.apply_directive(
+                    CTX,
+                    ids["fork"],
+                    DirectiveRequest(text="Make this scene tense.", kind="ephemeral"),
+                    viewpoint="omniscient",
+                )
+            ),
+        ),
+        # A second session, cancelled.
+        Step(
+            "open_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites",
+                {"instruction": REWRITE_INSTRUCTION},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.open_rewrite(
+                    CTX,
+                    ids["fork"],
+                    RewriteRequest(instruction=REWRITE_INSTRUCTION),
+                    viewpoint="omniscient",
+                )
+            ),
+            _keep("rewrite", "id"),
+            status=lambda body: 201,
+            prepare=_script_rewrite,
+        ),
+        Step(
+            "cancel_rewrite",
+            lambda ids: Rest(
+                "POST", "/stories/{fork}/rewrites/{rewrite}/cancel", params=OMNISCIENT_QUERY
+            ),
+            lambda e, ids: _rewrite(
+                e.cancel_rewrite(CTX, ids["fork"], ids["rewrite"], viewpoint="omniscient")
             ),
         ),
         Step(
@@ -3474,6 +3634,63 @@ async def _coverage_gap(engine: Engine, ids: Ids) -> None:
             text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
             {"s": ids["story"]},
         )
+
+
+REWRITE_INSTRUCTION = "The first reply was calmer."
+OMNISCIENT_QUERY = {"viewpoint": "omniscient"}
+REWRITE_ASKS = json.dumps(
+    {
+        "changes": [],
+        "ambiguities": [
+            {
+                "about": "tone",
+                "question": "How calm was it?",
+                "options": ["quiet", "gentle"],
+                "recommended": 0,
+            }
+        ],
+    }
+)
+REWRITE_PARSED = json.dumps(
+    {
+        "changes": [
+            {
+                "kind": "record",
+                "ref": {"turn": 1},
+                "action": "replace",
+                "new_text": "A quieter reply.",
+            }
+        ]
+    }
+)
+
+
+async def _script_rewrite(engine: Engine, ids: Ids) -> None:
+    """#223: the fork's ``rewrite_parse`` asks about the tone first, then (with the answer)
+    corrects turn 1's reply."""
+    assert engine.models.stub is not None
+    engine.models.stub.script("rewrite_parse", [REWRITE_ASKS, REWRITE_PARSED])
+
+
+async def _merge_pair(engine: Engine, ids: Ids) -> None:
+    """#225: two entities of the fork's to merge (the same kind)."""
+    from epistrel.core.propositions import store
+
+    async with engine.db.begin() as conn:
+        ids["merge_a"] = await store.add_entity(conn, ids["fork"], "other", "the lantern")
+        ids["merge_b"] = await store.add_entity(conn, ids["fork"], "other", "the old lamp")
+
+
+async def _directed(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(DirectiveBody.of(await call))
+
+
+async def _rewrite(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(RewriteSessionBody.of(await call))
+
+
+async def _applied(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(AppliedBody.of(await call))
 
 
 async def _gap_fill(call: Awaitable[Any]) -> dict[str, Any]:

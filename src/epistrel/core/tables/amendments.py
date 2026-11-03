@@ -51,7 +51,12 @@ amendments = Table(
     Column("id", ulid_type(), primary_key=True),
     Column("story_id", ulid_type(), nullable=False),
     Column("operation_id", ulid_type(), nullable=False),
-    Column("session_id", ulid_type(), nullable=True),
+    Column(
+        "session_id",
+        ulid_type(),
+        ForeignKey("rewrite_sessions.id", name="fk_amendments_session"),
+        nullable=True,
+    ),
     Column("tx_time", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
     Column("author", Text, nullable=False),
     Column("authority", Text, nullable=False, server_default=text("'author'")),
@@ -102,7 +107,9 @@ amendment_parts = Table(
     Column("tx_to", TIMESTAMP(timezone=True), nullable=True),
     CheckConstraint("kind IN ('proposition', 'record')", name="kind"),
     CheckConstraint("status IN ('active', 'reverted')", name="status"),
-    CheckConstraint("action IS NULL OR action IN ('replace', 'drop', 'relabel')", name="action"),
+    CheckConstraint(
+        "action IS NULL OR action IN ('replace', 'drop', 'relabel', 'set_intent')", name="action"
+    ),
     CheckConstraint(
         "strategy IS NULL OR strategy IN ('overlay', 'version', 'in_place')", name="strategy"
     ),

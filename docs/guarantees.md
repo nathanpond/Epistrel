@@ -59,6 +59,9 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 | embedding | `embedding` | model-dependent | NFR-QUAL-6 | `episodic` | `embedding` |
 | guardrail check | `guardrail_check` | model-dependent | unmeasured | none (every profile) | `guardrail_check` |
 | rating suggestion | `rating_suggestion` | model-dependent | unmeasured | none (outside stories) | `rating_suggestion` |
+| history rewrite parse | `rewrite_parse` | model-dependent | unmeasured | none (outside stories) | `rewrite_parse` |
+| history rewrite repair | `rewrite_record` | model-dependent | unmeasured | none (outside stories) | `rewrite_record` |
+| directive parse | `directive_parse` | model-dependent | unmeasured | none (outside stories) | `directive_parse` |
 | quality judge | `quality_judge` | model-dependent | NFR-QUAL-14 | none (outside stories) | `quality_judge` |
 
 ## Notes
@@ -83,6 +86,9 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `embedding`: The embedding port (FR-EMBED), measured by resolution retrieval.
 - `guardrail_check`: Only for an output policy that declares a model-assisted check (FR-GUARD-9); every other policy is evaluated by rules.
 - `rating_suggestion`: Advisory, outside stories (it reviews catalog entries), never a verdict.
+- `rewrite_parse`: The author's side-channel, never in a turn: its changes are previewed and every ambiguity is asked, with a recommendation, before anything is applied.
+- `rewrite_record`: The author's side-channel, never in a turn: a repaired text passes the output policies before it can be applied, and a failed repair is dropped or asked about.
+- `directive_parse`: The author's side-channel, never in a turn: a request's explicit kind overrides its classification, and a change to the past is previewed as a rewrite.
 - `quality_judge`: Eval only, never in a turn.
 
 ## Outside the guarantee: voice and plot
@@ -132,6 +138,9 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | embedding | `embedding` | model-dependent | not provided |
 | guardrail check | `guardrail_check` | model-dependent | provided |
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Not provided under Lite:** structural knowledge separation, verification, audience filtering, commitment.
@@ -177,6 +186,9 @@ Profile `00000000000000000000PRF003`, version 1 as seeded.
 | embedding | `embedding` | model-dependent | provided |
 | guardrail check | `guardrail_check` | model-dependent | provided |
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Provided under Standard:** structural knowledge separation, verification, audience filtering, commitment.
@@ -218,6 +230,9 @@ Profile `00000000000000000000PRF002`, version 4 as seeded.
 | embedding | `embedding` | model-dependent | provided |
 | guardrail check | `guardrail_check` | model-dependent | provided |
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Provided under Full:** structural knowledge separation, verification, audience filtering, commitment.
@@ -257,6 +272,9 @@ Profile `00000000000000000000PRF004`, version 1 as seeded.
 | embedding | `embedding` | model-dependent | provided |
 | guardrail check | `guardrail_check` | model-dependent | provided |
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Provided under Max:** structural knowledge separation, verification, audience filtering, commitment.

@@ -99,6 +99,33 @@ async def _amend(engine: AsyncEngine, story_id: str) -> None:
     await amendment_support.amend(
         engine, story_id, [RecordPartDraft("events", str(reply), "replace", {"text": "x"})]
     )
+    # #223: a rewrite session of the story's, with one question (planted).
+    session, question = new_ulid(), new_ulid()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO rewrite_sessions (id, story_id, principal, state, expires_at) "
+                "VALUES (:i, :s, 'p-author', 'cancelled', now())"
+            ),
+            {"i": session, "s": story_id},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO rewrite_questions (id, story_id, session_id, kind, key, prompt, "
+                "recommended_option_id, recommendation_reason) VALUES (:q, :s, :i, "
+                "'clarification', 'k', 'Which?', 'o1', 'The closest.')"
+            ),
+            {"q": question, "s": story_id, "i": session},
+        )
+        # #226: a queued author steer of the story's (planted).
+        await conn.execute(
+            text(
+                "INSERT INTO directives (id, story_id, principal, text, kind, classified_by, "
+                "disposition) VALUES (:d, :s, 'p-author', 'Make it tense.', 'ephemeral', "
+                "'request', 'steer_queued')"
+            ),
+            {"d": new_ulid(), "s": story_id},
+        )
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
@@ -756,6 +783,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
             ("amendment_part_id", "amendment_parts", "id"),
             # #228: a backfill's chunks and conflicts name it; all of one story.
             ("backfill_id", "story_backfills", "id"),
+            # #223: a question names its session, and an amendment the session that applied
+            # it; all of one story.
+            ("session_id", "rewrite_sessions", "id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

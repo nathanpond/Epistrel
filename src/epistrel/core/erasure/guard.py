@@ -416,6 +416,10 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.world_clock.stops", DIRECT),
     # #221: amendments and their parts are rows written in a rewrite_session's commit step.
     WritePath("epistrel.core.amendments.store", DIRECT),
+    # #223: a rewrite session's instruction and free-text answers (author text) and its plan.
+    WritePath("epistrel.orchestrator.rewrite.session", DIRECT),
+    # #226: a directive's text (author text) and what was parsed from it.
+    WritePath("epistrel.orchestrator.directives", DIRECT),
     # #210: the outbox's intent rows (a turn's commit step), and the dispatcher's and the
     # intake's raw writes (statuses and outcome records: ids, kinds and hashes, no text).
     WritePath("epistrel.core.outbox", DIRECT),

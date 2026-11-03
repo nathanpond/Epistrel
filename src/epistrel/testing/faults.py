@@ -473,6 +473,19 @@ def amendment_proposition_changes_skipped() -> Iterator[None]:
         store.PROPOSITION_CHANGES = True
 
 
+@contextlib.contextmanager
+def rewrite_apply_failing() -> Iterator[None]:
+    """Fail every rewrite apply after its parts are written (the fault point
+    ``rewrite.apply.after_part``, #224): the apply's transaction rolls back whole."""
+    from epistrel.orchestrator.rewrite import apply
+
+    apply.FAIL_AFTER_PARTS = True
+    try:
+        yield
+    finally:
+        apply.FAIL_AFTER_PARTS = False
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] != "serve":

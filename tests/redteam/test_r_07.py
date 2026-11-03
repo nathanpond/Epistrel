@@ -533,3 +533,93 @@ def test_r_07__draft_topology() -> None:
     factive = AttributionDecl(holder="I", factive=True)
     assert read(sketch("the girl", "on_channel", "call-9", attribution=factive))[2] is True
     assert read(sketch("the girl", "likes", "hay"))[2] is False
+
+
+@pytest.mark.integration
+@pytest.mark.redteam
+@pytest.mark.part("M7", "FR-GUARD-10")
+async def test_r_07__m7_rewrite(pg_url: str, engine: AsyncEngine) -> None:
+    """The rewrite path is blocked too (#223): with a 16-year-old in the cast, the euphemism,
+    the framing and the older claim sent as rewrite instructions are each refused 422
+    ``guardrail_violation`` naming the minors policy, with no session row and no
+    ``rewrite_parse`` call. Complement: the same cast without a minor lets the instructions
+    past the gate (the Lite story is then refused ``module_off`` until #245)."""
+    from sqlalchemy import func
+
+    from epistrel.core.tables import rewrite_sessions as sessions_table
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    story = await explicit_story(engine, minor=True)
+    adults = await explicit_story(engine, minor=False)
+    async with guarded_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        _flagged(stub)
+
+        def rewrite(story_id: str, said: str) -> Any:
+            return client.post(
+                f"/stories/{story_id}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": said},
+                headers=WRITE,
+            )
+
+        for said in INPUTS:
+            refused = await rewrite(story, said)
+            assert refused.status_code == 422, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "guardrail_violation"
+            assert [v["policy_id"] for v in error["details"]["violations"]] == [MINORS_POLICY_ID]
+        assert [c for c in stub.calls if c.purpose == "rewrite_parse"] == []
+        async with engine.connect() as conn:
+            count = await conn.scalar(
+                select(func.count()).where(sessions_table.c.story_id.in_([story, adults]))
+            )
+        assert count == 0
+        for said in INPUTS:
+            passed = await rewrite(adults, said)
+            assert passed.json()["error"]["code"] == "module_off", passed.text
+
+
+@pytest.mark.integration
+@pytest.mark.redteam
+@pytest.mark.part("M7", "FR-GUARD-10")
+async def test_r_07__m7_directive(pg_url: str, engine: AsyncEngine) -> None:
+    """The directive path is blocked too (#226): with a 16-year-old in the cast, the euphemism,
+    the framing and the older claim sent as author directives are each refused 422
+    ``guardrail_violation`` naming the minors policy, with no ``directives`` row and no
+    ``directive_parse`` call. Complement: the same cast without a minor lets the directives
+    past the gate (the Lite story is then refused ``module_off`` until #244)."""
+    from sqlalchemy import func
+
+    from epistrel.core.tables import directives as directives_table
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    story = await explicit_story(engine, minor=True)
+    adults = await explicit_story(engine, minor=False)
+    async with guarded_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        _flagged(stub)
+
+        def direct(story_id: str, said: str) -> Any:
+            return client.post(
+                f"/stories/{story_id}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": said},
+                headers=WRITE,
+            )
+
+        for said in INPUTS:
+            refused = await direct(story, said)
+            assert refused.status_code == 422, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "guardrail_violation"
+            assert [v["policy_id"] for v in error["details"]["violations"]] == [MINORS_POLICY_ID]
+        assert [c for c in stub.calls if c.purpose == "directive_parse"] == []
+        async with engine.connect() as conn:
+            count = await conn.scalar(
+                select(func.count()).where(directives_table.c.story_id.in_([story, adults]))
+            )
+        assert count == 0
+        for said in INPUTS:
+            passed = await direct(adults, said)
+            assert passed.json()["error"]["code"] == "module_off", passed.text

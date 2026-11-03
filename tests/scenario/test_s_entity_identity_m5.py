@@ -19,9 +19,9 @@ the stranger and did not know him, holds that she does not know the stranger.
 - **Jenni's line** "I've never met that stranger." is consistent with her beliefs and false in
   canon (labelled ``sincere_error``, objective relation false), and never repaired.
 - **Merges are M7's**: a canon ``same_as`` between two characters is 422
-  ``identity_merge_not_yet``; ``merge_entities`` raises it; ``entities/merge`` has no row in the
-  FR-API-6 route table and docs/02 §9 lists it as M7; a split has no route of its own (owner,
-  2026-10-28, #225).
+  ``identity_merge_not_yet``; ``merge_entities`` raises it; ``entities/merge`` is served from M7
+  (#225, its row in the FR-API-6 route table) and docs/02 §9 lists it as M7; a split
+  has no route of its own (owner, 2026-10-28, #225).
 """
 
 from __future__ import annotations
@@ -334,7 +334,9 @@ async def test_s_entity_identity__m5(
         for r in table.get(group, [])
         if isinstance(r, dict) and "path" in r
     }
-    assert not any("entities/merge" in p or "entities/split" in p for p in paths)
+    # #225 (M7) serves the merge; a split still has no route of its own.
+    assert not any("entities/split" in p for p in paths)
+    assert "/stories/{story_id}/entities/merge" in paths
     section = (ROOT / "docs/02-technology-architecture.md").read_text().split("## 9.")[1]
     section = section.split("\n## ")[0]
     assert "entities/merge" in section

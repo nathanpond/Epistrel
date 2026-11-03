@@ -80,6 +80,10 @@ class EntryPoint(StrEnum):
     """A character added to a running story (FR-CAT-7; #114)."""
     SANITIZE = "sanitize"
     """A sanitize's surrogate (FR-GUARD-4; #145)."""
+    DIRECTIVE = "directive"
+    """An author's directive (#226)."""
+    REWRITE = "rewrite"
+    """A history-rewrite instruction or a free-text answer to one of its questions (#223)."""
 
 
 @dataclass(frozen=True, slots=True)

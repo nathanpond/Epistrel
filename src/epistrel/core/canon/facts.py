@@ -483,12 +483,26 @@ def _open(
 ) -> list[ColumnElement[bool]]:
     """Version ``f`` is in the record and not closed (now, or at ``record_time``), in the view
     through ``through`` when given (a version a later row closes is current through N)."""
-    where = [~_closed_by(f, record_time, through)]
+    where = [~_closed_by(f, record_time, through), _not_reverted(f, record_time)]
     if through is not None:
         where.append(_through(f, through))
     if record_time is None:
         return [active_only(f), *where]
     return [f.c.tx_from <= record_time, active_as_of(f, record_time), *where]
+
+
+def _not_reverted(f: Any, record_time: datetime | None) -> ColumnElement[bool]:
+    """A version an amendment part wrote is out once that part is reverted (#225: a revert
+    closes what the part wrote even when it superseded nothing; at ``record_time``, out only if
+    reverted by then)."""
+    from epistrel.core.tables.amendments import amendment_parts
+
+    p = amendment_parts.c
+    reverted = p.tx_to.is_not(None) if record_time is None else p.tx_to <= record_time
+    return or_(
+        f.c.amendment_part_id.is_(None),
+        ~exists().where(p.id == f.c.amendment_part_id, reverted),
+    )
 
 
 def _select(f: Any) -> Any:
@@ -728,6 +742,14 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
             ):
                 return current
     conflicting = [c for c in overlapping if _conflicts(predicate, stored, c)]
+    if w.authority is not FactAuthority.AUTHOR and any(c.author_locked for c in conflicting):
+        # FR-DIRECT-6 (#226): narrative canon never supersedes the author's locked canon.
+        from epistrel.core.errors import AuthorityConflict
+
+        raise AuthorityConflict(
+            "a narrative write cannot supersede the author's locked fact",
+            {"fact_ids": [c.id for c in conflicting if c.author_locked]},
+        )
     closing = ([old] if old is not None else []) + conflicting
 
     proposition_id = await store.write_proposition(conn, w.story_id, w.proposition, found)
@@ -975,10 +997,12 @@ async def commit_fact(
     An affirmed ``same_as`` between two entities (FR-PROP-7, #171) files an identity proposal
     for the pair in the same transaction (``registry.file_identity_proposal``: the engine never
     merges them itself); one between two of the story's characters is 422
-    ``identity_merge_not_yet`` (merging two modeled characters is M7's amendment)."""
+    ``identity_merge_not_yet`` unless an amendment writes it (#225's merge, which also approves
+    the pair's proposal)."""
     refuse_holder(holder)
     pair = pair_of(proposition)
-    if pair is not None:
+    if pair is not None and amendment_part_id is None:
+        # #225: an amendment is how two characters become one referent (the merge route).
         await refuse_character_merge(conn, story_id, pair)
     fact = await _write(
         conn,
@@ -1005,9 +1029,18 @@ async def commit_fact(
         registry,
     )
     if pair is not None:
-        await file_identity_proposal(
+        proposal = await file_identity_proposal(
             conn, story_id, pair, reason="canon_same_as", fact_ids=[fact.id]
         )
+        if amendment_part_id is not None:
+            # #225: an author's merge decides the pair: its proposal is approved.
+            from epistrel.core.tables import predicate_proposals
+
+            await conn.execute(
+                update(predicate_proposals)
+                .where(predicate_proposals.c.id == proposal)
+                .values(status="approved")
+            )
     if fact.predicate_id == SCHEDULED and fact.commit_state is FactCommitState.COMMITTED:
         # #196 (FR-CLOCK-9): a canon scheduled event is an event of ``scheduled_events``,
         # written with its fact (here: the clock reads canon).

@@ -48,6 +48,7 @@ from epistrel.core.tables import (
     client_events,
     dependency_edges,
     divergences,
+    entities,
     escalations,
     events,
     exposures,
@@ -170,11 +171,14 @@ class PruneTarget(BaseModel):
 
 
 class Excluded(BaseModel):
-    """A target left out and why (``amendment_ids``: the amendments that name its records)."""
+    """A target left out and why (``amendment_ids``: the amendments that name its records;
+    ``settling_change_ids``: #702, the active changes that settle one of its ``state_changes``
+    rows, #218)."""
 
     target: str
-    reason: Literal["amendment_dependency", "in_flight"]
+    reason: Literal["amendment_dependency", "settlement_dependency", "in_flight"]
     amendment_ids: list[str] = Field(default_factory=list)
+    settling_change_ids: list[str] = Field(default_factory=list)
 
 
 class PruneImpact(BaseModel):
@@ -293,7 +297,36 @@ async def _targets(
                 target.excluded = Excluded(
                     target=target.id, reason="amendment_dependency", amendment_ids=names
                 )
+        if target.excluded is None:
+            settling = await _settling(conn, story_id, target.operation_ids)
+            if settling:
+                target.excluded = Excluded(
+                    target=target.id,
+                    reason="settlement_dependency",
+                    settling_change_ids=settling,
+                )
     return found
+
+
+async def _settling(
+    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str]
+) -> list[str]:
+    """#702 (#218): the active ``state_changes`` rows that settle a change of
+    ``operation_ids`` (``settles_change_id``: a settle-now of a discarded origin); the target
+    is kept whole while one does."""
+    from epistrel.core.membership import active_only
+
+    origin = state_changes.alias("origin")
+    found = await conn.scalars(
+        select(state_changes.c.id)
+        .join(origin, origin.c.id == state_changes.c.settles_change_id)
+        .where(
+            state_changes.c.story_id == story_id,
+            active_only(state_changes),
+            origin.c.operation_id.in_(list(operation_ids)),
+        )
+    )
+    return sorted(str(f) for f in found)
 
 
 async def _amendment_names(
@@ -515,20 +548,39 @@ async def _apply(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
     )
     await feedback.mark_pruned(conn, story_id, [str(m) for m in messages])
     rows: dict[str, int] = {}
-    await conn.execute(
-        text("SELECT set_config('epistrel.allow_story_delete', :s, true)"), {"s": story_id}
-    )
+    keys = await _state_keys(conn, ids)
+    propositions_named = await _propositions_named(conn, ids)
+    minted = [
+        str(e)
+        for e in await conn.scalars(
+            select(entities.c.id).where(
+                entities.c.story_id == story_id, entities.c.created_by_operation_id.in_(list(ids))
+            )
+        )
+    ]
+    # #702: the guards' own prune exemption (migration 0126), not the story-delete setting.
+    await conn.execute(text("SELECT set_config('epistrel.allow_prune', :s, true)"), {"s": story_id})
     try:
         for table in PRUNABLE_TABLES:
             key = table.c.operation_id
             doomed = list(await conn.scalars(select(table.c[_pk(table)]).where(key.in_(list(ids)))))
             if not doomed:
                 continue
-            await conn.execute(delete(table).where(key.in_(list(ids))))
-            await index.drop_many(conn, table.name, [str(d) for d in doomed])
+            pk = table.c[_pk(table)]
+            for start in range(0, len(doomed), CHUNK):
+                # #702: deleted in chunks of ``CHUNK`` rows, all in the one transaction.
+                chunk = doomed[start : start + CHUNK]
+                await conn.execute(delete(table).where(pk.in_(chunk)))
+                await index.drop_many(conn, table.name, [str(d) for d in chunk])
             rows[table.name] = len(doomed)
     finally:
-        await conn.execute(text("SELECT set_config('epistrel.allow_story_delete', '', true)"))
+        await conn.execute(text("SELECT set_config('epistrel.allow_prune', '', true)"))
+    if keys:
+        from epistrel.core import states
+
+        # #702: the projection of the touched State keys refolded from what remains.
+        await states.refresh(conn, story_id, keys)
+    rows.update(await _orphans(conn, story_id, propositions_named, minted))
     kept_outcomes = select(external_effect_outbox.c.outcome_event_id).where(
         external_effect_outbox.c.outcome_event_id.is_not(None)
     )
@@ -550,7 +602,182 @@ async def _apply(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
         await conn.execute(text("SELECT set_config('epistrel.allow_prune', '', true)"))
     await index.drop_many(conn, "events", [str(e) for e in doomed_events])
     await index.drop_many(conn, "operations", list(ids))
+    trimmed = await _trim_proposals(conn, story_id, {str(e) for e in doomed_events})
+    if trimmed:
+        rows["state_proposals"] = trimmed
     return {"operations": len(ids), "events": len(doomed_events), "rows_by_table": rows}
+
+
+CHUNK = 5_000
+"""#702: the most rows one delete statement of a pruning removes."""
+
+
+async def _state_keys(conn: AsyncConnection, ids: Sequence[str]) -> list[tuple[str, str | None]]:
+    """The ``(state_id, scope_key)`` keys the pruned operations' State changes touch."""
+    found = await conn.execute(
+        select(state_changes.c.state_id, state_changes.c.scope_key)
+        .where(state_changes.c.operation_id.in_(list(ids)))
+        .distinct()
+    )
+    return [(str(r.state_id), None if r.scope_key is None else str(r.scope_key)) for r in found]
+
+
+PROPOSITION_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("facts", "proposition_id"),
+    ("beliefs", "proposition_id"),
+    ("exposures", "proposition_id"),
+    ("promissory_ledger", "proposition_id"),
+    ("proposition_changes", "proposition_id"),
+    ("scheduled_events", "proposition_id"),
+    ("divergences", "asserted_proposition_id"),
+    ("divergences", "believed_proposition_id"),
+    ("amendment_parts", "proposition_id"),
+    ("belief_state", "proposition_id"),
+    ("nested_belief_state", "proposition_id"),
+)
+"""#702: every column that names a proposition (``memories.proposition_ids`` and
+``utterances.proposition_ids`` are arrays, read apart)."""
+
+
+async def _propositions_named(conn: AsyncConnection, ids: Sequence[str]) -> set[str]:
+    """The propositions the pruned operations' rows name (candidates for the orphan sweep)."""
+    from epistrel.core.tables import metadata
+
+    found: set[str] = set()
+    for table_name, column in PROPOSITION_COLUMNS:
+        table = metadata.tables[table_name]
+        if "operation_id" not in table.c:
+            continue
+        found.update(
+            str(p)
+            for p in await conn.scalars(
+                select(table.c[column]).where(
+                    table.c.operation_id.in_(list(ids)), table.c[column].is_not(None)
+                )
+            )
+        )
+    return found
+
+
+async def _orphans(
+    conn: AsyncConnection, story_id: str, candidates: set[str], minted: Sequence[str]
+) -> dict[str, int]:
+    """#702: the propositions only the pruned rows named, and the entities (with their
+    aliases) only the pruned turns minted, that nothing retained references, deleted."""
+
+    from epistrel.core.tables import entity_aliases, metadata, propositions
+
+    deleted: dict[str, int] = {}
+    referenced: set[str] = set()
+    if candidates:
+        wanted = sorted(candidates)
+        for table_name, column in PROPOSITION_COLUMNS:
+            table = metadata.tables[table_name]
+            referenced.update(
+                str(p)
+                for p in await conn.scalars(
+                    select(table.c[column]).where(table.c[column].in_(wanted))
+                )
+            )
+        for table_name in ("memories", "utterances"):
+            table = metadata.tables[table_name]
+            referenced.update(
+                str(p)
+                for p in await conn.scalars(
+                    select(func.unnest(table.c.proposition_ids)).where(
+                        table.c.story_id == story_id,
+                        table.c.proposition_ids.overlap(wanted),
+                    )
+                )
+            )
+    orphan_props = sorted(candidates - referenced)
+    kept_entities: set[str] = set()
+    if minted:
+        p = propositions.c
+        kept_entities.update(
+            str(x)
+            for x in await conn.scalars(
+                select(p.subject_id).where(
+                    p.subject_id.in_(list(minted)), p.id.not_in(orphan_props)
+                )
+            )
+        )
+        kept_entities.update(
+            str(x)
+            for x in await conn.scalars(
+                select(p.object_id).where(p.object_id.in_(list(minted)), p.id.not_in(orphan_props))
+            )
+        )
+        for table_name, column in (
+            ("state_definitions", "entity_id"),
+            ("scheduled_events", "place_id"),
+            ("placement", "entity_id"),
+            ("placement", "location_id"),
+            ("placement", "container_id"),
+            ("relationships", "subject_id"),
+            ("relationships", "object_id"),
+            ("scene_state", "location_id"),
+            ("thunks", "subject_id"),
+            ("thunks", "object_id"),
+            ("dependency_edges", "target_id"),
+            ("entities", "merged_into"),
+        ):
+            table = metadata.tables[table_name]
+            kept_entities.update(
+                str(x)
+                for x in await conn.scalars(
+                    select(table.c[column]).where(table.c[column].in_(list(minted)))
+                )
+            )
+        kept_entities.update(
+            str(x)
+            for x in await conn.scalars(
+                select(entities.c.id).where(
+                    entities.c.id.in_(list(minted)), entities.c.character_id.is_not(None)
+                )
+            )
+        )
+    orphan_entities = sorted(set(minted) - kept_entities)
+    await conn.execute(
+        text("SELECT set_config('epistrel.allow_story_delete', :s, true)"), {"s": story_id}
+    )
+    try:
+        if orphan_props:
+            await conn.execute(delete(propositions).where(propositions.c.id.in_(orphan_props)))
+            deleted["propositions"] = len(orphan_props)
+        if orphan_entities:
+            await conn.execute(
+                delete(entity_aliases).where(entity_aliases.c.entity_id.in_(orphan_entities))
+            )
+            await conn.execute(delete(entities).where(entities.c.id.in_(orphan_entities)))
+            deleted["entities"] = len(orphan_entities)
+    finally:
+        await conn.execute(text("SELECT set_config('epistrel.allow_story_delete', '', true)"))
+    return deleted
+
+
+async def _trim_proposals(conn: AsyncConnection, story_id: str, gone: set[str]) -> int:
+    """#702: a State proposal's evidence naming a deleted event is dropped; a pending proposal
+    left with none is deleted. How many proposals changed."""
+    from epistrel.core.tables import state_proposals
+
+    if not gone:
+        return 0
+    sp = state_proposals.c
+    changed = 0
+    for row in await conn.execute(
+        select(sp.id, sp.evidence, sp.status).where(sp.story_id == story_id)
+    ):
+        evidence = list(row.evidence or [])
+        kept = [e for e in evidence if str(dict(e).get("event_id")) not in gone]
+        if len(kept) == len(evidence):
+            continue
+        changed += 1
+        if not kept and str(getattr(row.status, "value", row.status)) == "proposed":
+            await conn.execute(delete(state_proposals).where(sp.id == row.id))
+        else:
+            await conn.execute(update(state_proposals).where(sp.id == row.id).values(evidence=kept))
+    return changed
 
 
 # -- the policy and the history (#248) ------------------------------------------------------------

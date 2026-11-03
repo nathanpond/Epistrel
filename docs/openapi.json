@@ -11618,7 +11618,7 @@
         "type": "object"
       },
       "Excluded": {
-        "description": "A target left out and why (``amendment_ids``: the amendments that name its records).",
+        "description": "A target left out and why (``amendment_ids``: the amendments that name its records;\n``settling_change_ids``: #702, the active changes that settle one of its ``state_changes``\nrows, #218).",
         "properties": {
           "amendment_ids": {
             "items": {
@@ -11630,10 +11630,18 @@
           "reason": {
             "enum": [
               "amendment_dependency",
+              "settlement_dependency",
               "in_flight"
             ],
             "title": "Reason",
             "type": "string"
+          },
+          "settling_change_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Settling Change Ids",
+            "type": "array"
           },
           "target": {
             "title": "Target",

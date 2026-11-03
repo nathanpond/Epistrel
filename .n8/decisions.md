@@ -11760,3 +11760,31 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
 - **Decision (test ids):** the planned `test_lite_directive_dispatch` and `test_lite_directed_regeneration` are written as `test_s_lite_directive__dispatch` and `__regeneration`, and the upgrade case is `test_i_19__m7_author_facts` with I-19's existing M7 requirements.
   **Why:** a new test id needs a §15 row, and S-LITE-DIRECTIVE and I-19 already own these requirements.
   **Issue:** #699
+
+### #702 — pruning follow-ups
+
+- **Decision (guards):** migration 0126 does two things.
+  - **Terminal.** `operations_pruned_terminal` refuses any flip out of `pruned`.
+  - **Exemption.** It injects the pruning's own exemption (`epistrel.allow_prune` for the story, and only for a row whose operation is `pruned`) at the head of every `*_append_only`/`*_guard` trigger function on `PRUNABLE_TABLES` that admits the story-delete setting. The injection rewrites `pg_get_functiondef` and is marked, so the downgrade removes it.
+  - **Result.** A pruning sets only `allow_prune` for the derived deletes. The story-delete setting is used only for the orphan proposition and entity sweep, because `propositions` and `entities` are not operation-keyed.
+  **Why:** one generic rewrite instead of re-stating the eight guard bodies.
+  **Issue:** #702
+- **Decision:** what else a pruning now does:
+  - **Settlement dependency.** A target holding a `state_changes` row that an active row names through `settles_change_id` is excluded whole: `settlement_dependency`, with `settling_change_ids`.
+  - **Chunked deletes.** Each table's rows are deleted in chunks of `CHUNK` (5,000), with the index rows dropped per chunk.
+  - **State values.** The touched `(state, scope)` keys are refolded with `states.refresh`.
+  - **Orphans.** Propositions that only the pruned rows named and nothing retained references (every proposition column, plus the `proposition_ids` arrays) are deleted. So are entities that only the pruned operations minted and nothing references (propositions, placement, relationships, States, scheduled events, thunks, edges, merges, characters), with their aliases.
+  - **State proposals.** Evidence naming a deleted event is dropped, and a `proposed` proposal left with none is deleted.
+  **Issue:** #702
+- **Decision (markers):** a `prune_marker` event type is registered but never written.
+  - `audit_view` synthesizes one marker per target from the `pruning` event, at the target's first turn.
+  - The as-originally-recorded view lists the markers beside the erasures.
+  - A checkpoint whose operation is pruned is 409 `pruned`.
+  **Issue:** #702
+- **Decision (refusals):**
+  - `variants.chain_operations` raises 409 `pruned` for a chain with a pruned operation. That covers `history?variant=` and a fork's `variant_chain`, though a pruned chain usually no longer resolves, which gives the existing 404/409.
+  - A rating write (`rate`, `retract`) to a message whose ratings carry `pruned_at` is 409 `pruned`.
+  - `undo_state` already counted only `discarded`/`dormant` operations, so `dormant_chains` drops a pruned chain with no change. The test asserts it.
+  **Issue:** #702
+- **Decision (docs):** the docs/02 §9 paragraph is added for `POST /prune` and `/prune-runs`.
+  **Issue:** #702

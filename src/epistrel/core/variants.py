@@ -424,6 +424,11 @@ async def chain_operations(conn: AsyncConnection, story_id: str, ref: ChainRef) 
     tip = tree.resolve(ref)
     path = tree.path(tip)
     found = await path_operations(conn, story_id, path)
+    from epistrel.core.pruned import assert_not_pruned
+
+    # #702 (FR-STORE-32): a chain a pruning removed is no longer readable or promotable
+    # (``history?variant=``, a fork's ``variant_chain``): 409 ``pruned``.
+    await assert_not_pruned(conn, story_id, [op for op, _ in found])
     return ChainSelection(
         ref=ref,
         branch=path.branch if path.nodes else tip.turn,

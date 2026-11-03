@@ -273,3 +273,281 @@ async def test_s_prune__policy(stub_settings: Settings, engine: AsyncEngine) -> 
         assert run["principal"] == "system"
         none = await client.get(f"/stories/{kept}/prune-runs", headers=READ)
         assert none.json()["prune_runs"] == []
+
+
+@pytest.mark.part("M7", "FR-STORE-18,19,28,32; FR-FB-2")
+async def test_s_prune__follow_ups(
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#702 (#247's not-built clauses), over S-PRUNE's tail and continuation:
+
+    - **markers**: ``audit_view`` carries a ``prune_marker`` at the tail's first turn and the
+      as-originally-recorded view lists it beside the erasures; a checkpoint inside the pruned
+      range is 409 ``pruned``;
+    - **replay**: refolding every projection after the pruning gives the live projections;
+    - **cleanup**: an entity only the tail minted is deleted with its aliases, one an active fact
+      still names is kept; a State proposal whose only evidence was a pruned event is deleted;
+    - **refusals**: a feedback write to a pruned message, ``history?variant=`` of a pruned chain
+      and a fork promoting it are 409 ``pruned`` (or the chain is gone); ``dormant_chains`` no
+      longer lists it;
+    - **guards**: ``pruned`` is terminal (the operations trigger refuses a flip back), and the
+      deletes run in chunks (``CHUNK`` lowered to 1 here)."""
+    from epistrel.core import prune as core_prune
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.enums import OperationKind
+    from epistrel.core.ids import new_ulid
+    from epistrel.core.projections.fold import fold
+    from epistrel.core.propositions import store
+    from epistrel.core.propositions.model import Interval, Proposition
+    from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+    from epistrel.core.views import Checkpoint, as_originally_recorded, audit_view
+    from tests.canon_support import commit
+
+    monkeypatch.setattr(core_prune, "CHUNK", 1)
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, actor = await _story(client, engine)
+        played = []
+        for _ in range(3):
+            found = await respond(client, story, respond_body(actor, FIRST))
+            assert found.status_code == 200, found.text
+            played.append(found.json())
+        rated = played[1]["message"]["message_id"]
+        assert (await rate(client, story, rated, {"rating": 2})).status_code in (200, 201)
+        (tail_op,) = await rows(
+            engine,
+            "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "AND narrative_turn = 3",
+            s=story,
+        )
+        tail_event = played[2]["message"]["message_id"]
+        async with engine.begin() as conn:
+            lonely = await store.add_entity(
+                conn, story, "item", "a lost glove", operation_id=str(tail_op.operation_id)
+            )
+            named = await store.add_entity(
+                conn, story, "item", "a brass key", operation_id=str(tail_op.operation_id)
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO state_proposals (id, story_id, name, suggested_type, "
+                    "suggested_scope, evidence, created_by_operation_id) VALUES (:i, :s, 'mood', "
+                    "'number', 'story', CAST(:e AS jsonb), :o)"
+                ),
+                {
+                    "i": new_ulid(),
+                    "s": story,
+                    "e": f'[{{"turn": 3, "event_id": "{tail_event}", "span": [0, 1], "text": ""}}]',
+                    "o": str(tail_op.operation_id),
+                },
+            )
+        await _ok(
+            await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+        )
+        # An active fact (after the truncation) still names the key.
+        await commit(
+            engine,
+            story,
+            Proposition(
+                subject_id=named,
+                predicate_id=CORE_BY_NAME["held_by"].id,
+                object_id=actor,
+                valid_time=Interval.of(None, None),
+            ),
+            provenance="author",
+            kind=OperationKind.CONTROL,
+        )
+        applied = await _ok(await _prune(client, story, ignore_warnings=True))
+        prune_id = applied["result"]["prune_id"]
+
+        markers = [e for e in await audit_view(engine, story) if e.type == "prune_marker"]
+        assert [(m.narrative_turn, m.payload.prune_id) for m in markers] == [(2, prune_id)]  # type: ignore[attr-defined]
+        view = await as_originally_recorded(engine, story, Checkpoint(1))
+        assert any(m.get("type") == "prune_marker" for m in view.erasure_markers)
+        from epistrel.core.errors import Pruned
+
+        with pytest.raises(Pruned):
+            await as_originally_recorded(engine, story, Checkpoint(3))
+
+        from datetime import datetime as _dt
+
+        from epistrel.core.projections.base import registered_projections
+        from epistrel.core.projections.fold import replace_with_fold
+
+        async def projected() -> dict[str, list[tuple[Any, ...]]]:
+            found: dict[str, list[tuple[Any, ...]]] = {}
+            for projection in registered_projections():
+                table = projection.table
+                kept = [c.name for c in table.c]
+                listed = await rows(
+                    engine,
+                    f"SELECT * FROM {table.name} WHERE story_id = :s",  # noqa: S608
+                    s=story,
+                )
+                found[projection.name] = sorted(
+                    tuple(
+                        None if isinstance(v, _dt) else str(v)
+                        for v in (getattr(r, c) for c in kept)
+                    )
+                    for r in listed
+                )
+            return found
+
+        live = await projected()
+        async with engine.begin() as conn:
+            await replace_with_fold(conn, story)
+        assert await projected() == live  # the replay of the post-pruning log
+        del fold
+
+        entities_left = {
+            str(r.id)
+            for r in await rows(engine, "SELECT id FROM entities WHERE story_id = :s", s=story)
+        }
+        assert lonely not in entities_left
+        assert named in entities_left
+        assert (
+            await scalar(
+                engine, "SELECT count(*) FROM entity_aliases WHERE entity_id = :e", e=lonely
+            )
+            == 0
+        )
+        assert (
+            await scalar(
+                engine, "SELECT count(*) FROM state_proposals WHERE story_id = :s", s=story
+            )
+            == 0
+        )
+
+        refused = await rate(client, story, rated, {"rating": 1})
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "pruned"
+        with pytest.raises(DBAPIError):
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE operations SET membership = 'active' WHERE story_id = :s "
+                        "AND membership = 'pruned'"
+                    ),
+                    {"s": story},
+                )
+        del canon
+
+        # A dormant continuation, pruned: its chain is no longer readable or promotable.
+        other, other_actor = await _story(client, engine)
+        await _ok(await respond(client, other, respond_body(other_actor, FIRST)))
+        await _ok(await client.post(f"/stories/{other}/regenerate", json={}, headers=WRITE))
+        before = await _ok(await client.get(f"/stories/{other}", headers=READ))
+        assert before["dormant_chains"]
+        chain = before["dormant_chains"][0]
+        await _ok(await _prune(client, other, ignore_warnings=True))
+        after = await _ok(await client.get(f"/stories/{other}", headers=READ))
+        assert after["dormant_chains"] == []
+        read = await client.get(
+            f"/stories/{other}/history",
+            params={"variant": f"{chain['from_turn']}:{chain['variant']}"},
+            headers=READ,
+        )
+        assert read.status_code in (404, 409), read.text
+        forked = await client.post(
+            f"/stories/{other}/fork",
+            json={"variant_chain": {"turn": chain["from_turn"], "variant": chain["variant"]}},
+            headers=WRITE,
+        )
+        assert forked.status_code in (404, 409), forked.text
+
+
+@pytest.mark.part("M7", "FR-STORE-18,19,28,32; FR-FB-2")
+async def test_s_prune__settlement_dependency(
+    stub_settings: Settings, engine: AsyncEngine, states_delivered: None
+) -> None:
+    """#702 (#218): a tail holding a State change an active change settles
+    (``settles_change_id``) is excluded whole, ``settlement_dependency`` with the settling
+    change ids; complement: without the settling row the tail is a target."""
+    from epistrel.core.ids import new_ulid
+    from epistrel.core.states.api import StateSetRequest, set_state
+    from epistrel.core.tables import state_changes
+    from tests import state_support as ss
+
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, actor = await _story(client, engine)
+        await ss.set_level(engine, story, "prompt_only")
+        await ss.define_all(engine, story, ss.gold(name="coins"))
+        for _ in range(3):
+            await _ok(await respond(client, story, respond_body(actor, FIRST)))
+        await set_state(
+            engine,
+            story,
+            "coins",
+            StateSetRequest(value=5, scope_key=actor, reason="a purse"),
+            principal="p-consumer",
+        )
+        (origin,) = await rows(
+            engine,
+            "SELECT id FROM state_changes WHERE story_id = :s ORDER BY id DESC LIMIT 1",
+            s=story,
+        )
+        await _ok(
+            await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+        )
+        report = await _ok(await _prune(client, story))
+        assert report["impact"]["to_delete"]["discarded_tails"]
+        await set_state(
+            engine,
+            story,
+            "coins",
+            StateSetRequest(value=6, scope_key=actor, reason="a coin"),
+            principal="p-consumer",
+        )
+        (active,) = await rows(
+            engine,
+            "SELECT id FROM state_changes WHERE story_id = :s AND membership = 'active' "
+            "ORDER BY id DESC LIMIT 1",
+            s=story,
+        )
+        columns = [c.name for c in state_changes.c if c.name not in ("id", "settles_change_id")]
+        listed = ", ".join(columns)
+        settling = new_ulid()
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    f"INSERT INTO state_changes (id, settles_change_id, {listed}) "  # noqa: S608
+                    f"SELECT :n, :o, {listed} FROM state_changes WHERE id = :a"
+                ),
+                {"n": settling, "o": str(origin.id), "a": str(active.id)},
+            )
+        report = await _ok(await _prune(client, story))
+        assert report["impact"]["to_delete"]["discarded_tails"] == []
+        (excluded,) = report["impact"]["excluded"]
+        assert excluded["reason"] == "settlement_dependency"
+        assert excluded["settling_change_ids"] == [settling]
+        await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M7", "FR-STORE-18,19,28,32; FR-FB-2")
+async def test_s_prune__held_turn(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#702 (FR-CONC-4): a pruning is not a control action, so a turn generating while it
+    commits rebases and commits (its attempt records ``rebase``), never abandoned."""
+    import asyncio
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, actor = await _story(client, engine)
+        for _ in range(3):
+            await _ok(await respond(client, story, respond_body(actor, FIRST)))
+        await _ok(
+            await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+        )
+        stub.reset()
+        latch = stub.hold("generation")
+        task = asyncio.ensure_future(respond(client, story, respond_body(actor, FIRST)))
+        await asyncio.wait_for(latch.entered.wait(), 5)
+        await _ok(await _prune(client, story, ignore_warnings=True))
+        latch.release()
+        played = await task
+        assert played.status_code == 200, played.text
+        attempts = await scalar(
+            engine,
+            "SELECT attempts FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "AND membership = 'active' ORDER BY narrative_turn DESC LIMIT 1",
+            s=story,
+        )
+        assert [a["outcome"] for a in attempts] == ["rebase"], attempts

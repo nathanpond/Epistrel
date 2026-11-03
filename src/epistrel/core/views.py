@@ -153,13 +153,74 @@ async def _overlaid(
 async def audit_view(
     db: AsyncEngine | AsyncConnection, story_id: str, through_turn: int | None = None
 ) -> list[Event]:
-    """Every event of ``story_id`` in every category, discarded operations included."""
+    """Every event of ``story_id`` in every category, discarded operations included; #702: a
+    ``prune_marker`` item at the start of each range a pruning removed (no content)."""
     query = _base(story_id)
     if through_turn is not None:
         query = query.where(
             or_(events.c.narrative_turn.is_(None), events.c.narrative_turn <= through_turn)
         )
-    return await _fetch(db, query)
+    found = await _fetch(db, query)
+    async with _connection(db) as conn:
+        markers = await prune_markers(conn, story_id)
+    pruning = {e.payload.prune_id: e for e in found if e.type == "pruning"}  # type: ignore[attr-defined]
+    for n, marker in enumerate(markers):
+        at = marker["from"]
+        if through_turn is not None and int(at["turn"]) > through_turn:
+            continue
+        source = pruning.get(marker["prune_id"])
+        if source is None:
+            continue
+        found.append(
+            replace(
+                source,
+                id=f"{source.id}:{n}",
+                category=EventCategory.CONTROL,
+                narrative_turn=int(at["turn"]),
+                turn_variant=int(at["variant"]),
+                beat=None,
+                step=0,
+                slot_k=None,
+                type="prune_marker",
+                payload=validate("prune_marker", {k: v for k, v in marker.items() if k != "type"}),
+            )
+        )
+    found.sort(
+        key=lambda e: (
+            e.narrative_turn is not None,
+            e.narrative_turn or 0,
+            e.turn_variant is not None,
+            e.turn_variant or 0,
+            e.seq,
+        )
+    )
+    return found
+
+
+async def prune_markers(conn: AsyncConnection, story_id: str) -> list[dict[str, Any]]:
+    """#702 (FR-STORE-1,32): one ``{type: prune_marker, prune_id, target_kind, from, to,
+    operations}`` per target of every pruning of the story, in pruning order (identifiers,
+    positions and counts only)."""
+    rows = await conn.execute(
+        select(events.c.payload)
+        .where(events.c.story_id == story_id, events.c.type == "pruning")
+        .order_by(events.c.seq)
+    )
+    found: list[dict[str, Any]] = []
+    for row in rows:
+        payload = dict(row.payload or {})
+        for target in payload.get("targets") or []:
+            found.append(
+                {
+                    "type": "prune_marker",
+                    "prune_id": str(payload.get("prune_id")),
+                    "target_kind": str(target.get("kind")),
+                    "from": dict(target.get("from") or {"turn": 0, "variant": 0}),
+                    "to": dict(target.get("to") or {"turn": 0, "variant": 0}),
+                    "operations": len(target.get("operation_ids") or []),
+                }
+            )
+    return found
 
 
 def _base(story_id: str) -> Select[Any]:
@@ -270,12 +331,22 @@ async def boundary_tx(
     active_first = (o.membership == Membership.ACTIVE.value).desc()
     row = (
         await conn.execute(
-            select(o.committed_at, o.turn_stage, o.stage_log, o.status)
+            select(
+                o.operation_id, o.committed_at, o.turn_stage, o.stage_log, o.status, o.membership
+            )
             .where(o.story_id == story_id, o.status == OperationStatus.COMMITTED.value, *where)
             .order_by(active_first, o.committed_at.desc())
             .limit(1)
         )
     ).one_or_none()
+    if row is not None and str(getattr(row.membership, "value", row.membership)) == "pruned":
+        from epistrel.core.errors import Pruned
+
+        # #702: a checkpoint inside a pruned range cannot be shown as recorded.
+        raise Pruned(
+            "the checkpoint is in a range a pruning removed",
+            {"turn": checkpoint.turn, "operation_id": str(row.operation_id)},
+        )
     if row is None or row.committed_at is None:
         raise CheckpointNotFound(
             "no committed checkpoint there",
@@ -459,5 +530,7 @@ async def as_originally_recorded(
         ]
         kept = await _overlaid_at(conn, story_id, kept, boundary)
         markers = await erasure_markers(conn, story_id)
+        # #702: the pruned ranges, beside the erasures (#222's marker list).
+        markers += await prune_markers(conn, story_id)
         recorded = await canon.canon_as_recorded(conn, story_id, record_time=boundary)
     return HistoryView(checkpoint, boundary, kept, markers, list(recorded))

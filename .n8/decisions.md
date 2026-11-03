@@ -11936,3 +11936,9 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   - **S-ERASURE-BOUNDARY.** The M7 rewrite test asserts the as-recorded view's erasure markers (FR-STORE-23).
   - **Renames.** The #700 tests are renamed into S-LITE-REWRITE (`test_s_lite_rewrite__*`) so they map to a docs/04 test ID.
   **Issue:** milestone gate (#222, #247, #249, #250)
+- **Decision (CI follow-ups, Rule 1):**
+  - **0126 downgrade.** It now cuts each guard's prune clause out by position. The regex escape had been lost in the E-string, so the downgrade left the clause in place (`test_i_08__round_trip`).
+  - **Expression index.** `ix_stories_prune_policy` is an expression index Alembic cannot compare, so `schema.EXPRESSION_INDEXES` keeps it out of autogenerate (`test_drift`).
+  - **Reach relation.** A Lite reach hit's relation is compared through `lite._conflicting`, so #104's relation-literal scan does not read it as an ownership decision.
+  - **Queue fold.** The #229 queue fold runs only for a version that changes data-producing settings; a behavioral edit leaves a queued upgrade as it is (`test_two_stage::test_reports_list_at_most_the_cap`).
+  **Issue:** #702, #703, #700, #698

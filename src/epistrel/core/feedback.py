@@ -664,6 +664,23 @@ async def refuse_tag_removal(
         )
 
 
+async def count_rated(conn: AsyncConnection, story_id: str, operation_ids: Sequence[str]) -> int:
+    """#247: how many ratings name a message of ``operation_ids`` (a pruning's report)."""
+    if not operation_ids:
+        return 0
+    return int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(message_feedback)
+            .where(
+                message_feedback.c.story_id == story_id,
+                message_feedback.c.operation_id.in_(list(operation_ids)),
+            )
+        )
+        or 0
+    )
+
+
 async def mark_pruned(conn: AsyncConnection, story_id: str, message_ids: Sequence[str]) -> int:
     """Mark the ratings of messages an opt-in pruning removed (FR-FB-2, FR-STORE-32): the
     hook M7's pruning calls in its transaction. The ratings are kept, with ``pruned_at``

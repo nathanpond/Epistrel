@@ -836,6 +836,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{S}/backfill"): Call(404),
     ("DELETE", f"{S}/backfill"): Call(404),
     ("POST", f"{S}/backfill"): Call(409, {}),  # a story with no turn has nothing to backfill
+    # #247: nothing to prune: the report, applied false.
+    ("POST", f"{S}/prune"): Call(200, {"ignore_warnings": True}),
+    ("GET", f"{S}/prune-runs"): Call(200),  # #248
     # #230: no backfill, so no conflict to resolve.
     ("POST", f"{S}/backfill/conflicts/{{cid}}"): Call(
         404, {"accept_recommendation": True}, prepare=_no_conflict

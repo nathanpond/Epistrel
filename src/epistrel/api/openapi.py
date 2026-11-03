@@ -246,6 +246,9 @@ ERROR_STATUS: dict[str, int] = {
     "backfill_in_progress": 409,
     "checkpoint_incomplete": 409,
     "nothing_to_backfill": 409,
+    "pruned": 409,
+    "prune_target_unknown": 422,
+    "prune_target_ineligible": 422,
     "backfill_conflict_not_found": 404,
     "backfill_conflict_closed": 409,
     "backfill_not_awaiting_conflicts": 409,
@@ -604,6 +607,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Backfill (#228): a gap fill, its read and its cancel.
     "start_backfill": ("backfill_in_progress", "nothing_to_backfill", "story_archived"),
     "get_backfill": ("backfill_not_found",),
+    # #247: manual pruning.
+    "prune_story": (
+        "story_archived",
+        "story_paused",
+        "prune_target_unknown",
+        "prune_target_ineligible",
+    ),
     # #230: a conflict's resolution.
     "resolve_backfill_conflict": (
         "backfill_not_found",

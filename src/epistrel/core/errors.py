@@ -1761,6 +1761,28 @@ class InvalidResolution(EpistrelError):
     http_status = 422
 
 
+class Pruned(EpistrelError):
+    """The records the call needs were pruned (#247, FR-STORE-18,28): ``details``:
+    ``operation_id``. Nothing changes."""
+
+    code = "pruned"
+    http_status = 409
+
+
+class PruneTargetUnknown(EpistrelError):
+    """A pruning names a target the story does not have (#247)."""
+
+    code = "prune_target_unknown"
+    http_status = 422
+
+
+class PruneTargetIneligible(EpistrelError):
+    """A pruning names a target that cannot be pruned (#247): ``details.reason``."""
+
+    code = "prune_target_ineligible"
+    http_status = 422
+
+
 class CheckpointNotFound(EpistrelError):
     """No committed checkpoint is at that turn, slot or variant (#222)."""
 

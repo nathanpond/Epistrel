@@ -51,6 +51,7 @@ from epistrel.orchestrator.jobs.handlers.outbox import (
     OUTBOX_RECOVERY_HANDLER,
     OUTBOX_RECOVERY_TASK,
 )
+from epistrel.orchestrator.jobs.handlers.prune_policy import PRUNE_RUN_HANDLER, PRUNE_RUN_TASK
 from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
 from epistrel.orchestrator.jobs.handlers.reembed import EMBED_HANDLER, REEMBED_HANDLER
@@ -126,9 +127,11 @@ for _handler in (
     CERTIFICATION_RECERTIFY_HANDLER,
     BACKFILL_HANDLER,
     REWRITE_EXPIRY_HANDLER,
+    PRUNE_RUN_HANDLER,
 ):
     register(_handler)
 for _task in (
+    PRUNE_RUN_TASK,
     IDEMPOTENCY_TASK,
     RETENTION_TASK,
     TURN_QUEUE_TASK,

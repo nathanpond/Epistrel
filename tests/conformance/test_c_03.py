@@ -179,6 +179,7 @@ from epistrel.api.routes.story_texts import (
 )
 from epistrel.api.routes.timeline import (
     ForkedBody,
+    PruneBody,
     RegeneratedBody,
     SwappedBody,
     TruncatedBody,
@@ -238,6 +239,7 @@ from epistrel.core.propositions.model import Cardinality, Interval, Proposition
 from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
 from epistrel.core.providers import BindingRequest
+from epistrel.core.prune import PruneRequest
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -1775,6 +1777,19 @@ def _steps() -> list[Step]:
             lambda e, ids: _rewrite(
                 e.cancel_rewrite(CTX, ids["fork"], ids["rewrite"], viewpoint="omniscient")
             ),
+        ),
+        # #247: pruning the main story's inactive records (its regenerated variants).
+        Step(
+            "prune_story",
+            lambda ids: Rest("POST", f"{s}/prune", {"ignore_warnings": True}),
+            lambda e, ids: _pruned(
+                e.prune_story(CTX, ids["story"], PruneRequest(ignore_warnings=True))
+            ),
+        ),
+        Step(
+            "list_prune_runs",
+            lambda ids: Rest("GET", f"{s}/prune-runs"),
+            lambda e, ids: _dumped(e.list_prune_runs(CTX, ids["story"])),
         ),
         Step(
             "delete_story",
@@ -3737,6 +3752,10 @@ async def _coverage_gap(engine: Engine, ids: Ids) -> None:
             text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
             {"s": ids["story"]},
         )
+
+
+async def _pruned(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PruneBody.of(await call))
 
 
 async def _conflict_resolved(call: Awaitable[Any]) -> dict[str, Any]:

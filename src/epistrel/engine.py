@@ -55,6 +55,7 @@ from epistrel.core import (
 from epistrel.core import control as control_ops
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
+from epistrel.core import prune as core_prune
 from epistrel.core import story_settings as settings_store
 from epistrel.core.amendments import read as amendment_reads
 from epistrel.core.backfill import conflicts as backfill_conflicts
@@ -186,6 +187,7 @@ from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
+from epistrel.orchestrator.jobs.handlers import prune_policy as prune_policy_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
@@ -346,6 +348,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
         core_backfill.GapFill, status=lambda found: 202 if found.backfill is not None else 200
     ),
     "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
+    "prune_story": ResultCodec.of(core_prune.PruneOutcome),
     "resolve_backfill_conflict": ResultCodec.of(backfill_conflicts.Resolved),
     # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
     "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
@@ -811,6 +814,7 @@ class Engine:
         importance_job.bind(self.models)
         consolidation_job.bind(self.models)
         backfill_job.bind(self.models)
+        prune_policy_job.bind(core_prune.run_policy)  # #248
         backfill_job.configure(
             concurrency=self.settings.backfill_concurrency,
             wait_s=self.settings.worker_poll_interval,
@@ -2774,6 +2778,32 @@ class Engine:
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
         )
+
+    async def prune_story(
+        self, ctx: RequestContext, story_id: str, request: core_prune.PruneRequest
+    ) -> core_prune.PruneOutcome:
+        """Manual pruning of the story's discarded tails and dormant continuations (FR-STORE-
+        19,32; #247): the report without ``ignore_warnings``, else the deletion in one control
+        operation that moves the revision (an in-flight turn rebases). 409 ``story_archived``,
+        ``story_paused``; 422 ``prune_target_unknown``, ``prune_target_ineligible``."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> core_prune.PruneOutcome:
+            return await core_prune.prune(self.db, story_id, request, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "prune_story",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+            keep=lambda found: found.applied,
+        )
+
+    @refuses_nul()
+    async def list_prune_runs(self, ctx: RequestContext, story_id: str) -> core_prune.PruneRuns:
+        """Every pruning of the story, manual or by its policy, newest first (#248)."""
+        return await core_prune.list_prune_runs(self.db, story_id)
 
     async def swap(
         self, ctx: RequestContext, story_id: str, request: variants.SwapRequest

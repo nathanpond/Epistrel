@@ -67,7 +67,7 @@ async def _transcript(engine: AsyncEngine, story: str) -> list[str]:
 
 
 async def _lite_story(client: Any, engine: AsyncEngine, stub: Any) -> str:
-    story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+    story = str((await create(client, story_body("Wren", "Ada")))["story_id"])
     cast = await rows(engine, "SELECT id, name FROM characters WHERE story_id = :s", s=story)
     actor = next(str(c.id) for c in cast if c.name == "Wren")
     stub.when("", FARMER, purpose="generation")

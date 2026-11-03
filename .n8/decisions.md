@@ -11516,3 +11516,38 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - the replay and regenerate assertions.
   - Case (5) of the test ("Twenty minutes later" from the model with nothing established) is refused by #199's rules (`no_established_activity`). The test asserts only that no estimation call is made.
   **Issue:** #632
+
+### #247 — manual pruning, 2026-11-03
+
+- **Decision:**
+  - **Targets.** A target is a group of `discarded` or `dormant` operations flipped in one transaction (`membership_tx`): one truncation's tail, or one swap's or regenerate's continuation. Its id is `<kind>:<first operation id>`, and `targets` takes those ids from the report rather than #66's chain objects. A tail that later turns are written over becomes `dormant`, so it is reported as a continuation.
+  - **Apply.** One `Operation(kind=control, bumps_revision=True, control_action=False)` writes the `pruning` marker event. Its commit step:
+    - flips the operations to the new `Membership.PRUNED` (migration 0124 adds the enum value; `turn_report`/`read_set` are cleared);
+    - calls `feedback.mark_pruned`;
+    - deletes `PRUNABLE_TABLES` rows by `operation_id` (children first) and their subject-index rows;
+    - deletes the operations' events except audit/amendment, redacted and outbox-outcome events.
+  **Issue:** #247
+- **Decision (deviation from the AC's database guard):** only the `events` guard gains the `epistrel.allow_prune` exemption, with all four conditions (story, category, not redacted, operation `pruned`). The derived tables' own append-only guards admit the delete under `epistrel.allow_story_delete`, scoped to the story and set only around the derived-row deletes in the pruning transaction. No `operations` trigger enforces `pruned` as terminal. `_flip` (timeline) refuses to bring a pruned operation back (409 `pruned`), and an untruncate of a pruned truncation is `pruned` too.
+  **Issue:** #247
+- **Decision (not built; #702):**
+  - Markers in `audit_view` and the as-originally-recorded view.
+  - The replay byte-identity check.
+  - `settlement_dependency` exclusion, and entities/aliases/propositions minted by pruned turns (kept).
+  - `pruned` on fork, history `?variant=` and feedback writes.
+  - `undo_available`/`dormant_chains` recomputation.
+  - Rebase of a held in-flight turn (the operation is not a control action, so FR-CONC-4 rebases; not tested).
+  - Chunked deletes.
+  - The docs/02 §9 route paragraph.
+  **Issue:** #247
+- **Decision (Rule 3, import contract):** the untruncate and swap refusals live in `core.pruned`, and `core.prune` (which marks feedback) is reached by the timeline only through it. This keeps `feedback-is-flag-only`: the timeline, and so genesis, profiles and projections, never import `core.feedback`. `core/prune.py` is added to the modules allowed to name the rating tables (it classifies them as retained).
+  **Issue:** #247
+
+### #248 — the pruning policy, 2026-11-03
+
+- **Decision:**
+  - **Setting.** `StorySettings.prune_policy` (`null` | `{older_than_days: 1..3650}`, a `PrunePolicy` model) is prospective and documented in the settings PATCH description; I-18's strategy covers it.
+  - **Daily run.** `prune_run` is daily (`orchestrator/jobs/handlers/prune_policy.py`). It calls `core.prune.run_policy` through a runner the Engine binds at start-up, because the Orchestrator may not import the feedback marking. For every active story with a policy, it runs #247's pruning with `trigger: policy` as `system`, over targets older than the cut-off.
+  - **Recording.** The marker carries the policy and the run's impact report. `GET /stories/{id}/prune-runs` (`Engine.list_prune_runs`) lists every pruning, newest first.
+  **Issue:** #248
+- **Decision (not built; #703):** the `pruning` block on `GET /stories/{id}`; the partial expression index on `stories.settings->'prune_policy'`; the X-07 missed-run and X-01 soak slices; the never-suggests check over 50 dormant chains. The policy test sits in `tests/scenario/test_s_prune.py`, since one file per test ID per milestone is allowed.
+  **Issue:** #248

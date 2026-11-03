@@ -548,6 +548,11 @@ async def _plan_untruncate(
     conn: AsyncConnection, story_id: str, named: str | None
 ) -> _UntruncatePlan | _UntruncateSwap:
     stack = await _undoable(conn, story_id)
+    if not stack:
+        # #247: the most recent truncation's records were pruned: 409 ``pruned``.
+        from epistrel.core.pruned import assert_truncation_not_pruned
+
+        await assert_truncation_not_pruned(conn, story_id, named)
     if not stack or (named is not None and named != stack[0].truncate_operation_id):
         details: dict[str, Any] = {"story_id": story_id}
         if named is not None:
@@ -632,6 +637,11 @@ async def _tail_swap(
 async def _flip(
     conn: AsyncConnection, story_id: str, operation_ids: Sequence[str], membership: Membership
 ) -> None:
+    if membership in (Membership.ACTIVE, Membership.DORMANT):
+        # #247 (FR-STORE-18,28): a pruned operation never comes back.
+        from epistrel.core.pruned import assert_not_pruned
+
+        await assert_not_pruned(conn, story_id, operation_ids)
     if operation_ids:
         await conn.execute(
             update(operations)

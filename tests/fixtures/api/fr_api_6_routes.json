@@ -1024,6 +1024,16 @@
       "method": "POST",
       "path": "/engine-profiles/{profile_id}/upgrade-pinned",
       "why": "FR-PROF-7: bring pinned stories forward"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/prune",
+      "why": "FR-STORE-32: manual pruning (#247)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/prune-runs",
+      "why": "FR-STORE-32: prune history (#248)"
     }
   ],
   "outside": [

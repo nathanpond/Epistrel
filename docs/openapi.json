@@ -6795,6 +6795,18 @@
             "title": "Player View",
             "type": "string"
           },
+          "prune_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrunePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The story's opt-in pruning policy (FR-STORE-32; #248): ``null`` (the default) keeps every\ndiscarded tail and dormant continuation; ``{older_than_days}`` has the daily ``prune_run``\nprune those older than that. Setting or changing it deletes nothing by itself. Prospective."
+          },
           "reactive_interjections": {
             "default": false,
             "description": "Whether reactive narration may give a reactive character a brief interjection\n(FR-MULTI-9; #176): at most ``multi_character.interjection_max_words`` words (6), checked\nagainst the reactor's viewpoint like any ``say``. Off by default (the owner's decision): a\nreactive character's narrated speech escalates it to a primary render instead (FR-MULTI-10).\nA request overrides it. Prospective.",
@@ -11596,6 +11608,36 @@
           "text"
         ],
         "title": "EvidenceBody",
+        "type": "object"
+      },
+      "Excluded": {
+        "description": "A target left out and why (``amendment_ids``: the amendments that name its records).",
+        "properties": {
+          "amendment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Amendment Ids",
+            "type": "array"
+          },
+          "reason": {
+            "enum": [
+              "amendment_dependency",
+              "in_flight"
+            ],
+            "title": "Reason",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "reason"
+        ],
+        "title": "Excluded",
         "type": "object"
       },
       "ExposureItemBody": {
@@ -18747,7 +18789,8 @@
           "active",
           "discarded",
           "dormant",
-          "superseded"
+          "superseded",
+          "pruned"
         ],
         "title": "Membership",
         "type": "string"
@@ -23880,6 +23923,25 @@
           "message"
         ],
         "title": "PolicyReplacement",
+        "type": "object"
+      },
+      "Position": {
+        "description": "A turn and its variant.",
+        "properties": {
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "variant"
+        ],
+        "title": "Position",
         "type": "object"
       },
       "PredicateBody": {
@@ -30456,6 +30518,357 @@
           "manifest"
         ],
         "title": "ProviderSpec",
+        "type": "object"
+      },
+      "PruneBody": {
+        "description": "A pruning's two stages (#247): ``applied``, the ``impact`` report, and the ``result``\nonce applied (``null`` with the report alone).",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "impact": {
+            "$ref": "#/components/schemas/PruneImpact"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PruneResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "applied",
+          "impact",
+          "result"
+        ],
+        "title": "PruneBody",
+        "type": "object"
+      },
+      "PruneImpact": {
+        "description": "The report (see the module docstring).",
+        "properties": {
+          "excluded": {
+            "items": {
+              "$ref": "#/components/schemas/Excluded"
+            },
+            "title": "Excluded",
+            "type": "array"
+          },
+          "lost_operations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Lost Operations",
+            "type": "array"
+          },
+          "retained": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Retained",
+            "type": "object"
+          },
+          "suggestions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "to_delete": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/PruneTarget"
+              },
+              "type": "array"
+            },
+            "title": "To Delete",
+            "type": "object"
+          }
+        },
+        "required": [
+          "to_delete",
+          "lost_operations",
+          "retained",
+          "excluded",
+          "suggestions"
+        ],
+        "title": "PruneImpact",
+        "type": "object"
+      },
+      "PrunePolicy": {
+        "additionalProperties": false,
+        "description": "#248 (FR-STORE-32): prune the story's dormant continuations and discarded tails older\nthan ``older_than_days`` (1 to 3650), daily.",
+        "properties": {
+          "older_than_days": {
+            "maximum": 3650,
+            "minimum": 1,
+            "title": "Older Than Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "older_than_days"
+        ],
+        "title": "PrunePolicy",
+        "type": "object"
+      },
+      "PruneRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/prune``: the targets (ids from the report; omitted: every eligible\none) and ``ignore_warnings`` (``ignoreWarnings``) to apply.",
+        "examples": [
+          {
+            "ignore_warnings": true
+          }
+        ],
+        "properties": {
+          "ignoreWarnings": {
+            "default": false,
+            "description": "`ignore_warnings`, for camelCase clients (send one of the two).",
+            "title": "Ignorewarnings",
+            "type": "boolean"
+          },
+          "ignore_warnings": {
+            "default": false,
+            "description": "Apply the change even when its impact report warns (FR-PROF-7). An invalid configuration is refused all the same.",
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          },
+          "targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targets"
+          },
+          "upgradeMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
+            "title": "Upgrade Mode"
+          }
+        },
+        "title": "PruneRequest",
+        "type": "object"
+      },
+      "PruneResult": {
+        "description": "An applied pruning: its operation (``prune_id``), the revision after it, and what it\ndeleted by count.",
+        "properties": {
+          "deleted": {
+            "additionalProperties": true,
+            "title": "Deleted",
+            "type": "object"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "prune_id": {
+            "title": "Prune Id",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operation_id",
+          "prune_id",
+          "timeline_revision",
+          "deleted"
+        ],
+        "title": "PruneResult",
+        "type": "object"
+      },
+      "PruneRun": {
+        "description": "One pruning of the story, manual or by its policy (``GET /stories/{id}/prune-runs``).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "impact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impact"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          },
+          "principal": {
+            "title": "Principal",
+            "type": "string"
+          },
+          "prune_id": {
+            "title": "Prune Id",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeline Revision"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prune_id",
+          "trigger",
+          "policy",
+          "principal",
+          "at",
+          "timeline_revision",
+          "impact"
+        ],
+        "title": "PruneRun",
+        "type": "object"
+      },
+      "PruneRuns": {
+        "description": "Every pruning of the story, newest first.",
+        "properties": {
+          "prune_runs": {
+            "items": {
+              "$ref": "#/components/schemas/PruneRun"
+            },
+            "title": "Prune Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "prune_runs"
+        ],
+        "title": "PruneRuns",
+        "type": "object"
+      },
+      "PruneTarget": {
+        "description": "One target: its id, kind, the range it spans and how many operations it holds.",
+        "properties": {
+          "flipped_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flipped At"
+          },
+          "from": {
+            "$ref": "#/components/schemas/Position"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "discarded_tail",
+              "dormant_continuation"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operations": {
+            "title": "Operations",
+            "type": "integer"
+          },
+          "to": {
+            "$ref": "#/components/schemas/Position"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "from",
+          "to",
+          "operations"
+        ],
+        "title": "PruneTarget",
         "type": "object"
       },
       "PublishRequest": {
@@ -44369,6 +44782,18 @@
             "default": null,
             "description": "Upserts the story's own policies (never relaxing).",
             "title": "Policies"
+          },
+          "prune_policy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrunePolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The story's opt-in pruning policy (FR-STORE-32; #248): ``null`` (the default) keeps every\ndiscarded tail and dormant continuation; ``{older_than_days}`` has the daily ``prune_run``\nprune those older than that. Setting or changing it deletes nothing by itself. Prospective."
           },
           "reactive_interjections": {
             "anyOf": [
@@ -73040,6 +73465,8 @@
                           "profile_overrides.verification.level",
                           "profile_overrides.verification.safe_disposition",
                           "profile_overrides.verification.shape_tightening",
+                          "prune_policy",
+                          "prune_policy.older_than_days",
                           "reactive_interjections",
                           "regenerate_retry_budget",
                           "required_providers",
@@ -80043,6 +80470,300 @@
         ]
       }
     },
+    "/stories/{story_id}/prune": {
+      "post": {
+        "description": "Manual pruning (FR-STORE-19,32; #247), in two stages. Without `ignore_warnings` (`ignoreWarnings`) the answer is the `impact` report and nothing changes: the discarded tails and dormant continuations that would be deleted (`targets` names some by their ids; omitted, every eligible one), the untruncates, swaps and promotions that would stop being possible, what is retained, the targets `excluded` (`amendment_dependency`: an amendment names one of their records, `in_flight`) and a `promote_before_pruning` suggestion per dormant continuation. With it one control operation deletes the targets' records (their `operations` rows stay as markers with membership `pruned`; audit and amendment events, redacted events, outbox rows and outcomes, the erasure ledger and feedback rows, marked `pruned`, are kept), writes a `pruning` marker and moves the revision by one: a turn in flight rebases. Afterwards an untruncate or swap that needs a pruned record is 409 `pruned`. 422 `prune_target_unknown`, `prune_target_ineligible`; 409 `story_archived`, `story_paused`.",
+        "operationId": "prune_story",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PruneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PruneBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `prune_target_ineligible`, `prune_target_unknown`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prune a story's discarded tails and dormant continuations",
+        "tags": [
+          "timeline"
+        ]
+      }
+    },
+    "/stories/{story_id}/prune-runs": {
+      "get": {
+        "description": "Every pruning of the story, manual (`POST /stories/{id}/prune`) or by its `prune_policy` (#248's daily run), newest first: its id, `trigger` (`manual` | `policy`), the policy it ran under, the principal, when, the revision after it and its impact report (identifiers and counts only).",
+        "operationId": "list_prune_runs",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PruneRuns"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a story's prunings",
+        "tags": [
+          "timeline"
+        ]
+      }
+    },
     "/stories/{story_id}/reconciliation": {
       "get": {
         "description": "The effects dispatched to write-capable providers that are not confirmed, oldest first:\neach one's outbox id (the provider idempotency key), provider and value, status, why it is\nlisted (`reason`: `unconfirmed`, `failed`, `unknown`, `reconciliation_required`,\n`cancelled_on_reactivation`, `confirmed_unsettled`, `confirmed_discarded_origin`,\n`settlement_conflict`, `late_success_after_expiry`, `outcome_conflict` or\n`reservation_expired`), since when, the effect, and the latest outcome recorded for it. A\n`late_success_after_expiry` carries its `reverification` (`passed` or `failed`, with\n`reasons`); an effect the author chose to compensate shows `status: compensated` and\n`compensated_by`, the compensating effect, until that one is confirmed. A confirmed or\ncancelled effect is not listed. 404 for an unknown story.",
@@ -84103,7 +84824,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a history rewrite places a correction whose absolute time the clock's anchor cannot decide, included and flagged `timing_uncertain` by default or asked of the author; read when a rewrite is planned), and `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`: how a backfill settles old text that contradicts itself, the latest or earliest statement canon, or the conflicts listed for the author while the story stays paused; read when a backfill starts). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a history rewrite places a correction whose absolute time the clock's anchor cannot decide, included and flagged `timing_uncertain` by default or asked of the author; read when a rewrite is planned), and `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`: how a backfill settles old text that contradicts itself, the latest or earliest statement canon, or the conflicts listed for the author while the story stays paused; read when a backfill starts), and `prune_policy` (`null`, the default, or `{older_than_days}` from 1 to 3650: the daily pruning run deletes the story's dormant continuations and discarded tails older than that; setting it deletes nothing by itself). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

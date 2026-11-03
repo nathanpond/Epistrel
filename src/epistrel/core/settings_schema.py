@@ -325,6 +325,15 @@ BackfillConflictPolicy = Literal["last_mention", "first_mention", "ask"]
 """#230: ``StorySettings.backfill_conflict_policy``'s values."""
 
 
+class PrunePolicy(BaseModel):
+    """#248 (FR-STORE-32): prune the story's dormant continuations and discarded tails older
+    than ``older_than_days`` (1 to 3650), daily."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    older_than_days: StrictInt = Field(ge=1, le=3650)
+
+
 class StorySettings(BaseModel):
     """A story's settings: what the story is, never how hard the engine works (FR-PROF-5; the
     engine dials are its profile's, ``SUPERSEDED_STORY_SETTINGS``). Unknown keys are kept so
@@ -366,6 +375,11 @@ class StorySettings(BaseModel):
     """How many days this story's audit records are kept before the ``retention_sweep`` deletes
     them (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``
     (default 90). Never affects story history. Prospective."""
+
+    prune_policy: Annotated[PrunePolicy | None, PROSPECTIVE] = None
+    """The story's opt-in pruning policy (FR-STORE-32; #248): ``null`` (the default) keeps every
+    discarded tail and dormant continuation; ``{older_than_days}`` has the daily ``prune_run``
+    prune those older than that. Setting or changing it deletes nothing by itself. Prospective."""
 
     allow_new_arrivals: Annotated[StrictBool, INTERPRETIVE] = True
     """Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival

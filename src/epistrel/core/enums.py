@@ -41,6 +41,8 @@ class Membership(StrEnum):
     DISCARDED = "discarded"
     DORMANT = "dormant"
     SUPERSEDED = "superseded"
+    PRUNED = "pruned"
+    """#247 (FR-STORE-32): terminal; the operation's records were pruned, its row is a marker."""
 
 
 class Provenance(StrEnum):

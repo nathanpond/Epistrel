@@ -984,6 +984,7 @@ ALLOWED: dict[str, str] = {
     "core/erasure/index.py": "the subject-index registry lists the indexed tables (#123)",
     "core/feedback_reporting.py": "the aggregates and review lists read ratings (#126)",
     "core/feedback_export.py": "the export reads ratings into labelled cases (#126)",
+    "core/prune.py": "pruning classifies the rating tables as retained (#247; marks via feedback)",
 }
 """The modules that may name the feedback tables, and why. Later stories add theirs: #128's
 route table. (#124's erasure redacts through ``core.feedback`` and names none.)"""

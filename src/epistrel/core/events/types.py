@@ -292,6 +292,21 @@ class Truncate(EventPayload):
     operation_ids: list[str]
 
 
+@register("pruning", category=EventCategory.CONTROL)
+class Pruning(EventPayload):
+    """A pruning's marker (FR-STORE-32; #247): its id, what started it (``manual``, or #248's
+    ``policy``), and per target its kind, range, the pruned operations, the deleted events'
+    sequence ranges and counts. Identifiers, positions, ranges and counts only: never text."""
+
+    prune_id: str
+    trigger: Literal["manual", "policy"] = "manual"
+    policy: dict[str, Any] | None = None
+    targets: list[dict[str, Any]] = Field(default_factory=list)
+    retained: dict[str, int] = Field(default_factory=dict)
+    impact: dict[str, Any] | None = None
+    """#248: the run's impact report (identifiers, ranges and counts only)."""
+
+
 @register("untruncate", category=EventCategory.CONTROL)
 class Untruncate(EventPayload):
     """Reactivate the operations the truncation ``truncate_operation_id`` discarded (#65)."""

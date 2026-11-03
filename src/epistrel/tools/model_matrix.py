@@ -140,6 +140,9 @@ from epistrel.orchestrator.models.stub import StubAdapter
 from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
 
+SIDE_CHANNEL = frozenset({"rewrite_parse", "rewrite_record", "directive_parse"})
+"""Story purposes no turn calls: the history and directive side-channel's (#223, #224, #226)."""
+
 MATRIX_PATH = REPO_ROOT / "docs" / "model-matrix.md"
 RAW_PATH = REPO_ROOT / "docs" / "model-matrix.json"
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -1191,7 +1194,9 @@ def render(
     recorded* while a row lacks the call breakdown, the turn-path note while a row was
     measured on the guarded reply (#303), and the override note while a row ran under a turn
     deadline override (#454). ``failed_rows`` are the rows a run could not finish (#454)."""
-    purposes = list(STORY_PURPOSES)  # a turn's purposes: the matrix measures turns
+    # A turn's purposes: the matrix measures turns, so the author's side-channel purposes
+    # (#223, #224, #226: rewrites and directives run outside any turn) have no column.
+    purposes = [p for p in STORY_PURPOSES if p not in SIDE_CHANNEL]
     header = ["Tier", "Policies", "Protocol", *[f"`{p}`" for p in purposes]]
     header += ["E-06", "Turns", "p50", "p95", "Calls per turn"]
     calls_header = ["Tier", "Policies", "Designed per turn", "Extra calls", "Failed calls"]

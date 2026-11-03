@@ -1579,7 +1579,7 @@ REWRITE_PARSE = Purpose(
     response_schema=RewriteParseResult,
     # The author side-channel: not routed by a story's profile, so a story's runtime facts and
     # certifications are unchanged by it (#223's deviation, logged).
-    story_scoped=False,
+    story_scoped=True,
 )
 """``rewrite_parse`` (#223): one call per opened session and per free-text answer
 (``orchestrator.rewrite.parse``)."""
@@ -1600,7 +1600,7 @@ REWRITE_RECORD = Purpose(
     # definition, a policy, an age or eval text.
     never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION, C.CHECKED_TEXT},
     response_schema=RewrittenRecord,
-    story_scoped=False,
+    story_scoped=True,
 )
 """``rewrite_record`` (#224): one call per conflicting record the apply rewrites
 (``orchestrator.rewrite.apply``)."""
@@ -1619,7 +1619,7 @@ DIRECTIVE_PARSE = Purpose(
     hot_path=False,
     never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION},
     response_schema=DirectiveParseResult,
-    story_scoped=False,
+    story_scoped=True,
 )
 """``directive_parse`` (#226): one call per directive whose kind or changes the request does
 not settle (``orchestrator.directives``)."""

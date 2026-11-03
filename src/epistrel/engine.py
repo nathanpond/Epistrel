@@ -6216,7 +6216,7 @@ class Engine:
         story_id: str,
         *,
         viewpoint: str | None = None,
-        states: Sequence[str] = (),
+        states: str | Sequence[str] = (),
         cursor: str | None = None,
         limit: int = rewrite_session.LIST_LIMIT,
     ) -> rewrite_api.RewriteList:
@@ -6388,6 +6388,7 @@ class Engine:
                 conn, story_id, status=status, cursor=cursor, limit=limit
             )
 
+    @refuses_nul()
     async def get_amendment(
         self,
         ctx: RequestContext,

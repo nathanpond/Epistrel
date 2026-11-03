@@ -181,8 +181,13 @@ LITE_ROUTED = set(STORY_PURPOSES) - {
     EXTRACTION_BACKSTOP.name,
     REGENERATION.name,
     TIME_ESTIMATION.name,
+    "rewrite_parse",
+    "rewrite_record",
+    "directive_parse",
 }
 """The story purposes the Lite preset names in ``models.purposes``: every one a Lite story calls.
+The history and directive side-channel's (#223, #224, #226) run only on structured stories until
+#244/#245 give Lite its own.
 ``importance_scoring`` (#135) needs episodic memory, ``entailment`` (#142) verification at
 ``entailment``, ``consolidation`` (#143) the consolidation module, ``salience_detection``
 (#146) commitment, ``extraction_backstop`` (#148) verification at ``extraction`` and

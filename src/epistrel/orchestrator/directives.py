@@ -32,7 +32,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -53,6 +53,7 @@ from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
 from epistrel.core.settings_schema import RewriteSettings
 from epistrel.core.tables import directives, events, stories
+from epistrel.core.trimmed import trim_as_sent
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
@@ -92,7 +93,9 @@ class DirectiveRequest(BaseModel):
     )
 
     text: Annotated[
-        str, StringConstraints(min_length=1, max_length=TEXT_MAX, strip_whitespace=True)
+        str,
+        StringConstraints(min_length=1, max_length=TEXT_MAX, strip_whitespace=True),
+        BeforeValidator(trim_as_sent(TEXT_MAX)),
     ]
     kind: Literal["ephemeral", "durable"] | None = None
     resolution_mode: ResolutionMode = "synchronous"

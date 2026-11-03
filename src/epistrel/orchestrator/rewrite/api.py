@@ -7,14 +7,27 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StringConstraints,
+    model_validator,
+)
+
+from epistrel.core.trimmed import trim_as_sent
 
 INSTRUCTION_MAX = 4_000
 ANSWER_TEXT_MAX = 2_000
 
 Severity = Literal["high", "low"]
 Instruction = Annotated[
-    str, StringConstraints(min_length=1, max_length=INSTRUCTION_MAX, strip_whitespace=True)
+    str,
+    StringConstraints(min_length=1, max_length=INSTRUCTION_MAX, strip_whitespace=True),
+    BeforeValidator(trim_as_sent(INSTRUCTION_MAX)),
 ]
 
 
@@ -66,7 +79,7 @@ class AnswerItem(BaseModel):
     question_id: str = Field(min_length=26, max_length=26)
     option_id: str | None = Field(default=None, max_length=40)
     text: Annotated[str | None, StringConstraints(min_length=1, max_length=ANSWER_TEXT_MAX)] = None
-    accept_recommended: bool = False
+    accept_recommended: StrictBool = False
 
     @model_validator(mode="after")
     def _one(self) -> AnswerItem:
@@ -269,7 +282,7 @@ class ApplyRequest(BaseModel):
         extra="forbid", json_schema_extra={"examples": [{"base_revision": 7}]}
     )
 
-    base_revision: int | None = Field(default=None, ge=0)
+    base_revision: StrictInt | None = Field(default=None, ge=0)
 
 
 class Applied(BaseModel):

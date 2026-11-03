@@ -776,9 +776,56 @@ ENTRY_READS: tuple[dict[str, str], ...] = (
     {"draft": "true", "projection": "full"},
 )
 
+NO_SUCH = "01J00000000000000000000000"
+"""An id no story holds: the rewrite and amendment routes below answer 404 for it (#223-#238)."""
+
+
+async def _no_session(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"session_id": NO_SUCH}
+
+
+async def _no_amendment(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"amendment_id": NO_SUCH}
+
+
 CALLS: dict[tuple[str, str], Call] = {
     # -- stories: writes
     ("POST", f"{S}/respond"): Call(200, respond_body),
+    # #223-#226, #238: the history side-channel on a Lite story (no planner: 409 module_off),
+    # its reads, and the routes of a session or an amendment the story does not hold (404).
+    ("POST", f"{S}/rewrites"): Call(
+        409, {"instruction": "Ada was always a sailor."}, queries=(OMNISCIENT,)
+    ),
+    ("GET", f"{S}/rewrites"): Call(200, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/rewrites/{{session_id}}"): Call(404, queries=(OMNISCIENT,), prepare=_no_session),
+    ("POST", f"{S}/rewrites/{{session_id}}/answers"): Call(
+        404,
+        {"answers": [{"question_id": NO_SUCH, "accept_recommended": True}]},
+        queries=(OMNISCIENT,),
+        prepare=_no_session,
+    ),
+    ("POST", f"{S}/rewrites/{{session_id}}/apply"): Call(
+        404, {"base_revision": 0}, queries=(OMNISCIENT,), prepare=_no_session
+    ),
+    ("POST", f"{S}/rewrites/{{session_id}}/cancel"): Call(
+        404, queries=(OMNISCIENT,), prepare=_no_session
+    ),
+    ("POST", f"{S}/entities/merge"): Call(
+        409, {"entity_ids": [NO_SUCH, NO_SUCH]}, queries=(OMNISCIENT,)
+    ),
+    ("POST", f"{S}/directives"): Call(
+        409, {"text": "Make this scene tense.", "kind": "ephemeral"}, queries=(OMNISCIENT,)
+    ),
+    ("GET", f"{S}/amendments"): Call(200, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/amendments/{{amendment_id}}"): Call(
+        404, queries=(OMNISCIENT,), prepare=_no_amendment
+    ),
+    ("POST", f"{S}/amendments/{{amendment_id}}/undo"): Call(
+        404, {}, queries=(OMNISCIENT,), prepare=_no_amendment
+    ),
+    ("POST", f"{S}/amendments/{{amendment_id}}/redo"): Call(
+        404, {}, queries=(OMNISCIENT,), prepare=_no_amendment
+    ),
     # #228: a story with no backfill reads and cancels none (404 for every requester).
     ("GET", f"{S}/backfill"): Call(404),
     ("DELETE", f"{S}/backfill"): Call(404),

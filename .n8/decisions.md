@@ -11291,3 +11291,14 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #240
 - **Decision:** test placement. The bounds unit test is `tests/test_amendment_parts.py::test_eligibility__bounds`, unmarked like #221's `test_eligibility` (the plan's `tests/test_eligibility.py` does not exist). The "changing the setting moves no stored part" case is in S-RETCON-TIMING. The S-RETCON-TIMING checkpoints are 4 and 8 rather than 40 and 80. Subject (b) is Cal, because `located_at` is functional and Bobby's undecidable coast part would supersede his Ohio part.
   **Issue:** #240
+
+### CI fixes after #223-#238, 2026-11-02
+
+- **Decision (Rule 1):** CI at 59535c5 failed six meta-tests, all fallout from #223-#238's new surface:
+  - **strict library inputs:** `AnswerItem.accept_recommended` is now `StrictBool` and `ApplyRequest.base_revision` `StrictInt`;
+  - **trimmed:** the rewrite instruction and the directive text now carry `trim_as_sent`;
+  - **NUL reads:** `@refuses_nul` on `get_amendment`;
+  - **repeated filters:** `list_rewrites(states)` is annotated `str | Sequence[str]`;
+  - **ownership matrix:** the rewrite, merge, directive and amendment routes are added to `CALLS`;
+  - **deployment-level purposes:** `rewrite_parse`, `rewrite_record` and `directive_parse` are now `story_scoped=True`. This was the #226 plan's call ("a profile may route it"), and it was wrong at #223. It also left them out of the Lite preset's routed purposes (`LITE_ROUTED`) and out of the model matrix (`model_matrix.SIDE_CHANNEL`: no turn calls them).
+  **Issue:** #223, #226, #238

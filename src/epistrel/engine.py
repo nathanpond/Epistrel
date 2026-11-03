@@ -2862,8 +2862,8 @@ class Engine:
         variant committed and reopens the thunks it resolved.
 
         #241 (FR-COMMIT-12): ``request.directive`` directs the outcome. It is gated (422
-        ``guardrail_violation``), structured stories only (a Lite story 409 ``module_off``,
-        ``lite_directives``, until #244), and parsed; a binding of an open question is
+        ``guardrail_violation``; #244: on a Lite story it is a nudge for this regeneration
+        only, with no binding and no reconciliation), and parsed; a binding of an open question is
         reconciled with recorded history before anything commits. No conflict: the regeneration
         commits steered to the author's decision. A conflict proceeds as a
         ``directed_resolution`` amendment under ``resolution_mode`` and ``preview``: the answer
@@ -2939,10 +2939,16 @@ class Engine:
             [GateText("body.directive.text", request.directive.text)],
         )
         if not await self._plays_structured(story_id):
-            raise ModuleOff(
-                "a Lite story takes no regeneration directive yet",
-                {"module": author_directives.LITE_DIRECTIVES},
+            # #244 (FR-LITE-8): under Lite the directive is a nudge for this regeneration only.
+            await author_directives.record_directed(
+                self.db, story_id, request.directive.text, principal=principal
             )
+            token = lite.LITE_NUDGE.set(request.directive.text)
+            try:
+                replay = request.model_copy(update={"directive": None})
+                return await self._regenerate(ctx, story_id, replay, principal)
+            finally:
+                lite.LITE_NUDGE.reset(token)
         prepared = await directed.prepare(self.db, self.models, story_id, request.directive.text)
         amendment_id: str | None = None
         if prepared.conflicting:
@@ -6500,9 +6506,11 @@ class Engine:
         a durable change applied at the next inter-turn slot with the author's authority, or a
         change to the past routed into a rewrite session (REST 202). An omniscient call; 404;
         409 ``story_paused``; a stale expected revision 409 ``revision_conflict``; 422
-        ``guardrail_violation`` before anything else is written; a Lite story 409
-        ``module_off``; 422 ``directive_unparseable`` or ``directive_no_changes``; the State,
-        clock and turn-slot refusals of the changes it applies."""
+        ``guardrail_violation`` before anything else is written; on a Lite story (#244,
+        FR-LITE-8) a nudge or a lasting author fact, and one about the past 422
+        ``directive_requires_rewrite``; 422 ``directive_unparseable`` or
+        ``directive_no_changes``; the State, clock and turn-slot refusals of the changes it
+        applies."""
         principal = self.require_principal(ctx)
         await self._erasure_gate(story_id)
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")

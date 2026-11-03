@@ -1566,6 +1566,14 @@ class DirectiveUnparseable(EpistrelError):
     http_status = 422
 
 
+class DirectiveRequiresRewrite(EpistrelError):
+    """A Lite directive about the past (#244): a history rewrite, not a directive, until #245
+    routes it; ``details.rewrite_route``. Nothing is written."""
+
+    code = "directive_requires_rewrite"
+    http_status = 422
+
+
 class DirectiveNoChanges(EpistrelError):
     """A durable directive parsed into no change (#226): 422; nothing is written."""
 

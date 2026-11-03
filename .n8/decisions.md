@@ -11450,3 +11450,34 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - S-PROFILE-SWITCH is reduced to a twenty-turn story with preset copies. Its diner fixture, scheduled-event, per-character belief and pacing-fold assertions are not built.
   - The downgrade report's `summary_backfill.estimate` is `{model_calls}` only.
   **Issue:** #232
+
+## Ad-hoc — 2026-11-03 (#244, the planned FR-LITE-8 amendment)
+
+- **Change:** docs/03 gains FR-LITE-8 (M7), the Lite forms of directives and rewrites, and the §22 M7 row lists it. FR-PROF-13 keeps FR-DIRECT and FR-REWRITE under `structured` "as written (under `lite`, the forms of FR-LITE-8)". FR-LITE-1's prompt list names the author blocks. docs/02 §4.11's Lite bullet, the capability map's notes, and docs/04 (S-LITE-DIRECTIVE, §15 rows for FR-LITE-8 and FR-DIRECT-1,2) follow.
+  **Why:** the owner's round-two decision (2026-10-10), planned as #244. The amendment lands in this PR as the issue requires.
+  **Affects:** #245 (Lite rewrites, the FR-LITE-8 half it delivers), M7 only. No replan is needed: the plans already assume this text.
+
+### #244 — Lite author directives, 2026-11-03
+
+- **Decision (deviation from artifacts):** there is no `lite_author_facts` table. A lasting author fact is #226's own durable path with no structured changes.
+  - It writes an `inter_turn` slot operation, the `directive_applied` event carrying the author's text, and a `directives` row (`applied`).
+  - The Lite prompt reads the active `directive_applied` events before the turn (`directives.author_facts`).
+  - The event follows its slot operation's membership, so rewind, truncation, swap and fork need no new code. A fork copies the event; it does not copy `directives` rows.
+  - The same read gives the downgrade rendering of structured durable directives.
+  **Issue:** #244
+- **Decision:**
+  - The Lite blocks (author facts, then the nudge) are appended to the prompt's author notes (`director_notes`), so the template and every fingerprint are unchanged.
+  - Nudges are #226's `steer_queued` rows, consumed in the Lite turn's commit.
+  - A Lite directed regeneration writes a `directed_regeneration` row and carries its text as a one-off nudge (`lite.LITE_NUDGE`).
+  - The parse is #226's `directive_parse` (no new `lite_directive_parse` purpose). A lasting fact's text is the parse's `steer_text` or the request's text.
+  - A past directive is 422 `directive_requires_rewrite` (a new error).
+  **Issue:** #244
+- **Decision (not built; #699):**
+  - The prompt-only clock advance from a Lite directive.
+  - The `author_fact_limit`.
+  - The Lite read-set members (`author_facts`, `author_direction`).
+  - The `lite_no_reconciliation` warning.
+  - Converting lasting author facts into structured directives during an upgrade backfill.
+  - The guarantee-table rows.
+  - `test_lite_directive_dispatch`, `test_lite_directed_regeneration` and `test_i_19__m7_author_facts`. The scenario covers nudge, lasting fact, rewind, the past refusal and the directed regeneration.
+  **Issue:** #244

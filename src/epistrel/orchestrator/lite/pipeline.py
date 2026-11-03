@@ -89,9 +89,11 @@ the gate in as ``gate``.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import partial
 from types import SimpleNamespace
@@ -123,7 +125,7 @@ from epistrel.core.settings_schema import (
     ResolvedGeneration,
     resolve_generation,
 )
-from epistrel.core.tables import operations
+from epistrel.core.tables import operations, stories
 from epistrel.core.tables.operations import REGENERATED_VARIANT
 from epistrel.core.turn_gate import Concurrency
 from epistrel.core.turns import (
@@ -606,11 +608,15 @@ async def _play(
     lite_context: list[LiteContext] = [LiteContext()]
     """The prompt-only clock and States (#203), read in the latest read phase's snapshot."""
 
+    steering: list[str] = []
+    """#244: the nudges the turn carries, consumed when it commits."""
+
     async def begin(conn: AsyncConnection) -> tuple[TurnInputs, ResolvedGeneration]:
         reading = time.perf_counter()
         inputs = await read_turn_inputs(
             conn, story_id, before_turn=before_turn, configuration=configuration
         )
+        inputs = await _with_author_notes(conn, story_id, inputs, before_turn, steering)
         lite_context[0] = await read_lite_context(conn, story_id, before_turn=before_turn)
         timing.assemble_s += time.perf_counter() - reading
         resolved = resolve_generation(inputs.generation, request.prompt_params)
@@ -703,6 +709,8 @@ async def _play(
         timing.policy_check_s += time.perf_counter() - gating - (produced[0] - before)
         gated[:] = [outcome]
         op.add_commit_step(write_report)
+        if steering:
+            op.add_commit_step(partial(_consume, list(steering), op.operation_id))
         stage_turn(
             op,
             actor_character_id=cast.actor.id,
@@ -846,6 +854,45 @@ def _fallback_lines(inputs: TurnInputs, cast: ResolvedCast) -> FallbackLines:
         character_text=current.safe_fallback_text,
         deployment_text=inputs.default_safe_fallback,
     )
+
+
+LITE_NUDGE: ContextVar[str | None] = ContextVar("epistrel_lite_nudge", default=None)
+"""#244: a directed regeneration's directive, a nudge for that one regeneration only."""
+
+
+async def _with_author_notes(
+    conn: AsyncConnection,
+    story_id: str,
+    inputs: TurnInputs,
+    before_turn: int | None,
+    steering: list[str],
+) -> TurnInputs:
+    """#244 (FR-LITE-8): the turn's inputs with the lasting author facts before it and the
+    queued nudges (or a directed regeneration's) as author notes; ``steering`` the nudges' ids,
+    consumed at commit."""
+    from epistrel.orchestrator import directives as author_directives
+
+    turn = before_turn
+    if turn is None:
+        turn = int(
+            await conn.scalar(select(stories.c.next_turn_index).where(stories.c.id == story_id))
+            or 1
+        )
+    facts = await author_directives.author_facts(conn, story_id, turn)
+    nudge = LITE_NUDGE.get()
+    steers = [("", nudge)] if nudge else await author_directives.queued_steers(conn, story_id)
+    steering[:] = [i for i, _ in steers if i]
+    notes = author_directives.lite_notes(steers, facts)
+    if not notes:
+        return inputs
+    joined = "\n\n".join(n for n in (inputs.director_notes, notes) if n)
+    return dataclasses.replace(inputs, director_notes=joined)
+
+
+async def _consume(ids: list[str], operation_id: str, conn: AsyncConnection) -> None:
+    from epistrel.orchestrator import directives as author_directives
+
+    await author_directives.consume_steers(conn, ids, operation_id)
 
 
 def guardrail_fields(outcome: Gated | None) -> dict[str, Any]:

@@ -16,8 +16,8 @@ knocked" an open thunk.
   variant active, the revision unchanged); cancelled, the story is as it was. Under
   ``best_effort`` + ``apply_directly`` the amendment (Bobby's line repaired) and the
   regenerated variant (Bobby the knocker, never re-steered) commit in the one call.
-- A directive on a Lite story is 409 ``module_off`` (``lite_directives``) with nothing
-  regenerated; a Lite regenerate without one works as before.
+- A directive on a Lite story is a nudge for that regeneration only (#244); a Lite regenerate
+  without one works as before.
 """
 
 from __future__ import annotations
@@ -249,9 +249,9 @@ async def test_s_direct_george__bobby(
 
 
 async def test_regenerate_without_directive_unchanged(pg_url: str, engine: AsyncEngine) -> None:
-    """#241: a directive on a Lite story is 409 ``module_off`` (``lite_directives``) and nothing
-    is regenerated (the active variant and revision unchanged, no generation call); without a
-    directive the Lite regenerate works as before."""
+    """#244 (FR-LITE-8): on a Lite story a directive is a nudge for that regeneration only (a
+    ``directed_regeneration`` row, the text in the regeneration's prompt and not the next
+    turn's); without a directive the Lite regenerate works as before."""
     from tests.respond_support import FIRST, respond
 
     settings = auth_settings(pg_url, model_adapter="stub")
@@ -261,14 +261,14 @@ async def test_regenerate_without_directive_unchanged(pg_url: str, engine: Async
         wren = next(str(c.id) for c in cast if c.name == "Wren")
         first = await respond(client, story, body(wren, FIRST))
         assert first.status_code == 200, first.text
-        revision = await rs.revision(engine, story)
         epistrel.models.stub.calls.clear()
-        refused = await _regenerate(client, story, directive={"text": GEORGE})
-        assert refused.status_code == 409, refused.text
-        error = refused.json()["error"]
-        assert (error["code"], error["details"]["module"]) == ("module_off", "lite_directives")
-        assert await rs.revision(engine, story) == revision
-        assert [c for c in epistrel.models.stub.calls if c.purpose == "generation"] == []
+        directed_ = await _regenerate(client, story, directive={"text": GEORGE})
+        assert directed_.status_code == 200, directed_.text
+        assert GEORGE in _prompts(epistrel.models.stub)
+        (row,) = await rows(
+            engine, "SELECT disposition FROM directives WHERE story_id = :s", s=story
+        )
+        assert row.disposition == "directed_regeneration"
         again = await _regenerate(client, story)
         assert again.status_code == 200, again.text
 

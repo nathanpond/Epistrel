@@ -5,7 +5,9 @@
 viewpoint, ``precheck``: 404, 409 ``story_paused``, a stale expected revision) and #56's input
 gate on the text. It refuses text that names an erased subject (409
 ``erased_subject_referenced``), dispatches on the story's pipeline (a Lite story is 409
-``module_off {module: "lite_directives"}`` until #244, nothing written) and classifies:
+the Lite forms of FR-LITE-8 for a Lite story, #244: a nudge, or a lasting author fact recorded
+at the next slot as its ``directive_applied`` event; one about the past is 422
+``directive_requires_rewrite`` until #245) and classifies:
 
 - **ephemeral** (guidance for the next reply: the request's ``kind``, or ``directive_parse``'s
   classification): a ``directives`` row ``steer_queued``. The next structured turn's renders
@@ -46,8 +48,8 @@ from epistrel.core.enums import (
 )
 from epistrel.core.errors import (
     DirectiveNoChanges,
+    DirectiveRequiresRewrite,
     DirectiveUnparseable,
-    ModuleOff,
 )
 from epistrel.core.ids import new_ulid
 from epistrel.core.propositions.model import Interval, Polarity, Proposition
@@ -114,6 +116,8 @@ class DirectiveApplied(BaseModel):
     scheduled_events: list[str] = Field(default_factory=list)
     outbox_ids: list[str] = Field(default_factory=list)
     """#242: the game-owned changes the directive asked the game to make (``routed_write``)."""
+    author_fact: dict[str, str] | None = None
+    """#244 (FR-LITE-8): a Lite story's lasting author fact: its id, position and text."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,17 +167,11 @@ async def precheck(db: AsyncEngine, story_id: str, *, expected_revision: int | N
 
 
 async def require_pipeline(db: AsyncEngine, story_id: str) -> str:
-    """The story's pipeline: 409 ``module_off {module: lite_directives}`` for Lite (#244)."""
+    """The story's pipeline (#244: a Lite story takes directives in their Lite forms)."""
     from epistrel.orchestrator.rewrite.session import pipeline_of
 
     async with db.connect() as conn:
-        pipeline = await pipeline_of(conn, story_id)
-    if pipeline != "structured":
-        raise ModuleOff(
-            "directives are not available for a Lite story yet",
-            {"module": LITE_DIRECTIVES, "pipeline": pipeline},
-        )
-    return pipeline
+        return str(await pipeline_of(conn, story_id))
 
 
 async def _guard(conn: AsyncConnection, story_id: str, text: str) -> None:
@@ -552,6 +550,34 @@ async def apply_directive(
     classification = request.kind or result.classification
     directive_id = new_ulid()
     payload = [c.model_dump(mode="json", by_alias=True) for c in result.changes]
+    lite = await require_pipeline(db, story_id) != "structured"
+    if lite and classification != "ephemeral":
+        # #244 (FR-LITE-8): a lasting author fact, or a past one refused until #245.
+        if result.temporal_scope == "past":
+            raise DirectiveRequiresRewrite(
+                "a Lite directive about the past is a history rewrite",
+                {"rewrite_route": f"/stories/{story_id}/rewrites"},
+            )
+        fact = (result.steer_text or "").strip() or request.text
+        noted, at, moved = await _apply_now(
+            db,
+            story_id,
+            directive_id,
+            request.model_copy(update={"text": fact}),
+            _Normalized(),
+            payload,
+            principal=principal,
+        )
+        return DirectiveResult(
+            directive_id,
+            "durable",
+            "applied",
+            position=at,
+            applied=noted.model_copy(
+                update={"author_fact": {"id": directive_id, "position": at, "text": fact}}
+            ),
+            timeline_revision=moved,
+        )
     if classification == "ephemeral":
         steer = result.steer_text.strip() or request.text
         async with db.begin() as conn:
@@ -688,6 +714,68 @@ async def consume_steers(conn: AsyncConnection, ids: Sequence[str], operation_id
     )
 
 
+async def record_directed(db: AsyncEngine, story_id: str, text: str, *, principal: str) -> str:
+    """#244: a Lite directed regeneration's ``directives`` row (``directed_regeneration``; the
+    text is a nudge for that regeneration only, no binding and no reconciliation)."""
+    directive_id = new_ulid()
+    async with db.begin() as conn:
+        await conn.execute(
+            insert(directives).values(
+                id=directive_id,
+                story_id=story_id,
+                principal=principal,
+                text=text,
+                kind="ephemeral",
+                classified_by="request",
+                disposition="directed_regeneration",
+                temporal_scope="now",
+                changes=[{"steer_text": text}],
+            )
+        )
+        await _index(conn, directive_id)
+    return directive_id
+
+
+async def author_facts(conn: AsyncConnection, story_id: str, before_turn: int) -> list[str]:
+    """#244 (FR-LITE-8): the lasting author facts a Lite prompt carries, in narrative order:
+    the text of every ``directive_applied`` event on the active chain at a slot before
+    ``before_turn`` (a Lite fact, or a structured story's durable directive after a
+    downgrade). Rewind, truncation, swap and fork follow the event's operation."""
+    from epistrel.core.membership import active_operation
+    from epistrel.core.tables import operations
+
+    o, e = operations.c, events.c
+    rows = await conn.execute(
+        select(o.narrative_turn, e.payload)
+        .join(operations, o.operation_id == e.operation_id)
+        .where(
+            e.story_id == story_id,
+            e.type == "directive_applied",
+            active_operation(operations),
+            o.narrative_turn < before_turn,
+        )
+        .order_by(o.narrative_turn, o.slot_k, e.seq)
+    )
+    return [
+        f"(after turn {int(r.narrative_turn)}) {str(dict(r.payload or {}).get('text', '')).strip()}"
+        for r in rows
+        if str(dict(r.payload or {}).get("text", "")).strip()
+    ]
+
+
+def lite_notes(steers: Sequence[tuple[str, str]], facts: Sequence[str]) -> str:
+    """#244: the Lite prompt's author blocks, as author notes."""
+    blocks: list[str] = []
+    if facts:
+        blocks.append(
+            "Author facts (true from where each was set; a later fact wins over an earlier "
+            "one):\n" + "\n".join(f"- {f}" for f in facts)
+        )
+    if steers:
+        blocks.append("Author direction (this turn only): " + " ".join(text for _, text in steers))
+    return "\n\n".join(blocks)
+
+
 def steering_line(steers: Sequence[tuple[str, str]]) -> str:
     """The renders' author direction line for queued steers."""
     if not steers:
@@ -701,9 +789,12 @@ __all__ = [
     "DirectiveRequest",
     "DirectiveResult",
     "apply_directive",
+    "author_facts",
     "consume_steers",
+    "lite_notes",
     "precheck",
     "queued_steers",
+    "record_directed",
     "require_pipeline",
     "steering_line",
 ]

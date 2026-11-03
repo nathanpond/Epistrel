@@ -7170,6 +7170,20 @@
         "additionalProperties": false,
         "description": "What a durable directive applied at its slot.",
         "properties": {
+          "author_fact": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Fact"
+          },
           "beliefs": {
             "items": {
               "type": "string"
@@ -74027,7 +74041,7 @@
     },
     "/stories/{story_id}/directives": {
       "post": {
-        "description": "An author's direction (FR-DIRECT-1,2): **ephemeral** guidance for the next reply (\"make this scene tense\": `steer_queued`, carried by the next turn's renders and consumed by its commit; nothing else is written) or a **durable** change to the world (\"it starts raining\", \"the next morning, 08:00\", \"Bobby believes he graduated from Florida\"), applied at the next inter-turn slot with the author's authority: facts, State sets, a clock advance and beliefs (`applied`, its `position` `N⁺k`; the revision moves by one). A change to the past is routed into a rewrite session of kind `directive` under `resolution_mode` and `preview` (202, `routed_to_rewrite`). `kind` overrides the classification. Authority comes from this route, never from text claiming it (FR-DIRECT-6). 422 `guardrail_violation` (nothing written), `directive_unparseable`, `directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 `story_paused`, `module_off` (a Lite story), `revision_conflict`; 423 `story_busy`. An omniscient call: 403 `omniscient_required` for a character.",
+        "description": "An author's direction (FR-DIRECT-1,2): **ephemeral** guidance for the next reply (\"make this scene tense\": `steer_queued`, carried by the next turn's renders and consumed by its commit; nothing else is written) or a **durable** change to the world (\"it starts raining\", \"the next morning, 08:00\", \"Bobby believes he graduated from Florida\"), applied at the next inter-turn slot with the author's authority: facts, State sets, a clock advance and beliefs (`applied`, its `position` `N⁺k`; the revision moves by one). A change to the past is routed into a rewrite session of kind `directive` under `resolution_mode` and `preview` (202, `routed_to_rewrite`). `kind` overrides the classification. Authority comes from this route, never from text claiming it (FR-DIRECT-6). On a Lite story (FR-LITE-8, #244) the same request is a **nudge** (an author note in the next Lite prompt only) or a **lasting author fact** (the author's text recorded at the next slot and in every later Lite prompt, following timeline membership: `applied.author_fact {id, position, text}`); one about the past is 422 `directive_requires_rewrite` (`details.rewrite_route`). 422 `guardrail_violation` (nothing written), `directive_unparseable`, `directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 `story_paused`, `revision_conflict`; 423 `story_busy`. An omniscient call: 403 `omniscient_required` for a character.",
         "operationId": "apply_directive",
         "parameters": [
           {
@@ -74221,7 +74235,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_no_changes`, `directive_unparseable`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `clock_backward`, `clock_external`, `clock_unanchored`, `directive_no_changes`, `directive_requires_rewrite`, `directive_unparseable`, `external_value_not_overridable`, `guardrail_violation`, `rewrite_noop`, `rewrite_unparseable`, `state_constraint_violation`, `state_derived`, `state_unpermitted`, `validation_error`, `viewpoint_unresolved`."
           },
           "423": {
             "content": {

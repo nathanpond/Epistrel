@@ -817,8 +817,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/entities/merge"): Call(
         409, {"entity_ids": [NO_SUCH, NO_SUCH]}, queries=(OMNISCIENT,)
     ),
+    # #244: a Lite story's nudge (steer_queued) for every requester.
     ("POST", f"{S}/directives"): Call(
-        409, {"text": "Make this scene tense.", "kind": "ephemeral"}, queries=(OMNISCIENT,)
+        200, {"text": "Make this scene tense.", "kind": "ephemeral"}, queries=(OMNISCIENT,)
     ),
     ("GET", f"{S}/amendments"): Call(200, queries=(OMNISCIENT,)),
     ("GET", f"{S}/amendments/{{amendment_id}}"): Call(

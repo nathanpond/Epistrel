@@ -179,7 +179,8 @@ CAPABILITY_MAP: tuple[CapabilityEntry, ...] = (
         "FR-TURN; FR-BITEMP; FR-PROP; FR-RET; FR-EMBED; FR-MEM-1,2,4,5,7,8; FR-STORE-3; "
         "FR-RESP-8; FR-DIRECT; FR-REWRITE; FR-CONC-3,7,11..13; FR-GUARD-4,5",
         STRUCTURED_PIPELINE,
-        notes="FR-STORE-3: its projections of beliefs, relationships and placement. FR-CONC: "
+        notes="FR-DIRECT, FR-REWRITE: as written; under `lite`, the forms of FR-LITE-8. "
+        "FR-STORE-3: its projections of beliefs, relationships and placement. FR-CONC: "
         "the structured read set and rewrite parts (the Lite read set of FR-CONC-4 is floor). "
         "FR-GUARD: its memory parts.",
     ),

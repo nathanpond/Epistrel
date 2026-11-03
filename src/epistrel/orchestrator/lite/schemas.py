@@ -274,8 +274,8 @@ class RegenerateRequest(BaseModel):
     """#241 (FR-COMMIT-12): the author directs the outcome ("the knocker is George, her ex"):
     gated like any input, parsed by ``directive_parse``; a binding of an open question is
     reconciled with recorded history before anything commits (a conflict proceeds as a
-    ``directed_resolution`` amendment under ``resolution_mode`` and ``preview``). Structured
-    stories only until #244 (a Lite story: 409 ``module_off``, ``lite_directives``)."""
+    ``directed_resolution`` amendment under ``resolution_mode`` and ``preview``). On a Lite story
+    (#244, FR-LITE-8) the directive is a nudge for that regeneration only."""
     resolution_mode: ResolutionMode = "synchronous"
     preview: PreviewMode = "preview_first"
 

@@ -64,10 +64,15 @@ class DirectiveBody(MutationResponse):
         "revision moves by one). A change to the past is routed into a rewrite session of kind "
         "`directive` under `resolution_mode` and `preview` (202, `routed_to_rewrite`). `kind` "
         "overrides the classification. Authority comes from this route, never from text "
-        "claiming it (FR-DIRECT-6). 422 `guardrail_violation` (nothing written), "
-        "`directive_unparseable`, `directive_no_changes`, `state_constraint_violation`, "
-        "`clock_backward`; 409 `story_paused`, `module_off` (a Lite story), `revision_conflict`; "
-        "423 `story_busy`. An omniscient call: 403 `omniscient_required` for a character."
+        "claiming it (FR-DIRECT-6). On a Lite story (FR-LITE-8, #244) the same request is a "
+        "**nudge** (an author note in the next Lite prompt only) or a **lasting author fact** "
+        "(the author's text recorded at the next slot and in every later Lite prompt, following "
+        "timeline membership: `applied.author_fact {id, position, text}`); one about the past "
+        "is 422 `directive_requires_rewrite` (`details.rewrite_route`). 422 "
+        "`guardrail_violation` (nothing written), `directive_unparseable`, "
+        "`directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 "
+        "`story_paused`, `revision_conflict`; 423 `story_busy`. An omniscient call: 403 "
+        "`omniscient_required` for a character."
     ),
 )
 async def apply_directive(

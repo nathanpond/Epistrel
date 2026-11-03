@@ -256,19 +256,20 @@ async def test_u_07__routing(
 
 @pytest.mark.integration
 @pytest.mark.part("M7", "FR-DIRECT-2")
-async def test_u_07__lite_interim(pg_url: str, engine: AsyncEngine) -> None:
-    """Until #244, a Lite story's directive is 409 ``module_off {module: lite_directives}`` (the
-    engine-wide status of ``module_off``; the plan's 422 is logged as a deviation). Complement:
-    no ``directives`` row and no ``directive_parse`` call."""
+async def test_u_07__lite(pg_url: str, engine: AsyncEngine) -> None:
+    """#244 (FR-LITE-8): a Lite story's ephemeral directive is a nudge, never ``module_off``:
+    a ``directives`` row ``steer_queued``, no ``directive_parse`` call (the request named its
+    kind), and the revision unmoved."""
     from tests.story_support import create, story_body
 
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        revision = await rs.revision(engine, story)
         epistrel.models.stub.calls.clear()
-        refused = await _directive(client, story, text="Ada is in the kitchen.")
-        assert refused.status_code == 409, refused.text
-        error = refused.json()["error"]
-        assert (error["code"], error["details"]["module"]) == ("module_off", "lite_directives")
+        nudged = await _directive(client, story, text="Ada is tired.", kind="ephemeral")
+        assert nudged.status_code == 200, nudged.text
+        assert nudged.json()["disposition"] == "steer_queued"
         assert [c for c in epistrel.models.stub.calls if c.purpose == "directive_parse"] == []
-        assert await rs.count(engine, "directives", story) == 0
+        assert await rs.count(engine, "directives", story) == 1
+        assert await rs.revision(engine, story) == revision

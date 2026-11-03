@@ -11788,3 +11788,18 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #702
 - **Decision (docs):** the docs/02 §9 paragraph is added for `POST /prune` and `/prune-runs`.
   **Issue:** #702
+
+### #703 — pruning policy follow-ups
+
+- **Decision:** `GET /stories/{id}` and `Engine.get_story` carry `pruning {policy, last_prune_at, next_run_at}`.
+  - `policy` is `null` when off.
+  - `last_prune_at` is the latest `pruning` event's time, manual or policy.
+  - `next_run_at` is the `prune_run` recurring row's next time, shown only while the policy is on.
+  - The block reports and never suggests: the never-suggests check asserts no other response names a prune route or `promote_before_pruning`.
+  **Issue:** #703
+- **Decision:** migration 0127 adds `ix_stories_prune_policy`, a partial expression index on `(settings -> 'prune_policy')` where it is a JSON object. The table metadata declares the same index, and `run_policy`'s scan uses its predicate.
+  **Issue:** #703
+- **Decision:** the X-07 M7 prune part (`test_x_07__m7_prune`, chaos_quick) runs on a scratch database: three missed due times give one fired run and one pruning, and a rerun prunes nothing.
+  - **The X-01 M7 part** (`test_x_01__m7_prune`, soak, `EPISTREL_SOAK_PRUNE_CYCLES`, default 400, weekly) checks linear active turns and storage under a one-day policy. It reuses X-01's fit and bound.
+  - **The never-suggests check** is `test_s_prune__never_suggests`: 50 dormant chains and a ten-year-old tail.
+  **Issue:** #703

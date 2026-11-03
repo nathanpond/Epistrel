@@ -31073,6 +31073,52 @@
         "title": "PruneTarget",
         "type": "object"
       },
+      "PruningBody": {
+        "description": "#703: a story's automatic pruning: its policy (``null``: off), when it last pruned\n(manually or by the policy; ``null``: never) and when the daily run comes next (``null``\nwhile the policy is off).",
+        "properties": {
+          "last_prune_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Prune At"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "policy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy"
+          }
+        },
+        "required": [
+          "policy",
+          "last_prune_at",
+          "next_run_at"
+        ],
+        "title": "PruningBody",
+        "type": "object"
+      },
       "PublishRequest": {
         "additionalProperties": false,
         "description": "``POST /catalog/{characters|scenarios}/{id}/publish``: the draft revision being published\n(FR-CAT-3); a stale one is 409 ``draft_stale``.",
@@ -43638,6 +43684,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/StoryPauseBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pruning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PruningBody"
               },
               {
                 "type": "null"

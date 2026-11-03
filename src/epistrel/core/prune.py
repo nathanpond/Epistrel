@@ -844,7 +844,9 @@ async def run_policy(db: AsyncEngine, now: datetime) -> dict[str, int]:
         found = list(
             await conn.execute(
                 select(stories.c.id, stories.c.settings).where(
+                    # #703: the partial index ``ix_stories_prune_policy``'s predicate.
                     stories.c.settings["prune_policy"].isnot(None),
+                    func.jsonb_typeof(stories.c.settings["prune_policy"]) == "object",
                     stories.c.status == StoryStatus.ACTIVE.value,
                 )
             )

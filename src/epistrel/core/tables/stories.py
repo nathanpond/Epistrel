@@ -192,3 +192,12 @@ stories = Table(
 Index("ix_stories_owner_principal", stories.c.owner_principal)
 # A profile's delete warnings and its purge find the stories that use it (#106).
 Index("ix_stories_engine_profile_id", stories.c.engine_profile_id)
+Index(
+    "ix_stories_prune_policy",
+    stories.c.settings["prune_policy"],
+    postgresql_where=text(
+        "(settings -> 'prune_policy') IS NOT NULL "
+        "AND jsonb_typeof(settings -> 'prune_policy') = 'object'"
+    ),
+)
+"""#703: the daily ``prune_run``'s scan of the opted-in stories (migration 0127)."""

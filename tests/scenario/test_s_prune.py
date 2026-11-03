@@ -273,6 +273,17 @@ async def test_s_prune__policy(stub_settings: Settings, engine: AsyncEngine) -> 
         assert run["principal"] == "system"
         none = await client.get(f"/stories/{kept}/prune-runs", headers=READ)
         assert none.json()["prune_runs"] == []
+        # #703: the story read's pruning block, and the index the daily scan uses.
+        shown = (await client.get(f"/stories/{opted}", headers=READ)).json()["pruning"]
+        assert shown["policy"] == {"older_than_days": 7}
+        assert shown["last_prune_at"] is not None
+        off = (await client.get(f"/stories/{kept}", headers=READ)).json()["pruning"]
+        assert (off["policy"], off["last_prune_at"], off["next_run_at"]) == (None, None, None)
+        (index,) = await rows(
+            engine,
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_stories_prune_policy'",
+        )
+        assert "prune_policy" in index.indexdef
 
 
 @pytest.mark.part("M7", "FR-STORE-18,19,28,32; FR-FB-2")
@@ -551,3 +562,46 @@ async def test_s_prune__held_turn(stub_settings: Settings, engine: AsyncEngine) 
             s=story,
         )
         assert [a["outcome"] for a in attempts] == ["rebase"], attempts
+
+
+@pytest.mark.part("M7", "FR-STORE-18,19,28,32; FR-FB-2")
+async def test_s_prune__never_suggests(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#703 (FR-STORE-32: pruning is opt-in and never suggested): a story with 50 dormant
+    continuations and a ten-year-old discarded tail. No response outside ``/prune`` and
+    ``/prune-runs`` suggests pruning: the story, its history, variants, effective
+    configuration and a turn name no prune route and no ``promote_before_pruning``; the story's
+    ``pruning`` block only reports (policy off, no run)."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, actor = await _story(client, engine)
+        for _ in range(3):
+            await _ok(await respond(client, story, respond_body(actor, FIRST)))
+        await _ok(
+            await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+        )
+        await _execute_sql(
+            engine,
+            "UPDATE operations SET membership_tx = membership_tx - interval '3650 days' "
+            "WHERE story_id = :s AND membership = 'discarded'",
+            s=story,
+        )
+        await _ok(await respond(client, story, respond_body(actor, FIRST)))
+        for _ in range(50):
+            await _ok(await client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE))
+        texts = [
+            (await client.get(f"/stories/{story}", headers=READ)).text,
+            (await client.get(f"/stories/{story}/history", headers=READ)).text,
+            (await client.get(f"/stories/{story}/variants", headers=READ)).text,
+            (await client.get(f"/stories/{story}/effective-config", headers=READ)).text,
+            (await respond(client, story, respond_body(actor, FIRST))).text,
+        ]
+        for found in texts:
+            assert "/prune" not in found
+            assert "promote_before_pruning" not in found
+        shown = await _ok(await client.get(f"/stories/{story}", headers=READ))
+        assert len(shown["dormant_chains"]) >= 50
+        assert shown["pruning"] == {"policy": None, "last_prune_at": None, "next_run_at": None}
+
+
+async def _execute_sql(engine: AsyncEngine, sql: str, **params: Any) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text(sql), params)

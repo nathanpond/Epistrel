@@ -280,3 +280,81 @@ async def test_x_01__consolidation(scratch: Scratch) -> None:
         level2 = await covered_to(conn, story, Scope().key, 2)
     assert level1 >= CONSOLIDATION_TURNS - BLOCK, level1
     assert level2 > 0, level2
+
+
+PRUNE_CYCLES = int(os.environ.get("EPISTREL_SOAK_PRUNE_CYCLES", "400"))
+PRUNE_CHECK_EVERY = max(10, PRUNE_CYCLES // 20)
+
+
+@pytest.mark.part("M7", "NFR-SCALE-2; FR-STORE-32")
+async def test_x_01__m7_prune(scratch: Scratch) -> None:
+    """X-01 (M7, #703): under a one-day ``prune_policy`` the story keeps playing past
+    truncations. Each cycle plays three turns and truncates two of them away (a discarded
+    tail), the tail ages past the policy and the daily run prunes it. At every checkpoint the
+    discarded tails older than the policy are gone (pruned), active turns grow linearly, and
+    total storage grows with a slope, relative to its size, within 1.5 times the active turns'
+    (linear with a bounded constant)."""
+    from epistrel.core import clock, timeline
+    from epistrel.core.prune import run_policy
+    from tests.event_support import new_story, play_turn
+
+    db = scratch.db
+    story = await new_story(db)
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET settings = settings || "
+                '\'{"prune_policy": {"older_than_days": 1}}\'::jsonb WHERE id = :s'
+            ),
+            {"s": story},
+        )
+    xs: list[float] = []
+    active: list[float] = []
+    storage: list[float] = []
+    head = 0
+    for cycle in range(1, PRUNE_CYCLES + 1):
+        for n in range(3):
+            await play_turn(db, story, f"cycle {cycle} turn {n}")
+        head += 3
+        await timeline.truncate(
+            db, story, timeline.TruncateRequest(to_turn=head - 2), principal="p-test"
+        )
+        head -= 2
+        async with db.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE operations SET membership_tx = membership_tx - interval '2 days' "
+                    "WHERE story_id = :s AND membership = 'discarded'"
+                ),
+                {"s": story},
+            )
+        await run_policy(db, clock.now())
+        if cycle % PRUNE_CHECK_EVERY:
+            continue
+        async with db.connect() as conn:
+            left = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM operations WHERE story_id = :s "
+                    "AND membership = 'discarded'"
+                ),
+                {"s": story},
+            )
+            turns = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM operations WHERE story_id = :s AND kind = 'turn' "
+                    "AND membership = 'active'"
+                ),
+                {"s": story},
+            )
+        assert left == 0
+        xs.append(float(cycle))
+        active.append(float(turns or 0))
+        storage.append(float(await _storage(scratch)))
+        print(f"X-01 m7 cycle={cycle} active={int(active[-1])} storage={int(storage[-1])}")
+    assert len(xs) >= 5
+    a_slope, _, a_r2 = _fit(xs, active)
+    s_slope, _, _ = _fit(xs, storage)
+    assert a_r2 >= 0.99, a_r2
+    relative_active = a_slope * xs[-1] / active[-1]
+    relative_storage = s_slope * xs[-1] / storage[-1]
+    assert relative_storage <= 1.5 * relative_active, (relative_storage, relative_active)

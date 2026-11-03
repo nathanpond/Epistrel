@@ -394,6 +394,16 @@ class AmendmentChecksBody(BaseModel):
     session_id: str | None = None
 
 
+class PruningBody(BaseModel):
+    """#703: a story's automatic pruning: its policy (``null``: off), when it last pruned
+    (manually or by the policy; ``null``: never) and when the daily run comes next (``null``
+    while the policy is off)."""
+
+    policy: dict[str, Any] | None
+    last_prune_at: str | None
+    next_run_at: str | None
+
+
 class StoryBody(StorySummaryBody):
     """One story: the summary, its cast (true ages only for an omniscient read), its settings,
     its engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``
@@ -414,6 +424,9 @@ class StoryBody(StorySummaryBody):
     """While ``status`` is ``paused`` (#118): the check that paused it; ``null`` otherwise."""
     scenario: ScenarioOriginBody | None = None
     """The scenario version the story was created from (#119); ``null`` for a blank story."""
+    pruning: PruningBody | None = None
+    """#703 (FR-STORE-32): the story's ``prune_policy`` (``null``: off), its latest pruning and,
+    while the policy is on, the daily run's next time."""
     amendment_checks_pending: AmendmentChecksBody | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
@@ -445,6 +458,7 @@ class StoryBody(StorySummaryBody):
             scenario=None
             if story.scenario is None
             else ScenarioOriginBody(id=story.scenario.id, version=story.scenario.version),
+            pruning=None if story.pruning is None else PruningBody.model_validate(story.pruning),
         )
 
 

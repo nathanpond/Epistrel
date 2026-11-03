@@ -832,7 +832,8 @@ async def apply_directive(
 
     async with db.connect() as conn:
         judged = await external_guard.classify(conn, story_id, normalized.states)
-    refused = [v for _, v in judged if v.action == "refuse"]
+        facts_judged = await external_guard.classify_facts(conn, story_id, normalized.facts)
+    refused = [v for _, v in [*judged, *facts_judged] if v.action == "refuse"]
     if refused:
         # #242: a game-owned value on a read-only provider: the whole directive is refused.
         raise external_guard.refusal(refused)

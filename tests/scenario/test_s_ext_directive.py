@@ -210,3 +210,83 @@ async def test_s_ext_directive__rewrite(
         ]
         assert [c["state"] for c in preview["changes"]] == ["purse"]
         await _never_authored(engine, story)
+
+
+@pytest.mark.part("M7", "FR-EXT-8; FR-DIRECT-1")
+async def test_s_ext_directive__predicate(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#697: a fact on a predicate whose registry ``owner = external`` (#131) is the game's too:
+    a durable directive setting it is 422 ``external_value_not_overridable`` (nothing written),
+    and a rewrite whose only change it is is 422 with no session. Complement: the same
+    predicate story-owned is applied."""
+    from sqlalchemy import text
+
+    from tests.canon_support import auto_predicate
+
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, _, _ = await _game(client, engine, epistrel, writable=True)
+        predicate = await auto_predicate(engine, story, "has reputation")
+        async with engine.begin() as conn:
+            name = await conn.scalar(
+                text("SELECT name FROM predicates WHERE id = :p"), {"p": predicate}
+            )
+            await conn.execute(
+                text("UPDATE predicates SET owner = 'external' WHERE id = :p"), {"p": predicate}
+            )
+        stub = epistrel.models.stub
+        renown = json.dumps(
+            {
+                "classification": "durable",
+                "temporal_scope": "now",
+                "changes": [
+                    {"kind": "proposition", "subject": "Cal", "predicate": name, "literal": 9}
+                ],
+            }
+        )
+        stub.when("", renown, purpose="directive_parse")
+        refused = await client.post(
+            f"/stories/{story}/directives",
+            params=rs.OMNISCIENT,
+            json={"text": "Cal's renown is nine."},
+            headers=WRITE,
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "external_value_not_overridable"
+        assert await rs.count(engine, "directives", story) == 0
+        stub.when(
+            "",
+            json.dumps(
+                {
+                    "changes": [
+                        {"kind": "proposition", "subject": "Cal", "predicate": name, "literal": 9}
+                    ]
+                }
+            ),
+            purpose="rewrite_parse",
+        )
+        alone = await client.post(
+            f"/stories/{story}/rewrites",
+            params=rs.OMNISCIENT,
+            json={"instruction": "Cal always had a renown of nine."},
+            headers=WRITE,
+        )
+        assert alone.status_code == 422, alone.text
+        assert alone.json()["error"]["code"] == "external_value_not_overridable"
+        await _never_authored(engine, story)
+
+        # Complement: story-owned again, the directive applies.
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("UPDATE predicates SET owner = 'story' WHERE id = :p"), {"p": predicate}
+            )
+        applied = await client.post(
+            f"/stories/{story}/directives",
+            params=rs.OMNISCIENT,
+            json={"text": "Cal's renown is nine."},
+            headers=WRITE,
+        )
+        assert applied.status_code == 200, applied.text

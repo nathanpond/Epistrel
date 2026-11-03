@@ -11714,3 +11714,19 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #696
 - **Decision (`AuthorityConflict` in verification):** `check_with` reads which fetched canon facts are `author_locked`. A non-author claim whose `fluent_change` would close one is `contradicted` by the new rule `authority`, citing the locked fact, so #142 repairs it instead of the commit raising. `check_with(..., author=True)` keeps the author's own claims (#145's `mutation._check`) as they were.
   **Issue:** #696
+
+### #697 — game-owned values
+
+- **Decision (S-LATE-SETTLEMENT M7):** a State change's dependents include lines that presupposed the State's value (#191's owned reading writes a `presupposes` edge on the State). Such a line is now an irreducible conflict, `state_presupposed`, rather than a cascaded `fix`, because substituting a name cannot repair a value statement. It is settled under the session's mode like any conflict.
+  - **The backdating test** (`test_s_late_settlement__m7`) checks that the "sold out" line is a conflict, and that the externally owned payment's outbox row and outcome record are identical row for row.
+  - **The edge is written directly** in the test, as `test_s_ucla` writes its edges, because no stub turn produces an owned-value `presupposes` edge on demand.
+  **Issue:** #697
+- **Decision (case 6, observability):** the lazy resolution of Jenni's exposure decides on her own beliefs: a `state_value` claim is belief-only for a witness, so its verdict is `novel` whatever canon holds. The amendment's effect on "the resolution" is therefore asserted where it acts: the corrected history the resolution reads through `h⁺2`. A State part valid from the story's start changes Cal's sword value through `h⁺2`, while one valid from after `h⁺2`'s story-time does not (#221's per-part eligibility). Every read the resolution makes is bounded by the frame either way.
+  **Issue:** #697
+- **Decision (`ownership_changed`):** #237's snapshot records, for each planned State, its owner, its provider and the provider's `write_capable`, and for each planned predicate its registry owner. `revalidate` compares them before the revision short-circuit, because a provider flip moves no revision. A difference is stale reason `ownership_changed`.
+  **Issue:** #697
+- **Decision (external predicates):** a fact on a predicate whose registry `owner = external` is guarded.
+  - **Directives:** `external_guard.classify_facts` refuses it, and the whole directive is 422 `external_value_not_overridable`.
+  - **Rewrites:** `parse._proposition` puts it in `refused_changes` (`external_owned`, `PAST`). A rewrite with only such changes is 422 with no session.
+  - **Why it is never routed:** the provider registry maps no predicate to a provider or a write shape (#204's writes name State values). The verdict names "the game" as provider and the predicate as the value.
+  **Issue:** #697

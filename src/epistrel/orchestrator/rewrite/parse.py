@@ -453,6 +453,25 @@ async def _proposition(conn: AsyncConnection, ctx: _Context, n: int, change: Rew
             }
         )
         return
+    owned = ctx.story.registry.get(str(predicate))
+    if owned is not None and str(getattr(owned.owner, "value", owned.owner)) == "external":
+        # #697 (FR-EXT-8): a predicate the registry gives an external owner is the game's:
+        # its past cannot be rewritten (as an externally owned State's).
+        from epistrel.orchestrator.external_guard import CODE, PAST
+
+        ctx.parsed.refused.append(
+            {
+                "index": n,
+                "reason": "external_owned",
+                "code": CODE,
+                "explanation": PAST,
+                "predicate": owned.name,
+                "provider": None,
+                "value_name": owned.name,
+                "change": _dump(change),
+            }
+        )
+        return
     key = prop_key(subject, predicate)
     absolute = timing.absolute(change.valid.from_)
     uncertain, bound = False, None

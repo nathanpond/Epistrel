@@ -17,6 +17,9 @@ rewrite, whether its State is externally owned (``owner = external``, #204) and 
 - A **past** change (a rewrite, an undo or a redo) to a game-owned value is always refused,
   even on a write-capable provider: a write changes only the present.
 
+#697: a fact on a predicate whose registry ``owner = external`` (#131) is guarded too, and
+always refused (``classify_facts``): a predicate-owned value has no outbox write shape.
+
 Story-owned values are not guarded: they are the story's own, and retcon like any canon.
 """
 
@@ -102,6 +105,41 @@ async def classify(
     return found
 
 
+async def classify_facts(
+    conn: AsyncConnection, story_id: str, propositions: Sequence[Any], *, past: bool = False
+) -> list[tuple[Any, ExternalVerdict]]:
+    """#697 (FR-EXT-8): the propositions among ``propositions`` whose predicate the registry
+    gives an external owner (#131), each refused: a predicate-owned value has no outbox write
+    shape (#204's writes name State values), so the author changes it in the game. The verdict
+    names the predicate as the value."""
+    from epistrel.core.propositions.registry import load
+
+    registry = await load(conn, story_id)
+    found: list[tuple[Any, ExternalVerdict]] = []
+    for proposition in propositions:
+        predicate = registry.get(str(proposition.predicate_id))
+        if predicate is None or str(getattr(predicate.owner, "value", predicate.owner)) != (
+            "external"
+        ):
+            continue
+        provider = "the game"
+        explanation = PAST if past else EXPLANATION.format(value=predicate.name, provider=provider)
+        found.append(
+            (
+                proposition,
+                ExternalVerdict(
+                    state=predicate.name,
+                    provider=provider,
+                    value_name=predicate.name,
+                    scope_key=str(proposition.subject_id),
+                    action="refuse",
+                    explanation=explanation,
+                ),
+            )
+        )
+    return found
+
+
 def refusal(verdicts: Sequence[ExternalVerdict]) -> ExternalValueNotOverridable:
     """The 422 for refused changes (one explanation per change, the first one's as the
     message)."""
@@ -121,6 +159,7 @@ __all__ = [
     "ExternalValueNotOverridable",
     "ExternalVerdict",
     "classify",
+    "classify_facts",
     "refusal",
     "verdict",
 ]

@@ -473,6 +473,15 @@ class StructuredPlanner:
                 # FR-REWRITE-11 (#238): a later amendment relying on what changes is asked
                 # about whatever its edge type (``cascade_undo`` recommended).
                 reason = "dependent_amendment"
+            elif (
+                change.kind == "state"
+                and dependent.edge_type in TEXT_EDGES
+                and table == "events"
+                and found is not None
+            ):
+                # #697 (FR-DIRECT-3): a line that presupposed the State's value (a #191 owned
+                # reading) cannot be fixed by substituting a name: it is a conflict.
+                reason = self._irreducible(found, old_forms) or "state_presupposed"
             elif dependent.edge_type in TEXT_EDGES and found is not None:
                 reason = self._irreducible(found, old_forms)
             elif dependent.edge_type is DependencyEdgeType.CAUSES and table == "events":

@@ -140,7 +140,9 @@ from epistrel.orchestrator.models.stub import StubAdapter
 from epistrel.orchestrator.policies.output_gate import DEADLINE
 from epistrel.tools.generated import REPO_ROOT
 
-SIDE_CHANNEL = frozenset({"rewrite_parse", "rewrite_record", "directive_parse"})
+SIDE_CHANNEL = frozenset(
+    {"rewrite_parse", "rewrite_record", "directive_parse", "lite_rewrite_reach"}
+)
 """Story purposes no turn calls: the history and directive side-channel's (#223, #224, #226)."""
 
 MATRIX_PATH = REPO_ROOT / "docs" / "model-matrix.md"

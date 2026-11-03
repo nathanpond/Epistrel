@@ -146,7 +146,13 @@ from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_degradation
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
-from epistrel.orchestrator.lite.context import LiteContext, pace, read_lite_context
+from epistrel.orchestrator.lite.context import (
+    LiteContext,
+    LiteSkip,
+    pace,
+    plan_skip,
+    read_lite_context,
+)
 from epistrel.orchestrator.lite.prompt import assemble, model_params, prompt_hash
 from epistrel.orchestrator.lite.schemas import (
     PIN_QUARANTINED,
@@ -708,6 +714,18 @@ async def _play(
         )
         timing.policy_check_s += time.perf_counter() - gating - (produced[0] - before)
         gated[:] = [outcome]
+        # #632 (FR-CLOCK-7,8): a narrated skip in the reply, classified, estimated (one call at
+        # most) and bounded before the commit; accepted, it replaces the pacing advance.
+        skipped[0] = await plan_skip(
+            db,
+            models,
+            story_id,
+            reply=outcome.draft.text,
+            player_input=joined_input(say, do),
+            notes=[inputs.director_notes] if inputs.director_notes else [],
+            window=[row.text for row in inputs.window],
+            budget=budget,
+        )
         op.add_commit_step(write_report)
         if steering:
             op.add_commit_step(partial(_consume, list(steering), op.operation_id))
@@ -732,8 +750,11 @@ async def _play(
 
     failed_queue: list[str] = []
 
+    skipped: list[LiteSkip | None] = [None]
+    """#632: the reply's narrated skip, planned before the commit."""
+
     async def paced(conn: AsyncConnection, *, reply: str) -> None:
-        await pace(conn, op, story_id, say=joined_input(say, do), reply=reply)
+        await pace(conn, op, story_id, say=joined_input(say, do), reply=reply, skip=skipped[0])
 
     async def write_report(conn: AsyncConnection) -> None:
         # ``elapsed_ms`` is fixed here, in the commit transaction, and the turn report is
@@ -747,6 +768,8 @@ async def _play(
             queued_ms=timing.queued_ms,
             first_call_offset_ms=timing.first_call_offset_ms(calls),
         )
+        if skipped[0] is not None:
+            report["clock"] = skipped[0].report()  # #632
         if regenerating is not None:
             # The variant this regenerate replaced (#126): the feedback aggregates count a
             # regeneration of that variant's message from it. A turn written over a rewound

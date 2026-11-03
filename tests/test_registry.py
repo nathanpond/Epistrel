@@ -86,6 +86,7 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "rewrite_parse",
         "rewrite_record",
         "directive_parse",
+        "lite_rewrite_reach",
     }
     for purpose in DELIVERED.values():
         parents = {

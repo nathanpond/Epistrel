@@ -1,8 +1,8 @@
 """Planning a rewrite: the blast radius and the preview (FR-REWRITE-2,4,5, FR-DIRECT-3; #223).
 
-``PLANNERS`` maps a story's pipeline to its ``Planner``: #223 registers ``structured`` only, so
-a Lite story's session is 409 ``module_off {module: "lite_rewrites"}`` until #245 registers
-the Lite planner (``session`` dispatches; nothing else changes).
+``PLANNERS`` maps a story's pipeline to its ``Planner``: ``structured`` (#223) and, since
+#245, ``lite``, the same planner over a Lite story's record changes, whose reach a model pass
+found first (``orchestrator.rewrite.lite``; ``session`` dispatches).
 
 **The blast radius** of each normalized change:
 
@@ -589,6 +589,9 @@ def _conflict_id(change_key: str, table: str, record_id: str) -> str:
 
 
 register_planner("structured", StructuredPlanner())
+# #245 (FR-LITE-8): a Lite story plans with the same planner over record changes only (its
+# reach is model-searched before the plan, ``orchestrator.rewrite.lite``).
+register_planner("lite", StructuredPlanner())
 
 
 __all__ = [

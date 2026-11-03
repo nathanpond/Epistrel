@@ -6507,8 +6507,8 @@ class Engine:
         change to the past routed into a rewrite session (REST 202). An omniscient call; 404;
         409 ``story_paused``; a stale expected revision 409 ``revision_conflict``; 422
         ``guardrail_violation`` before anything else is written; on a Lite story (#244,
-        FR-LITE-8) a nudge or a lasting author fact, and one about the past 422
-        ``directive_requires_rewrite``; 422 ``directive_unparseable`` or
+        FR-LITE-8) a nudge or a lasting author fact, and one about the past a Lite rewrite
+        session (#245); 422 ``directive_unparseable`` or
         ``directive_no_changes``; the State, clock and turn-slot refusals of the changes it
         applies."""
         principal = self.require_principal(ctx)

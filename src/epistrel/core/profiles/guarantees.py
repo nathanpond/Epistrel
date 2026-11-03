@@ -428,6 +428,19 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         ),
     ),
     _row(
+        "lite_rewrite_reach",
+        "Lite history rewrite reach",
+        M,
+        UNMEASURED,
+        purposes=("lite_rewrite_reach",),
+        in_story=False,
+        note=(
+            "The author's side-channel, never in a turn: a Lite rewrite's reach is "
+            "model-searched, not structurally complete; every fix is previewed and a line the "
+            "player wrote is never rewritten silently."
+        ),
+    ),
+    _row(
         "directive_parse",
         "directive parse",
         M,

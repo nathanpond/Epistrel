@@ -8,8 +8,8 @@ A Lite story plays a turn; the author then:
   not move;
 - sets a **lasting author fact** ("It starts raining."): recorded at the next slot, in every later
   prompt, and gone after a rewind past it (its slot operation discarded, never deleted);
-- directs the **past**: 422 ``directive_requires_rewrite`` with the rewrite route, nothing
-  written;
+- directs the **past**: routed into a Lite rewrite session (#245; with no line to fix, 422
+  ``rewrite_noop`` and nothing written);
 - and a **directed regeneration** applies its directive as a nudge to that regeneration only.
 
 No response on the Lite story is ``module_off``.
@@ -112,14 +112,14 @@ async def test_s_lite_directive(stub_settings: Settings, engine: AsyncEngine) ->
         )
         assert [s.m for s in slots] == ["discarded"]
 
-        # The past: refused with the rewrite route, nothing written.
+        # The past: a Lite rewrite session (#245); with no line to fix, a no-op.
         stub.when("Ohio", PAST, purpose="directive_parse")
+        stub.when("", json.dumps({"changes": []}), purpose="rewrite_parse")
+        stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
         count = await rs.count(engine, "directives", story)
         past = await _directive(client, story, text="Ada grew up in Ohio.")
         assert past.status_code == 422, past.text
-        error = past.json()["error"]
-        assert error["code"] == "directive_requires_rewrite"
-        assert error["details"]["rewrite_route"].endswith("/rewrites")
+        assert past.json()["error"]["code"] == "rewrite_noop"
         assert await rs.count(engine, "directives", story) == count
 
         # A directed regeneration: the directive nudges that regeneration only.

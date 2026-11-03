@@ -23,11 +23,8 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core.context import RequestContext
-from epistrel.core.errors import EpistrelError
 from epistrel.core.ids import new_ulid
 from epistrel.core.propositions import store
-from epistrel.orchestrator.rewrite.api import RewriteRequest
 from epistrel.orchestrator.rewrite.session import expire_idle
 from tests.auth_support import auth_settings
 from tests.event_support import execute_in_tx, rows, scalar
@@ -239,27 +236,18 @@ async def test_rewrite_session(pg_url: str, engine: AsyncEngine) -> None:
 
 
 async def test_rewrite_lite_interim(pg_url: str, engine: AsyncEngine) -> None:
-    """Until #245, a Lite story's session is 409 ``module_off {module: lite_rewrites}`` on REST
-    and through ``Engine.open_rewrite``. Complement: no session row and no ``rewrite_parse``
-    call."""
+    """#245 retires the interim: a Lite story's session is never ``module_off``. With no line
+    the reach pass can fix and no change Lite can hold, the instruction is a no-op (422
+    ``rewrite_noop``) and no session row is written."""
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         story = (await create(client, story_body("Wren", "Ada")))["story_id"]
-        epistrel.models.stub.calls.clear()
-        refused = await _open(client, story, "Ada was always a sailor.")
-        # 409, the engine-wide status of ``module_off`` (the plan's 422 is logged as a deviation).
-        assert refused.status_code == 409, refused.text
-        error = refused.json()["error"]
-        assert (error["code"], error["details"]["module"]) == ("module_off", "lite_rewrites")
-        with pytest.raises(EpistrelError) as found:
-            await epistrel.open_rewrite(
-                RequestContext(principal="p-author"),
-                story,
-                RewriteRequest(instruction="Ada was always a sailor."),
-                viewpoint="omniscient",
-            )
-        assert found.value.code == "module_off"
-        assert [c for c in epistrel.models.stub.calls if c.purpose == "rewrite_parse"] == []
+        epistrel.models.stub.when("", json.dumps({"changes": []}), purpose="rewrite_parse")
+        epistrel.models.stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
+        found = await _open(client, story, "Ada was always a sailor.")
+        assert found.status_code == 422, found.text
+        assert found.json()["error"]["code"] == "rewrite_noop"
+        assert [c for c in epistrel.models.stub.calls if c.purpose == "lite_rewrite_reach"]
         assert (
             await scalar(
                 engine, "SELECT count(*) FROM rewrite_sessions WHERE story_id = :s", s=story

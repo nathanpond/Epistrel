@@ -797,8 +797,9 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/respond"): Call(200, respond_body),
     # #223-#226, #238: the history side-channel on a Lite story (no planner: 409 module_off),
     # its reads, and the routes of a session or an amendment the story does not hold (404).
+    # #245: a Lite story's session runs (the stub's reach finds no line: a no-op).
     ("POST", f"{S}/rewrites"): Call(
-        409, {"instruction": "Ada was always a sailor."}, queries=(OMNISCIENT,)
+        422, {"instruction": "Ada was always a sailor."}, queries=(OMNISCIENT,)
     ),
     ("GET", f"{S}/rewrites"): Call(200, queries=(OMNISCIENT,)),
     ("GET", f"{S}/rewrites/{{session_id}}"): Call(404, queries=(OMNISCIENT,), prepare=_no_session),
@@ -815,7 +816,7 @@ CALLS: dict[tuple[str, str], Call] = {
         404, queries=(OMNISCIENT,), prepare=_no_session
     ),
     ("POST", f"{S}/entities/merge"): Call(
-        409, {"entity_ids": [NO_SUCH, NO_SUCH]}, queries=(OMNISCIENT,)
+        422, {"entity_ids": [NO_SUCH, NO_SUCH]}, queries=(OMNISCIENT,)
     ),
     # #244: a Lite story's nudge (steer_queued) for every requester.
     ("POST", f"{S}/directives"): Call(

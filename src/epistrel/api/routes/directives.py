@@ -68,7 +68,7 @@ class DirectiveBody(MutationResponse):
         "**nudge** (an author note in the next Lite prompt only) or a **lasting author fact** "
         "(the author's text recorded at the next slot and in every later Lite prompt, following "
         "timeline membership: `applied.author_fact {id, position, text}`); one about the past "
-        "is 422 `directive_requires_rewrite` (`details.rewrite_route`). 422 "
+        "opens a Lite rewrite session (#245, 202 `routed_to_rewrite`). 422 "
         "`guardrail_violation` (nothing written), `directive_unparseable`, "
         "`directive_no_changes`, `state_constraint_violation`, `clock_backward`; 409 "
         "`story_paused`, `revision_conflict`; 423 `story_busy`. An omniscient call: 403 "

@@ -1636,6 +1636,69 @@ DIRECTIVE_PARSE = Purpose(
 """``directive_parse`` (#226): one call per directive whose kind or changes the request does
 not settle (``orchestrator.directives``)."""
 
+
+class LiteReachLine(BaseModel):
+    """One transcript line a Lite reach pass reads: its turn, speaker and text."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    turn: int
+    speaker: str = Field(max_length=200)
+    text: str = Field(max_length=REWRITE_RECORD_TEXT_MAX)
+
+
+LITE_REACH_LINES_MAX = 200
+
+
+class LiteRewriteReachInputs(InputSchema):
+    """A Lite history rewrite's correction (FR-LITE-8; #245) and the transcript lines it is
+    searched against (the active chain, newest first, at most ``LITE_REACH_LINES_MAX``)."""
+
+    instruction: Annotated[str, C.AUTHOR_INSTRUCTION] = Field(max_length=REWRITE_INSTRUCTION_MAX)
+    lines: Annotated[list[LiteReachLine], C.RECENT_MESSAGE] = Field(
+        default_factory=list, max_length=LITE_REACH_LINES_MAX
+    )
+
+
+class LiteReachHit(BaseModel):
+    """A line the correction touches: where it is, how, and its fix (``null``: none clean)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    turn: int = Field(ge=1)
+    quote: str = Field(max_length=2_000)
+    relation: Literal["conflicts", "mentions"]
+    fix_text: str | None = Field(default=None, max_length=REWRITE_RECORD_TEXT_MAX)
+    reason: str = Field(default="", max_length=300)
+
+
+class LiteRewriteReachResult(BaseModel):
+    """What ``lite_rewrite_reach`` answers: the lines the correction touches."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hits: list[LiteReachHit] = Field(default_factory=list, max_length=50)
+
+
+LITE_REWRITE_REACH = Purpose(
+    name="lite_rewrite_reach",
+    description=(
+        "Finds the lines of a Lite story's transcript a correction to its past contradicts or "
+        "mentions and proposes the least fix of each, on the author's side-channel, never in a "
+        "turn (FR-LITE-8): the Lite reach is model-searched, not structurally complete."
+    ),
+    default_model_key=DEFAULT_MODEL_KEY,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=LiteRewriteReachInputs,
+    template="lite_rewrite_reach.j2",
+    hot_path=False,
+    never_receives=_EVERYTHING - {C.AUTHOR_INSTRUCTION, C.RECENT_MESSAGE},
+    response_schema=LiteRewriteReachResult,
+    story_scoped=True,
+)
+"""``lite_rewrite_reach`` (#245): one call per Lite rewrite session the author opens with an
+instruction (``orchestrator.rewrite.lite``)."""
+
 RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
     ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
     ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
@@ -1804,6 +1867,7 @@ DELIVERED: Mapping[str, Purpose] = _build(
         REWRITE_PARSE,
         REWRITE_RECORD,
         DIRECTIVE_PARSE,
+        LITE_REWRITE_REACH,
     )
 )
 """Purposes a model call may use now, by name."""
@@ -1845,6 +1909,7 @@ __all__ = [
     "EXTRACTION_MAX_CLAIMS",
     "EXTRACTION_MIN_CONFIDENCE",
     "IMPORTANCE_SCORING",
+    "LITE_REWRITE_REACH",
     "PORTS",
     "QUALITY_JUDGE",
     "RATING_SUGGESTION",
@@ -1902,6 +1967,10 @@ __all__ = [
     "JudgeCriteria",
     "JudgePair",
     "KnownHit",
+    "LiteReachHit",
+    "LiteReachLine",
+    "LiteRewriteReachInputs",
+    "LiteRewriteReachResult",
     "LiteSummaryInputs",
     "Modality",
     "PlayerInput",

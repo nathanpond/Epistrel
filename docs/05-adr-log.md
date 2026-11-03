@@ -32,7 +32,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-MODEL | §13 | 129, 136, 144, 150, 170 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
 | FR-STATE | §15.1 | 055, 072, 144 |
-| FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
+| FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
@@ -40,7 +40,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
-| FR-LITE | §18.4 | 085, 086, 087 |
+| FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
@@ -240,6 +240,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 175 | Compaction is renamed pruning | Current | — |
 | 176 | A story character is erased from the catalog with its story named | Current | — |
 | 177 | A character may state what an author_fiat acquisition made it know | Current | — |
+| 178 | A Lite turn handles narrated time skips | Current | — |
 
 ---
 
@@ -1865,6 +1866,15 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 **Decision:** The owner's decision on #649 (2026-11-01). A character's render (and the narrator side of a reactive render) that states a fact the character holds through an active `author_fiat` acquisition at the claim's position is **permitted** with basis `author_fiat`, as knowledge from perception or testimony may be stated. The permission matrix stays pure: the verifier reads the acquisition from the character's beliefs (the could-have-known replay's first path) and passes `fiat_known` in. The rule replaces only the `other_character_secret` denial. External values, locked canon, State changes, the player's character and the arrival policy deny as before, and a fact about a different proposition is still denied. The protected-content match on that very fact is not a leak to this character, which now knows it, so it does not deny; any other protected content still does. Canonization is unchanged: a permitted `say` about another character is not canonized.
 **Alternatives considered:** Making the fiat canon visible to the character was rejected: it would rewrite canon visibility from player input, which ADR-174 refused. Leaving the line repaired contradicted "its later turns are verified as knowing it".
 **Consequences:** docs/03 FR-RESP-14 adds "and may state it" (amended 2026-11-01). S-PLAYER-AUTHORITY gains an M7 part (FR-RESP-14). `tests/test_permission.py` checks the matrix row over every asserter kind (FR-RESP-14, FR-VERIFY-11).
+
+---
+
+### ADR-178 — A Lite turn handles narrated time skips
+**Status:** Accepted.
+**Context:** #203 gave the prompt-only clock of a Lite story one pacing advance per reply. A Lite reply that narrates elapsed time ("they watch the rest of the movie") moved the clock by its word count only: Lite never classified, estimated or bounded a narrated skip (FR-CLOCK-7,8), which only the structured pipeline did (#199, #201). FR-LITE-5 limited the prompt-only clock to pacing and FR-LITE-7 limited a Lite turn's calls.
+**Decision:** The owner's decision on #632 (2026-11-01). With the clock at `prompt_only` and `paced`, a Lite turn reads a narrated skip in its reply deterministically (a stated amount, or an activity of #199's lexicon with a word that has it elapse), classifies it with #199's rules (the player's input or the author's Lite notes invite it, else the model started it) and bounds it (`max_unprompted_skip_minutes`, an established activity from the verbatim window). A skip with no stated amount is estimated by at most one `time_estimation` call (#201), within the turn's budget, before the commit. An accepted skip replaces the turn's pacing advance; a refused or unestimated one is not applied, because Lite has no repair: the reply stands, the clock moves by pacing only, and the turn report lists why. A Lite skip that passes an open scheduled event is applied in full: due-event stops (FR-CLOCK-9) stay structured-only, since Lite cannot regenerate a reply to end at the interruption, and #196's lifecycle evaluates the events it passes as for any advance.
+**Alternatives considered:** Repairing a refused skip as the structured pipeline does was rejected: Lite has no repair loop, and adding one would break FR-LITE-7's one-generation-call contract. Estimating every activity mention was rejected: the lexicon names common words ("show", "watch"), so the detector also needs a word that has the activity elapse.
+**Consequences:** docs/03 FR-LITE-5 and FR-LITE-7 are amended (2026-11-01). docs/04 I-18 gains an M7 part (FR-CLOCK-7,8, FR-LITE-5,7). `core.world_clock.skips.narrates_elapsing` is the Lite detector (`DURATIVE`). Test: `tests/integration/test_i_18.py::test_i_18__m7_skips`.
 
 ---
 

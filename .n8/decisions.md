@@ -11481,3 +11481,38 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - The guarantee-table rows.
   - `test_lite_directive_dispatch`, `test_lite_directed_regeneration` and `test_i_19__m7_author_facts`. The scenario covers nudge, lasting fact, rewind, the past refusal and the directed regeneration.
   **Issue:** #244
+
+### #245 — Lite history rewrites, 2026-11-03
+
+- **Decision:** a Lite rewrite reuses #223's session, planner and apply.
+  - `open_session` on a Lite story calls `rewrite_parse` and then one `lite_rewrite_reach` pass (a new purpose: registry, template, guarantee row, side-channel matrix, deterministic-first exempt) over the active transcript, newest first, at most 200 lines.
+  - Each hit with a fix becomes a #221 record change (`overlay` `replace` by `ref` turn plus quote), which #223's normalizer resolves to the line's event.
+  - The `lite` planner is the structured planner over those record changes. The parse's proposition and State changes are refused (`lite_no_canon`); unfixable hits are listed as refused (`no_clean_fix`).
+  - Apply, the as-recorded original in the event log, and #238's undo and redo then work unchanged.
+  - A Lite directive about the past now routes into a `directive` session (202). #244's `directive_requires_rewrite` is removed.
+  **Issue:** #245
+- **Decision (not built; #700):**
+  - `line_edit` (a direct single-line edit with zero model calls).
+  - The `lite_note` amendment part and the "Author corrections" prompt block.
+  - The `lite_rewrite_parse` purpose (`rewrite_parse` serves).
+  - The re-check call over all fixes and the output and rating gate on each fix text.
+  - Chunked reach under `lite_reach_max_calls` with flagged ranges first.
+  - The summary-segment rebuild and `summary_rebuilding` after an apply.
+  - The Lite revalidation read set.
+  - Converting `lite_note` parts on upgrade, and rendering structured instructions on downgrade.
+  - `preview.reach` metadata.
+  - S-LITE-REWRITE is a new docs/04 test ID for the scenario this story ships.
+  **Issue:** #245
+
+### #632 — Lite time skips, 2026-11-03
+
+- **Decision:** the Lite detector is `skips.narrates_elapsing`: a stated amount, or an activity of #199's lexicon together with a `DURATIVE` word ("rest of", "until", "fall asleep", …). An activity word alone ("show", "watch") would have sent an estimation call on ordinary replies. Classification and bounding are #199's `classify_skip` and `authorize` (directives = the prompt's author notes; established = the verbatim window). One `time_estimation` call at most per turn (#201's `estimate`, under the turn budget), before the commit. The skip's minutes replace `pace`'s pacing advance (source `declared_skip` or `estimate`). A refused or unestimated skip leaves pacing and is listed in `turn_report.clock.skips_refused`.
+  **Issue:** #632
+- **Decision:** ADR-178 records it, including the planner's product-visible call that due-event stops stay structured-only. docs/03 FR-LITE-5 and FR-LITE-7 are amended (2026-11-01, the owner's decision on #632). docs/04 I-18 gains its M7 part, and the §15 rows for FR-CLOCK-7, FR-CLOCK-8 and FR-LITE-7 list `I-18 (M7)`.
+  **Issue:** #632
+- **Decision (not built):**
+  - the respond `degradation: time_estimate_skipped` when the budget refuses the call;
+  - the Lite guarantee row for `time_estimation`;
+  - the replay and regenerate assertions.
+  - Case (5) of the test ("Twenty minutes later" from the model with nothing established) is refused by #199's rules (`no_established_activity`). The test asserts only that no estimation call is made.
+  **Issue:** #632

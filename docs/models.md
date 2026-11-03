@@ -33,6 +33,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `rewrite_parse` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `rewrite_record` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `directive_parse` | no | `default` | `parse_validate_retry` | 8,192 tokens |
+| `lite_rewrite_reach` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -548,6 +549,27 @@ Classifies an author's directive as guidance for the next turn or a change to th
 | `clock` | `author_instruction` |
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+
+### `lite_rewrite_reach`
+
+Finds the lines of a Lite story's transcript a correction to its past contradicts or mentions and proposes the least fix of each, on the author's side-channel, never in a turn (FR-LITE-8): the Lite reach is model-searched, not structurally complete.
+
+- **Hot path:** no
+- **Default model:** the `default` row of `model_config`, unless the purpose has its own
+- **Template:** `lite_rewrite_reach.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `LiteRewriteReachResult` (`hits`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `instruction` | `author_instruction` |
+| `lines.turn` | `recent_message` |
+| `lines.speaker` | `recent_message` |
+| `lines.text` | `recent_message` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
 
 ## Ports delivered
 

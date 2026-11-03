@@ -66,7 +66,14 @@ type UncertainReason = Literal["parse_error", "schema_error", "low_confidence", 
 type DeterministicFirst[T] = Callable[[], T | None]
 
 DETERMINISTIC_FIRST_EXEMPT = frozenset(
-    {"generation", "lite_summary", "rewrite_parse", "rewrite_record", "directive_parse"}
+    {
+        "generation",
+        "lite_summary",
+        "rewrite_parse",
+        "rewrite_record",
+        "directive_parse",
+        "lite_rewrite_reach",
+    }
 )
 """Purposes with no deterministic path (FR-MODEL-5's residual is the whole call).
 ``rewrite_parse`` (#223) reads the author's free-text instruction; everything after it

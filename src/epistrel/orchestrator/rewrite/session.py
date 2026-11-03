@@ -577,7 +577,16 @@ async def open_session(
         )
     # The model call runs with no transaction open (FR-CONC-2).
     result = await parsing.call_parse(models, story, request.instruction, [])
+    no_canon: list[dict[str, Any]] = []
+    if pipeline != "structured":
+        # #245 (FR-LITE-8): a Lite story's reach is model-searched over its transcript.
+        from epistrel.orchestrator.rewrite import lite as lite_rewrite
+
+        reached, unfixed = await lite_rewrite.reach(db, models, story_id, request.instruction)
+        result, no_canon = lite_rewrite.lite_result(result, reached)
+        no_canon.extend(unfixed)
     result, gated = await gate_new_texts(db, models, story_id, result)
+    gated = [*gated, *no_canon]
     mode, threshold = request.mode()
     async with db.begin() as conn:
         parsed, plan, revision = await _compute(

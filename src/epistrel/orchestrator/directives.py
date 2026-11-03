@@ -6,8 +6,8 @@ viewpoint, ``precheck``: 404, 409 ``story_paused``, a stale expected revision) a
 gate on the text. It refuses text that names an erased subject (409
 ``erased_subject_referenced``), dispatches on the story's pipeline (a Lite story is 409
 the Lite forms of FR-LITE-8 for a Lite story, #244: a nudge, or a lasting author fact recorded
-at the next slot as its ``directive_applied`` event; one about the past is 422
-``directive_requires_rewrite`` until #245) and classifies:
+at the next slot as its ``directive_applied`` event; one about the past is routed into a Lite
+rewrite session, #245) and classifies:
 
 - **ephemeral** (guidance for the next reply: the request's ``kind``, or ``directive_parse``'s
   classification): a ``directives`` row ``steer_queued``. The next structured turn's renders
@@ -48,7 +48,6 @@ from epistrel.core.enums import (
 )
 from epistrel.core.errors import (
     DirectiveNoChanges,
-    DirectiveRequiresRewrite,
     DirectiveUnparseable,
 )
 from epistrel.core.ids import new_ulid
@@ -551,13 +550,9 @@ async def apply_directive(
     directive_id = new_ulid()
     payload = [c.model_dump(mode="json", by_alias=True) for c in result.changes]
     lite = await require_pipeline(db, story_id) != "structured"
-    if lite and classification != "ephemeral":
-        # #244 (FR-LITE-8): a lasting author fact, or a past one refused until #245.
-        if result.temporal_scope == "past":
-            raise DirectiveRequiresRewrite(
-                "a Lite directive about the past is a history rewrite",
-                {"rewrite_route": f"/stories/{story_id}/rewrites"},
-            )
+    if lite and classification != "ephemeral" and result.temporal_scope != "past":
+        # #244 (FR-LITE-8): a lasting author fact (a past one is a Lite rewrite, #245, routed
+        # below like a structured story's).
         fact = (result.steer_text or "").strip() or request.text
         noted, at, moved = await _apply_now(
             db,

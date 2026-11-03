@@ -543,7 +543,7 @@ async def test_r_07__m7_rewrite(pg_url: str, engine: AsyncEngine) -> None:
     the framing and the older claim sent as rewrite instructions are each refused 422
     ``guardrail_violation`` naming the minors policy, with no session row and no
     ``rewrite_parse`` call. Complement: the same cast without a minor lets the instructions
-    past the gate (the Lite story is then refused ``module_off`` until #245)."""
+    past the gate (the Lite story's session then plans, #245)."""
     from sqlalchemy import func
 
     from epistrel.core.tables import rewrite_sessions as sessions_table
@@ -577,7 +577,8 @@ async def test_r_07__m7_rewrite(pg_url: str, engine: AsyncEngine) -> None:
         assert count == 0
         for said in INPUTS:
             passed = await rewrite(adults, said)
-            assert passed.json()["error"]["code"] == "module_off", passed.text
+            # #245: past the gate, a Lite story's session plans (the stub finds nothing).
+            assert passed.json()["error"]["code"] != "guardrail_violation", passed.text
 
 
 @pytest.mark.integration
@@ -588,7 +589,7 @@ async def test_r_07__m7_directive(pg_url: str, engine: AsyncEngine) -> None:
     the framing and the older claim sent as author directives are each refused 422
     ``guardrail_violation`` naming the minors policy, with no ``directives`` row and no
     ``directive_parse`` call. Complement: the same cast without a minor lets the directives
-    past the gate (the Lite story is then refused ``module_off`` until #244)."""
+    past the gate (the Lite story then takes it in its Lite form, #244)."""
     from sqlalchemy import func
 
     from epistrel.core.tables import directives as directives_table
@@ -622,4 +623,7 @@ async def test_r_07__m7_directive(pg_url: str, engine: AsyncEngine) -> None:
         assert count == 0
         for said in INPUTS:
             passed = await direct(adults, said)
-            assert passed.json()["error"]["code"] == "module_off", passed.text
+            # #244/#245: past the gate, a Lite directive is handled in its Lite form.
+            assert passed.status_code != 422 or (
+                passed.json()["error"]["code"] != "guardrail_violation"
+            ), passed.text

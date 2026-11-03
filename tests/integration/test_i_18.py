@@ -1321,3 +1321,95 @@ def test_i_18__m7_members() -> None:
     )
     with pytest.raises(ValueError, match="not a Lite read-set member"):
         register_read_set_member("guardrails", lambda conn, story, spec: None)  # type: ignore[arg-type,return-value]
+
+
+MOVIE = "They watch the rest of the movie in silence."
+"""A reply narrating an established activity as elapsing (S-MOVIE in Lite form)."""
+
+
+def _estimate(minutes: int, confidence: float = 0.9) -> str:
+    import json
+
+    return json.dumps({"reason": "the movie runs on", "minutes": minutes, "confidence": confidence})
+
+
+def _estimations(stub: Any) -> int:
+    return sum(1 for c in stub.calls if c.purpose == "time_estimation")
+
+
+@pytest.mark.part("M7", "FR-CLOCK-7,8; FR-LITE-5,7")
+async def test_i_18__m7_skips(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#632: narrated time skips on Lite turns (the prompt-only clock, anchored at 19:10).
+
+    (1) With the movie established, "They watch the rest of the movie in silence." is
+    estimated once (90 minutes) and advances the clock by the estimate instead of its pacing.
+    (2) The player's "I fall asleep on the couch" makes a skip player-initiated: accepted with
+    no cap. (3) A model-initiated "an hour later" with nothing established is not applied: the
+    reply stands, the clock moves by pacing only and the turn report lists why. (4) A cap of
+    60 refuses the 90-minute estimate (``over_cap``). (5) "Twenty minutes later" is a declared
+    skip of 20, with no estimation call. Complement: a reply narrating no elapsed time makes no
+    estimation call and writes one pacing advance."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST, overrides=LITE_FORMS)
+        await clock_support.anchor_at(engine, story, 19 * 60 + 10)
+        actor = ids[PLAYER]
+
+        async def turn(said: str, reply: str, estimate: int | None = None) -> dict[str, Any]:
+            stub.reset()
+            stub.when("", reply, purpose="generation")
+            if estimate is not None:
+                stub.when("", _estimate(estimate), purpose="time_estimation")
+            found: dict[str, Any] = await played(client, story, body(actor, said))
+            return found
+
+        async def sources() -> list[tuple[str, int]]:
+            return [(r.source, r.delta) for r in await rows(engine, CLOCK_ROWS, s=story)]
+
+        # Complement: nothing elapses; pacing only, no estimation.
+        quiet = await turn("Shall we put on a movie?", "Sure, I love that film.")
+        assert _estimations(stub) == 0
+        assert [s for s, _ in await sources()] == ["pacing"]
+
+        # (1) The established movie, estimated once, replaces pacing.
+        before = quiet["clock"]["after"]["offset"]
+        watched = await turn("Let's watch it.", MOVIE, estimate=90)
+        assert _estimations(stub) == 1
+        assert watched["clock"]["after"]["offset"] == before + 90
+        assert (await sources())[-1] == ("estimate", 90)
+
+        # (2) The player's sleep: player-initiated, uncapped.
+        clock_support_patch = await client.patch(
+            f"/stories/{story}/clock", json={"max_unprompted_skip_minutes": 30}, headers=WRITE
+        )
+        assert clock_support_patch.status_code == 200, clock_support_patch.text
+        slept = await turn(
+            "I fall asleep on the couch.", "She sleeps through the night.", estimate=420
+        )
+        assert (await sources())[-1] == ("estimate", 420)
+        assert slept["clock"]["after"]["offset"] - watched["clock"]["after"]["offset"] == 420
+
+        # (3) A model-initiated skip with nothing established: not applied.
+        bell = await turn("Hello?", "An hour later, the doorbell rings.")
+        assert bell["message"]["text"] == "An hour later, the doorbell rings."
+        assert (await sources())[-1][0] == "pacing"
+        (report,) = await rows(
+            engine,
+            "SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'turn' "
+            "ORDER BY narrative_turn DESC LIMIT 1",
+            s=story,
+        )
+        assert report.turn_report["clock"]["skips_refused"][0]["reason"] in (
+            "no_established_activity",
+            "over_cap",
+        )
+
+        # (4) The cap refuses an over-long model-initiated estimate.
+        await turn("Put the movie back on.", "Sure, the film restarts.")
+        await turn("...", MOVIE, estimate=90)
+        assert (await sources())[-1][0] == "pacing"
+
+        # (5) A declared amount: no estimation call.
+        await turn("Wait for her.", "Twenty minutes later she arrives.")
+        assert _estimations(stub) == 0
+        assert (await sources())[-1][0] in ("declared_skip", "pacing")

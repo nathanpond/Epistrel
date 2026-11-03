@@ -20,7 +20,7 @@ relying on A's fact (its #220 edges); a later turn has Marcus form a memory from
 - The routes (``test_s_amend_undo__routes``): list and detail shapes (``relies_on``,
   ``dependents``), 404 ``amendment_not_found``, 403 ``omniscient_required``, 409
   ``amendment_already_reverted``, 422 ``use_redo``, 409 ``amendment_not_reverted``, 409
-  ``amendment_already_redone``; a Lite story's undo is 409 ``module_off`` (``lite_rewrites``)
+  ``amendment_already_redone``; a Lite story's undo opens a Lite session (#245)
   with no session while its list and detail answer 200.
 """
 
@@ -471,8 +471,8 @@ async def test_s_amend_undo__routes(
                 f"/stories/{lite}/amendments/{lite_amendment}", params=rs.OMNISCIENT, headers=WRITE
             )
         ).status_code == 200
-        refused = await _undo(client, lite, lite_amendment)
-        assert refused.status_code == 409, refused.text
-        error = refused.json()["error"]
-        assert (error["code"], error["details"]["module"]) == ("module_off", "lite_rewrites")
-        assert await rs.count(engine, "rewrite_sessions", lite) == 0
+        # #245: a Lite story's amendment is undone through a Lite session like any other.
+        opened = await _undo(client, lite, lite_amendment)
+        assert opened.status_code == 201, opened.text
+        assert opened.json()["kind"] == "undo"
+        assert await rs.count(engine, "rewrite_sessions", lite) == 1

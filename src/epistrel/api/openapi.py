@@ -223,6 +223,7 @@ ERROR_STATUS: dict[str, int] = {
     "rewrite_session_closed": 409,
     "rewrite_session_limit": 409,
     "rewrite_stale": 409,
+    "rewrite_question_superseded": 409,
     "rewrite_questions_pending": 409,
     "rewrite_apply_in_progress": 409,
     "record_in_flight": 409,
@@ -763,6 +764,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erased_subject_referenced",
         "model_unavailable",
         "rewrite_apply_failed",
+        "rewrite_question_superseded",
     ),
     "cancel_rewrite": (
         "omniscient_required",
@@ -786,6 +788,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "invalid_amendment_part",
         "rewrite_apply_failed",
         "model_unavailable",
+        "erased_subject_referenced",
     ),
     "apply_directive": (
         "omniscient_required",

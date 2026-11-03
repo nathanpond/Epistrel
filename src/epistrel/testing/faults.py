@@ -498,6 +498,20 @@ if __name__ == "__main__":  # pragma: no cover - the child process entry point
     sys.exit(main())
 
 
+@contextlib.contextmanager
+def rewrite_research_skipped() -> Iterator[None]:
+    """Skip the apply revalidation's dependency re-search (the fault point
+    ``rewrite.revalidate.skip_research``, #237): a dependent formed since the preview is not
+    seen, so a test can watch S-PREVIEW-NEW-DEPENDENT fail without it."""
+    from epistrel.orchestrator.rewrite import revalidate
+
+    revalidate.RESEARCH = False
+    try:
+        yield
+    finally:
+        revalidate.RESEARCH = True
+
+
 __all__ = [
     "ADDRESS_IN_USE",
     "BEFORE_COMMIT",

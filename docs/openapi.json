@@ -38549,6 +38549,13 @@
             "title": "Rewrite Session Ttl Minutes",
             "type": "integer"
           },
+          "rewrite_stale_retries": {
+            "default": 2,
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Rewrite Stale Retries",
+            "type": "integer"
+          },
           "structured_retry_budget": {
             "default": 2,
             "maximum": 10.0,
@@ -40142,6 +40149,17 @@
               }
             ],
             "title": "Rewrite Session Ttl Minutes"
+          },
+          "rewrite_stale_retries": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rewrite Stale Retries"
           },
           "structured_retry_budget": {
             "anyOf": [
@@ -46809,6 +46827,7 @@
                           "rewrite_ambiguity_margin",
                           "rewrite_max_open_sessions",
                           "rewrite_session_ttl_minutes",
+                          "rewrite_stale_retries",
                           "structured_retry_budget",
                           "thunks_max_open",
                           "timer_lag_alert",
@@ -80185,7 +80204,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `rewrite_session_closed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `rewrite_question_superseded`, `rewrite_session_closed`."
           },
           "422": {
             "content": {
@@ -80247,7 +80266,7 @@
     },
     "/stories/{story_id}/rewrites/{session_id}/apply": {
       "post": {
-        "description": "Apply the session's plan (#224, FR-REWRITE-6) as one atomic amendment: the planned changes, the incidental and cascaded repairs, the conflicts' resolutions (as answered, or the least change the mode chose) and any cascade undo, all or nothing; the story's `timeline_revision` moves by exactly one. The questions and answers are recorded as audit events. The answer is the session, the `amendment_id` and the `report` (`resolutions`, `applied`, `notifications`). 409 `rewrite_session_closed`, `rewrite_apply_in_progress`, `story_paused`, `rewrite_stale` (a moved revision, or a changed pipeline: the session is then abandoned), `rewrite_questions_pending`, `record_in_flight`; 422 `base_revision_required`; 503 `rewrite_apply_failed` (retryable; nothing was written and the session awaits approval again). An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
+        "description": "Apply the session's plan (#224, FR-REWRITE-6) as one atomic amendment: the planned changes, the incidental and cascaded repairs, the conflicts' resolutions (as answered, or the least change the mode chose) and any cascade undo, all or nothing; the story's `timeline_revision` moves by exactly one. The questions and answers are recorded as audit events. The answer is the session, the `amendment_id` and the `report` (`resolutions`, `applied`, `notifications`). 409 `rewrite_session_closed`, `rewrite_apply_in_progress`, `story_paused`, `rewrite_stale`, `rewrite_questions_pending`, `record_in_flight`, `erased_subject_referenced` (an erasure touched what the plan reads: the session is abandoned); 422 `base_revision_required`; 503 `rewrite_apply_failed` (retryable; nothing was written and the session awaits approval again). The plan is revalidated at the final commit (#237, FR-CONC-7,13): a story that moved outside the blast radius applies; a plan whose keys, States, records, configuration or dependents changed since its base is recomputed and the answer is 409 `rewrite_stale` with the new preview, the carried answers, any new questions and the reasons (under `apply_directly` with nothing to answer it is applied again, up to `rewrite_stale_retries` times). A `base_revision` other than the session's preview base is 409 `rewrite_stale` (`base_mismatch`); a changed pipeline abandons the session. An omniscient call: 422 `viewpoint_unresolved` without `?viewpoint`, 403 `omniscient_required` for a character. 404 `rewrite_session_not_found` for an unknown session or another story's. The story's `timeline_revision` never moves.",
         "operationId": "apply_rewrite",
         "parameters": [
           {
@@ -80417,7 +80436,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `record_in_flight`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_questions_pending`, `rewrite_session_closed`, `rewrite_stale`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_in_flight`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_questions_pending`, `rewrite_session_closed`, `rewrite_stale`, `story_paused`."
           },
           "422": {
             "content": {

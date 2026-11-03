@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -868,8 +868,10 @@ async def apply(
     *,
     principal: str,
     audit: Sequence[tuple[str, Mapping[str, Any]]],
+    check: Callable[[AsyncConnection], Awaitable[None]] | None = None,
 ) -> Applied:
-    """The one atomic apply (see the module docstring)."""
+    """The one atomic apply (see the module docstring). ``check`` runs first in the commit,
+    under the story row lock (#237's revalidation); raising rolls the apply back whole."""
     found: dict[str, Any] = {}
     async with Operation(
         db,
@@ -886,6 +888,8 @@ async def apply(
         )
 
         async def step(conn: AsyncConnection) -> None:
+            if check is not None:
+                await check(conn)
             await _in_flight(conn, prepared.parts)
             created = await _create_pending(conn, story_id, prepared.pending)
             parts = [d for _, d, _ in prepared.parts]

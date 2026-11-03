@@ -57,6 +57,7 @@ from epistrel.core.tables import (
     state_definitions,
     utterances,
 )
+from epistrel.orchestrator.rewrite import revalidate
 from epistrel.orchestrator.rewrite.cascade import PlanContext, classify
 from epistrel.orchestrator.rewrite.parse import Normalized, Parsed, Story
 
@@ -330,6 +331,10 @@ class StructuredPlanner:
             "config_revisions": {"registry": story.registry.config_revision},
             "anchor_revision": None,
         }
+        # #237: what the apply's revalidation compares against, taken with the plan.
+        plan.read_set.update(
+            await revalidate.snapshot(conn, story.story_id, plan.read_set, plan.changes)
+        )
         return plan
 
     async def _proposition(

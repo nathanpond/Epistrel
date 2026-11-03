@@ -41,6 +41,7 @@ from epistrel.core.config_changes import read_section
 from epistrel.core.errors import (
     BaseRevisionRequired,
     EpistrelError,
+    ErasedSubjectReferenced,
     InvalidAnswer,
     ModuleOff,
     RevisionConflict,
@@ -48,6 +49,7 @@ from epistrel.core.errors import (
     RewriteApplyInProgress,
     RewriteNoop,
     RewriteQuestionsPending,
+    RewriteQuestionSuperseded,
     RewriteSessionClosed,
     RewriteSessionLimit,
     RewriteSessionNotFound,
@@ -62,6 +64,7 @@ from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.registry import RewriteParseResult
 from epistrel.orchestrator.rewrite import apply as rewrite_apply
 from epistrel.orchestrator.rewrite import parse as parsing
+from epistrel.orchestrator.rewrite import revalidate
 from epistrel.orchestrator.rewrite.api import (
     AnswerRequest,
     Applied,
@@ -434,9 +437,14 @@ async def _write_questions(
     story_id: str,
     session_id: str,
     asked: Sequence[parsing.Question],
+    *,
+    refresh: bool = False,
 ) -> None:
     """Keep the current questions the parse asks again, add new ones, and mark those no longer
-    asked superseded (``superseded_by``: this re-plan's id)."""
+    asked superseded (``superseded_by``: this re-plan's id). With ``refresh`` (#237's stale
+    re-plan) a kept question takes the new plan's options and recommendation, and loses its
+    answer when the answered option is gone or names another effect (it is asked again; an
+    engine-settled conflict takes the new recommendation)."""
     current = {str(q.key): q for q in await _questions(conn, session_id)}
     wanted = {q.key for q in asked}
     replan = new_ulid()
@@ -450,6 +458,8 @@ async def _write_questions(
     now = await conn.scalar(select(func.transaction_timestamp()))
     for question in asked:
         if question.key in current:
+            if refresh:
+                await _refresh_question(conn, current[question.key], question, now)
             continue
         auto = question.kind == "conflict" and not question.required
         await conn.execute(
@@ -473,6 +483,41 @@ async def _write_questions(
                 answered_at=now if auto else None,
             )
         )
+
+
+async def _refresh_question(
+    conn: AsyncConnection, row: Any, question: parsing.Question, now: Any
+) -> None:
+    options = {str(o["id"]): o for o in question.options}
+    values: dict[str, Any] = {
+        "options": list(question.options),
+        "recommended_option_id": question.recommended,
+        "recommendation_reason": question.reason,
+        "severity": question.severity,
+        "required": question.required,
+    }
+    answered = row.answer_option_id
+    old = {str(o["id"]): o for o in row.options or []}
+    if answered is not None and (
+        answered not in options
+        or dict(options[answered].get("effect") or {})
+        != dict(old.get(answered, {}).get("effect") or {})
+    ):
+        auto = question.kind == "conflict" and not question.required
+        values.update(
+            answer_option_id=question.recommended if auto else None,
+            answer_text=None,
+            accepted_recommendation=True if auto else None,
+            answered_by=ENGINE if auto else None,
+            answered_at=now if auto else None,
+        )
+    elif row.answered_by == ENGINE and answered is not None:
+        values.update(answer_option_id=question.recommended, accepted_recommendation=True)
+    elif answered is not None:
+        values["accepted_recommendation"] = answered == question.recommended
+    await conn.execute(
+        update(rewrite_questions).where(rewrite_questions.c.id == row.id).values(**values)
+    )
 
 
 async def _state_of(conn: AsyncConnection, session_id: str) -> str:
@@ -750,6 +795,26 @@ def _open(row: Any) -> None:
         )
 
 
+async def _superseded(conn: AsyncConnection, session_id: str, question_id: str, live: Any) -> None:
+    """409 ``rewrite_question_superseded`` for an answer to a question a re-plan superseded
+    (#237), naming the question now asked under its key."""
+    q = rewrite_questions.c
+    old = (
+        await conn.execute(
+            select(q.key).where(
+                q.session_id == session_id, q.id == question_id, q.superseded_by.is_not(None)
+            )
+        )
+    ).first()
+    if old is None:
+        return
+    now = next((str(x.id) for x in live if str(x.key) == str(old.key)), None)
+    raise RewriteQuestionSuperseded(
+        "a re-plan superseded that question",
+        {"question_id": question_id, "new_question_id": now},
+    )
+
+
 def free_texts(request: AnswerRequest) -> list[str]:
     """The free-text answers (gated by the Engine before ``answer``)."""
     return [a.text for a in request.answers if a.text is not None]
@@ -775,6 +840,7 @@ async def answer(
         for item in request.answers:
             question = asked.get(item.question_id)
             if question is None:
+                await _superseded(conn, session_id, item.question_id, asked.values())
                 raise InvalidAnswer(
                     "the session does not ask that question",
                     {"question_id": item.question_id},
@@ -921,6 +987,154 @@ async def _all_questions(conn: AsyncConnection, session_id: str) -> list[Any]:
     )
 
 
+async def _recompute(
+    conn: AsyncConnection, story_id: str, row: Any, settings: RewriteSettings
+) -> tuple[parsing.Parsed, Plan | None, int, dict[str, Any]]:
+    """The session's plan again at the current state, from its stored parse and bindings (no
+    model call): the parse, the plan, the revision it was computed at and the stored plan."""
+    stored = dict(row.plan or {})
+    result = RewriteParseResult.model_validate(stored.get("parse") or {})
+    bindings: dict[str, dict[str, Any]] = dict(stored.get("bindings") or {})
+    gated: list[dict[str, Any]] = list(stored.get("gated") or [])
+    mode, threshold = str(row.resolution_mode), row.threshold_severity
+    plan: Plan | None
+    if stored.get("merge") is not None:
+        parsed = merge_parsed(list(stored["merge"]["entity_ids"]))
+        story = await parsing.load_story(
+            conn,
+            story_id,
+            await _registry(conn, story_id),
+            margin=settings.rewrite_ambiguity_margin,
+        )
+        revision = int((await _story(conn, story_id)).timeline_revision)
+        plan = await _planner_of(str(row.pipeline)).plan(
+            conn, story, parsed, base_revision=revision
+        )
+        parsed.questions.extend(dispose(plan.irreducible, mode, threshold).questions)
+    else:
+        parsed, plan, revision = await _compute(
+            conn,
+            story_id,
+            str(row.pipeline),
+            result,
+            bindings,
+            settings,
+            gated=gated,
+            mode=mode,
+            threshold=threshold,
+        )
+    again = _stored_plan(result, bindings, list(stored.get("answers") or []), parsed, plan, gated)
+    if stored.get("merge") is not None:
+        again["merge"] = stored["merge"]
+    return parsed, plan, revision, again
+
+
+def _revalidation(story_id: str, row: Any, settings: RewriteSettings) -> Any:
+    """The apply's commit-time check (#237): ``revalidate`` under the story row lock; anything
+    but ``Fresh`` raises ``Revalidated`` (the apply rolls back)."""
+
+    async def replan(conn: AsyncConnection) -> Mapping[str, Any] | None:
+        _, plan, _, _ = await _recompute(conn, story_id, row, settings)
+        return None if plan is None else plan.read_set
+
+    async def check(conn: AsyncConnection) -> None:
+        current = int(
+            await conn.scalar(select(stories.c.timeline_revision).where(stories.c.id == story_id))
+            or 0
+        )
+        outcome = await revalidate.revalidate(
+            conn,
+            story_id,
+            base_revision=int(row.base_revision or 0),
+            current_revision=current,
+            read_set=dict(row.plan_read_set or {}),
+            replan=replan,
+        )
+        if not isinstance(outcome, revalidate.Fresh):
+            raise revalidate.Revalidated(outcome)
+
+    return check
+
+
+async def _restale(
+    db: AsyncEngine, story_id: str, session_id: str, reasons: list[dict[str, Any]]
+) -> tuple[RewriteWrite, dict[str, Any]]:
+    """A stale plan, recomputed outside any lock at the current revision (#237): questions whose
+    key the new plan asks again keep their answers (carried) unless the answered option is gone
+    or changed its effect; new ones are added and the rest superseded. ``stale_count`` + 1,
+    ``last_error {code: rewrite_stale, reasons}``, ``expires_at`` extended. The details of the
+    409 the caller raises."""
+    async with db.begin() as conn:
+        settings = await read_section(conn, RewriteSettings)
+        row = await _row(conn, story_id, session_id, lock=True)
+        before = {str(q.key): q for q in await _questions(conn, session_id)}
+        parsed, computed, revision, stored = await _recompute(conn, story_id, row, settings)
+        await _write_questions(conn, story_id, session_id, parsed.questions, refresh=True)
+        after = await _questions(conn, session_id)
+        carried = [
+            {
+                "question_id": str(q.id),
+                "carried_from": str(before[str(q.key)].id),
+                **(
+                    {"option_id": q.answer_option_id}
+                    if q.answer_option_id is not None
+                    else {"text": q.answer_text}
+                ),
+            }
+            for q in after
+            if str(q.key) in before and q.answered_at is not None and q.answered_by != ENGINE
+        ]
+        fresh = [
+            _question_view(q).model_dump(mode="json") for q in after if str(q.key) not in before
+        ]
+        count = int(row.stale_count) + 1
+        now = await conn.scalar(select(func.transaction_timestamp()))
+        await conn.execute(
+            update(rewrite_sessions)
+            .where(rewrite_sessions.c.id == session_id)
+            .values(
+                plan=stored,
+                plan_hash=None if computed is None else computed.plan_hash,
+                plan_read_set=None if computed is None else computed.read_set,
+                base_revision=revision,
+                stale_count=count,
+                last_error={
+                    "code": "rewrite_stale",
+                    "reasons": reasons,
+                    "at": str(now),
+                },
+                state=await _state_of(conn, session_id),
+                updated_at=now,
+                expires_at=await _expires(conn, settings),
+            )
+        )
+        await _index(conn, session_id)
+        written = await _answer(conn, story_id, session_id)
+    session = written.session
+    details = {
+        "session_id": session_id,
+        "base_revision": revision,
+        "preview": None if session.preview is None else session.preview.model_dump(mode="json"),
+        "carried_answers": carried,
+        "new_questions": fresh,
+        "reasons": reasons,
+        "stale_count": count,
+    }
+    return written, details
+
+
+async def _abandon_erased(
+    db: AsyncEngine, story_id: str, session_id: str, outcome: revalidate.Abandon
+) -> ErasedSubjectReferenced:
+    """An erasure touched what the plan reads (#237): the session is ``abandoned``; the 409
+    withholds the subject id."""
+    await _abandon(db, story_id, session_id)
+    return ErasedSubjectReferenced(
+        "an erasure touched what this rewrite reads; the session is abandoned",
+        {"erasure_id": outcome.erasure_id, "session_id": session_id},
+    )
+
+
 async def apply_session(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -935,11 +1149,52 @@ async def apply_session(
     ``rewrite_apply_in_progress``; a paused story 409 ``story_paused``; a pipeline that changed
     since the session opened 409 ``rewrite_stale {reason: pipeline_changed}`` (the session is
     ``abandoned``); no ``base_revision`` 422 ``base_revision_required``, another one than the
-    story's 409 ``rewrite_stale``; unanswered required questions 409
-    ``rewrite_questions_pending``."""
+    session's preview base 409 ``rewrite_stale {reason: base_mismatch}`` (with the current
+    preview, nothing recomputed); unanswered required questions 409
+    ``rewrite_questions_pending``.
+
+    Then (#237) the apply's commit revalidates the plan under the story row lock
+    (``revalidate``): a story that moved only outside the blast radius applies; a stale plan is
+    recomputed (``_restale``) and, under ``apply_directly`` with nothing left to answer, applied
+    again up to ``rewrite_stale_retries`` times, else 409 ``rewrite_stale`` with the new
+    preview; an erasure touching the plan abandons the session (409
+    ``erased_subject_referenced``)."""
+    retries = 0
+    while True:
+        try:
+            return await _apply_once(db, models, story_id, session_id, request, principal=principal)
+        except revalidate.Revalidated as signal:
+            outcome = signal.outcome
+            if isinstance(outcome, revalidate.Abandon):
+                raise await _abandon_erased(db, story_id, session_id, outcome) from None
+            written, details = await _restale(db, story_id, session_id, outcome.reasons)
+            async with db.connect() as conn:
+                settings = await read_section(conn, RewriteSettings)
+            session = written.session
+            if (
+                session.preview_mode == "apply_directly"
+                and session.state == "awaiting_approval"
+                and retries < settings.rewrite_stale_retries
+            ):
+                retries += 1
+                request = ApplyRequest(base_revision=session.base_revision)
+                continue
+            raise RewriteStale("the plan went stale; it was recomputed", details) from None
+
+
+async def _apply_once(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    session_id: str,
+    request: ApplyRequest,
+    *,
+    principal: str,
+) -> RewriteWrite:
     from epistrel.core import pause
 
     async with db.begin() as conn:
+        settings = await read_section(conn, RewriteSettings)
         row = await _row(conn, story_id, session_id, lock=True)
         if str(row.state) == "applying":
             raise RewriteApplyInProgress(
@@ -958,13 +1213,18 @@ async def apply_session(
                     "an apply names the revision its preview was computed against",
                     {"field": "base_revision"},
                 )
-            if request.base_revision != current:
+            base = None if row.base_revision is None else int(row.base_revision)
+            if request.base_revision != base:
+                preview = dict(row.plan or {}).get("preview")
                 raise RewriteStale(
-                    "the story moved since the preview",
+                    "the apply names another revision than the session's preview",
                     {
-                        "reason": "revision",
-                        "base_revision": request.base_revision,
+                        "reason": "base_mismatch",
+                        "base_revision": base,
+                        "requested_base_revision": request.base_revision,
                         "current_revision": current,
+                        "preview": preview,
+                        "stale_count": int(row.stale_count),
                     },
                 )
             pending = [
@@ -991,6 +1251,10 @@ async def apply_session(
                 "current_revision": current,
             },
         )
+    async with db.connect() as conn:
+        abandon = await revalidate.erased(conn, story_id, dict(row.plan_read_set or {}))
+    if abandon is not None:
+        raise revalidate.Revalidated(abandon)
     try:
         async with db.connect() as conn:
             changes = await _changes(conn, story_id, row)
@@ -1005,7 +1269,10 @@ async def apply_session(
             prepared,
             principal=principal,
             audit=rewrite_apply.audit_events(session_id, asked),
+            check=_revalidation(story_id, row, settings),
         )
+    except revalidate.Revalidated:
+        raise
     except Exception as failed:
         await _failed(db, session_id, failed)
         if isinstance(failed, rewrite_apply.InducedApplyFailure | OperationalError):

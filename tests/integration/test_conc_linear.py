@@ -577,3 +577,140 @@ async def test_conc_linear__turn_concurrency(pg_url: str, engine: AsyncEngine) -
     print(f"CONC-LINEAR turn concurrency tally={dict(tally)} turns={expected} queued={queued}")
     assert tally["busy_reject"] > 0, tally
     assert queued > 0, tally
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-CONC-7")
+async def test_conc_linear__m7(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """The M7 slice (#237): rewrite opens, answers, applies and cancels interleaved with turns
+    that touch nothing the plan reads and turns that change Bobby's enrollment (the plan's
+    key), in seeded random orders over the OSU fixture. After every step the revision equals
+    the start plus the committed truth changes (turns, enrollment changes, applied rewrites:
+    opens, answers, cancels and refused applies never move it), and no amendment ever commits
+    from a plan whose blast radius changed since its base: an apply whose session's base
+    precedes a change canon recorded on the plan's key (``proposition_changes``) is 409
+    ``rewrite_stale``, never applied. Each seed starts scripted (open, answer, a change, apply:
+    stale), so both outcomes occur."""
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.events import Operation
+    from epistrel.core.propositions.model import Interval, Proposition
+    from tests import canon_support as c
+    from tests import rewrite_support as rs
+    from tests.event_support import rows
+    from tests.respond_support import respond_client
+    from tests.story_support import WRITE
+
+    async def weather(story: str) -> None:
+        async with Operation(engine, story_id=story, kind=OperationKind.TURN, principal="p") as op:
+            op.append("player_input", {"text": "Nice day."}, provenance=Provenance.PLAYER)
+            op.append("message_rendered", {"text": "The sun is out."})
+            await op.commit()
+
+    async def enrollment(ed: Any, school: str, start: int) -> None:
+        """A new fact on the plan's key (a distinct valid start each time, so never a
+        duplicate canon would fold away)."""
+        held = ed.enrollment.proposition
+        await c.commit(
+            engine,
+            ed.story_id,
+            Proposition(
+                subject_id=held.subject_id,
+                predicate_id=held.predicate_id,
+                object_id=school,
+                valid_time=Interval.of(start, None),
+            ),
+        )
+
+    settings_ = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings_, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        stub.when("", rs.UCLA, purpose="rewrite_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        seen: Counter[str] = Counter()
+        for seed in (7, 11, 23, 31):
+            chosen = random.Random(seed)  # noqa: S311 - a seeded order, not a secret
+            deps = await rs.story(client, engine)
+            story, ed = deps.story_id, deps.ed
+            expected = await rs.revision(engine, story)
+            touched_at: list[int] = []  # revisions an enrollment change left
+            session: dict[str, Any] | None = None
+            # A scripted start (the blast radius changes between the answers and the apply),
+            # then a seeded random order.
+            script = ["open", "answer", "touch", "apply"]
+            for step in range(28):
+                (action,) = (
+                    [script[step]]
+                    if step < len(script)
+                    else chosen.choices(
+                        ["open", "answer", "apply", "cancel", "turn", "touch"],
+                        weights=[4, 4, 4, 1, 2, 2],
+                    )
+                )
+                if action == "turn":
+                    await weather(story)
+                    expected += 1
+                elif action == "touch":
+                    await enrollment(ed, ed.florida, 1_000 * (len(touched_at) + 1))
+                    expected += 1
+                    touched_at.append(expected)
+                elif action == "open" and session is None:
+                    opened = await rs.open_session(client, story)
+                    if opened.status_code == 201:
+                        session = opened.json()
+                    else:
+                        assert opened.json()["error"]["code"] == "rewrite_noop", opened.text
+                elif (
+                    action == "answer"
+                    and session is not None
+                    and any(
+                        q["required"] and q["answered_at"] is None for q in session["questions"]
+                    )
+                ):
+                    answered = await rs.answer_all(client, story, session)
+                    assert answered.status_code == 200, answered.text
+                    session = answered.json()
+                elif action == "cancel" and session is not None:
+                    cancelled = await client.post(
+                        f"/stories/{story}/rewrites/{session['id']}/cancel",
+                        params=rs.OMNISCIENT,
+                        headers=WRITE,
+                    )
+                    assert cancelled.status_code == 200, cancelled.text
+                    session = None
+                elif action == "apply" and session is not None:
+                    base = session["base_revision"]
+                    # The blast radius moved when canon recorded a change on the plan's key
+                    # since the base (a touch canon folds into an existing fact records none).
+                    moved = bool(
+                        await rows(
+                            engine,
+                            "SELECT 1 FROM proposition_changes WHERE story_id = :s "
+                            "AND subject_id = :b AND predicate_id = :p AND timeline_revision > :r",
+                            s=story,
+                            b=ed.enrollment.proposition.subject_id,
+                            p=ed.enrollment.proposition.predicate_id,
+                            r=base,
+                        )
+                    )
+                    applied = await rs.apply(client, story, session["id"], base)
+                    code = None if applied.status_code == 200 else applied.json()["error"]["code"]
+                    seen[code or "applied"] += 1
+                    if code is None:
+                        assert not moved, ("applied a stale plan", seed, step, base)
+                        expected += 1
+                        session = None
+                    elif code == "rewrite_stale":
+                        session = (
+                            await client.get(
+                                f"/stories/{story}/rewrites/{session['id']}",
+                                params=rs.OMNISCIENT,
+                                headers=WRITE,
+                            )
+                        ).json()
+                    else:
+                        assert code == "rewrite_questions_pending", applied.text
+                assert await rs.revision(engine, story) == expected, (seed, action)
+        assert seen["applied"] >= 1, seen
+        assert seen["rewrite_stale"] >= 1, seen

@@ -11219,3 +11219,23 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #226
 - **Decision:** `derives` dependents of kind `inference` are kept, not re-run against their premises (the AC's "cascade only if the premises now support the new value"). Re-running an inference needs #140's check under the hypothetical canon, which the planner does not have; keeping is the conservative half (the belief stays what the character concluded) and the report lists it as kept. `author`/`resolution`/`author_fiat`/`testimony` are kept as planned. A `causes` dependent with a `scheduled_events` version is not checked separately: M7 refuses scheduled-plan amendments (decision 4 of the #221 replan), so no rewrite reaches one.
   **Issue:** #225
+
+### #237 — revalidation at the final commit, 2026-11-02
+
+- **Decision:** revalidation is the apply operation's first commit step (`rewrite.apply.apply(check=…)`), so it runs under the story row's `FOR UPDATE` inside the apply transaction. A non-fresh outcome raises `revalidate.Revalidated`, which rolls the apply back; the operation row ends `failed`, as any rolled-back apply does. The erasure check also runs before `prepare`, outside the lock: an erased subject can break the stored parse's normalization before the commit is reached.
+  **Issue:** #237
+- **Decision:** what each check reads:
+  - The snapshot is taken by the planner, so every plan carries it: open, answer, merge and re-plan. It holds the known erasure ids, the story and deployment config high-water revisions, the anchor revision, the planned records' operation versions (`input_versions._operation_versions`: membership and #236's record version), and the proposition and State keys.
+  - An erasure "since the plan" is one the snapshot did not list. Comparing against the base revision would miss an erasure that moved no revision.
+  - `config_changed` is checked even when the revision has not moved, because a settings PATCH does not bump it. S-CONFIG-RACE M7 needs it.
+  - `new_dependent` re-runs the whole planner under the lock (no model call) and compares dependents by `{table, id}`.
+  **Issue:** #237
+- **Decision:** carry-over keeps the question rows rather than copying them. A question whose key the new plan asks again keeps its row and answer. Its options and recommendation are refreshed, and the answer is cleared when the answered option is gone or its effect changed. The 409's `carried_answers` names the kept row in both `question_id` and `carried_from`. The plan's "new rows with `carried_from`" was not built: the outcome is the same (no question is re-asked whose key survived), and #223's answer path already keeps rows by key.
+  **Issue:** #237
+- **Decision:** a change landing mid-Q&A is absorbed by the next answer, because each answer re-plans at the current revision (#223). No check runs at answer time; the plan approved after the change is computed against it, so its apply is fresh. S-STALE-PREVIEW's mid-Q&A variant asserts this, not a 409. A change after the last answer is the stale case (variant 2).
+  **Issue:** #237
+- **Decision:** test scope:
+  - CONC-LINEAR M7 is a seeded interleaving (4 seeds × 28 steps, each starting scripted open/answer/change/apply), not a Hypothesis stateful machine with 50 examples. The M2 machine drives Lite turns, and rewrites are structured-only.
+  - U-09 is unchanged: the base-mismatch 409 is asserted in S-STALE-PREVIEW and I-13.
+  - S-ERASURE-BOUNDARY M7 does not cover the ADR-154 common-word candidate case (`candidates_remaining`): abandonment is decided by subject id, and #123's redaction of session texts is already registered.
+  **Issue:** #237

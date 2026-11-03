@@ -1491,11 +1491,23 @@ class BaseRevisionRequired(EpistrelError):
 
 
 class RewriteStale(EpistrelError):
-    """The story moved since the session's preview, or its pipeline changed (#224; #237 enriches
-    the details): 409. ``details``: ``reason`` (``revision`` or ``pipeline_changed``),
-    ``base_revision`` and ``current_revision``. Nothing is written."""
+    """The plan no longer holds (#224, #237): 409, nothing written. An apply naming another
+    ``base_revision`` than the session's preview has ``reason: base_mismatch`` and the current
+    preview; a plan the final commit's revalidation found stale was recomputed:
+    ``base_revision`` (the new one), ``preview``, ``carried_answers``, ``new_questions``,
+    ``reasons`` (``{kind, refs}``) and ``stale_count``; a changed pipeline is
+    ``reason: pipeline_changed`` (the session abandoned)."""
 
     code = "rewrite_stale"
+    http_status = 409
+
+
+class RewriteQuestionSuperseded(EpistrelError):
+    """An answer to a question a re-plan superseded (#237): 409. ``details``:
+    ``question_id``, ``new_question_id`` (the question now asked under the same key, or
+    ``None``)."""
+
+    code = "rewrite_question_superseded"
     http_status = 409
 
 

@@ -222,10 +222,18 @@ async def cancel_rewrite(
         "`timeline_revision` moves by exactly one. The questions and answers are recorded as "
         "audit events. The answer is the session, the `amendment_id` and the `report` "
         "(`resolutions`, `applied`, `notifications`). 409 `rewrite_session_closed`, "
-        "`rewrite_apply_in_progress`, `story_paused`, `rewrite_stale` (a moved revision, or a "
-        "changed pipeline: the session is then abandoned), `rewrite_questions_pending`, "
-        "`record_in_flight`; 422 `base_revision_required`; 503 `rewrite_apply_failed` "
-        "(retryable; nothing was written and the session awaits approval again)." + _OMNISCIENT
+        "`rewrite_apply_in_progress`, `story_paused`, `rewrite_stale`, "
+        "`rewrite_questions_pending`, `record_in_flight`, `erased_subject_referenced` (an "
+        "erasure touched what the plan reads: the session is abandoned); 422 "
+        "`base_revision_required`; 503 `rewrite_apply_failed` (retryable; nothing was written "
+        "and the session awaits approval again). The plan is revalidated at the final commit "
+        "(#237, FR-CONC-7,13): a story that moved outside the blast radius applies; a plan "
+        "whose keys, States, records, configuration or dependents changed since its base is "
+        "recomputed and the answer is 409 `rewrite_stale` with the new preview, the carried "
+        "answers, any new questions and the reasons (under `apply_directly` with nothing to "
+        "answer it is applied again, up to `rewrite_stale_retries` times). A `base_revision` "
+        "other than the session's preview base is 409 `rewrite_stale` (`base_mismatch`); a "
+        "changed pipeline abandons the session." + _OMNISCIENT
     ),
 )
 async def apply_rewrite(

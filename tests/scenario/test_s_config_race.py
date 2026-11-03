@@ -1066,3 +1066,47 @@ async def test_s_config_race__regenerated_under_current(
         said = " ".join(b["text"] for b in answer.json()["beats"])
         assert "Jenni here." in said, said
         assert "Ada here." not in said, said
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-CONC-7,16")
+async def test_s_config_race__m7(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A rewrite's plan and the configuration (#237): an interpretive change after the preview
+    (the author switches ``player_authority``) makes the apply 409 ``rewrite_stale`` with reason
+    ``config_changed`` naming the change, and the session re-previews; complement: a
+    prospective change (``turn_concurrency``) leaves the plan fresh and the apply lands."""
+    from tests import rewrite_support as rs
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        stub.when("", rs.UCLA, purpose="rewrite_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        for setting, value, stale in (
+            ("turn_concurrency", "reject", False),
+            ("player_authority", "co_author", True),
+        ):
+            assert setting_class(StorySettings, setting) is (
+                ConfigClass.interpretive if stale else ConfigClass.prospective
+            )
+            deps = await rs.story(client, engine)
+            story = deps.story_id
+            opened = await rs.open_session(client, story)
+            session = (await rs.answer_all(client, story, opened.json())).json()
+            patched = await client.patch(
+                f"/stories/{story}/settings", json={setting: value}, headers=WRITE
+            )
+            assert patched.status_code == 200, patched.text
+            applied = await rs.apply(client, story, session["id"], session["base_revision"])
+            if not stale:
+                assert applied.status_code == 200, applied.text
+                continue
+            assert applied.status_code == 409, applied.text
+            details = applied.json()["error"]["details"]
+            reasons = {r["kind"]: r["refs"] for r in details["reasons"]}
+            assert "config_changed" in reasons
+            assert {r["table"] for r in reasons["config_changed"]} == {"config_changes"}
+            assert await rs.count(engine, "amendments", story) == 0
+            assert details["stale_count"] == 1

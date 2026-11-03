@@ -6360,10 +6360,11 @@ class Engine:
         """Apply a rewrite session (#224): one atomic amendment with every part, repair and
         resolution, its questions and answers recorded as audit events; the revision moves by
         exactly one. 409 ``rewrite_session_closed``, ``rewrite_apply_in_progress``,
-        ``story_paused``, ``rewrite_stale`` (a moved revision, or a changed pipeline: the
-        session is abandoned), ``rewrite_questions_pending``, ``record_in_flight``; 422
-        ``base_revision_required``; 503 ``rewrite_apply_failed`` (retryable, nothing
-        written)."""
+        ``story_paused``, ``rewrite_stale`` (another base than the preview's, a plan the
+        final commit found stale and recomputed (#237), or a changed pipeline: the session is
+        abandoned), ``rewrite_questions_pending``, ``record_in_flight``,
+        ``erased_subject_referenced`` (the session abandoned); 422 ``base_revision_required``;
+        503 ``rewrite_apply_failed`` (retryable, nothing written)."""
         principal = self.require_principal(ctx)
         await self._erasure_gate(story_id)
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")

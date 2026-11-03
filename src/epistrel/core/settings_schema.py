@@ -891,7 +891,9 @@ class RewriteSettings(BaseModel):
     ``deployment_state.settings``: two entity candidates whose resolution scores are within
     ``rewrite_ambiguity_margin`` of each other are asked about, not guessed; a story has at most
     ``rewrite_max_open_sessions`` open sessions; a session idle ``rewrite_session_ttl_minutes``
-    expires. Prospective: a session reads them when it is opened or written."""
+    expires; an ``apply_directly`` apply whose plan went stale re-plans and retries
+    ``rewrite_stale_retries`` times (#237). Prospective: a session reads them when it is opened or
+    written."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -902,6 +904,7 @@ class RewriteSettings(BaseModel):
     rewrite_session_ttl_minutes: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=1_440, ge=10, le=30 * 1_440
     )
+    rewrite_stale_retries: Annotated[StrictInt, PROSPECTIVE] = Field(default=2, ge=0, le=10)
 
 
 DAY_S = 86_400

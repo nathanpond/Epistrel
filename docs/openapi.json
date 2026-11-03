@@ -17028,6 +17028,10 @@
       "ImportedBody": {
         "description": "An imported story: its new id, the bundle's source story and revision, and the rows\nwritten per table.",
         "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
           "counts": {
             "additionalProperties": {
               "type": "integer"
@@ -17057,14 +17061,10 @@
           "story_id": {
             "title": "Story Id",
             "type": "string"
-          },
-          "timeline_revision": {
-            "title": "Timeline Revision",
-            "type": "integer"
           }
         },
         "required": [
-          "timeline_revision",
+          "config_revision",
           "story_id",
           "source_story_id",
           "exported_revision",

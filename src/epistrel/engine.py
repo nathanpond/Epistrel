@@ -353,7 +353,7 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
     "prune_story": ResultCodec.of(core_prune.PruneOutcome),
     "export_story": ResultCodec.of(bundles.ExportStarted, status=202),
-    "import_story": ResultCodec.of(bundle_import.Imported, status=201),
+    "import_story": ResultCodec.of(bundle_import.Imported, status=201, revision_field=_CONFIG),
     "resolve_backfill_conflict": ResultCodec.of(backfill_conflicts.Resolved),
     # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
     "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),

@@ -73,13 +73,14 @@ class ImportRequest(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class Imported:
-    """An import's answer (REST 201): the new story, the bundle's source and its counts."""
+    """An import's answer (REST 201): the new story, the bundle's source and its counts. An
+    import is deployment-scoped: ``config_revision`` is the deployment's, unchanged."""
 
     story_id: str
     source_story_id: str
     exported_revision: int
     counts: dict[str, int] = field(default_factory=dict)
-    timeline_revision: int = 0
+    config_revision: int = 0
     replayed: bool = False
 
 
@@ -273,7 +274,7 @@ async def import_story(
 ) -> Imported:
     """Import ``data`` as a new story (see the module docstring)."""
     from epistrel.core.erasure.index import reindex_story
-    from epistrel.core.profiles.store import default_profile
+    from epistrel.core.profiles.store import config_revision, default_profile
     from epistrel.core.projections.fold import replace_with_fold
 
     manifest, by_path = read_bundle(data)
@@ -326,17 +327,14 @@ async def import_story(
             counts[table.name] = len(rows)
         await replace_with_fold(conn, new_story)
         await reindex_story(conn, new_story)
-        revision = int(
-            await conn.scalar(select(stories.c.timeline_revision).where(stories.c.id == new_story))
-            or 0
-        )
+        revision = await config_revision(conn)
     log.info("story imported", story_id=new_story, tables=len(counts))
     return Imported(
         new_story,
         str(manifest.get("source_story_id", "")),
         int(manifest.get("exported_revision") or 0),
         counts,
-        timeline_revision=revision,
+        config_revision=revision,
     )
 
 

@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
-from epistrel.api.responses import MutationResponse
+from epistrel.api.responses import DeploymentMutationResponse, MutationResponse
 from epistrel.core.bundles import ExportJob, ExportStarted
 from epistrel.core.bundles.importing import Imported, ImportRequest
 from epistrel.core.errors import BundleTooLarge
@@ -120,7 +120,7 @@ async def export_story(
     )
 
 
-class ImportedBody(MutationResponse):
+class ImportedBody(DeploymentMutationResponse):
     """An imported story: its new id, the bundle's source story and revision, and the rows
     written per table."""
 
@@ -136,7 +136,7 @@ class ImportedBody(MutationResponse):
             source_story_id=found.source_story_id,
             exported_revision=found.exported_revision,
             counts=found.counts,
-            timeline_revision=found.timeline_revision,
+            config_revision=found.config_revision,
         )
 
 

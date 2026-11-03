@@ -331,7 +331,7 @@ class PrunePolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    older_than_days: StrictInt = Field(ge=1, le=3650)
+    older_than_days: Annotated[StrictInt, PROSPECTIVE] = Field(ge=1, le=3650)
 
 
 class StorySettings(BaseModel):

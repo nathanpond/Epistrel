@@ -1624,6 +1624,13 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     return removed
 
 
+async def purge_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, int]:
+    """#250: every row of ``story_id``, the story row included, deleted in the caller's
+    transaction with no deletion record (an import's refusal or reset: the story was never
+    served)."""
+    return await _delete_story_rows(conn, story_id)
+
+
 async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, int]:
     """``DELETE … WHERE story_id`` over every story table, then the story row (in the caller's
     transaction). Sets ``epistrel.allow_story_delete`` so the events trigger lets exactly this

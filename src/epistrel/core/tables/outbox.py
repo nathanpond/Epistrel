@@ -199,6 +199,7 @@ REASONS: tuple[str, ...] = (
     "late_success_after_expiry",
     "outcome_conflict",
     "reservation_expired",
+    "imported_unsettled",
 )
 """Every reconciliation reason (``core.outbox.REASONS``; a mark's reason is one of them)."""
 

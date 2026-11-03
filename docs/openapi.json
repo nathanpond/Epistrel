@@ -17078,22 +17078,16 @@
         "title": "ImplicationBody",
         "type": "object"
       },
-      "ImportedBody": {
-        "description": "An imported story: its new id, the bundle's source story and revision, and the rows\nwritten per table.",
+      "ImportImpactBody": {
+        "description": "#251: an import whose impact report warns, without ``ignore_warnings``: nothing was\ncreated.",
         "properties": {
+          "applied": {
+            "default": false,
+            "title": "Applied",
+            "type": "boolean"
+          },
           "config_revision": {
             "title": "Config Revision",
-            "type": "integer"
-          },
-          "counts": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Counts",
-            "type": "object"
-          },
-          "exported_revision": {
-            "title": "Exported Revision",
             "type": "integer"
           },
           "idempotency_key": {
@@ -17107,7 +17101,57 @@
             ],
             "title": "Idempotency Key"
           },
-          "operation_id": {
+          "impact": {
+            "$ref": "#/components/schemas/ImpactReport"
+          }
+        },
+        "required": [
+          "config_revision",
+          "impact"
+        ],
+        "title": "ImportImpactBody",
+        "type": "object"
+      },
+      "ImportJob": {
+        "additionalProperties": false,
+        "description": "``GET /admin/stories/imports/{job_id}``: the import's state.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "progress": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Progress",
+            "type": "object"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report"
+          },
+          "stage": {
             "anyOf": [
               {
                 "type": "string"
@@ -17116,35 +17160,77 @@
                 "type": "null"
               }
             ],
-            "description": "#705: the story's `import` operation (its `turn_report.imported_from`: the source story, the exported revision, the format version and the bundle's SHA-256).",
-            "title": "Operation Id"
+            "title": "Stage"
           },
-          "source_story_id": {
-            "title": "Source Story Id",
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "ready",
+              "refused",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Story Id"
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "story_id"
+        ],
+        "title": "ImportJob",
+        "type": "object"
+      },
+      "ImportStartedBody": {
+        "description": "An accepted import (#250): its job, the new story (``importing`` until the job ends)\nand its status.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
             "type": "string"
           },
           "story_id": {
             "title": "Story Id",
             "type": "string"
-          },
-          "warnings": {
-            "description": "#705: what a bundle of a newer format MINOR carried that this deployment ignored (`unknown_member`, `unknown_fields`), or `media_not_imported`.",
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Warnings",
-            "type": "array"
           }
         },
         "required": [
           "config_revision",
+          "job_id",
           "story_id",
-          "source_story_id",
-          "exported_revision",
-          "counts"
+          "status"
         ],
-        "title": "ImportedBody",
+        "title": "ImportStartedBody",
         "type": "object"
       },
       "InactiveItem": {
@@ -18286,7 +18372,8 @@
               "settlement_conflict",
               "late_success_after_expiry",
               "outcome_conflict",
-              "reservation_expired"
+              "reservation_expired",
+              "imported_unsettled"
             ],
             "title": "Reason",
             "type": "string"
@@ -38924,6 +39011,27 @@
             "title": "Bundle Export Ttl Hours",
             "type": "integer"
           },
+          "bundle_max_entries": {
+            "default": 100000,
+            "maximum": 10000000.0,
+            "minimum": 10.0,
+            "title": "Bundle Max Entries",
+            "type": "integer"
+          },
+          "bundle_max_entry_bytes": {
+            "default": 1073741824,
+            "maximum": 68719476736.0,
+            "minimum": 1048576.0,
+            "title": "Bundle Max Entry Bytes",
+            "type": "integer"
+          },
+          "bundle_max_uncompressed_bytes": {
+            "default": 4294967296,
+            "maximum": 68719476736.0,
+            "minimum": 1048576.0,
+            "title": "Bundle Max Uncompressed Bytes",
+            "type": "integer"
+          },
           "cascade_threshold": {
             "default": 5,
             "maximum": 1000.0,
@@ -40338,6 +40446,39 @@
               }
             ],
             "title": "Bundle Export Ttl Hours"
+          },
+          "bundle_max_entries": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Max Entries"
+          },
+          "bundle_max_entry_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Max Entry Bytes"
+          },
+          "bundle_max_uncompressed_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bundle Max Uncompressed Bytes"
           },
           "cascade_threshold": {
             "anyOf": [
@@ -50217,12 +50358,13 @@
         "type": "object"
       },
       "StoryStatus": {
-        "description": "Where a story is in its lifecycle (#50). Stored as checked text, not a Postgres enum.\n\n``archived`` is read-only: truth-changing work is refused with ``story_archived``.\n``paused`` is reserved for M3's rating and reactivation checks.\n``blocked_by_erasure``: the erasure ledger holds an erasure this database has not applied\n(a restored backup that predates it; FR-ADMIN-7, #125). Every read and write of the story is\nrefused with 503 ``erasure_pending`` until the reconciler has reapplied it; the status it\nhad is kept in ``stories.status_before_block`` and restored then.",
+        "description": "Where a story is in its lifecycle (#50). Stored as checked text, not a Postgres enum.\n\n``archived`` is read-only: truth-changing work is refused with ``story_archived``.\n``paused`` is reserved for M3's rating and reactivation checks.\n``blocked_by_erasure``: the erasure ledger holds an erasure this database has not applied\n(a restored backup that predates it; FR-ADMIN-7, #125). Every read and write of the story is\nrefused with 503 ``erasure_pending`` until the reconciler has reapplied it; the status it\nhad is kept in ``stories.status_before_block`` and restored then.\n``importing`` (#250, FR-STORE-7): the story's import job has not finished; every read and\nwrite of it is refused with 409 ``story_importing`` (``core.importing``).",
         "enum": [
           "active",
           "archived",
           "paused",
-          "blocked_by_erasure"
+          "blocked_by_erasure",
+          "importing"
         ],
         "title": "StoryStatus",
         "type": "string"
@@ -53527,6 +53669,9 @@
                         "enum": [
                           "audit_retention_days",
                           "bundle_export_ttl_hours",
+                          "bundle_max_entries",
+                          "bundle_max_entry_bytes",
+                          "bundle_max_uncompressed_bytes",
                           "cascade_threshold",
                           "certification_canary_enabled",
                           "certification_canary_interval_s",
@@ -59081,43 +59226,9 @@
     },
     "/admin/stories/import": {
       "post": {
-        "description": "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, checked against its manifest (format `1.x`, every member's SHA-256), every id it owns remapped, every line checked against its schema (`components.schemas` `StoryBundle*`) and every event payload against its type, the members in the export's order, and written as a new story in one transaction, owned by `owner` (default: the caller) under `engine_profile_id` (default: its bundle profile when this deployment has it, else the default profile); projections and the subject index are rebuilt, its media written as new assets of the owner, its revision the exported one plus one (an `import` operation records `imported_from`), and the embed job queued. 201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` (`details.reason`) or `unsupported_format_version`. A refusal writes nothing.",
+        "description": "FR-STORE-7, FR-ADMIN-4 (#250, #251): a `multipart/form-data` body: part `metadata` (JSON: `owner`, `name`, `content_rating_id`, `engine_profile_id`, `upgrade_mode`, `ignore_warnings`), then part `file`, the archive `GET /admin/stories/exports/{job_id}/bundle` gives. Checked up front, before anything is created: the upload's size (`bundle_max_uncompressed_bytes`), the manifest (the archive's first member), the format (`1.x`) and the rating (the one named, else the one whose name matches the bundle's: 422 `rating_required` when none does); an impact report for the profile that warns, without `ignore_warnings`, is answered 200 `{applied: false, impact}` and nothing is created. Then 202: the story exists, `status: importing` (every route of it is 409 `story_importing` until its import ends), and a background job reads the archive under the limits (`bundle_max_entries`, `bundle_max_entry_bytes`, counted while it decompresses), checks every member against the manifest and its schema, inserts the rows with every id remapped, applies this deployment's erasure ledger, checks the whole active history against the rating's guardrails, parks every unsettled external effect (`imported_unsettled`), attaches the profile (a backfill when it gains data-producing capability, unless `upgrade_mode: forward_only`) and rebuilds the projections. Poll `GET /admin/stories/imports/{job_id}`. A refusal at any stage leaves no story. 413 `bundle_too_large`; 422 `corrupt_bundle` (`details.reason`), `unsupported_format_version`, `rating_required`, `validation_error`.",
         "operationId": "import_story",
         "parameters": [
-          {
-            "in": "query",
-            "name": "owner",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 200,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Owner"
-            }
-          },
-          {
-            "in": "query",
-            "name": "engine_profile_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 26,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Engine Profile Id"
-            }
-          },
           {
             "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
             "in": "header",
@@ -59141,21 +59252,65 @@
         ],
         "requestBody": {
           "content": {
-            "application/octet-stream": {
+            "multipart/form-data": {
+              "encoding": {
+                "metadata": {
+                  "contentType": "application/json"
+                }
+              },
               "schema": {
-                "format": "binary",
-                "type": "string"
+                "properties": {
+                  "file": {
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "description": "The `ImportMetadata` JSON document.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "metadata",
+                  "file"
+                ],
+                "type": "object"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "201": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ImportedBody"
+                  "$ref": "#/components/schemas/ImportImpactBody"
+                }
+              }
+            },
+            "description": "#251: the impact report warns; nothing was created.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportStartedBody"
                 }
               }
             },
@@ -59250,6 +59405,103 @@
           }
         ],
         "summary": "Import a story bundle",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/stories/imports/{job_id}": {
+      "get": {
+        "description": "An import's state (#250): `status` (`queued`, `running`, `ready`, `refused`, `failed`), the story (`null` once a refusal deleted it), the `stage` it is at (`reading`, `inserting`, `erasure`, `guardrails`, `outbox`, `profile`, `rebuilding`, `embedding`, `cleaning`) with its `progress`, and, once it ended, its `error` (`{code, message, details}`: `corrupt_bundle`, `bundle_too_large`, `unsupported_format_version`, `rating_check_failed`, `erased_subject_referenced`, `import_failed`) and `report` (`errors[]`, `warnings[]`, counts). 404 `job_not_found`.",
+        "operationId": "import_status",
+        "parameters": [
+          {
+            "description": "The import's id.",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "description": "The import's id.",
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportJob"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story import",
         "tags": [
           "admin"
         ]
@@ -59389,7 +59641,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -59583,7 +59835,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -59767,7 +60019,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -60027,7 +60279,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -60201,7 +60453,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -60370,7 +60622,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -60551,7 +60803,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -60748,7 +61000,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -60957,7 +61209,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `fact_inactive`, `fact_superseded`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -61076,6 +61328,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -61349,6 +61611,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -61528,7 +61800,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -61735,7 +62007,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -61944,7 +62216,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -62154,7 +62426,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -75805,6 +76077,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -75980,6 +76262,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -76117,6 +76409,16 @@
               }
             },
             "description": "Not found: `amendment_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -76330,7 +76632,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `amendment_already_redone`, `amendment_not_reverted`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `rewrite_stale`, `story_paused`."
+            "description": "Conflict; nothing was written: `amendment_already_redone`, `amendment_not_reverted`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `rewrite_stale`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -76562,7 +76864,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `amendment_already_reverted`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `rewrite_stale`, `story_paused`."
+            "description": "Conflict; nothing was written: `amendment_already_reverted`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `rewrite_stale`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -76746,7 +77048,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -76930,7 +77232,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `backfill_not_cancellable`, `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `backfill_not_cancellable`, `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -77073,6 +77375,16 @@
               }
             },
             "description": "Not found: `backfill_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -77272,7 +77584,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `nothing_to_backfill`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `nothing_to_backfill`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -77478,7 +77790,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `backfill_conflict_closed`, `backfill_not_awaiting_conflicts`, `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `backfill_conflict_closed`, `backfill_not_awaiting_conflicts`, `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -77698,7 +78010,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `certification_run_in_progress`, `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `certification_run_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -77892,7 +78204,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -78101,7 +78413,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -78323,7 +78635,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -78532,7 +78844,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -78651,6 +78963,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -78824,7 +79146,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -79018,7 +79340,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -79342,6 +79664,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -79542,7 +79874,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -79676,6 +80008,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -79863,7 +80205,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `already_corrected`, `erased_subject_referenced`, `idempotency_conflict`, `not_latest_turn`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `already_corrected`, `erased_subject_referenced`, `idempotency_conflict`, `not_latest_turn`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -79981,6 +80323,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -80154,7 +80506,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -80400,7 +80752,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `author_fact_limit`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `steer_budget_exceeded`, `story_paused`."
+            "description": "Conflict; nothing was written: `author_fact_limit`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `steer_budget_exceeded`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -80519,6 +80871,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -80720,7 +81082,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -80940,7 +81302,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `rewrite_session_limit`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -81149,7 +81511,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -81315,6 +81677,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -81529,7 +81901,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_paused`, `unknown_chain`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`, `story_paused`, `unknown_chain`."
           },
           "422": {
             "content": {
@@ -81648,6 +82020,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -81903,7 +82285,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `checkpoint_incomplete`, `unknown_chain`."
+            "description": "Conflict; nothing was written: `checkpoint_incomplete`, `story_importing`, `unknown_chain`."
           },
           "422": {
             "content": {
@@ -82034,6 +82416,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -82280,7 +82672,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `client_event_conflict`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `client_event_conflict`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -82523,7 +82915,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -82740,7 +83132,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -82956,7 +83348,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -83130,6 +83522,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -83326,7 +83728,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -83507,7 +83909,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -83704,7 +84106,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -83852,6 +84254,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -83985,6 +84397,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -84138,6 +84560,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -84351,6 +84783,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -84538,6 +84980,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -84712,7 +85164,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -84830,6 +85282,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -85003,7 +85465,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -85121,6 +85583,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -85318,7 +85790,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -85517,7 +85989,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -85737,7 +86209,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `backfill_in_progress`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -85856,6 +86328,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -85970,6 +86452,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -86158,7 +86650,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -86352,7 +86844,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -86472,6 +86964,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -86571,6 +87073,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -86761,7 +87273,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -86970,7 +87482,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -87169,7 +87681,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `settle_refused`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `settle_refused`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -87408,7 +87920,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -87527,6 +88039,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -87726,7 +88248,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -87933,7 +88455,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`."
           },
           "422": {
             "content": {
@@ -88183,7 +88705,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -88380,6 +88902,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -88553,6 +89085,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -88752,7 +89294,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_inactive`, `revision_conflict`, `rewrite_session_limit`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_inactive`, `revision_conflict`, `rewrite_session_limit`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -88909,6 +89451,16 @@
               }
             },
             "description": "Not found: `not_found`, `rewrite_session_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -89122,7 +89674,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `rewrite_question_superseded`, `rewrite_session_closed`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `rewrite_question_superseded`, `rewrite_session_closed`, `story_importing`."
           },
           "422": {
             "content": {
@@ -89354,7 +89906,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_in_flight`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_questions_pending`, `rewrite_session_closed`, `rewrite_stale`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `record_in_flight`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_questions_pending`, `rewrite_session_closed`, `rewrite_stale`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -89576,7 +90128,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_session_closed`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `rewrite_apply_in_progress`, `rewrite_session_closed`, `story_importing`."
           },
           "422": {
             "content": {
@@ -89728,6 +90280,16 @@
             },
             "description": "Not found: `not_found`."
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -89839,6 +90401,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -90012,7 +90584,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -90208,7 +90780,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -90412,7 +90984,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -90531,6 +91103,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {
@@ -90704,7 +91286,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -90832,7 +91414,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -90998,7 +91580,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -91207,7 +91789,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `state_name_taken`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `state_name_taken`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -91406,7 +91988,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -91562,7 +92144,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -91736,7 +92318,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `state_name_taken`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `state_name_taken`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -91928,7 +92510,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -92117,7 +92699,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -92288,7 +92870,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `module_off`."
+            "description": "Conflict; nothing was written: `module_off`, `story_importing`."
           },
           "422": {
             "content": {
@@ -92477,7 +93059,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -92697,7 +93279,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`, `unknown_chain`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `unknown_chain`."
           },
           "422": {
             "content": {
@@ -92891,7 +93473,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -93075,7 +93657,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -93302,7 +93884,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `nothing_to_undo`, `revision_conflict`, `story_archived`, `story_paused`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `nothing_to_undo`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -93421,6 +94003,16 @@
               }
             },
             "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
           },
           "422": {
             "content": {

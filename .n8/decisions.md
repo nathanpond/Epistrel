@@ -12027,3 +12027,52 @@ Branch `milestone/m7-verify-fixes-2`, PR #719. This pass takes the open `bug`/`c
   - **Round trip** (a `prompt_only` Lite era): nothing is re-derived (owner decision 2), and the clock equals the fold of its advances.
   - **Main test** (Lite preset, clock off): turns 3 and 4 are planted with a paced render and a player-invited "two hours" skip, so the derivation is exercised.
   **Issue:** #709
+
+### #222 — the as-recorded view's derived sections
+
+- **Decision:** the derived sections are read per request from the derived tables:
+  - `beliefs`: open at the boundary by `tx_from`/`tx_to`;
+  - `memories`: `created_at` at or before the boundary, not retired then;
+  - `states`: counted changes with `tx_from` at or before the boundary, folded on the initial value.
+
+  Each keeps only rows whose producing operation was active at the boundary (#222's `membership_at` fold) and whose position is at or before the checkpoint. The history route serves them as `derived {facts, beliefs, memories, states}`.
+  **Why:** the view is an audit tool, not a hot path (#222's Discretion: no projection), and it reuses the fold the events section already uses.
+  **Issue:** #222
+- **Decision:** an `in_place` part recorded after the boundary is reverse-applied from the earliest such part's `patch_before` for its record. A later revert is a part too, so the earliest part after the boundary holds the value as it stood.
+  **Issue:** #222
+- **Decision (Rule 1):** `boundary_tx` read `stage_log` entries named `completed`/`abandoned`, but the log names stages (`completion`, …), so a completed staged turn fell back to its intent commit. Now:
+  - a completed turn ends at its `completion` entry;
+  - an abandoned one ends at its last logged stage (a discard moves `turn_stage` and logs no entry).
+  **Issue:** #222
+
+### #250, #251, #705 — story import as a job, and its gates
+
+- **Decision:** the import's planned shape is built: a multipart request; up-front checks; a story row created `importing`; a `bundle_jobs` row of `kind = import`; and a `story_import` job with `GET /admin/stories/imports/{job_id}`.
+  **Why:** the last pass logged the 202-plus-job contract as Rule 4. It is #250's own planned AC, though, so building it executes the plan rather than deviating from it. Executing the plan is this skill's job; no replan is needed.
+  **Issue:** #250, #705
+- **Decision:** the job reads the whole staged archive into memory under the frozen limits, still counted while it decompresses. It inserts the rows in one transaction (`importing.insert_bundle`, the former synchronous path refactored), then runs the gates, then rebuilds.
+  - **Not built** (#250's Discretion mechanics): the streaming COPY in 5,000-row batches, progress per member, and the crash points and pauses.
+  - **Recovery:** a crashed attempt is reset by the next one (the story's rows purged, its row recreated) and restarts from the staged file. Ids are recomputed the same (`fresh_id`: the old id's time prefix plus HMAC(job id, old id)).
+  **Why:** memory is bounded by `bundle_max_uncompressed_bytes`. One transaction makes "a refusal leaves nothing" hold for the insert by construction.
+  **Issue:** #250
+- **Decision:** after a refusal the `bundle_jobs` record is kept with `story_id` null, and a story's deletion no longer deletes its import record (`delete_story_bundles` deletes exports only). The table gains `request`, `report`, `stage` and `progress`, and `story_id` becomes nullable (migration 0130).
+  **Issue:** #250
+- **Decision:** `story_importing` rides on the Engine's story gate (`erasure_ledger.check_story` calls `core.importing.refuse`), so every story-naming method answers 409. `delete_story` checks it explicitly. `Operation._refuse_blocked` is the backstop. The job claim and the outbox's `story_blocked` skip importing stories, and the import job's own work passes (`core.importing.passing`).
+  **Issue:** #250
+- **Decision:** with no `engine_profile_id`, the import attaches the bundle's own profile when this deployment has it, pinned at the bundle's version when this deployment holds that version, else the deployment's default. The up-front impact report is skipped for the bundle's own pinned configuration.
+  **Why:** "identical to the source apart from the deployment-specific choices". Without the pin, an edited profile would make every re-import gain capability and start a backfill (found by the outbox test).
+  **Issue:** #250, #251
+- **Decision:** `rating_required` and the profile's impact are checked up front. The up-front report's "before" configuration is `manifest.engine_profile.settings`; it warns when `ImpactReport.warnings` is non-empty.
+  **Issue:** #251
+- **Decision (gates):**
+  - **`apply_erasure_ledger`** re-runs `erase()` with the entry's id, principal `system` and `write_ledger=False`. Its subject is remapped for story scope; for catalog scope it is the story character whose `source_catalog_id`/`persona_id` matches. It then copies the entries with `copied_from` and runs `guard.check_content` over every indexed record.
+  - **Confirmed candidates are not translated:** `confirmed=()`, and the report carries `candidates_remaining`. A candidate id hashes the record's text offset, which `Candidate` does not expose. The text fence still refuses the import if a confirmed mention survives.
+  - **`check_guardrails`** reuses #118's evaluator and the rating check's `ModelPolicyCheck`.
+  - **`park_outbox`** reuses `close_in_fork`. The reservation timers come back through `timers.schedule`.
+  - **`attach_profile`** starts a `gap_fill` backfill (in the finishing transaction) only for capability the attach adds over the bundle's configuration, never for gaps the source already had.
+  **Issue:** #251
+- **Decision:** a parked `imported_unsettled` row is listed by `GET /stories/{id}/reconciliation` (`_listed` admits it, though not executable), and #661's resolve action accepts it.
+  - **Not built:** `compensate` accepting `imported_unsettled`. Compensate dispatches a new effect against an executable row, which a parked row is not by design.
+  **Issue:** #251
+- **Decision:** `FORMAT_MIGRATIONS` maps a from-version to `(to-version, step)` and chains to `FORMAT_VERSION`. A registered version with a gap is `unsupported_format_version`; an older MINOR with no step imports as it is.
+  **Issue:** #250

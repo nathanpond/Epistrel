@@ -460,6 +460,8 @@ Off-hot-path jobs run in the same image in worker mode: **consolidation/reflecti
 
 ---
 
+Story snapshots and restore (a story export, and its import as a new story through the import gates) are an operator procedure: [OPERATIONS.md, Story snapshots and restore](OPERATIONS.md#story-snapshots-and-restore).
+
 ## 13. Technology summary
 
 | Concern | Choice | Rationale | Alternatives |

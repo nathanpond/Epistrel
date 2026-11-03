@@ -436,11 +436,110 @@ async def _exported(client: Any, engine: AsyncEngine, story: str, tmp_path: Any)
     return bytes(got.content)
 
 
-def _import(client: Any, data: bytes, headers: dict[str, str] | None = None) -> Any:
-    return client.post(
+class _Imported:
+    """An import through REST (#250): the request's answer and, once its job ran, its state."""
+
+    def __init__(self, started: Any, status: dict[str, Any] | None) -> None:
+        self.started = started
+        self.status = status
+
+    @property
+    def ready(self) -> bool:
+        return self.status is not None and self.status["status"] == "ready"
+
+    @property
+    def story_id(self) -> str:
+        return str(self.started.json()["story_id"])
+
+    @property
+    def error(self) -> dict[str, Any]:
+        """The refusal: the request's (up front) or the job's."""
+        if self.status is None:
+            found: dict[str, Any] = self.started.json()["error"]
+            return found
+        assert self.status["error"] is not None, self.status
+        return dict(self.status["error"])
+
+
+async def _import(
+    client: Any,
+    engine: AsyncEngine,
+    data: bytes,
+    headers: dict[str, str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> _Imported:
+    """POST the bundle as #250's multipart request, then run its ``story_import`` job and read
+    its state."""
+    started = await client.post(
         "/admin/stories/import",
-        content=data,
-        headers={**WRITE, "Content-Type": "application/gzip", **(headers or {})},
+        files={
+            "metadata": (None, json.dumps(metadata or {}), "application/json"),
+            "file": ("story.epistrel.tgz", data, "application/gzip"),
+        },
+        headers={**WRITE, **(headers or {})},
+    )
+    if started.status_code != 202:
+        return _Imported(started, None)
+    job = started.json()["job_id"]
+    await _run_import_job(engine, job)
+    state = await client.get(f"/admin/stories/imports/{job}", headers=READ)
+    assert state.status_code == 200, state.text
+    return _Imported(started, state.json())
+
+
+async def _run_import_job(engine: AsyncEngine, bundle_id: str) -> None:
+    """Claim the import's ``story_import`` job and run it through a worker (as the deployment's
+    worker would), until it is no longer queued."""
+    from datetime import timedelta
+
+    from sqlalchemy import text
+
+    from epistrel.core import clock
+    from epistrel.orchestrator.jobs.types import ClaimedJob
+    from tests.offboarding_support import worker
+
+    runner = worker(engine)
+    for _ in range(5):
+        now = clock.now()
+        async with engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "UPDATE jobs SET status = 'running', lease_until = :lease, "
+                        "attempt = attempt + 1, worker_id = 'w:test:0', updated_at = :now "
+                        "WHERE id = (SELECT job_id FROM bundle_jobs WHERE id = :b) "
+                        "AND status = 'queued' RETURNING *"
+                    ),
+                    {"b": bundle_id, "now": now, "lease": now + timedelta(seconds=60)},
+                )
+            ).one_or_none()
+        if row is None:
+            return
+        await runner.execute(
+            ClaimedJob(
+                id=row.id,
+                kind=row.kind,
+                story_id=row.story_id,
+                payload=dict(row.payload or {}),
+                attempt=int(row.attempt),
+                failures=int(row.failures),
+                due_at=row.due_at,
+                lease_until=row.lease_until,
+                worker_id=row.worker_id,
+            )
+        )
+
+
+async def _nothing_left(engine: AsyncEngine, stories_before: int) -> None:
+    """#250's complement after a refusal: no story, no import job queued or running."""
+    assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+    assert (
+        await count(
+            engine,
+            "SELECT count(*) FROM jobs WHERE kind = 'story_import' "
+            "AND status IN ('queued', 'running')",
+        )
+        == 0
     )
 
 
@@ -449,7 +548,8 @@ def _import(client: Any, data: bytes, headers: dict[str, str] | None = None) -> 
 async def test_i_10__m7_import_round_trip(
     settings: Settings, engine: AsyncEngine, tmp_path: Any
 ) -> None:
-    """A story with three turns is exported and imported (201): the new story has a new id,
+    """A story with three turns is exported and imported (202, then its job makes it ready):
+    the new story has a new id,
     the same number of operations, events and characters, no id of the source, the original
     recording times, and the source's transcript; the source is untouched. Two imports of one
     bundle give two independent stories; repeating a request with the same ``Idempotency-Key``
@@ -463,18 +563,26 @@ async def test_i_10__m7_import_round_trip(
         data = await _exported(client, engine, story, tmp_path)
         before = await _rows_left(engine, story)
 
-        first = await _import(client, data, {"Idempotency-Key": "01JB0000000000000000000IMP"})
-        assert first.status_code == 201, first.text
-        imported = first.json()["story_id"]
+        key = {"Idempotency-Key": "01JB0000000000000000000IMP"}
+        first = await _import(client, engine, data, key)
+        assert first.started.status_code == 202, first.started.text
+        assert first.started.headers["Location"].startswith("/admin/stories/imports/")
+        assert first.ready, first.status
+        imported = first.story_id
         assert imported != story
-        assert first.json()["source_story_id"] == story
-        again = await _import(client, data, {"Idempotency-Key": "01JB0000000000000000000IMP"})
-        assert again.status_code == 201
-        assert again.json()["story_id"] == imported
-        assert again.headers.get("Idempotent-Replay") == "true"
-        second = await _import(client, data)
-        assert second.status_code == 201, second.text
-        assert second.json()["story_id"] not in (story, imported)
+        again = await _import(client, engine, data, key)
+        assert again.started.status_code == 202
+        assert again.story_id == imported
+        assert again.started.headers.get("Idempotent-Replay") == "true"
+        second = await _import(client, engine, data)
+        assert second.ready, second.status
+        assert second.story_id not in (story, imported)
+        (origin,) = await rows(
+            engine,
+            "SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'import'",
+            s=imported,
+        )
+        assert origin.turn_report["imported_from"]["source_story_id"] == story
 
         for table in ("operations", "events", "characters"):
             sql = f"SELECT count(*) FROM {table} WHERE story_id = :s"  # noqa: S608
@@ -581,16 +689,47 @@ async def test_i_10__m7_import_bad_bundles(
         ]
         stories_before = await count(engine, "SELECT count(*) FROM stories")
         for data, code, reason in cases:
-            refused = await _import(client, data)
-            assert refused.json()["error"]["code"] == code, (reason, refused.text)
+            refused = await _import(client, engine, data)
+            assert refused.error["code"] == code, (reason, refused.error)
             if reason is not None:
-                assert refused.json()["error"]["details"]["reason"] == reason, refused.text
-        bomb = _tar([("manifest.json", b"\0" * (importing.MAX_ENTRY_BYTES + 1))])
-        assert len(bomb) < 1_000_000
-        too_large = await _import(client, bomb)
-        assert too_large.status_code == 413, too_large.text
-        assert too_large.json()["error"]["details"]["limit"] == "bundle_max_entry_bytes"
-        assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+                assert refused.error["details"]["reason"] == reason, refused.error
+            if refused.status is not None:
+                # Found by the job: the import is refused, its story gone, its record kept.
+                assert (refused.status["status"], refused.status["story_id"]) == (
+                    "refused",
+                    None,
+                )
+                assert refused.status["report"]["errors"], refused.status
+            await _nothing_left(engine, stories_before)
+        # The staged uploads are deleted with the refusals (their records keep no path).
+        assert (
+            await count(
+                engine,
+                "SELECT count(*) FROM bundle_jobs WHERE kind = 'import' "
+                "AND status IN ('refused', 'failed') AND path IS NOT NULL",
+            )
+            == 0
+        )
+        # #250: the limits are the deployment's (here the per-entry one at its 1 MiB minimum).
+        operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+        lowered = await client.put(
+            "/admin/settings", json={"bundle_max_entry_bytes": 1024 * 1024}, headers=operator
+        )
+        assert lowered.status_code == 200, lowered.text
+        try:
+            bomb = _tar([("manifest.json", b"\0" * (1024 * 1024 + 1))])
+            assert len(bomb) < 100_000  # it inflates more than tenfold
+            too_large = await _import(client, engine, bomb)
+            assert too_large.started.status_code == 413, too_large.started.text
+            assert too_large.error["details"]["limit"] == "bundle_max_entry_bytes"
+        finally:
+            restored = await client.put(
+                "/admin/settings",
+                json={"bundle_max_entry_bytes": importing.MAX_ENTRY_BYTES},
+                headers=operator,
+            )
+            assert restored.status_code == 200, restored.text
+        await _nothing_left(engine, stories_before)
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
 
@@ -858,10 +997,9 @@ async def test_i_10__m7_import_follow_ups(
         members = bundles.read_archive(data)
         manifest = json.loads(members[0][1])
 
-        made = await _import(client, data)
-        assert made.status_code == 201, made.text
-        found = made.json()
-        imported = found["story_id"]
+        made = await _import(client, engine, data)
+        assert made.ready, made.status
+        imported = made.story_id
         (images,) = await rows(
             engine,
             "SELECT images FROM characters WHERE story_id = :s AND name = 'Ada'",
@@ -884,7 +1022,6 @@ async def test_i_10__m7_import_follow_ups(
             "WHERE story_id = :s AND kind = 'import'",
             s=imported,
         )
-        assert str(op.operation_id) == found["operation_id"]
         assert op.turn_report["imported_from"] == {
             "source_story_id": rich.story_id,
             "exported_revision": manifest["exported_revision"],
@@ -934,9 +1071,9 @@ async def test_i_10__m7_import_follow_ups(
             (rebuilt(broken), "schema_violation", "events.jsonl", "payload"),
             (rebuilt(swapped), "member_order", None, None),
         ):
-            refused = await _import(client, bundle)
-            assert refused.status_code == 422, refused.text
-            details = refused.json()["error"]["details"]
+            refused = await _import(client, engine, bundle)
+            assert refused.error["code"] == "corrupt_bundle", refused.error
+            details = refused.error["details"]
             assert details["reason"] == reason, details
             if entry is not None:
                 assert (details["entry"], details["line"]) == (entry, 1), details
@@ -944,13 +1081,14 @@ async def test_i_10__m7_import_follow_ups(
                 assert details["field"] == field_, details
         assert await count(engine, "SELECT count(*) FROM stories") == stories_before
 
-        newer = await _import(client, rebuilt(extra, format_version="1.9.0"))
-        assert newer.status_code == 201, newer.text
+        newer = await _import(client, engine, rebuilt(extra, format_version="1.9.0"))
+        assert newer.ready, newer.status
+        assert newer.status is not None
         assert {
             "code": "unknown_fields",
             "entry": "records/characters.jsonl",
             "fields": ["nickname"],
-        } in newer.json()["warnings"]
+        } in newer.status["report"]["warnings"]
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
@@ -958,35 +1096,40 @@ async def test_i_10__m7_import_follow_ups(
 async def test_i_10__m7_import_unchecked(
     settings: Settings, engine: AsyncEngine, tmp_path: Any
 ) -> None:
-    """I-10 M7 (FR-RATE-7, #250's import rule): no imported operation counts as checked
-    against this deployment's guardrails: every imported turn's ``checked_guardrails`` is null
-    where the source's carry their stamps, so every turn an untruncate of the imported story's
-    discarded tail would reactivate is unchecked (#120's guard holds that edit for a rating
-    check), while the source's are not."""
+    """I-10 M7 (FR-RATE-7, #250's import rule, #251's gate): no imported stamp is trusted: the
+    active history is checked at import and stamped with this deployment's set, and the
+    inactive turns keep none, so every turn an untruncate of the imported story's discarded
+    tail would reactivate is unchecked (#120's guard holds that edit for a rating check), while
+    the source's are not."""
     from tests import bundle_support as bs
 
     async with rest(settings, engine) as client:
         rich = await bs.build_rich_story(client, engine)
         job = await _export(client, engine, rich.story_id, tmp_path)
         data = (await client.get(f"/admin/stories/exports/{job}/bundle", headers=READ)).content
-        made = await _import(client, data)
-        assert made.status_code == 201, made.text
-        imported = made.json()["story_id"]
+        made = await _import(client, engine, data)
+        assert made.ready, made.status
+        imported = made.story_id
 
-        async def stamps(story: str) -> list[Any]:
+        async def stamps(story: str, membership: str) -> list[Any]:
             return [
                 r.checked_guardrails
                 for r in await rows(
                     engine,
                     "SELECT checked_guardrails FROM operations WHERE story_id = :s "
-                    "AND kind = 'turn'",
+                    "AND kind = 'turn' AND membership::text = :m",
                     s=story,
+                    m=membership,
                 )
             ]
 
-        assert all(s is not None for s in await stamps(rich.story_id))
-        assert await stamps(imported)
-        assert all(s is None for s in await stamps(imported))
+        assert all(s is not None for s in await stamps(rich.story_id, "active"))
+        # #251: the active history passed this deployment's check at import and is stamped;
+        # the inactive turns were never checked here.
+        assert await stamps(imported, "active")
+        assert all(s is not None for s in await stamps(imported, "active"))
+        assert await stamps(imported, "discarded")
+        assert all(s is None for s in await stamps(imported, "discarded"))
         from epistrel.core.ratings import reactivation
 
         async def pending(story: str) -> list[Any]:
@@ -1007,3 +1150,322 @@ async def test_i_10__m7_import_unchecked(
         # (here), so its untruncate is held for the reactivation check.
         assert await pending(rich.story_id) == []
         assert len(await pending(imported)) == len(rich.discarded)
+
+
+# -- M7: the import job and its gates (#250, #251) ---------------------------------------------
+
+
+async def _started(client: Any, data: bytes, metadata: dict[str, Any] | None = None) -> Any:
+    """The import request alone (its job not run)."""
+    return await client.post(
+        "/admin/stories/import",
+        files={
+            "metadata": (None, json.dumps(metadata or {}), "application/json"),
+            "file": ("story.epistrel.tgz", data, "application/gzip"),
+        },
+        headers=WRITE,
+    )
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_importing(settings: Settings, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#250: while the import job has not run, the story exists ``importing``: its routes are
+    409 ``story_importing`` with the job, its stage and its progress (a read, a turn, a
+    history read, its deletion), and nothing is written; an operation on it is refused at
+    ``begin``; its status route answers ``queued``. Complement: another story answers
+    normally, and once the job ran the story is served."""
+    from epistrel.core.errors import StoryImporting
+    from tests.respond_support import body as respond_body
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        started = await _started(client, data)
+        assert started.status_code == 202, started.text
+        imported, job = started.json()["story_id"], started.json()["job_id"]
+        operations = await _operations(engine, imported)
+        cast = await rows(engine, "SELECT id FROM characters WHERE story_id = :s", s=imported)
+        for method, path, body in (
+            ("GET", f"/stories/{imported}", None),
+            ("GET", f"/stories/{imported}/history", None),
+            ("POST", f"/stories/{imported}/respond", respond_body(story, "Hi.")),
+            ("DELETE", f"/stories/{imported}", None),
+        ):
+            refused = await client.request(method, path, json=body, headers=WRITE)
+            assert refused.status_code == 409, (path, refused.text)
+            error = refused.json()["error"]
+            assert error["code"] == "story_importing", (path, error)
+            assert error["details"]["job_id"] == job
+            assert error["details"]["stage"] == "queued"
+        assert cast == []
+        assert await _operations(engine, imported) == operations
+        with pytest.raises(StoryImporting):
+            async with Operation(
+                engine, story_id=imported, kind=OperationKind.CONTROL, principal="p-x"
+            ) as op:
+                await op.commit()
+        state = await client.get(f"/admin/stories/imports/{job}", headers=READ)
+        assert (state.json()["status"], state.json()["story_id"]) == ("queued", imported)
+        assert (await client.get(f"/stories/{story}", headers=READ)).status_code == 200
+        await _run_import_job(engine, job)
+        served = await client.get(f"/stories/{imported}", headers=READ)
+        assert served.status_code == 200, served.text
+        assert served.json()["status"] == "active"
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7; FR-RATE-7")
+async def test_i_10__m7_import_guardrails(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251: the whole active history is checked against the chosen rating's guardrails (a
+    global policy among them) before the story is served: a history whose player line breaks a
+    global policy is refused ``rating_check_failed`` with the violation listed (its position
+    and policy), and leaves no story. Complement: once the policy is retired, the same bundle
+    imports and its active turns carry this deployment's stamp."""
+    from tests.policy_support import unique
+
+    operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+    word = f"zarquon{unique('w').lower().replace('-', '')}"
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, f"I carry the {word}.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        made = await client.post(
+            "/admin/policies",
+            json={
+                "scope": "global",
+                "name": unique("import-gate"),
+                "rule": {"type": "wordlist", "words": [word]},
+                "message": "Not here.",
+            },
+            headers=operator,
+        )
+        assert made.status_code == 201, made.text
+        policy = made.json()["id"]
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        try:
+            refused = await _import(client, engine, data)
+            assert refused.status is not None
+            assert refused.status["status"] == "refused", refused.status
+            assert refused.error["code"] == "rating_check_failed", refused.error
+            violations = refused.error["details"]["violations"]
+            assert {v["policy_id"] for v in violations} == {policy}
+            assert {v["position"].get("turn") for v in violations} == {1}
+            assert word not in json.dumps(refused.status)
+            await _nothing_left(engine, stories_before)
+        finally:
+            gone = await client.delete(f"/admin/policies/{policy}", headers=operator)
+            assert gone.status_code in (200, 204), gone.text
+        passed = await _import(client, engine, data)
+        assert passed.ready, passed.status
+        stamps = await rows(
+            engine,
+            "SELECT checked_guardrails FROM operations WHERE story_id = :s AND kind = 'turn'",
+            s=passed.story_id,
+        )
+        assert stamps
+        assert all(s.checked_guardrails is not None for s in stamps)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7; FR-ADMIN-9")
+async def test_i_10__m7_import_erasure(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#251: a subject erased here after the bundle was made is erased from the imported story
+    before it is served: Ada is erased from the source after its export; the import of that
+    earlier bundle applies the erasure (its ledger entry concerns the bundle's source story),
+    so the imported story holds no record naming her, and its ledger holds a copy of the entry
+    (``copied_from``). Complement: the source's own record of it is untouched."""
+    from tests import erasure_support as es
+
+    settings = es.erasure_settings(pg_url)
+    async with rest(settings, engine) as client:
+        made = await create(client, story_body("Wren", "Ada"))
+        story = made["story_id"]
+        ada = next(c["id"] for c in made["characters"] if c["name"] == "Ada")
+        await play_turn(engine, story, "Ada waves at the door.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        await es.erase(client, "character", ada, story, confirm_all=True)
+        (entry,) = await rows(
+            engine,
+            "SELECT id FROM erasure_ledger WHERE story_ref = :s AND copied_from IS NULL",
+            s=story,
+        )
+        imported = await _import(client, engine, data)
+        assert imported.ready, imported.status
+        assert imported.status is not None
+        assert imported.status["report"]["erasure"]["applied"] == 1
+        names = await rows(
+            engine, "SELECT name FROM characters WHERE story_id = :s", s=imported.story_id
+        )
+        assert "Ada" not in {n.name for n in names}
+        lines = await rows(
+            engine,
+            "SELECT text FROM transcript_messages WHERE story_id = :s",
+            s=imported.story_id,
+        )
+        assert lines
+        assert not any(es.naming(str(r.text), ["Ada"]) for r in lines)
+        (copied,) = await rows(
+            engine,
+            "SELECT copied_from FROM erasure_ledger WHERE story_ref = :s",
+            s=imported.story_id,
+        )
+        assert str(copied.copied_from) == str(entry.id)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_import_outbox(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#251 (FR-EXT-22): an outbox row still pending in the bundle is imported parked: status
+    ``imported_unsettled``, never executable, with a ``reconciliation_marks`` row naming its
+    source row, listed by ``GET /stories/{id}/reconciliation`` and resolved only by the
+    author's resolve action. The provider receives no call."""
+    from tests import late_settlement_support as ls
+    from tests import staged_support as sp
+    from tests.respond_support import respond_client
+
+    settings = auth_settings_stub(pg_url)
+    async with respond_client(settings, engine) as (client, epistrel):
+        story, cal, bank, fake = await sp.sync_story(client, engine, epistrel)
+        outbox_id, _ = await ls.intent(engine, story, bank, cal, [])
+        data = await _exported(client, engine, story, tmp_path)
+        imported = await _import(client, engine, data, metadata={"ignore_warnings": True})
+        assert imported.ready, imported.status
+        (row,) = await rows(
+            engine,
+            "SELECT id, status, executable FROM external_effect_outbox WHERE story_id = :s",
+            s=imported.story_id,
+        )
+        assert (row.status, row.executable) == ("imported_unsettled", False)
+        (mark,) = await rows(
+            engine,
+            "SELECT reason, detail, resolved_by FROM reconciliation_marks WHERE outbox_id = :o",
+            o=row.id,
+        )
+        assert (mark.reason, mark.resolved_by) == ("imported_unsettled", None)
+        assert mark.detail == {"source_outbox_id": outbox_id, "source_story_id": story}
+        listed = await client.get(
+            f"/stories/{imported.story_id}/reconciliation",
+            params={"viewpoint": "omniscient"},
+            headers=READ,
+        )
+        assert listed.status_code == 200, listed.text
+        assert [(e["outbox_id"], e["reason"]) for e in listed.json()["listings"]] == [
+            (str(row.id), "imported_unsettled")
+        ]
+        resolved = await client.post(
+            f"/stories/{imported.story_id}/reconciliation/{row.id}/resolve",
+            json={"resolution": "abandoned"},
+            headers=WRITE,
+        )
+        assert resolved.status_code == 200, resolved.text
+        (after,) = await rows(
+            engine, "SELECT resolved_by FROM reconciliation_marks WHERE outbox_id = :o", o=row.id
+        )
+        assert after.resolved_by == "abandoned"
+        assert fake.writes == []
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_import_impact(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#251 (FR-PROF-7,8): a Lite story's bundle imported under Full warns (data-producing
+    capability gained over its history): without ``ignore_warnings`` the request answers 200
+    ``{applied: false, impact}`` and creates nothing; with it, the import runs, attaches Full
+    and starts a gap-fill backfill as the story leaves ``importing`` (the story ``paused``,
+    cause ``backfill``). A bundle whose rating name matches none needs a named rating."""
+    from epistrel.core.seeds.profiles import FULL_PRESET_ID
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        stories_before = await count(engine, "SELECT count(*) FROM stories")
+        warned = await _started(client, data, {"engine_profile_id": FULL_PRESET_ID})
+        assert warned.status_code == 200, warned.text
+        assert warned.json()["applied"] is False
+        assert warned.json()["impact"]["warnings"]
+        assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+        full = await _import(
+            client,
+            engine,
+            data,
+            metadata={"engine_profile_id": FULL_PRESET_ID, "ignore_warnings": True},
+        )
+        assert full.ready, full.status
+        (row,) = await rows(
+            engine,
+            "SELECT status, engine_profile_id FROM stories WHERE id = :s",
+            s=full.story_id,
+        )
+        assert (row.status, str(row.engine_profile_id)) == ("paused", FULL_PRESET_ID)
+        (backfill,) = await rows(
+            engine, "SELECT kind FROM story_backfills WHERE story_id = :s", s=full.story_id
+        )
+        assert backfill.kind == "gap_fill"
+
+        members = bundles_read(data)
+        manifest = json.loads(members[0][1])
+        renamed = {**manifest, "content_rating": {**manifest["content_rating"], "name": "Nope"}}
+        nameless = _tar([("manifest.json", json.dumps(renamed).encode()), *members[1:]])
+        needs = await _started(client, nameless)
+        assert needs.status_code == 422, needs.text
+        assert needs.json()["error"]["code"] == "rating_required"
+        assert needs.json()["error"]["details"]["bundle_rating_name"] == "Nope"
+        async with engine.begin() as conn:
+            await conn.execute(
+                __import__("sqlalchemy").text(
+                    "DELETE FROM jobs WHERE kind = 'backfill' AND story_id = :s"
+                ),
+                {"s": full.story_id},
+            )
+
+
+def bundles_read(data: bytes) -> list[tuple[str, bytes]]:
+    from epistrel.core import bundles
+
+    return bundles.read_archive(data)
+
+
+def auth_settings_stub(pg_url: str) -> Settings:
+    from tests.auth_support import auth_settings
+
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_import_older_format(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#250: a bundle of an older format is migrated line by line through
+    ``FORMAT_MIGRATIONS`` (here a test-registered step, with this deployment's format
+    monkeypatched to ``1.1.0``) and imports, every line through the step; a registered version
+    whose chain to the current format has a gap is ``unsupported_format_version``."""
+    from epistrel.core.bundles import format as bundle_format
+    from epistrel.core.bundles import importing
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        data = await _exported(client, engine, story, tmp_path)
+        seen: list[str] = []
+
+        def step(path: str, line: dict[str, Any]) -> dict[str, Any]:
+            seen.append(path)
+            return line
+
+        monkeypatch.setattr(importing, "FORMAT_VERSION", "1.1.0")
+        monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, "1.0.0", ("1.1.0", step))
+        migrated = await _import(client, engine, data)
+        assert migrated.ready, migrated.status
+        assert "records/story.json" in seen
+        assert "events.jsonl" in seen
+        monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, "1.0.0", ("1.0.9", step))
+        gap = await _import(client, engine, data)
+        assert gap.error["code"] == "unsupported_format_version", gap.error

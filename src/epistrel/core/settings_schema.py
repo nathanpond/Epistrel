@@ -586,6 +586,10 @@ DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS = 90
 default window, so a gate tightening's validation can read a full one (FR-OBS-4)."""
 
 
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+
 class RetentionSettings(BaseModel):
     """How long the ``retention_sweep`` keeps what may expire (FR-STORE-30; #71), stored under
     ``deployment_state.settings``: audit records (``audit`` events and ``audit_log`` rows) for
@@ -629,6 +633,19 @@ class RetentionSettings(BaseModel):
     bundle_export_ttl_hours: Annotated[StrictInt, PROSPECTIVE] = Field(default=24, ge=1, le=720)
     """#704 (FR-STORE-7): how long a story export's archive is kept; ``retention_sweep`` then
     deletes the file and sets the export ``expired``."""
+    bundle_max_uncompressed_bytes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=4 * GIB, ge=MIB, le=64 * GIB
+    )
+    """#250 (FR-STORE-7, ADR-143): the most bytes an imported bundle decompresses to, counted
+    while it decompresses (and the upload's own cap); past it, ``bundle_too_large``."""
+    bundle_max_entries: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=100_000, ge=10, le=10_000_000
+    )
+    """#250: the most members an imported bundle holds."""
+    bundle_max_entry_bytes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=GIB, ge=MIB, le=64 * GIB
+    )
+    """#250: the most bytes one member of an imported bundle decompresses to."""
 
 
 class WorkerHealthSettings(BaseModel):

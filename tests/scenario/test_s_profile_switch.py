@@ -318,6 +318,15 @@ async def test_s_profile_switch__round_trip(stub_settings: Settings, engine: Asy
             p=SCHEDULED,
         )
         assert ids["Jenni"] in {str(h.holder) for h in held}
+        observed = await rows(
+            engine,
+            "SELECT t.inferred FROM belief_transitions t JOIN beliefs b ON b.id = t.belief_id "
+            "WHERE t.story_id = :s AND t.holder_character_id = :j AND t.kind = 'observation'",
+            s=story,
+            j=ids["Jenni"],
+        )
+        assert observed
+        assert all(o.inferred for o in observed)  # read from the transcript, flagged so
         # #709: the clock is the fold of the advances: the played Lite turns' recorded pacing
         # kept, every other turn's re-derived (source backfill), Full's turn its own.
         folded = await rows(

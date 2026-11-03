@@ -21,6 +21,7 @@ small checker for the subset of JSON Schema these schemas use (no new dependency
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import (
@@ -273,13 +274,61 @@ def validate_line(path: str, line: Any) -> None:
     _check(schemas[name], line, path)
 
 
+# -- older formats (#250) ----------------------------------------------------------------------
+
+Step = Callable[[str, dict[str, Any]], dict[str, Any] | None]
+"""One format migration step: ``(member path, line) -> line`` (``None`` drops the line)."""
+FORMAT_MIGRATIONS: dict[str, tuple[str, Step]] = {}
+"""#250: the migrations from an older format, keyed by the version they read, each naming the
+version it produces; ``migrations_for`` chains them to ``bundles.FORMAT_VERSION``. Empty while
+no older format exists."""
+
+
+def _minor_of(version: str) -> tuple[int, int]:
+    parts = ([*version.split("."), "0", "0"])[:2]
+    return int(parts[0]) if parts[0].isdigit() else 0, int(parts[1]) if parts[1].isdigit() else 0
+
+
+def migrations_for(version: str, current: str | None = None) -> list[Step] | None:
+    """The steps that bring a bundle of ``version`` to the current format (``[]``: none is
+    needed, its MAJOR.MINOR is the current one or newer, or an older one with no step imports
+    as it is); ``None`` when the registry holds a step for ``version`` but its chain has a gap
+    (the bundle is then ``unsupported_format_version``). PATCH is never significant."""
+    target = _minor_of(current or bundles.FORMAT_VERSION)
+    if _minor_of(version) >= target:
+        return []
+    key = ".".join(str(p) for p in _minor_of(version))
+    found = next((k for k in FORMAT_MIGRATIONS if _minor_of(k) == _minor_of(key)), None)
+    if found is None:
+        return []
+    steps: list[Step] = []
+    seen: set[tuple[int, int]] = set()
+    at = found
+    while _minor_of(at) < target:
+        if _minor_of(at) in seen:
+            return None
+        seen.add(_minor_of(at))
+        entry = next(
+            (v for k, v in FORMAT_MIGRATIONS.items() if _minor_of(k) == _minor_of(at)), None
+        )
+        if entry is None:
+            return None
+        produced, step = entry
+        steps.append(step)
+        at = produced
+    return steps
+
+
 __all__ = [
     "EVENT",
+    "FORMAT_MIGRATIONS",
     "MANIFEST",
     "MEDIA",
     "RECORD",
     "LineInvalid",
+    "Step",
     "bundle_schemas",
+    "migrations_for",
     "record_schema",
     "schema_for",
     "validate_line",

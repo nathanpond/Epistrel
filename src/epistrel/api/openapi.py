@@ -253,6 +253,8 @@ ERROR_STATUS: dict[str, int] = {
     "bundle_too_large": 413,
     "corrupt_bundle": 422,
     "unsupported_format_version": 422,
+    "story_importing": 409,
+    "rating_required": 422,
     "prune_target_unknown": 422,
     "prune_target_ineligible": 422,
     "backfill_conflict_not_found": 404,
@@ -1177,7 +1179,8 @@ def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     if STORY_PATH_PARAMETER in path and (method, path) not in ERASURE_UNGATED_ROUTES:
         # A story the erasure reconciler blocked is refused until its erasures are reapplied
         # (#125); ``ledger_unavailable`` when the ledger cannot be compared on the first call.
-        codes += ["erasure_pending", "ledger_unavailable"]
+        # #250: a story being imported is refused until its import ends.
+        codes += ["erasure_pending", "ledger_unavailable", "story_importing"]
     elif any(parameter in path for parameter in CATALOG_PATH_PARAMETERS):
         # An entry a pending catalog-scope erasure reaches is refused until it is reapplied
         # (#346); ``ledger_unavailable`` as for a story.

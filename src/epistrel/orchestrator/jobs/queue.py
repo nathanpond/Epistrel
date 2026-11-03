@@ -162,11 +162,12 @@ def _claimed(row: Row[Any]) -> ClaimedJob:
 async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJob | None:
     """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due.
     A job of a story the erasure reconciler blocked stays queued, unclaimed, until the story is
-    unblocked (#125)."""
+    unblocked (#125); so does a job of a story being imported (#250)."""
     now = clock.now()
     blocked = exists().where(
         stories.c.id == jobs.c.story_id,
-        stories.c.status == StoryStatus.BLOCKED_BY_ERASURE.value,
+        # #250: an importing story's work waits for its import, as a blocked story's does.
+        stories.c.status.in_((StoryStatus.BLOCKED_BY_ERASURE.value, StoryStatus.IMPORTING.value)),
     )
     due = (
         select(jobs.c.id)

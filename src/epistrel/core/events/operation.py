@@ -111,6 +111,7 @@ from epistrel.core import (
     timeline_effects,
     turn_gate,
 )
+from epistrel.core import importing as story_importing
 from epistrel.core.commit import boundary as _boundary  # noqa: F401 - registers #154
 from epistrel.core.concurrency import (
     ERASED_SUBJECT,
@@ -1697,6 +1698,9 @@ class Operation:
         included (503 ``erasure_pending``), until its pending erasures are reapplied; an erasure
         runs, and so do the reapply's own operations. Checked at ``begin()`` and again under the
         story lock at commit."""
+        if self.story_id is not None:
+            # #250: an importing story takes no work but its import job's.
+            await story_importing.refuse(conn, self.story_id, status)
         if not self.erasure and self.story_id is not None:
             await erasure_ledger.refuse_blocked(conn, self.story_id, status)
 

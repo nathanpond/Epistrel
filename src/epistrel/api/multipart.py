@@ -210,6 +210,55 @@ async def read_upload(request: Request) -> UploadForm:
     return UploadForm(metadata=metadata, content_type=second[2], _events=events)
 
 
+@dataclass(frozen=True, slots=True)
+class ImportForm:
+    """``POST /admin/stories/import``'s two parts (#250): the ``metadata`` JSON document and
+    the ``file`` part's bytes (the archive)."""
+
+    metadata: bytes
+    data: bytes
+
+
+async def read_import(request: Request, *, cap: int) -> ImportForm:
+    """#250: the import's ``metadata`` part (at most ``METADATA_MAX_BYTES``), then its
+    ``file`` part, cut at ``cap`` bytes (413 ``bundle_too_large``), then nothing (422 at
+    ``body`` for any other part, another order, or a truncated body)."""
+    from epistrel.core.errors import BundleTooLarge
+
+    events = _events(request)
+    first = await anext(events, None)
+    if first is None or first[0] != "part" or first[1] != METADATA:
+        raise _refused("the first part must be `metadata`", "body.metadata")
+    raw = bytearray()
+    async for event in events:
+        if event[0] == "end":
+            break
+        if event[0] == "data":
+            raw += event[1]
+            if len(raw) > METADATA_MAX_BYTES:
+                raise _refused(
+                    f"the metadata part is larger than {METADATA_MAX_BYTES} bytes", "body.metadata"
+                )
+    second = await anext(events, None)
+    if second is None or second[0] != "part" or second[1] != FILE:
+        raise _refused("the second part must be `file`", "body.file")
+    data = bytearray()
+    async for event in events:
+        if event[0] == "end":
+            break
+        if event[0] == "data":
+            data += event[1]
+            if len(data) > cap:
+                raise BundleTooLarge(
+                    "the upload is larger than the bundle limit",
+                    {"limit": "bundle_max_uncompressed_bytes", "value": cap},
+                )
+    async for event in events:
+        if event[0] == "part":
+            raise _refused("nothing may follow the `file` part")
+    return ImportForm(metadata=bytes(raw), data=bytes(data))
+
+
 def declared_length(request: Request) -> int | None:
     """The body's ``Content-Length``, when the request declares one."""
     value = request.headers.get("content-length")
@@ -218,4 +267,12 @@ def declared_length(request: Request) -> int | None:
     return int(value)
 
 
-__all__ = ["FILE", "METADATA", "UploadForm", "declared_length", "read_upload"]
+__all__ = [
+    "FILE",
+    "METADATA",
+    "ImportForm",
+    "UploadForm",
+    "declared_length",
+    "read_import",
+    "read_upload",
+]

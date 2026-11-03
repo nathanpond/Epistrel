@@ -807,16 +807,19 @@ async def expire_bundles(db: AsyncEngine, now: datetime | None = None) -> int:
 
 
 async def delete_story_bundles(conn: AsyncConnection, story_id: str) -> int:
-    """#704: a story's exports and their files, deleted with the story."""
-    rows = list(
-        await conn.execute(
-            select(bundle_jobs.c.id, bundle_jobs.c.path).where(bundle_jobs.c.story_id == story_id)
-        )
+    """#704: a story's exports and their files, deleted with the story. #250: the record of
+    the import that made it is deployment-level and kept, no longer naming the story."""
+    await conn.execute(
+        update(bundle_jobs)
+        .where(bundle_jobs.c.story_id == story_id, bundle_jobs.c.kind == "import")
+        .values(story_id=None)
     )
+    exports = (bundle_jobs.c.story_id == story_id) & (bundle_jobs.c.kind == "export")
+    rows = list(await conn.execute(select(bundle_jobs.c.id, bundle_jobs.c.path).where(exports)))
     for row in rows:
         _unlink(row.path)
     if rows:
-        await conn.execute(bundle_jobs.delete().where(bundle_jobs.c.story_id == story_id))
+        await conn.execute(bundle_jobs.delete().where(exports))
     return len(rows)
 
 
@@ -886,7 +889,11 @@ async def _fail(db: AsyncEngine, job_id: str, error: dict[str, Any]) -> None:
 async def _row(db: AsyncEngine, job_id: str) -> Any:
     async with db.connect() as conn:
         row = (
-            await conn.execute(select(bundle_jobs).where(bundle_jobs.c.id == job_id))
+            await conn.execute(
+                select(bundle_jobs).where(
+                    bundle_jobs.c.id == job_id, bundle_jobs.c.kind == "export"
+                )
+            )
         ).one_or_none()
     if row is None:
         raise ExportNotFound("no such export", {"job_id": job_id})

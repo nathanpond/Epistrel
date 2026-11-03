@@ -460,9 +460,10 @@ async def _turn(
         ids = await record_exposures(conn, op, exposed, inferred=True)
         tally.exposures += len(ids)
     if observed:
-        from epistrel.core.epistemic import observation
+        from epistrel.core.epistemic import observation, transitions
 
-        tally.observations += await observation.observe(conn, op, observed, settings=settings)
+        with transitions.inferring():
+            tally.observations += await observation.observe(conn, op, observed, settings=settings)
 
 
 CLOCK_REASON = "backfill: re-derived from the transcript"

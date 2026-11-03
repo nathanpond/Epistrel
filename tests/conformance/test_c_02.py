@@ -307,6 +307,7 @@ M7_OPERATOR_PATHS = (
     "/admin/stories/exports/{job_id}",
     "/admin/stories/exports/{job_id}/bundle",
     "/admin/stories/import",
+    "/admin/stories/imports/{job_id}",
 )
 """docs/04 C-02 [M7]'s operator endpoints: story export and import (#249, #250)."""
 
@@ -327,7 +328,7 @@ def test_c_02__m7_bundles(dummy_dsn: str) -> None:
     outside = [path.removeprefix(ADMIN_PREFIX) for path in M7_OPERATOR_PATHS]
     assert [path for path in outside if not is_operator_path(path)] == []
     names = operations()
-    for name in ("export_story", "export_status", "import_story"):
+    for name in ("export_story", "export_status", "import_story", "import_status"):
         assert name in names, name
     assert unreachable(app) == []
     assert unguarded_routes(app) == []

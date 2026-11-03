@@ -156,6 +156,21 @@ from epistrel.core.tables.beliefs import TRANSITION_SOURCE_KINDS, belief_transit
 from epistrel.core.tables.commitments import thunks
 from epistrel.observability.metrics import BELIEF_TRANSITIONS, BELIEF_TRANSITIONS_REFUSED
 
+INFERRED: ContextVar[bool] = ContextVar("epistrel_inferred_transitions", default=False)
+"""#228, #709: a backfill's transitions, read from presence the transcript names rather than a
+live turn's routing, are written ``inferred`` (``inferring``)."""
+
+
+@contextmanager
+def inferring() -> Iterator[None]:
+    """Write the transitions made inside the block ``inferred``."""
+    token = INFERRED.set(True)
+    try:
+        yield
+    finally:
+        INFERRED.reset(token)
+
+
 BELIEF_TRANSITION = "belief_transition"
 PARTITIONS_MODULE = "partitions"
 
@@ -1214,6 +1229,7 @@ async def _transition(
             turn_variant=op.turn_variant,
             membership=Membership.ACTIVE.value,
             membership_tx=func.transaction_timestamp(),
+            inferred=INFERRED.get(),
         )
     )
     await index_records(

@@ -926,6 +926,41 @@ async def test_backfill__gap_fill(stub_settings: Any, engine: AsyncEngine) -> No
         assert none.json()["error"]["code"] == "nothing_to_backfill"
 
 
+async def test_backfill__erased_subject(pg_url: str, engine: AsyncEngine) -> None:
+    """#228: a subject erased before the backfill is never re-derived: Bobby, planted at turn
+    ``EARLY`` ("Bobby is thirty"), is erased; the backfill to Full then writes no fact whose
+    subject is Bobby and no memory naming him. Complement: the backfill completes and writes
+    other memories."""
+    from tests import erasure_support as es
+
+    settings = es.erasure_settings(pg_url)
+    async with respond_client(settings, engine) as (client, lib):
+        story, _, ids = await _story(client, engine, lib, 2 * lls.EARLY)
+        await es.erase(client, "character", ids["Bobby"], story, confirm_all=True)
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM facts WHERE story_id = :s AND subject_id = :b",
+                s=story,
+                b=ids["Bobby"],
+            )
+            == 0
+        )
+        texts = await rows(
+            engine,
+            "SELECT text FROM memories WHERE story_id = :s AND provenance = 'backfill'",
+            s=story,
+        )
+        assert texts
+        assert not any(es.naming(str(t.text), ["Bobby"]) for t in texts)
+
+
 async def engine_reset_coverage(engine: AsyncEngine, story: str) -> None:
     """Drop verification's backfilled interval: a gap the gap fill must cover."""
     async with engine.begin() as conn:

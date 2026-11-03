@@ -83,12 +83,15 @@ class StoryStatus(StrEnum):
     (a restored backup that predates it; FR-ADMIN-7, #125). Every read and write of the story is
     refused with 503 ``erasure_pending`` until the reconciler has reapplied it; the status it
     had is kept in ``stories.status_before_block`` and restored then.
+    ``importing`` (#250, FR-STORE-7): the story's import job has not finished; every read and
+    write of it is refused with 409 ``story_importing`` (``core.importing``).
     """
 
     ACTIVE = "active"
     ARCHIVED = "archived"
     PAUSED = "paused"
     BLOCKED_BY_ERASURE = "blocked_by_erasure"
+    IMPORTING = "importing"
 
 
 class EntryStatus(StrEnum):

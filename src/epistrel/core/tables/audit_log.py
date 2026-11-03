@@ -33,6 +33,8 @@ class AuditKind(StrEnum):
     PERSONA_DELETED = "persona_deleted"
     RATING_CHANGE_REFUSED = "rating_change_refused"
     ERASURE = "erasure"
+    STORY_IMPORT = "story_import"
+    """#250: a finished import, ready or refused (job id, bundle checksum, story id)."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

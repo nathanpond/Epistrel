@@ -3,25 +3,28 @@
 - ``POST /admin/stories/{story_id}/export``: queue an export (202, ``Location`` the job).
 - ``GET /admin/stories/exports/{job_id}``: its state.
 - ``GET /admin/stories/exports/{job_id}/bundle``: the archive, once ready.
-- ``POST /admin/stories/import``: a bundle (the request body) becomes a new story (#250).
+- ``POST /admin/stories/import``: a bundle becomes a new story, through a background job (#250).
+- ``GET /admin/stories/imports/{job_id}``: an import's state (#250).
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Request, Response
+from fastapi import APIRouter, Path, Request, Response
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
-from pydantic import Field
+from pydantic import ValidationError
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
+from epistrel.api.multipart import read_import
 from epistrel.api.responses import DeploymentMutationResponse, MutationResponse
 from epistrel.core.bundles import ExportJob, ExportStarted
-from epistrel.core.bundles.importing import Imported, ImportRequest
-from epistrel.core.errors import BundleTooLarge
+from epistrel.core.bundles.import_job import ImportImpact, ImportJob, ImportMetadata, ImportStarted
+from epistrel.core.errors import InvalidRequest
 from epistrel.core.ids import ULID_PATTERN
+from epistrel.core.profiles.impact import ImpactReport
 
 router = APIRouter(prefix="/stories")
 
@@ -121,92 +124,151 @@ async def export_story(
     )
 
 
-class ImportedBody(DeploymentMutationResponse):
-    """An imported story: its new id, the bundle's source story and revision, and the rows
-    written per table."""
+class ImportStartedBody(DeploymentMutationResponse):
+    """An accepted import (#250): its job, the new story (``importing`` until the job ends)
+    and its status."""
 
+    job_id: str
     story_id: str
-    source_story_id: str
-    exported_revision: int
-    counts: dict[str, int]
-    operation_id: str | None = Field(
-        default=None,
-        description="#705: the story's `import` operation (its `turn_report.imported_from`: "
-        "the source story, the exported revision, the format version and the bundle's "
-        "SHA-256).",
-    )
-    warnings: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="#705: what a bundle of a newer format MINOR carried that this deployment "
-        "ignored (`unknown_member`, `unknown_fields`), or `media_not_imported`.",
-    )
+    status: str
 
     @classmethod
-    def of(cls, found: Imported) -> ImportedBody:
+    def of(cls, found: ImportStarted) -> ImportStartedBody:
         return cls(
+            job_id=found.job_id,
             story_id=found.story_id,
-            source_story_id=found.source_story_id,
-            exported_revision=found.exported_revision,
-            counts=found.counts,
+            status=found.status,
             config_revision=found.config_revision,
-            operation_id=found.operation_id,
-            warnings=list(found.warnings),
         )
 
 
-MAX_COMPRESSED_BYTES = 256 * 1024 * 1024
+class ImportImpactBody(DeploymentMutationResponse):
+    """#251: an import whose impact report warns, without ``ignore_warnings``: nothing was
+    created."""
+
+    applied: bool = False
+    impact: ImpactReport
+
+    @classmethod
+    def of(cls, found: ImportImpact) -> ImportImpactBody:
+        return cls(applied=False, impact=found.impact, config_revision=found.config_revision)
 
 
-async def _archive(request: Request) -> bytes:
-    body = bytearray()
-    async for piece in request.stream():
-        body += piece
-        if len(body) > MAX_COMPRESSED_BYTES:
-            raise BundleTooLarge(
-                "the bundle is too large",
-                {"limit": "bundle_max_bytes", "value": MAX_COMPRESSED_BYTES},
-            )
-    return bytes(body)
+def _metadata(raw: bytes) -> ImportMetadata:
+    """The ``metadata`` part (422 ``validation_error`` at ``body.metadata.<field>``)."""
+    try:
+        return ImportMetadata.model_validate_json(raw or b"{}")
+    except ValidationError as exc:
+        errors = exc.errors()
+        where = ".".join(str(p) for p in errors[0]["loc"]) if errors else ""
+        raise InvalidRequest(
+            "the import's metadata is invalid",
+            {"field": "body.metadata" + (f".{where}" if where else "")},
+        ) from exc
+
+
+IMPORT_DESCRIPTION = (
+    "FR-STORE-7, FR-ADMIN-4 (#250, #251): a `multipart/form-data` body: part `metadata` "
+    "(JSON: `owner`, `name`, `content_rating_id`, `engine_profile_id`, `upgrade_mode`, "
+    "`ignore_warnings`), then part `file`, the archive `GET /admin/stories/exports/{job_id}/"
+    "bundle` gives. Checked up front, before anything is created: the upload's size "
+    "(`bundle_max_uncompressed_bytes`), the manifest (the archive's first member), the format "
+    "(`1.x`) and the rating (the one named, else the one whose name matches the bundle's: "
+    "422 `rating_required` when none does); an impact report for the profile that warns, "
+    "without `ignore_warnings`, is answered 200 `{applied: false, impact}` and nothing is "
+    "created. Then 202: the story exists, `status: importing` (every route of it is 409 "
+    "`story_importing` until its import ends), and a background job reads the archive under "
+    "the limits (`bundle_max_entries`, `bundle_max_entry_bytes`, counted while it "
+    "decompresses), checks every member against the manifest and its schema, inserts the rows "
+    "with every id remapped, applies this deployment's erasure ledger, checks the whole active "
+    "history against the rating's guardrails, parks every unsettled external effect "
+    "(`imported_unsettled`), attaches the profile (a backfill when it gains data-producing "
+    "capability, unless `upgrade_mode: forward_only`) and rebuilds the projections. Poll "
+    "`GET /admin/stories/imports/{job_id}`. A refusal at any stage leaves no story. 413 "
+    "`bundle_too_large`; 422 `corrupt_bundle` (`details.reason`), "
+    "`unsupported_format_version`, `rating_required`, `validation_error`."
+)
 
 
 @router.post(
     "/import",
-    status_code=http_status.HTTP_201_CREATED,
-    response_model=ImportedBody,
+    status_code=http_status.HTTP_202_ACCEPTED,
+    response_model=ImportStartedBody,
     operation_id="import_story",
     summary="Import a story bundle",
-    description=(
-        "FR-STORE-7, FR-ADMIN-4 (#250): the raw request body is a bundle, the gzip-compressed "
-        "archive `GET /admin/stories/exports/{job_id}/bundle` gives. It is read under limits, "
-        "checked against its manifest (format `1.x`, every member's SHA-256), every id it owns "
-        "remapped, every line checked against its schema (`components.schemas` "
-        "`StoryBundle*`) and every event payload against its type, the members in the export's "
-        "order, and written as a new story in one transaction, owned by `owner` (default: "
-        "the caller) under `engine_profile_id` (default: its bundle profile when this "
-        "deployment has it, else the default profile); projections and the subject index are "
-        "rebuilt, its media written as new assets of the owner, its revision the exported one "
-        "plus one (an `import` operation records `imported_from`), and the embed job queued. "
-        "201 with the new story. 413 `bundle_too_large`; 422 `corrupt_bundle` "
-        "(`details.reason`) or `unsupported_format_version`. A refusal writes nothing."
-    ),
+    description=IMPORT_DESCRIPTION,
+    responses={
+        http_status.HTTP_200_OK: {
+            "model": ImportImpactBody,
+            "description": "#251: the impact report warns; nothing was created.",
+        }
+    },
     openapi_extra={
         "requestBody": {
             "required": True,
             "content": {
-                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["metadata", "file"],
+                        "properties": {
+                            "metadata": {
+                                "type": "string",
+                                "description": "The `ImportMetadata` JSON document.",
+                            },
+                            "file": {"type": "string", "format": "binary"},
+                        },
+                    },
+                    "encoding": {"metadata": {"contentType": "application/json"}},
+                }
             },
         }
     },
 )
 async def import_story(
-    response: Response,
-    ctx: ContextDep,
-    engine: EngineDep,
-    choices: Annotated[ImportRequest, Depends()],
-    data: Annotated[bytes, Depends(_archive)],
-) -> ImportedBody:
-    found = await engine.import_story(ctx, data, choices)
-    return answered(ImportedBody.of(found), ctx, response, replayed=found.replayed)
+    request: Request, response: Response, ctx: ContextDep, engine: EngineDep
+) -> JSONResponse:
+    from epistrel.core.config_changes import read_section
+    from epistrel.core.settings_schema import RetentionSettings
+
+    cap = (await read_section(engine.db, RetentionSettings)).bundle_max_uncompressed_bytes
+    form = await read_import(request, cap=cap)
+    found = await engine.import_story(ctx, form.data, _metadata(form.metadata))
+    if isinstance(found, ImportImpact):
+        shown_impact = answered(ImportImpactBody.of(found), ctx, response, replayed=found.replayed)
+        return JSONResponse(
+            shown_impact.model_dump(mode="json"),
+            status_code=http_status.HTTP_200_OK,
+            headers=dict(response.headers),
+        )
+    shown = answered(ImportStartedBody.of(found), ctx, response, replayed=found.replayed)
+    return JSONResponse(
+        shown.model_dump(mode="json"),
+        status_code=http_status.HTTP_202_ACCEPTED,
+        headers={**dict(response.headers), "Location": found.status_url},
+    )
+
+
+ImportJobId = Annotated[str, Path(pattern=ULID_PATTERN, description="The import's id.")]
+
+
+@router.get(
+    "/imports/{job_id}",
+    response_model=ImportJob,
+    operation_id="import_status",
+    summary="Read a story import",
+    description=(
+        "An import's state (#250): `status` (`queued`, `running`, `ready`, `refused`, "
+        "`failed`), the story (`null` once a refusal deleted it), the `stage` it is at "
+        "(`reading`, `inserting`, `erasure`, `guardrails`, `outbox`, `profile`, `rebuilding`, "
+        "`embedding`, `cleaning`) with its `progress`, and, once it ended, its `error` "
+        "(`{code, message, details}`: `corrupt_bundle`, `bundle_too_large`, "
+        "`unsupported_format_version`, `rating_check_failed`, `erased_subject_referenced`, "
+        "`import_failed`) and `report` (`errors[]`, `warnings[]`, counts). 404 `job_not_found`."
+    ),
+)
+async def import_status(job_id: ImportJobId, ctx: ContextDep, engine: EngineDep) -> ImportJob:
+    return await engine.import_status(ctx, job_id)
 
 
 __all__ = ["router"]

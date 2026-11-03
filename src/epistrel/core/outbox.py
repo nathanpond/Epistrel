@@ -94,6 +94,7 @@ from epistrel.core.tables.outbox import (
     CONFLICT,
     DUPLICATE,
     FAILED,
+    IMPORTED_UNSETTLED,
     INTENDED,
     UNKNOWN,
     VIA_DISPATCHER,
@@ -133,6 +134,7 @@ Reason = Literal[
     "late_success_after_expiry",
     "outcome_conflict",
     "reservation_expired",
+    "imported_unsettled",
 ]
 
 
@@ -385,9 +387,13 @@ async def origin_active(conn: AsyncConnection, operation_id: str) -> bool:
 
 
 async def story_blocked(conn: AsyncConnection, story_id: str) -> bool:
-    """Whether the erasure reconciler holds the story (#125): its rows are not claimed."""
+    """Whether the erasure reconciler holds the story (#125), or (#250) it is being imported:
+    its rows are not claimed."""
     status = await conn.scalar(select(stories.c.status).where(stories.c.id == story_id))
-    return str(getattr(status, "value", status)) == StoryStatus.BLOCKED_BY_ERASURE.value
+    return str(getattr(status, "value", status)) in (
+        StoryStatus.BLOCKED_BY_ERASURE.value,
+        StoryStatus.IMPORTING.value,
+    )
 
 
 async def cancel(conn: AsyncConnection, outbox_id: str) -> None:
@@ -984,19 +990,25 @@ def _listed() -> Any:
     """The rows the status lists, executable rows only: unconfirmed (``intended`` with an
     active origin, or ``claimed``), ``failed``, ``unknown``, every row with an open mark
     (#211: ``reconciliation_required``, ``cancelled_on_reactivation``, and later reasons) and
-    (#217) a confirmed row whose settlement left the active timeline (``_unsettled``)."""
+    (#217) a confirmed row whose settlement left the active timeline (``_unsettled``); and (#251)
+    an imported row parked ``imported_unsettled`` while its mark is open."""
     o = external_effect_outbox.c
     active = exists().where(
         operations.c.operation_id == o.operation_id, active_operation(operations)
     )
-    return and_(
-        o.executable.is_(True),
-        or_(
-            and_(o.status == INTENDED, active),
-            o.status.in_((CLAIMED, FAILED, UNKNOWN)),
-            _open_mark(),
-            _unsettled(),
+    return or_(
+        and_(
+            o.executable.is_(True),
+            or_(
+                and_(o.status == INTENDED, active),
+                o.status.in_((CLAIMED, FAILED, UNKNOWN)),
+                _open_mark(),
+                _unsettled(),
+            ),
         ),
+        # #251: an imported row parked with no terminal outcome (never executable), listed
+        # until the author resolves it.
+        and_(o.status == IMPORTED_UNSETTLED, _open_mark()),
     )
 
 
@@ -1131,7 +1143,8 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
             else:
                 since = row.claimed_at if status == CLAIMED and row.claimed_at else row.created_at
         checked = None
-        if found_mark is not None and found_mark.detail:
+        if found_mark is not None and found_mark.detail and found_mark.reason != IMPORTED_UNSETTLED:
+            # #251: an imported row's mark names its source row, no re-verification.
             checked = Reverification.model_validate(found_mark.detail)
         if row.erased_at is not None:
             # #211: an erasure redacted the row (or abandoned its dispatch): ids only.

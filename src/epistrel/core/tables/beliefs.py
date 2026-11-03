@@ -78,6 +78,7 @@ from sqlalchemy import (
     NUMERIC,
     TIMESTAMP,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     ForeignKey,
@@ -86,6 +87,7 @@ from sqlalchemy import (
     SmallInteger,
     Table,
     Text,
+    false,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, INT8RANGE, JSONB
@@ -355,6 +357,8 @@ belief_transitions = Table(
     Column("outcome", Text, nullable=True),
     Column("prior_belief_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("prior", JSONB(none_as_null=True), nullable=True),
+    # #228, #709 (migration 0130): a backfill's transition, from presence the text names.
+    Column("inferred", Boolean, nullable=False, server_default=false()),
     *position_group("position", nullable=False),
     Column("tx_from", TIMESTAMP(timezone=True), nullable=False),
     Column("tx_to", TIMESTAMP(timezone=True), nullable=True),

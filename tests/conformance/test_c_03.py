@@ -244,7 +244,7 @@ from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
-from epistrel.core.seeds.ratings import EVERYONE_ID, EXPLICIT_ID
+from epistrel.core.seeds.ratings import DEFAULT_RATING_ID, EVERYONE_ID, EXPLICIT_ID
 from epistrel.core.states.api import StateDefineRequest, StateSetRequest
 from epistrel.core.states.proposals import StateProposalApproveRequest
 from epistrel.core.stories import (
@@ -1804,12 +1804,28 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/admin/stories/exports/{export}/bundle"),
             lambda e, ids: _bundle(e.open_export_bundle(CTX, ids["export"])),
         ),
-        # #250: a minimal bundle (a story with no history) imported as a new story (201).
+        # #250: a minimal bundle (a story with no history) imported as a new story: 202 with
+        # its job; then the import's state (its job not yet run: queued).
         Step(
             "import_story",
-            lambda ids: Rest("POST", "/admin/stories/import", content=IMPORT_BUNDLE),
+            lambda ids: Rest(
+                "POST",
+                "/admin/stories/import",
+                files=files(
+                    IMPORT_BUNDLE,
+                    IMPORT_METADATA,
+                    content_type="application/gzip",
+                    filename="story.epistrel.tgz",
+                ),
+            ),
             lambda e, ids: _imported(e),
-            status=lambda body: 201,
+            _keep("import", "job_id"),
+            status=lambda body: 202,
+        ),
+        Step(
+            "import_status",
+            lambda ids: Rest("GET", "/admin/stories/imports/{import}"),
+            lambda e, ids: _dumped(e.import_status(CTX, ids["import"])),
         ),
         Step(
             "list_prune_runs",
@@ -3830,11 +3846,17 @@ def _import_bundle() -> bytes:
 IMPORT_BUNDLE = _import_bundle()
 
 
-async def _imported(engine: Engine) -> dict[str, Any]:
-    from epistrel.api.routes.admin.bundles import ImportedBody
-    from epistrel.core.bundles.importing import ImportRequest
+IMPORT_METADATA = {"content_rating_id": DEFAULT_RATING_ID}
+"""#250: the minimal bundle names no rating, so the request does."""
 
-    return dump(ImportedBody.of(await engine.import_story(CTX, IMPORT_BUNDLE, ImportRequest())))
+
+async def _imported(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.bundles import ImportStartedBody
+    from epistrel.core.bundles.import_job import ImportMetadata, ImportStarted
+
+    found = await engine.import_story(CTX, IMPORT_BUNDLE, ImportMetadata(**IMPORT_METADATA))
+    assert isinstance(found, ImportStarted)
+    return dump(ImportStartedBody.of(found))
 
 
 async def _export_started(call: Awaitable[Any]) -> dict[str, Any]:

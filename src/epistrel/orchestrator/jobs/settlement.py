@@ -1199,14 +1199,24 @@ class Resolved:
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
 
 
+IMPORTED_UNSETTLED = "imported_unsettled"
+"""#251: an imported outbox row parked with no terminal outcome; the resolve action settles
+its listing (the row itself is never dispatched)."""
+
+
 async def _listed_request(conn: AsyncConnection, story_id: str, request_id: str) -> list[str]:
-    """The reasons consumer-applied effect ``request_id`` is listed under (404 ``no_listing``
-    when it is not listed: an outbox row, an unknown id or a resolved one)."""
+    """The reasons consumer-applied effect ``request_id`` is listed under, or (#251) the
+    ``imported_unsettled`` mark of a parked imported outbox row of that id (404 ``no_listing``
+    when it is not listed: another outbox row, an unknown id or a resolved one)."""
     listed: list[str] = [
         listing.reason
         for listing in await core_outbox.consumer_listings(conn, story_id)
         if listing.request_id == request_id
     ]
+    if not listed and IMPORTED_UNSETTLED in await core_outbox.open_marks(
+        conn, story_id, request_id
+    ):
+        listed = [IMPORTED_UNSETTLED]
     if not listed:
         raise NoListing(
             f"the story lists no consumer-applied effect {request_id} to resolve",
@@ -1239,7 +1249,13 @@ async def resolve_listing(
     async def step(conn: AsyncConnection) -> None:
         # Still listed under the story lock (a concurrent resolve answers 404).
         await _listed_request(conn, story_id, request_id)
-        await core_outbox.resolve(conn, story_id, request_id, request.resolution, request=True)
+        if reasons == [IMPORTED_UNSETTLED]:
+            # #251: a parked imported row's mark; the row stays parked, never dispatched.
+            await core_outbox.resolve(
+                conn, story_id, request_id, request.resolution, reasons=[IMPORTED_UNSETTLED]
+            )
+        else:
+            await core_outbox.resolve(conn, story_id, request_id, request.resolution, request=True)
         if "reservation_expired" in reasons:
             await core_outbox.mark(
                 conn,

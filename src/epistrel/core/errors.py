@@ -1875,6 +1875,30 @@ class UnsupportedFormatVersion(EpistrelError):
     http_status = 422
 
 
+class StoryImporting(EpistrelError):
+    """The story is being imported (#250, FR-STORE-7): every read and write of it is refused,
+    with no side effect, until its import job ends. ``details``: ``story_id``, ``job_id``,
+    ``stage`` and ``progress {done, total}``."""
+
+    code = "story_importing"
+    http_status = 409
+
+
+class RatingRequired(EpistrelError):
+    """An import names no rating, and none of this deployment's matches the bundle's (#250):
+    ``details``: ``bundle_rating_name`` (and ``candidates`` when several match)."""
+
+    code = "rating_required"
+    http_status = 422
+
+
+class ImportNotFound(EpistrelError):
+    """No story import of that id (#250)."""
+
+    code = "job_not_found"
+    http_status = 404
+
+
 class CheckpointNotFound(EpistrelError):
     """No committed checkpoint is at that turn, slot or variant (#222)."""
 

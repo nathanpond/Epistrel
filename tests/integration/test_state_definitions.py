@@ -8,13 +8,20 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import config_dependencies, states
 from epistrel.core.enums import OperationKind, StateChangeSource, StateChangeStatus
-from epistrel.core.errors import InvalidRequest, StateConstraintViolation, StateNotFound
+from epistrel.core.errors import (
+    InvalidRequest,
+    StateConstraintViolation,
+    StateNotFound,
+    StoryArchived,
+)
 from epistrel.core.membership import Position
 from epistrel.core.states import model
+from epistrel.core.world_clock import service as clock_service
 from tests import canon_support as c
 from tests import state_support as ss
 from tests.event_support import rows
@@ -186,3 +193,49 @@ async def test_value_of_positions(engine: AsyncEngine, states_delivered: None) -
     with pytest.raises(InvalidRequest):
         await ss.change(engine, story, ss.delta("debt", 1))
     assert await ss.stored_values(engine, story) == await ss.folded_values(engine, story)
+
+
+async def _set_status(engine: AsyncEngine, story: str, status: str) -> None:
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE stories SET status = :t WHERE id = :s"), {"s": story, "t": status}
+        )
+
+
+async def test_a_paused_story_takes_definition_and_clock_writes(
+    engine: AsyncEngine, states_delivered: None
+) -> None:
+    """#626: a State definition PATCH and ``PATCH /clock`` are configuration writes, so a story
+    paused for a check takes them like its other configuration writes (``core/pause.py``): the
+    configuration revision moves and the timeline revision does not (a pause refuses only
+    truth-changing calls). Complement asserted: an archived story refuses both with 409
+    ``story_archived`` and writes nothing."""
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    await ss.set_level(engine, story, "on")
+    await ss.define_all(engine, story, ss.gold())
+    config0, timeline0 = await _revisions(engine, story)
+
+    await _set_status(engine, story, "paused")
+    try:
+        await _update(engine, story, "gold", {"unit": "cr"})
+        moved = await clock_service.update_clock(
+            engine, story, {"mode": "manual"}, principal=c.PRINCIPAL
+        )
+    finally:
+        await _set_status(engine, story, "active")
+    assert moved.changed
+    assert await _revisions(engine, story) == (config0 + 2, timeline0)
+
+    await _set_status(engine, story, "archived")
+    try:
+        with pytest.raises(StoryArchived):
+            await _update(engine, story, "gold", {"unit": "gp"})
+        with pytest.raises(StoryArchived):
+            await clock_service.update_clock(
+                engine, story, {"mode": "paced"}, principal=c.PRINCIPAL
+            )
+    finally:
+        await _set_status(engine, story, "active")
+    assert await _revisions(engine, story) == (config0 + 2, timeline0)

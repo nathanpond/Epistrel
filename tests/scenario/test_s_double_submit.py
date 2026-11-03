@@ -26,6 +26,7 @@ from tests.idempotency_support import (
     keyed,
     message_of,
     turn_statuses,
+    waits_on_original,
 )
 from tests.respond_support import PLAYER, body, generation_calls, new_story, respond_client
 
@@ -38,7 +39,9 @@ def stub_settings(pg_url: str) -> Settings:
 
 
 @pytest.mark.part("M2", "FR-CONC-6; NFR-REL-4")
-async def test_s_double_submit(stub_settings: Settings, engine: AsyncEngine, pg_url: str) -> None:
+async def test_s_double_submit(
+    stub_settings: Settings, engine: AsyncEngine, pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """(a) after completion, (b) during generation, (c) after a crash between generation and
     commit: one committed turn per key and the same message on every answer; a different
     payload under the key is 409. Complement: a different key is a new turn."""
@@ -67,12 +70,13 @@ async def test_s_double_submit(stub_settings: Settings, engine: AsyncEngine, pg_
         story, ids = await new_story(client)
         request = body(ids[PLAYER], "Hold the door.")
         latch = stub.hold("generation")
-        original = asyncio.create_task(keyed(client, story, request, "dbl-b"))
-        await latch.entered.wait()
-        duplicate = asyncio.create_task(keyed(client, story, request, "dbl-b"))
-        await asyncio.sleep(0.4)
-        assert not duplicate.done()
-        latch.release()
+        with waits_on_original(monkeypatch) as waits:
+            original = asyncio.create_task(keyed(client, story, request, "dbl-b"))
+            await latch.entered.wait()
+            duplicate = asyncio.create_task(keyed(client, story, request, "dbl-b"))
+            await waits.arrived("dbl-b")  # #609: the duplicate is waiting on the original
+            assert not duplicate.done()
+            latch.release()
         answered, waited = await original, await duplicate
         assert (answered.status_code, waited.status_code) == (200, 200), waited.text
         assert waited.headers.get(REPLAY) == "true"

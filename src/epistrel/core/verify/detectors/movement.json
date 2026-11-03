@@ -1,7 +1,7 @@
 {
   "category": "movement",
   "language": "en",
-  "description": "Movement language: located_at(subject, place) for the nearest place mentioned after the verb. A departure from that place (a source marker before it, 'out of the orchard', 'away from the orchard', or a departure verb taking it as its object, 'left the orchard') makes it not located_at the place; a departure verb toward a destination marker ('fled to the barn') is located_at it, and with any other word before the place it asserts nothing. With no place, a departure verb or a departure cue after the verb ('on her way out') makes it not located_at the subject's current placement (it left); any other placeless movement is noise. A negated departure asserts nothing.",
+  "description": "Movement language: located_at(subject, place) for the nearest place mentioned after the verb. A departure from that place (a source marker before it, 'out of the orchard', 'away from the orchard', or a departure verb taking it as its object, 'left the orchard') makes it not located_at the place; a departure verb toward a destination marker ('fled to the barn') is located_at it, and with any other word before the place it asserts nothing. With no place, a departure verb or a departure cue after the verb ('on her way out') makes it not located_at the subject's current placement (it left); any other placeless movement is noise. A negated departure asserts nothing. #633: 'left' after a number or a quantifier, in a clause that holds or has something ('Cal has 500 gold left', 'there's nothing left'), means remaining: no movement.",
   "predicate": "located_at",
   "roles": {
     "subject": "before",
@@ -30,6 +30,34 @@
     "out of",
     "off of"
   ],
+  "remaining": {
+    "holders": [
+      "has",
+      "have",
+      "had",
+      "having",
+      "there",
+      "there's",
+      "is",
+      "are",
+      "was",
+      "were",
+      "'s",
+      "got"
+    ],
+    "quantifiers": [
+      "nothing",
+      "none",
+      "no",
+      "little",
+      "much",
+      "few",
+      "plenty",
+      "enough",
+      "some",
+      "anything"
+    ]
+  },
   "lemmas": [
     {
       "lemma": "go",
@@ -263,7 +291,10 @@
         "left",
         "leaving"
       ],
-      "departure": true
+      "departure": true,
+      "remaining_forms": [
+        "left"
+      ]
     },
     {
       "lemma": "exit",

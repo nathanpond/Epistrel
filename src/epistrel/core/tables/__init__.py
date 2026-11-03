@@ -7,7 +7,14 @@ naming them (``tests/integration/test_feedback.py``) sees each one (FR-FB-2).
 """
 
 from epistrel.core.tables import feedback as _feedback  # noqa: F401 - registers the tables
+from epistrel.core.tables.amendments import amendment_parts, amendments
 from epistrel.core.tables.audit_log import audit_log
+from epistrel.core.tables.backfill import (
+    backfill_chunks,
+    backfill_conflicts,
+    capability_coverage,
+    story_backfills,
+)
 from epistrel.core.tables.base import NAMING_CONVENTION, metadata
 from epistrel.core.tables.beliefs import (
     belief_state,
@@ -15,18 +22,26 @@ from epistrel.core.tables.beliefs import (
     beliefs,
     nested_belief_state,
 )
+from epistrel.core.tables.bundles import bundle_jobs
 from epistrel.core.tables.catalog import (
     character_catalog,
     character_versions,
     scenario_catalog,
     scenario_versions,
 )
+from epistrel.core.tables.certifications import (
+    certification_runs,
+    model_reported_versions,
+    profile_certifications,
+)
 from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.detection import extraction_shadow
+from epistrel.core.tables.directives import directives
 from epistrel.core.tables.divergences import divergences
+from epistrel.core.tables.edges import dependency_edges
 from epistrel.core.tables.erasure import erasure_ledger
 from epistrel.core.tables.escalations import (
     escalations,
@@ -79,6 +94,7 @@ from epistrel.core.tables.providers import external_providers, story_provider_bi
 from epistrel.core.tables.rating_checks import guardrail_check_results, rating_check_jobs
 from epistrel.core.tables.ratings import content_rating_versions, content_ratings
 from epistrel.core.tables.readset import proposition_changes
+from epistrel.core.tables.rewrites import rewrite_questions, rewrite_sessions
 from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import (
     external_values,
@@ -94,10 +110,17 @@ from epistrel.core.tables.utterances import utterances
 
 __all__ = [
     "NAMING_CONVENTION",
+    "amendment_parts",
+    "amendments",
     "audit_log",
+    "backfill_chunks",
+    "backfill_conflicts",
     "belief_state",
     "belief_transitions",
     "beliefs",
+    "bundle_jobs",
+    "capability_coverage",
+    "certification_runs",
     "character_catalog",
     "character_snapshots",
     "character_versions",
@@ -107,7 +130,9 @@ __all__ = [
     "config_changes",
     "content_rating_versions",
     "content_ratings",
+    "dependency_edges",
     "deployment_state",
+    "directives",
     "divergences",
     "engine_profile_versions",
     "engine_profiles",
@@ -134,6 +159,7 @@ __all__ = [
     "memories",
     "metadata",
     "model_config",
+    "model_reported_versions",
     "nested_belief_state",
     "offboarding_jobs",
     "operations",
@@ -145,6 +171,7 @@ __all__ = [
     "policies",
     "predicate_proposals",
     "predicates",
+    "profile_certifications",
     "promissory_ledger",
     "proposition_changes",
     "propositions",
@@ -152,6 +179,8 @@ __all__ = [
     "reconciliation_marks",
     "recurring_tasks",
     "relationships",
+    "rewrite_questions",
+    "rewrite_sessions",
     "scenario_catalog",
     "scenario_versions",
     "scene_state",
@@ -161,6 +190,7 @@ __all__ = [
     "state_proposals",
     "state_values",
     "stories",
+    "story_backfills",
     "story_heads",
     "story_profile_overrides",
     "story_provider_bindings",

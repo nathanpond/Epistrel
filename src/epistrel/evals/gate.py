@@ -73,6 +73,8 @@ class Verdict(StrEnum):
     report_only = "report_only"
     error = "error"
     """A suite the harness could not run (a malformed case, a harness exception)."""
+    not_applicable = "not_applicable"
+    """A suite the run's preset does not enable (NFR-QUAL-11; #227): never executed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +230,9 @@ def strict(metric: Metric, per_seed: Sequence[float]) -> Verdict:
 def gate(verdicts: Iterable[Verdict]) -> Verdict:
     """The verdict of a suite or a run from its metrics' (or suites') verdicts."""
     seen = set(verdicts)
+    if seen == {Verdict.not_applicable}:
+        return Verdict.not_applicable
+    seen.discard(Verdict.not_applicable)
     if seen & {Verdict.failed, Verdict.error}:
         return Verdict.failed
     if Verdict.insufficient_evidence in seen:

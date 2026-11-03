@@ -30,7 +30,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Response
 from fastapi import status as http_status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
@@ -39,6 +39,7 @@ from epistrel.api.routes.respond import RequiredEffectBody, RespondResponse
 from epistrel.api.routes.story_rating import CHECK_PATH, RatingCheckStartedBody
 from epistrel.core.enums import Membership
 from epistrel.core.fork import Forked, ForkRequest
+from epistrel.core.prune import PruneImpact, PruneOutcome, PruneRequest, PruneResult, PruneRuns
 from epistrel.core.ratings.change import RatingCheckStarted
 from epistrel.core.timeline import (
     Swapped,
@@ -48,7 +49,9 @@ from epistrel.core.timeline import (
     Untruncation,
 )
 from epistrel.core.variants import Chain, ChainRef, SwapRequest
+from epistrel.orchestrator.commit.directed import DirectedPending
 from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RegenerateResult
+from epistrel.orchestrator.rewrite.api import RewriteSession
 
 router = APIRouter(prefix="/stories", tags=["timeline"])
 
@@ -206,6 +209,26 @@ class RegeneratedBody(RespondResponse):
     def of_regenerate(cls, result: RegenerateResult) -> RegeneratedBody:
         return cls(
             **RespondResponse.of(result).model_dump(), previous_variant=result.previous_variant
+        )
+
+
+class DirectedPendingBody(MutationResponse):
+    """#241: a directed regeneration held for its ``directed_resolution`` session (202): the
+    session (its preview lists the conflicting lines and records), the variant still active,
+    and any warnings (``binding_unmatched``)."""
+
+    disposition: str = "awaiting_rewrite"
+    rewrite_session: RewriteSession
+    previous_variant: dict[str, int]
+    warnings: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def of(cls, found: DirectedPending) -> DirectedPendingBody:
+        return cls(
+            rewrite_session=found.rewrite_session,
+            previous_variant=found.previous_variant,
+            warnings=found.warnings,
+            timeline_revision=found.timeline_revision,
         )
 
 
@@ -379,6 +402,69 @@ async def untruncate(
     return answered(answer, ctx, response, replayed=done.replayed)
 
 
+class PruneBody(MutationResponse):
+    """A pruning's two stages (#247): ``applied``, the ``impact`` report, and the ``result``
+    once applied (``null`` with the report alone)."""
+
+    applied: bool
+    impact: PruneImpact
+    result: PruneResult | None
+
+    @classmethod
+    def of(cls, found: PruneOutcome) -> PruneBody:
+        return cls(
+            applied=found.applied,
+            impact=found.impact,
+            result=found.result,
+            timeline_revision=found.timeline_revision,
+        )
+
+
+@router.post(
+    "/{story_id}/prune",
+    response_model=PruneBody,
+    operation_id="prune_story",
+    summary="Prune a story's discarded tails and dormant continuations",
+    description=(
+        "Manual pruning (FR-STORE-19,32; #247), in two stages. Without `ignore_warnings` "
+        "(`ignoreWarnings`) the answer is the `impact` report and nothing changes: the "
+        "discarded tails and dormant continuations that would be deleted (`targets` names "
+        "some by their ids; omitted, every eligible one), the untruncates, swaps and "
+        "promotions that would stop being possible, what is retained, the targets `excluded` "
+        "(`amendment_dependency`: an amendment names one of their records, `in_flight`) and a "
+        "`promote_before_pruning` suggestion per dormant continuation. With it one control "
+        "operation deletes the targets' records (their `operations` rows stay as markers with "
+        "membership `pruned`; audit and amendment events, redacted events, outbox rows and "
+        "outcomes, the erasure ledger and feedback rows, marked `pruned`, are kept), writes a "
+        "`pruning` marker and moves the revision by one: a turn in flight rebases. Afterwards "
+        "an untruncate or swap that needs a pruned record is 409 `pruned`. 422 "
+        "`prune_target_unknown`, `prune_target_ineligible`; 409 `story_archived`, "
+        "`story_paused`."
+    ),
+)
+async def prune_story(
+    story_id: StoryId, body: PruneRequest, response: Response, ctx: ContextDep, engine: EngineDep
+) -> PruneBody:
+    found = await engine.prune_story(ctx, story_id, body)
+    return answered(PruneBody.of(found), ctx, response, replayed=found.replayed)
+
+
+@router.get(
+    "/{story_id}/prune-runs",
+    response_model=PruneRuns,
+    operation_id="list_prune_runs",
+    summary="List a story's prunings",
+    description=(
+        "Every pruning of the story, manual (`POST /stories/{id}/prune`) or by its "
+        "`prune_policy` (#248's daily run), newest first: its id, `trigger` (`manual` | "
+        "`policy`), the policy it ran under, the principal, when, the revision after it and its "
+        "impact report (identifiers and counts only)."
+    ),
+)
+async def list_prune_runs(story_id: StoryId, ctx: ContextDep, engine: EngineDep) -> PruneRuns:
+    return await engine.list_prune_runs(ctx, story_id)
+
+
 @router.post(
     "/{story_id}/swap",
     response_model=SwappedBody,
@@ -413,6 +499,13 @@ async def swap(
 @router.post(
     "/{story_id}/regenerate",
     response_model=RegeneratedBody,
+    responses={
+        http_status.HTTP_202_ACCEPTED: {
+            "model": DirectedPendingBody,
+            "description": "A directed regeneration whose binding conflicts with recorded "
+            "history, held for its `directed_resolution` session (#241).",
+        }
+    },
     operation_id="regenerate",
     summary="Regenerate the latest reply",
     description=(
@@ -425,7 +518,14 @@ async def swap(
         "player turn, a narration turn) is 422 `nothing_to_regenerate`. The answer is the "
         "respond body plus `previous_variant`. While another turn of the story runs the "
         "regenerate is 423 `story_busy` (it is never queued); queued turns fail with "
-        "`timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional."
+        "`timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional. "
+        "`directive` (#241, FR-COMMIT-12: structured stories; a Lite story is 409 `module_off`) "
+        'directs the outcome ("the knocker is George"): it is checked by the input policies, '
+        "and a binding of an open question is reconciled with recorded history before anything "
+        "commits. Without a conflict the regeneration commits steered to the author's decision. "
+        "With one, the author's choice proceeds as a `directed_resolution` amendment under "
+        "`resolution_mode` and `preview`: 202 with the session, nothing committed until it is "
+        "applied (the regenerated reply and the amendment then commit together)."
     ),
 )
 async def regenerate(
@@ -434,8 +534,15 @@ async def regenerate(
     ctx: ContextDep,
     engine: EngineDep,
     body: Annotated[RegenerateRequest | None, Body()] = None,
-) -> RegeneratedBody:
+) -> RegeneratedBody | JSONResponse:
     result = await engine.regenerate(ctx, story_id, body or RegenerateRequest())
+    if isinstance(result, DirectedPending):
+        held = answered(DirectedPendingBody.of(result), ctx, response, replayed=result.replayed)
+        return JSONResponse(
+            held.model_dump(mode="json"),
+            status_code=http_status.HTTP_202_ACCEPTED,
+            headers=dict(response.headers),
+        )
     return answered(RegeneratedBody.of_regenerate(result), ctx, response, replayed=result.replayed)
 
 

@@ -21,10 +21,11 @@ takes its class from there records it. Leaving the block restores the schema's o
 fixture profile of every M4 integration test: a story pinned to its version 1 (``version: 1`` on
 ``PUT /stories/{id}/engine-profile``, ``engine_profile_version: 1`` on a scenario creation, or
 ``engine_profile_version_pin = 1``) runs under every module M4 delivers. ``structured()`` names
-the same row at its latest version, ``Structured`` (#203: version 3, every M5 and M6 module on;
-#181's version 2, ``STRUCTURED_M5_VERSION``, has the M5 modules without the clock and States).
-Migrations ``0047``, ``0080`` and ``0104`` seed it in every database at head, the test databases
-included.
+the same row at its latest version: since #227 the Full preset (version 4, ``FULL_SETTINGS``;
+version 3, ``STRUCTURED_SETTINGS``, has the same modules; #181's version 2,
+``STRUCTURED_M5_VERSION``, has the M5 modules without the clock and States). ``full()``,
+``standard()`` and ``max_()`` name the M7 presets. Migrations ``0047``, ``0080``, ``0104`` and
+``0110`` seed them in every database at head, the test databases included.
 
 Nothing in ``Engine`` or ``create_app`` imports this module, and Core never does.
 """
@@ -37,6 +38,9 @@ from contextlib import contextmanager
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.schema import DependencyRule
 from epistrel.core.seeds.profiles import (
+    FULL_PRESET_ID,
+    MAX_PRESET_ID,
+    STANDARD_PRESET_ID,
     STRUCTURED_M4_PROFILE_ID,
     STRUCTURED_M4_VERSION,
     STRUCTURED_PROFILE_ID,
@@ -100,12 +104,31 @@ def structured() -> str:
     return STRUCTURED_PROFILE_ID
 
 
+def full() -> str:
+    """The id of the Full preset (#227): the seeded ``Structured`` row converted in place, so
+    the same id as ``structured()``."""
+    return FULL_PRESET_ID
+
+
+def standard() -> str:
+    """The id of the Standard preset (#227)."""
+    return STANDARD_PRESET_ID
+
+
+def max_() -> str:
+    """The id of the Max preset (#227)."""
+    return MAX_PRESET_ID
+
+
 __all__ = [
     "STRUCTURED_M4_VERSION",
     "TEST_CLAUSE",
     "data_producing",
     "extra_rule",
+    "full",
     "interpretive",
+    "max_",
+    "standard",
     "structured",
     "structured_m4",
     "structured_m4_settings",

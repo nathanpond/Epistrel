@@ -83,6 +83,11 @@ an owner-only named slot no call is charged to: nothing else may spend it (not t
 an escalation, a re-hold or any optional work). It is either released once the turn's last
 render has finished without a synchronous effect, or drawn (``draw``) into the outcome step's
 own slots when the turn is staged."""
+STOP = "stop"
+"""#636: a due-event stop's regeneration (``time_stop``: its render, extraction and output
+checks), an owner-only named slot a structured attempt reserves from the remainder when stops
+are on and an open event could be crossed; only the repair ladder's ``time_stop`` draws it, and
+an unused one is released once the renders and their repairs are done."""
 SALIENCE = "salience"
 DIRECTOR_ORDER = "director_order"
 """#174: the director's ordering of a sequential turn's primaries (one ``generation`` call)."""
@@ -103,6 +108,9 @@ TESTIMONY = "testimony"
 """#162: a salient witness's ``belief_adjudication`` call."""
 REPAIR = "repair"
 POLISH = "polish"
+INPUT_ACTS = "input_acts"
+"""#523: the extraction call that reads what the player's ``do`` shows its witnesses (optional,
+after testimony: unfunded, the act is observed with what detection found in it)."""
 OPTIONAL_PRIORITY = (
     SALIENCE,
     DIRECTOR_ORDER,
@@ -111,6 +119,7 @@ OPTIONAL_PRIORITY = (
     ENTAILMENT,
     FOLLOW_UP,
     TESTIMONY,
+    INPUT_ACTS,
     REPAIR,
     POLISH,
 )
@@ -506,6 +515,7 @@ __all__ = [
     "FOLLOW_UP",
     "GUARDRAIL_INPUT",
     "GUARDRAIL_OUTPUT",
+    "INPUT_ACTS",
     "MAX_CALLS_PER_TURN",
     "MIN_CALLS_PER_TURN",
     "MIN_DEADLINE_S",

@@ -78,6 +78,7 @@ def test_interaction_verbs_find_the_other_party() -> None:
         "a note that morning",
         "the salt again",
         "the towel later on",
+        "the salt later on",
         "the morning paper",
         "the evening edition",
         "a minute timer",
@@ -90,6 +91,23 @@ def test_interaction_verbs_find_the_other_party() -> None:
         "an hour later",
         "on the way home",
         "at dawn",
+        # #585: these modeled the jogger after #583.
+        "a little later",
+        "a bit later",
+        "a little earlier",
+        "an hour or so later",
+        "a moment or two later",
+        "a day or two later",
+        "an instant later",
+        "a beat later",
+        "a fortnight later",
+        # ...and these never did.
+        "a short while later",
+        "a little while later",
+        "a week later",
+        "a few seconds later",
+        "an hour ago",
+        "some time later",
     ):
         assert _objects("do", f"Jenni passes the jogger {after}.") == [], after
     passing = BeatView("do", 2, "Jenni passes the jogger a second time.", JENNI)
@@ -116,6 +134,9 @@ def test_a_say_interacts_by_vocative_only() -> None:
     assert _objects("say", "I will wave to the neighbor later.") == []
     assert modeling.is_interaction("say", "Thanks, driver.")
     assert not modeling.is_interaction("say", "The driver was late.")
+    # #624: a form of address names nobody new: it addresses the one spoken to.
+    for line in ("You have 500 gold, friend.", "Cheers, mate!", "Yes, sir.", "Sit down, dear."):
+        assert _objects("say", line) == [], line
     assert modeling.is_interaction("do", "She hands him the parcel.")
 
 

@@ -232,6 +232,39 @@ def stated_minutes(text: str) -> int | None:
     return count * unit
 
 
+DURATIVE: Final = (
+    *INVITATIONS,
+    "rest of",
+    "the whole",
+    "all night",
+    "all day",
+    "for hours",
+    "hours pass",
+    "through the night",
+    "fall asleep",
+    "falls asleep",
+    "fell asleep",
+    "finish",
+    "finishes",
+    "finished",
+)
+"""#632: words with which a reply narrates an activity as elapsing ("they watch the rest of the
+movie", "we talk until the diner closes"), beside its activity."""
+
+
+@cache
+def _durative() -> re.Pattern[str]:
+    return _words(DURATIVE)
+
+
+def narrates_elapsing(text: str) -> bool:
+    """#632 (the Lite detector): whether ``text`` narrates elapsed time: it states an amount,
+    or names an activity together with a word that has it elapse. Deterministic, no model."""
+    if stated_minutes(text) is not None:
+        return True
+    return bool(activities(text)) and bool(_durative().search(text))
+
+
 def established(texts: Iterable[str]) -> frozenset[str]:
     """The activities the scene established: those named by ``texts`` (its earlier ``do``
     beats, the player's input among them, and its ``fluent`` facts rendered as text)."""
@@ -334,6 +367,7 @@ __all__ = [
     "ACTIVITY_LEXICON",
     "AUTHOR",
     "DISABLED",
+    "DURATIVE",
     "INVITATIONS",
     "MIN_CONFIDENCE",
     "MODEL",
@@ -352,5 +386,6 @@ __all__ = [
     "authorize",
     "classify_skip",
     "established",
+    "narrates_elapsing",
     "stated_minutes",
 ]

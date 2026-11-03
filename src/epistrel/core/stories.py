@@ -122,13 +122,22 @@ from epistrel.core.settings_schema import (
 from epistrel.core.states import define_state, validate_state_tie_break
 from epistrel.core.states.model import world_clock_definition
 from epistrel.core.tables import (
+    amendment_parts,
+    amendments,
     audit_log,
+    backfill_chunks,
+    backfill_conflicts,
+    bundle_jobs,
+    capability_coverage,
+    certification_runs,
     character_snapshots,
     characters,
     client_events,
     config_changes,
     content_ratings,
+    dependency_edges,
     deployment_state,
+    directives,
     engine_profiles,
     events,
     genesis_deferred,
@@ -142,8 +151,11 @@ from epistrel.core.tables import (
     policies,
     rating_check_jobs,
     relationships,
+    rewrite_questions,
+    rewrite_sessions,
     scene_state,
     stories,
+    story_backfills,
     story_heads,
     story_profile_overrides,
     story_texts,
@@ -208,6 +220,9 @@ STORY_NAME_MAX = 200
 SAFE_FALLBACK_MAX = 500
 
 STORY_TABLES: tuple[Table, ...] = (
+    # Dependency edges (#220): ids only, no foreign key; first here, so a fork maps and copies
+    # them after every record they name (``fork.ROW_FILTERS``).
+    dependency_edges,
     subject_references,
     feedback_history,
     message_feedback,
@@ -288,6 +303,24 @@ STORY_TABLES: tuple[Table, ...] = (
     predicates,
     entity_aliases,
     entities,
+    # Amendments (#221): the parts before the amendments they belong to; neither is derived
+    # (FR-STORE-21), and a fork copies the amendments of its copied operations.
+    amendment_parts,
+    amendments,
+    # Rewrite sessions (#223): the questions before their sessions, after the amendments that
+    # name a session; neither is copied by a fork.
+    rewrite_questions,
+    rewrite_sessions,
+    # Directives (#226): an author's directions; not copied by a fork.
+    directives,
+    # Story exports (#249): the jobs and their archives; not copied by a fork.
+    bundle_jobs,
+    # Backfill (#228): the chunks and conflicts before the backfill they belong to, and the
+    # coverage (no foreign key); a fork copies only the coverage, clipped to its fork point.
+    backfill_chunks,
+    backfill_conflicts,
+    story_backfills,
+    capability_coverage,
     operations,
 )
 """Every table with a ``story_id`` column, in the order deletion empties them (events before the
@@ -316,6 +349,13 @@ STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
         escalations.name,
         state_proposals.name,
         reconciliation_marks.name,
+        backfill_chunks.name,
+        backfill_conflicts.name,
+        story_backfills.name,
+        rewrite_questions.name,
+        rewrite_sessions.name,
+        directives.name,
+        bundle_jobs.name,
     }
 )
 """Story-scoped tables a fork (#67) leaves behind: work in progress (``jobs``, the turn queue,
@@ -338,9 +378,10 @@ other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 
-STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name})
+STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name, certification_runs.name})
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
-column instead of removing the row. ``audit_log`` (#56) is the one member."""
+column instead of removing the row. ``audit_log`` (#56) and ``certification_runs`` (#233: a
+story's certification run is a deployment record)."""
 
 STORY_DELETE_SETTING = "epistrel.allow_story_delete"
 """The transaction setting the ``events`` trigger reads to let one story's events be deleted."""
@@ -638,6 +679,9 @@ class StoryView:
     scenario: ScenarioOrigin | None = None
     """The scenario version the story was created from (#119); ``None`` for a blank story.
     Read by ``get_story`` only."""
+    amendment_checks_pending: dict[str, Any] | None = None
+    """#239: ``{count, session_id}`` of the open support-check questions about the story's
+    amendments (``None`` when none); filled by ``Engine.get_story``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -718,6 +762,10 @@ async def create_story_from(
         )
         # The story's ids at its providers (#204), checked against each manifest.
         await providers.bind_all(conn, story_id, spec.provider_bindings)
+        # #228: which capabilities' data the story has from its first turn.
+        from epistrel.core.backfill import coverage
+
+        await coverage.seed_story(conn, story_id)
 
     async def insert_cast(conn: AsyncConnection) -> None:
         # One multi-row VALUES (not executemany) so ``age_recorded_at`` can be the commit's
@@ -1612,6 +1660,11 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
     )
     removed[config_changes.name] = result.rowcount
     await audit.detach_story(conn, story_id)  # kept, no longer naming the story
+    await conn.execute(  # #233: a certification run outlives the story it certified
+        update(certification_runs)
+        .where(certification_runs.c.story_id == story_id)
+        .values(story_id=None)
+    )
     result = await conn.execute(delete(stories).where(stories.c.id == story_id))
     removed[stories.name] = result.rowcount
     return removed

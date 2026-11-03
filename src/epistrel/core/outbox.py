@@ -138,9 +138,140 @@ Reason = Literal[
 
 # -- intent --------------------------------------------------------------------------------------
 
-INTERNAL_EFFECT_KEYS = frozenset({"authorized"})
+INTERNAL_EFFECT_KEYS = frozenset({"authorized", "pinned"})
 """#214: the effect document's keys kept for the Engine alone (what #188 authorized at intent,
-re-checked at claim), never listed nor sent to a provider."""
+re-checked at claim; #657: ``pinned``, the value the turn read, its response's ``old_value``),
+never listed nor sent to a provider."""
+
+
+REQUEST_PENDING = "pending"
+"""#656: a requested effect no terminal outcome has answered yet."""
+
+
+def request_status(outbox_status: str | None, answered: str | None) -> str:
+    """#656: a requested effect's current status as a response or history lists it: an outbox
+    row's settled status (``confirmed``, ``failed``, ``cancelled``), else a consumer-applied
+    request's terminal outcome (``answered``), else ``pending``."""
+    if outbox_status in (CONFIRMED, FAILED, CANCELLED):
+        return str(outbox_status)
+    if answered in TERMINAL:
+        return str(answered)
+    return REQUEST_PENDING
+
+
+async def request_statuses(
+    conn: AsyncConnection, story_id: str, effect_ids: Sequence[str]
+) -> dict[str, str]:
+    """#656: the current status (``request_status``) of each of ``effect_ids``, an outbox row's
+    id or a consumer-applied request's ``effect_id``."""
+    if not effect_ids:
+        return {}
+    o, x = external_effect_outbox.c, outbox_outcomes.c
+    rows = {
+        str(r.id): str(r.status)
+        for r in await conn.execute(
+            select(o.id, o.status).where(o.story_id == story_id, o.id.in_(list(effect_ids)))
+        )
+    }
+    answers: dict[str, str] = {}
+    for r in await conn.execute(
+        select(x.effect_id, x.kind)
+        .where(
+            x.story_id == story_id,
+            x.effect_id.in_(list(effect_ids)),
+            x.kind.in_(sorted(TERMINAL)),
+        )
+        .order_by(x.received_at, x.id)
+    ):
+        answers.setdefault(str(r.effect_id), str(r.kind))
+    return {e: request_status(rows.get(e), answers.get(e)) for e in effect_ids}
+
+
+async def request_effects(
+    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str], *, omniscient: bool
+) -> dict[str, list[dict[str, Any]]]:
+    """#656: the changes each of ``operation_ids`` requested and Epistrel does not apply, as
+    history lists them beside the committed ones (FR-RESP-7, as the response does): its outbox
+    rows (#210, ``outbox_id``) and its ``requested_effect`` events (#209), each ``owner:
+    external`` with its ``effect_id`` and current status (``request_status``); ``old_value`` the
+    value the turn read when the row kept it (#657), else ``null``. A ``hidden`` State's for
+    ``omniscient`` only."""
+    from epistrel.core.enums import StateVisibility
+    from epistrel.core.tables.events import events
+    from epistrel.core.tables.states import state_definitions
+
+    if not operation_ids:
+        return {}
+    d = state_definitions.c
+    hidden = {
+        str(r.name)
+        for r in await conn.execute(
+            select(d.name).where(
+                d.story_id == story_id, d.visibility != StateVisibility.PLAYER_VISIBLE
+            )
+        )
+    }
+    found: dict[str, list[tuple[tuple[int, int], dict[str, Any]]]] = {}
+
+    def add(operation_id: str, at: tuple[int, int], row: dict[str, Any]) -> None:
+        if omniscient or row["state"] not in hidden:
+            found.setdefault(operation_id, []).append((at, row))
+
+    def entry(effect: Mapping[str, Any], scope_key: Any, effect_id: str) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "state": str(effect.get("state") or ""),
+            "scope_key": None if scope_key is None else str(scope_key),
+            "old_value": effect.get("pinned"),
+            "new_value": None,
+            "reason": str(effect.get("reason") or ""),
+            "source": "turn",
+            "contingency": "unconditional",
+            "status": REQUEST_PENDING,
+            "owner": "external",
+            "effect_id": effect_id,
+        }
+        if effect.get("kind") == "time_advance":
+            row["kind"] = "time_advance"
+            row["minutes"] = effect.get("minutes")
+        elif effect.get("delta") is not None:
+            row["delta"] = effect.get("delta")
+        else:
+            row["value"] = effect.get("value")
+        return row
+
+    o = external_effect_outbox.c
+    for r in await conn.execute(
+        select(o.id, o.operation_id, o.scope_key, o.effect, o.beat, o.step).where(
+            o.story_id == story_id,
+            o.operation_id.in_(list(operation_ids)),
+            o.executable.is_(True),
+        )
+    ):
+        row = entry(dict(r.effect or {}), r.scope_key, str(r.id))
+        row["outbox_id"] = str(r.id)
+        add(str(r.operation_id), (int(r.beat), int(r.step)), row)
+    e = events.c
+    for asked in await conn.execute(
+        select(e.operation_id, e.payload, e.beat, e.step).where(
+            e.story_id == story_id,
+            e.operation_id.in_(list(operation_ids)),
+            e.type == "requested_effect",
+        )
+    ):
+        payload = dict(asked.payload or {})
+        add(
+            str(asked.operation_id),
+            (int(asked.beat or 0), int(asked.step or 0)),
+            entry(payload, payload.get("scope_key"), str(payload.get("effect_id"))),
+        )
+    ids = [row["effect_id"] for rows in found.values() for _, row in rows]
+    statuses = await request_statuses(conn, story_id, ids)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for operation_id, rows in found.items():
+        for _, row in sorted(rows, key=lambda pair: pair[0]):
+            row["status"] = statuses.get(row["effect_id"], REQUEST_PENDING)
+            out.setdefault(operation_id, []).append(row)
+    return out
 
 
 def public_effect(effect: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -346,32 +477,39 @@ async def cancel_all(conn: AsyncConnection, outbox_ids: Sequence[str]) -> int:
 async def mark(
     conn: AsyncConnection,
     story_id: str,
-    outbox_id: str,
+    outbox_id: str | None,
     reason: str,
     *,
     detail: Mapping[str, Any] | None = None,
+    request_id: str | None = None,
+    resolved_by: str | None = None,
 ) -> bool:
-    """List row ``outbox_id`` with ``reason`` until an explicit action resolves it (#218):
-    a ``reconciliation_marks`` row, unless one is open for that row and reason already.
-    ``detail``: codes only (#218: a late success's re-verification). Answers whether it wrote
-    one."""
+    """List row ``outbox_id`` (#661: or consumer-applied effect ``request_id``) with ``reason``
+    until an explicit action resolves it (#218): a ``reconciliation_marks`` row, unless one is
+    open for that row and reason already. ``detail``: codes only (#218: a late success's
+    re-verification); ``resolved_by``: written already resolved (#661: the resolve action on a
+    derived listing). Answers whether it wrote one."""
     if reason not in REASONS:
         raise ValueError(f"{reason!r} is not a reconciliation reason")
+    if (outbox_id is None) == (request_id is None):
+        raise ValueError("a mark names an outbox row or a request, not both")
     m = reconciliation_marks.c
-    written = await conn.scalar(
-        pg_insert(reconciliation_marks)
-        .values(
-            id=new_ulid(),
-            story_id=story_id,
-            outbox_id=outbox_id,
-            reason=reason,
-            detail=None if detail is None else dict(detail),
-        )
-        .on_conflict_do_nothing(
-            index_elements=[m.outbox_id, m.reason], index_where=m.resolved_by.is_(None)
-        )
-        .returning(m.id)
+    key = m.outbox_id if outbox_id is not None else m.request_id
+    where: Any = m.resolved_by.is_(None)
+    if request_id is not None:
+        where = where & m.request_id.is_not(None)
+    insert_ = pg_insert(reconciliation_marks).values(
+        id=new_ulid(),
+        story_id=story_id,
+        outbox_id=outbox_id,
+        request_id=request_id,
+        reason=reason,
+        detail=None if detail is None else dict(detail),
+        resolved_by=resolved_by,
     )
+    if resolved_by is None:
+        insert_ = insert_.on_conflict_do_nothing(index_elements=[key, m.reason], index_where=where)
+    written = await conn.scalar(insert_.returning(m.id))
     return written is not None
 
 
@@ -381,14 +519,18 @@ RESOLVED_COMPENSATED = "compensated"
 effect the author chose was confirmed."""
 
 
-async def open_marks(conn: AsyncConnection, story_id: str, outbox_id: str) -> list[str]:
-    """#218: the reasons row ``outbox_id`` is marked with and no action resolved yet."""
+async def open_marks(
+    conn: AsyncConnection, story_id: str, outbox_id: str, *, request: bool = False
+) -> list[str]:
+    """#218: the reasons row ``outbox_id`` (#661: ``request``: the consumer-applied effect of
+    that id) is marked with and no action resolved yet."""
     m = reconciliation_marks.c
+    key = m.request_id if request else m.outbox_id
     return [
         str(r)
         for r in await conn.scalars(
             select(m.reason)
-            .where(m.story_id == story_id, m.outbox_id == outbox_id, m.resolved_by.is_(None))
+            .where(m.story_id == story_id, key == outbox_id, m.resolved_by.is_(None))
             .order_by(m.since, m.id)
         )
     ]
@@ -401,13 +543,15 @@ async def resolve(
     by: str,
     *,
     reasons: Sequence[str] | None = None,
+    request: bool = False,
 ) -> int:
-    """#218: resolve row ``outbox_id``'s open marks (of ``reasons``; ``None``: all) with the
-    explicit action ``by``; answers how many it resolved. The row leaves the listing unless its
-    status lists it."""
+    """#218: resolve row ``outbox_id``'s open marks (of ``reasons``; ``None``: all; #661:
+    ``request``: the consumer-applied effect's) with the explicit action ``by``; answers how
+    many it resolved. The row leaves the listing unless its status lists it."""
     m = reconciliation_marks.c
+    key = m.request_id if request else m.outbox_id
     query = update(reconciliation_marks).where(
-        m.story_id == story_id, m.outbox_id == outbox_id, m.resolved_by.is_(None)
+        m.story_id == story_id, key == outbox_id, m.resolved_by.is_(None)
     )
     if reasons is not None:
         query = query.where(m.reason.in_(list(reasons)))
@@ -728,11 +872,16 @@ class Listing(BaseModel):
     effect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)
     is listed as ``{outbox_id, provider, status}`` with its reason and since only. #218: a
     ``late_success_after_expiry`` carries its re-verification; a compensated row's status is
-    ``compensated`` and ``compensated_by`` names the compensating row."""
+    ``compensated`` and ``compensated_by`` names the compensating row. #661: a consumer-applied
+    effect (no outbox row) is listed by its ``request_id``, its status the latest answer's kind
+    (``requested`` before any)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    outbox_id: str
+    outbox_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    request_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    """#661: a consumer-applied effect's id (its ``requested_effect``'s ``effect_id``) instead
+    of an outbox row's."""
     provider: str
     value: str | None = Field(default=None, exclude_if=lambda v: v is None)
     status: str
@@ -781,6 +930,17 @@ class CompensateRequest(BaseModel):
     )
 
     effect: CompensatingEffect
+
+
+class ResolveRequest(BaseModel):
+    """#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed
+    consumer-applied effect is resolved (``applied_elsewhere`` or ``abandoned``)."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [{"resolution": "applied_elsewhere"}]}
+    )
+
+    resolution: Literal["applied_elsewhere", "abandoned"]
 
 
 class Reconciliation(BaseModel):
@@ -1005,7 +1165,316 @@ async def listings_in(conn: AsyncConnection, story_id: str) -> Reconciliation:
                 compensated_by=compensation,
             )
         )
+    listed += await consumer_listings(conn, story_id)
     return Reconciliation(listings=listed)
+
+
+class OutboxPosition(BaseModel):
+    """#679: where an outbox row's effect was declared."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn: int | None
+    variant: int | None
+    slot_k: int
+    beat: int
+    step: int
+
+
+class OutboxRow(BaseModel):
+    """#679: one outbox row as the story's outbox list shows it (any status): its id (the
+    provider idempotency key), provider and value, status (``compensated`` once a compensating
+    row answers it), the effect, where it was declared and on which timeline membership,
+    whether a story-owned change waits on it (``contingent``), the row it compensates, the
+    send attempts and times, and the latest recorded outcome. A row an erasure redacted
+    carries its ids, provider, status and position only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outbox_id: str
+    provider: str
+    value: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    status: str
+    effect: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
+    position: OutboxPosition
+    membership: str
+    contingent: bool = False
+    compensates: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    compensated_by: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    attempts: int = 0
+    created_at: datetime
+    claimed_at: datetime | None = None
+    sent_at: datetime | None = None
+    outcome: OutcomeView | None = Field(default=None, exclude_if=lambda v: v is None)
+    redacted: bool = False
+
+
+class OutboxPage(BaseModel):
+    """#679: a page of a story's outbox rows by id, and ``next_after`` (``None``: the last)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rows: list[OutboxRow]
+    next_after: str | None
+
+
+OUTBOX_LIMIT_MAX = 200
+OUTBOX_LIMIT_DEFAULT = 50
+
+
+async def outbox_page(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    status: str | None = None,
+    provider: str | None = None,
+    after_id: str | None = None,
+    limit: int = OUTBOX_LIMIT_DEFAULT,
+) -> OutboxPage:
+    """#679: ``story_id``'s outbox rows by id after ``after_id`` (every status; ``status`` and
+    ``provider`` filter them; a ``compensated`` filter matches rows a compensation answers),
+    ``limit`` at most ``OUTBOX_LIMIT_MAX``. 404 for an unknown story."""
+    from epistrel.core.tables.states import state_changes as changes
+
+    limit = max(1, min(OUTBOX_LIMIT_MAX, limit))
+    o = external_effect_outbox.c
+    async with db.connect() as conn:
+        await _require_story(conn, story_id)
+        where: list[Any] = [o.story_id == story_id]
+        if provider is not None:
+            where.append(o.provider_name == provider)
+        if after_id is not None:
+            where.append(o.id > after_id)
+        if status is not None and status != COMPENSATED:
+            where.append(o.status == status)
+        query = select(external_effect_outbox).where(*where).order_by(o.id)
+        rows = list(await conn.execute(query))
+        ids = [str(r.id) for r in rows]
+        compensations = await compensations_of(conn, story_id, ids)
+        if status == COMPENSATED:
+            rows = [r for r in rows if str(r.id) in compensations]
+        elif status is not None:
+            rows = [r for r in rows if str(r.id) not in compensations]
+        more = len(rows) > limit
+        rows = rows[:limit]
+        ids = [str(r.id) for r in rows]
+        latest: dict[str, Any] = {}
+        if ids:
+            x = outbox_outcomes.c
+            for answer in await conn.execute(
+                select(x.outbox_id, x.kind, x.received_via, x.received_at)
+                .where(x.story_id == story_id, x.outbox_id.in_(ids))
+                .order_by(x.received_at, x.id)
+            ):
+                latest[str(answer.outbox_id)] = answer
+        contingent: set[str] = set()
+        if ids:
+            c = changes.c
+            for (waiting,) in await conn.execute(
+                select(func.unnest(c.prerequisite_effect_ids)).where(
+                    c.story_id == story_id, c.prerequisite_effect_ids.overlap(ids)
+                )
+            ):
+                contingent.add(str(waiting))
+    found: list[OutboxRow] = []
+    for row in rows:
+        key = str(row.id)
+        position = OutboxPosition(
+            turn=row.narrative_turn,
+            variant=row.turn_variant,
+            slot_k=int(row.slot_k),
+            beat=int(row.beat),
+            step=int(row.step),
+        )
+        compensated_by = compensations.get(key)
+        row_status = COMPENSATED if compensated_by is not None else str(row.status)
+        if row.erased_at is not None:
+            found.append(
+                OutboxRow(
+                    outbox_id=key,
+                    provider=str(row.provider_name),
+                    status=row_status,
+                    position=position,
+                    membership=str(getattr(row.membership, "value", row.membership)),
+                    created_at=row.created_at,
+                    redacted=True,
+                )
+            )
+            continue
+        heard = latest.get(key)
+        found.append(
+            OutboxRow(
+                outbox_id=key,
+                provider=str(row.provider_name),
+                value=str(row.value_name),
+                status=row_status,
+                effect=public_effect(row.effect),
+                position=position,
+                membership=str(getattr(row.membership, "value", row.membership)),
+                contingent=key in contingent,
+                compensates=None if row.compensates is None else str(row.compensates),
+                compensated_by=compensated_by,
+                attempts=int(row.attempts),
+                created_at=row.created_at,
+                claimed_at=row.claimed_at,
+                sent_at=row.sent_at,
+                outcome=None
+                if heard is None
+                else OutcomeView(
+                    kind=str(heard.kind),
+                    received_via=str(heard.received_via),
+                    received_at=heard.received_at,
+                ),
+            )
+        )
+    return OutboxPage(rows=found, next_after=found[-1].outbox_id if more and found else None)
+
+
+REQUESTED = "requested"
+"""#661: a consumer-applied effect's listed status before any answer was recorded."""
+
+
+async def expired_requests(conn: AsyncConnection, story_id: str) -> set[str]:
+    """#661 (#216's rule for a consumer-applied effect): the request ids an active State hold
+    waited on that was released with none of its prerequisites failed (``reservation_expired``),
+    leaving out outbox rows and requests that rule already listed once (a mark of that reason,
+    open or resolved)."""
+    c = state_changes.c
+    released = [
+        [str(p) for p in r.prerequisite_effect_ids]
+        for r in await conn.execute(
+            select(c.prerequisite_effect_ids).where(
+                c.story_id == story_id,
+                c.status == "released",
+                active_only(state_changes),
+                func.cardinality(c.prerequisite_effect_ids) > 0,
+            )
+        )
+    ]
+    named = {p for r in released for p in r}
+    if not named:
+        return set()
+    o, x, m = external_effect_outbox.c, outbox_outcomes.c, reconciliation_marks.c
+    outbox_ids = set(await conn.scalars(select(o.id).where(o.id.in_(sorted(named)))))
+    failed = set(
+        await conn.scalars(
+            select(x.effect_id).where(
+                x.story_id == story_id, x.effect_id.in_(sorted(named)), x.kind == FAILED
+            )
+        )
+    ) | set(
+        await conn.scalars(
+            select(o.id).where(o.story_id == story_id, o.id.in_(sorted(named)), o.status == FAILED)
+        )
+    )
+    listed_once = set(
+        await conn.scalars(
+            select(m.request_id).where(
+                m.story_id == story_id,
+                m.request_id.in_(sorted(named)),
+                m.reason == "reservation_expired",
+            )
+        )
+    )
+    return {
+        p
+        for r in released
+        if not failed & set(r)
+        for p in r
+        if p not in outbox_ids and p not in listed_once
+    }
+
+
+async def consumer_listings(conn: AsyncConnection, story_id: str) -> list[Listing]:
+    """#661: the consumer-applied effects the story lists, oldest first: each one with an open
+    mark (``confirmed_discarded_origin``, ``settlement_conflict``,
+    ``late_success_after_expiry``) under its reason, and each a released hold waited on
+    (``reservation_expired``, derived), with its request (the ``requested_effect`` payload),
+    the State's provider and the latest answer recorded for it."""
+    from epistrel.core.tables.events import events
+    from epistrel.core.tables.states import state_definitions
+
+    m = reconciliation_marks.c
+    marks: dict[str, Any] = {}
+    for r in await conn.execute(
+        select(m.request_id, m.reason, m.since, m.detail)
+        .where(m.story_id == story_id, m.request_id.is_not(None), m.resolved_by.is_(None))
+        .order_by(m.since, m.id)
+    ):
+        marks[str(r.request_id)] = r
+    expired = await expired_requests(conn, story_id)
+    ids = sorted(set(marks) | expired)
+    if not ids:
+        return []
+    e = events.c
+    requested = {
+        str(r.payload["effect_id"]): r
+        for r in await conn.execute(
+            select(e.payload, e.valid_time).where(
+                e.story_id == story_id,
+                e.type == "requested_effect",
+                e.payload["effect_id"].astext.in_(ids),
+            )
+        )
+    }
+    x = outbox_outcomes.c
+    latest: dict[str, Any] = {}
+    for answered in await conn.execute(
+        select(x.effect_id, x.kind, x.received_via, x.received_at)
+        .where(x.story_id == story_id, x.effect_id.in_(ids))
+        .order_by(x.received_at, x.id)
+    ):
+        latest[str(answered.effect_id)] = answered
+    d = state_definitions.c
+    providers = {
+        str(r.name): r
+        for r in await conn.execute(
+            select(d.name, d.provider_id, d.external_value_name).where(d.story_id == story_id)
+        )
+    }
+    found: list[tuple[datetime, Listing]] = []
+    for request_id in ids:
+        event = requested.get(request_id)
+        if event is None:
+            continue
+        payload = dict(event.payload or {})
+        state = str(payload.get("state") or "")
+        owner = providers.get(state)
+        answer = latest.get(request_id)
+        status = str(answer.kind) if answer is not None and answer.kind in TERMINAL else REQUESTED
+        mark_ = marks.get(request_id)
+        reason: Reason = mark_.reason if mark_ is not None else "reservation_expired"
+        since = mark_.since if mark_ is not None else event.valid_time
+        effect = {
+            k: v
+            for k, v in payload.items()
+            if k in ("kind", "state", "scope_key", "delta", "value", "minutes", "reason")
+        }
+        found.append(
+            (
+                since,
+                Listing(
+                    request_id=request_id,
+                    provider=str(owner.provider_id) if owner and owner.provider_id else "consumer",
+                    value=None if owner is None else (owner.external_value_name or state),
+                    status=status,
+                    reason=reason,
+                    since=since,
+                    effect=effect,
+                    outcome=None
+                    if answer is None
+                    else OutcomeView(
+                        kind=str(answer.kind),
+                        received_via=str(answer.received_via),
+                        received_at=answer.received_at,
+                    ),
+                    reverification=None
+                    if mark_ is None or not mark_.detail
+                    else Reverification.model_validate(mark_.detail),
+                ),
+            )
+        )
+    return [listing for _, listing in sorted(found, key=lambda f: (f[0], f[1].request_id or ""))]
 
 
 async def listings(db: AsyncEngine | AsyncConnection, story_id: str) -> Reconciliation:
@@ -1027,7 +1496,7 @@ async def count(conn: AsyncConnection, story_id: str) -> int | None:
         .select_from(external_effect_outbox)
         .where(o.story_id == story_id, _listed())
     )
-    return int(found or 0)
+    return int(found or 0) + len(await consumer_listings(conn, story_id))
 
 
 async def summary(db: AsyncEngine | AsyncConnection, story_id: str) -> dict[str, int] | None:
@@ -1044,7 +1513,11 @@ async def summary(db: AsyncEngine | AsyncConnection, story_id: str) -> dict[str,
 __all__ = [
     "COMPENSATED",
     "INTERNAL_EFFECT_KEYS",
+    "OUTBOX_LIMIT_DEFAULT",
+    "OUTBOX_LIMIT_MAX",
     "REASONS",
+    "REQUESTED",
+    "REQUEST_PENDING",
     "RESOLVED_COMPENSATED",
     "RESOLVED_SETTLE_NOW",
     "TERMINAL",
@@ -1052,20 +1525,26 @@ __all__ = [
     "CompensatingEffect",
     "Intended",
     "Listing",
+    "OutboxPage",
+    "OutboxPosition",
+    "OutboxRow",
     "OutcomeRecord",
     "OutcomeView",
     "Reason",
     "Reconciliation",
     "Recorded",
+    "ResolveRequest",
     "Reverification",
     "abandon",
     "cancel",
     "cancel_all",
     "claimable",
     "compensations_of",
+    "consumer_listings",
     "count",
     "erased_since",
     "expired_holds",
+    "expired_requests",
     "listings",
     "listings_in",
     "locked",
@@ -1077,11 +1556,15 @@ __all__ = [
     "mark_unknown",
     "open_marks",
     "origin_active",
+    "outbox_page",
     "outcome",
     "public_effect",
     "record_effect_outcome",
     "record_outcome",
     "release",
+    "request_effects",
+    "request_status",
+    "request_statuses",
     "resolve",
     "settled_kind",
     "settled_outcome",

@@ -175,6 +175,11 @@ def commitments_of(
         )
 
     for r in requests:
+        if r.anchors_clock:
+            # #627: an anchoring statement is no canon write but the clock's refinement: a
+            # later one is verified against the anchor an earlier one narrowed (the same-turn
+            # overlay), and ``commit_anchor`` commits them in beat order.
+            continue
         made(r.beat, r.claim, r.claim_id, r)
     for b, c in latent:
         made(b.beat, getattr(c, "proposition", None), getattr(c, "claim_id", None), None)

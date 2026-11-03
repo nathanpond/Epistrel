@@ -69,6 +69,8 @@ from epistrel.api.routes.admin.stories import (
     RebuildQueuedResponse,
     RebuildResponse,
 )
+from epistrel.api.routes.backfill import BackfillCancelledBody, GapFillBody
+from epistrel.api.routes.backfill import ResolvedBody as ConflictResolvedBody
 from epistrel.api.routes.catalog_characters import (
     CharacterDraftBody,
     CharacterListBody,
@@ -84,7 +86,14 @@ from epistrel.api.routes.catalog_scenarios import (
     ScenarioStatusBody,
     ScenarioVersionsBody,
 )
+from epistrel.api.routes.certifications import (
+    CertificationImportedBody,
+    CertificationInvalidatedBody,
+    CertificationRunBody,
+    StoryCertificationRunBody,
+)
 from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
+from epistrel.api.routes.directives import DirectiveBody
 from epistrel.api.routes.engine_profiles import (
     ProfileBody,
     ProfileDeletedBody,
@@ -108,7 +117,7 @@ from epistrel.api.routes.media import (
     PartStoredBody,
     UploadOpenedBody,
 )
-from epistrel.api.routes.operations import OperationBody
+from epistrel.api.routes.operations import OperationBody, OperationsBody
 from epistrel.api.routes.ownership import (
     OwnerBody,
     RelationBody,
@@ -118,9 +127,15 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
-from epistrel.api.routes.reconciliation import CompensatedBody, SettledNowBody
+from epistrel.api.routes.reconciliation import (
+    CompensatedBody,
+    OutboxBody,
+    ResolvedBody,
+    SettledNowBody,
+)
 from epistrel.api.routes.respond import RespondResponse
 from epistrel.api.routes.retrieval import RetrievalBody
+from epistrel.api.routes.rewrites import AppliedBody, RewriteSessionBody
 from epistrel.api.routes.scene import EntityProfileBody, SceneBody
 from epistrel.api.routes.scheduled_events import ScheduledEventsBody, ScheduledEventWrittenBody
 from epistrel.api.routes.state_proposals import (
@@ -131,6 +146,7 @@ from epistrel.api.routes.state_proposals import (
 )
 from epistrel.api.routes.states import (
     StateDeclaredBody,
+    StateDefinitionBody,
     StateDefinitionWriteBody,
     StatesBody,
     StateViewBody,
@@ -163,6 +179,7 @@ from epistrel.api.routes.story_texts import (
 )
 from epistrel.api.routes.timeline import (
     ForkedBody,
+    PruneBody,
     RegeneratedBody,
     SwappedBody,
     TruncatedBody,
@@ -170,6 +187,9 @@ from epistrel.api.routes.timeline import (
     VariantsBody,
 )
 from epistrel.config import Settings
+from epistrel.core import outbox as core_outbox
+from epistrel.core.backfill import BackfillRequest
+from epistrel.core.backfill.conflicts import ResolveRequest as ConflictResolution
 from epistrel.core.catalog.characters import (
     CharacterCreate,
     CharacterPatch,
@@ -200,11 +220,18 @@ from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.mutation import FactRequest, QuarantineRequest, SanitizeRequest, SupersedeRequest
 from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
-from epistrel.core.outbox import CompensateRequest
+from epistrel.core.outbox import CompensateRequest, ResolveRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
+from epistrel.core.profiles.certification import InvalidateRequest
 from epistrel.core.profiles.impact import ImpactPreviewRequest
-from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
+from epistrel.core.profiles.store import (
+    ProfileCopy,
+    ProfileCreate,
+    ProfileUpdate,
+    ProfileValidate,
+    UpgradePinned,
+)
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
@@ -212,6 +239,7 @@ from epistrel.core.propositions.model import Cardinality, Interval, Proposition
 from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
 from epistrel.core.providers import BindingRequest
+from epistrel.core.prune import PruneRequest
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -233,12 +261,27 @@ from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledEventReschedule
 from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
+from epistrel.evals.certify import install
+from epistrel.orchestrator.directives import DirectiveRequest
+from epistrel.orchestrator.jobs.handlers.certification_run import CertificationRunRequest
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
-from epistrel.orchestrator.lite.schemas import CorrectRequest, RegenerateRequest, RespondRequest
+from epistrel.orchestrator.lite.schemas import (
+    CorrectRequest,
+    RegenerateRequest,
+    RegenerateResult,
+    RespondRequest,
+)
 from epistrel.orchestrator.models.config import ConfigReplacement
 from epistrel.orchestrator.policies.schemas import PolicyFields, PolicyReplacement
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
+from epistrel.orchestrator.rewrite.api import (
+    AmendmentSessionRequest,
+    AnswerRequest,
+    ApplyRequest,
+    MergeRequest,
+    RewriteRequest,
+)
 from epistrel.testing.normalize import Normalizer
 from tests.auth_support import auth_settings, bearer
 from tests.character_support import complete as complete_character
@@ -275,12 +318,13 @@ ZEROED = frozenset(
         "request_id",
         "policy_set",
         "timings",
+        "plan_hash",
     }
 )
 """Durations (#76: a turn's queue wait and first-call delay too; #141: a retrieval's stage
 timings), and hashes over ids: the
-stub's request id (of the prompt) and an operation's ``config_revisions.policy_set`` (of the
-policy ids in force)."""
+stub's request id (of the prompt), an operation's ``config_revisions.policy_set`` (of the
+policy ids in force) and a rewrite preview's ``plan_hash`` (of its record ids, #223)."""
 
 Ids = dict[str, Any]
 Rendered = tuple[int, dict[str, Any]]
@@ -453,6 +497,36 @@ async def _listed_effects(engine: Engine, ids: Ids) -> None:
     await ss.change(engine.db, story, ss.set_to("sword", 1, scope_key=seller, reason="restock"))
     ids["refunded"] = await ls.discarded(engine.db, engine, story, bank.name, payer, seller)
     ids["listed_story"], ids["payer"] = story, payer
+
+
+async def _consumer_listed(engine: Engine, ids: Ids) -> None:
+    """#661: on the listed side story, a consumer-applied payment (a ``requested_effect`` a turn
+    staged) listed ``settlement_conflict`` (``consumer_request``): no public call lists one."""
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.events.operation import Operation
+    from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
+
+    story, request_id = ids["listed_story"], new_ulid()
+    async with Operation(
+        engine.db, story_id=story, kind=OperationKind.TURN, principal="p-parity"
+    ) as op:
+        op.append("player_input", {"text": "pays"}, provenance=Provenance.PLAYER)
+        op.append(
+            REQUESTED_EFFECT,
+            RequestedEffect(
+                effect_id=request_id,
+                state="gold",
+                scope_key=ids["payer"],
+                delta=-5,
+                reason="parity",
+            ),
+            provenance=Provenance.ENGINE,
+        )
+        op.append("message_rendered", {"text": "paid"})
+        await op.commit()
+    async with engine.db.begin() as conn:
+        await core_outbox.mark(conn, story, None, "settlement_conflict", request_id=request_id)
+    ids["consumer_request"] = request_id
 
 
 def _compensation(ids: Ids) -> dict[str, Any]:
@@ -783,12 +857,43 @@ PROFILE = {
 }
 PROFILE_EDIT = {"name": "Parity profile", "settings": {"pins": {"max_pinned": 10}}}
 PROFILE_COPY = {"name": "Parity copy"}
+CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
+"""A certification run's estimate request (#233): no ``confirm``, so nothing is written."""
+_REPORT = "# Parity certification\n\nOne floor passed.\n"
+CERTIFIED = "01JC0000000000000000000C01"
+DRIFT = {"reason": "drift", "note": "the provider confirmed a silent update"}
+CERTIFICATION_RECORD: dict[str, Any] = {
+    "schema_version": 1,
+    "certification_id": CERTIFIED,
+    "fingerprint": "sha256:" + "a" * 64,
+    "floors_passed": [
+        {
+            "metric_id": "smoke.turn_completed",
+            "rule": "rate",
+            "floor": 0.95,
+            "n": 10,
+            "seeds": 2,
+            "verdict": "pass",
+            "mean": 1.0,
+            "sd": 0.0,
+        }
+    ],
+    "seed_count": 2,
+    "report_sha256": hashlib.sha256(_REPORT.encode()).hexdigest(),
+    "run_at": "2026-11-01T12:00:00+00:00",
+    "report_md": _REPORT,
+}
+"""A hand run's certification record (#233), imported on both surfaces."""
+MISSING_RUN = "01JC0000000000000000000R99"
+COMMITTED_RUN = "74606ed2b224-2026-11-01"
+"""A report committed under ``docs/evals`` (#532)."""
 PROFILE_DRY_RUN = {"settings": undelivered()}
 PROFILE_ANSWERS = [
     ("create_profile", 201),
     ("get_profile", 200),
     ("list_profiles", 200),
     ("update_profile", 200),
+    ("upgrade_pinned_stories", 200),
     ("get_profile", 200),
     ("list_profile_versions", 200),
     ("get_profile_guarantees", 200),
@@ -1076,6 +1181,16 @@ def _steps() -> list[Step]:
             lambda e, ids: _history(e, ids["story"], viewpoint="omniscient", include_audit=True),
         ),
         Step(
+            "list_outbox",
+            lambda ids: Rest("GET", f"{s}/outbox", params={"viewpoint": "omniscient"}),
+            lambda e, ids: _outbox(e, ids),
+        ),
+        Step(
+            "list_operations",
+            lambda ids: Rest("GET", f"{s}/operations", params={"kind": "turn"}),
+            lambda e, ids: _operations(e, ids),
+        ),
+        Step(
             "get_operation",
             lambda ids: Rest(
                 "GET",
@@ -1236,6 +1351,51 @@ def _steps() -> list[Step]:
             "consolidate",
             lambda ids: Rest("POST", f"/admin{s}/consolidate", {"from_turn": 1, "to_turn": 2}),
             lambda e, ids: _consolidate(e, ids["story"]),
+        ),
+        # #228: a gap fill (the Lite pipeline's coverage dropped, so its turns are a gap): the
+        # preview, the backfill started, read, and cancelled (the story resumes).
+        Step(
+            "start_backfill",
+            lambda ids: Rest("POST", f"{s}/backfill", {}),
+            lambda e, ids: _gap_fill(e.start_backfill(CTX, ids["story"], BackfillRequest())),
+            prepare=_coverage_gap,
+        ),
+        Step(
+            "start_backfill",
+            lambda ids: Rest("POST", f"{s}/backfill", {"ignore_warnings": True}),
+            lambda e, ids: _gap_fill(
+                e.start_backfill(CTX, ids["story"], BackfillRequest(ignore_warnings=True))
+            ),
+            status=lambda body: 202 if body.get("started") else 200,
+        ),
+        Step(
+            "get_backfill",
+            lambda ids: Rest("GET", f"{s}/backfill"),
+            lambda e, ids: _dumped(e.get_backfill(CTX, ids["story"])),
+        ),
+        Step(
+            "cancel_backfill",
+            lambda ids: Rest("DELETE", f"{s}/backfill"),
+            lambda e, ids: _cancelled(e.cancel_backfill(CTX, ids["story"])),
+        ),
+        # #230: a backfill waiting for one conflict (planted: no public call pauses a Lite
+        # story for conflicts): accepting the recommendation completes it.
+        Step(
+            "resolve_backfill_conflict",
+            lambda ids: Rest(
+                "POST",
+                f"{s}/backfill/conflicts/{ids['conflict']}",
+                {"accept_recommendation": True},
+            ),
+            lambda e, ids: _conflict_resolved(
+                e.resolve_backfill_conflict(
+                    CTX,
+                    ids["story"],
+                    ids["conflict"],
+                    ConflictResolution(accept_recommendation=True),
+                )
+            ),
+            prepare=_awaiting_conflict,
         ),
         Step(
             "archive_story",
@@ -1409,6 +1569,252 @@ def _steps() -> list[Step]:
                     BeliefRequest(holder=ids["fork_ada"], proposition=_knows(ids, "fork")),
                 )
             ),
+        ),
+        # #223: a history rewrite session on the structured fork: opened (its parse asks a
+        # question), read, listed, answered with the recommendation, and cancelled.
+        Step(
+            "open_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites",
+                {"instruction": REWRITE_INSTRUCTION},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.open_rewrite(
+                    CTX,
+                    ids["fork"],
+                    RewriteRequest(instruction=REWRITE_INSTRUCTION),
+                    viewpoint="omniscient",
+                )
+            ),
+            _both(_keep("rewrite", "id"), _keep("rewrite_q", "questions", 0, "id")),
+            status=lambda body: 201,
+            prepare=_script_rewrite,
+        ),
+        Step(
+            "get_rewrite",
+            lambda ids: Rest("GET", "/stories/{fork}/rewrites/{rewrite}", params=OMNISCIENT_QUERY),
+            lambda e, ids: _dumped(
+                e.get_rewrite(CTX, ids["fork"], ids["rewrite"], viewpoint="omniscient")
+            ),
+        ),
+        Step(
+            "list_rewrites",
+            lambda ids: Rest("GET", "/stories/{fork}/rewrites", params=OMNISCIENT_QUERY),
+            lambda e, ids: _dumped(e.list_rewrites(CTX, ids["fork"], viewpoint="omniscient")),
+        ),
+        Step(
+            "answer_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites/{rewrite}/answers",
+                {"answers": [{"question_id": ids["rewrite_q"], "accept_recommended": True}]},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.answer_rewrite(
+                    CTX,
+                    ids["fork"],
+                    ids["rewrite"],
+                    AnswerRequest.model_validate(
+                        {"answers": [{"question_id": ids["rewrite_q"], "accept_recommended": True}]}
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            _keep("rewrite_base", "base_revision"),
+        ),
+        # #224: the session applied as one amendment.
+        Step(
+            "apply_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites/{rewrite}/apply",
+                {"base_revision": ids["rewrite_base"]},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _applied(
+                e.apply_rewrite(
+                    CTX,
+                    ids["fork"],
+                    ids["rewrite"],
+                    ApplyRequest(base_revision=ids["rewrite_base"]),
+                    viewpoint="omniscient",
+                )
+            ),
+            _keep("amendment", "amendment_id"),
+        ),
+        # #238: the amendment read, undone and redone as checked rewrites.
+        Step(
+            "list_amendments",
+            lambda ids: Rest("GET", "/stories/{fork}/amendments", params=OMNISCIENT_QUERY),
+            lambda e, ids: _dumped(e.list_amendments(CTX, ids["fork"], viewpoint="omniscient")),
+        ),
+        Step(
+            "get_amendment",
+            lambda ids: Rest(
+                "GET", "/stories/{fork}/amendments/{amendment}", params=OMNISCIENT_QUERY
+            ),
+            lambda e, ids: _dumped(
+                e.get_amendment(CTX, ids["fork"], ids["amendment"], viewpoint="omniscient")
+            ),
+        ),
+        Step(
+            "undo_amendment",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/amendments/{amendment}/undo",
+                {"resolution_mode": "best_effort", "preview": "apply_directly"},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.undo_amendment(
+                    CTX,
+                    ids["fork"],
+                    ids["amendment"],
+                    AmendmentSessionRequest(
+                        resolution_mode="best_effort", preview="apply_directly"
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            status=lambda body: 201,
+        ),
+        Step(
+            "redo_amendment",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/amendments/{amendment}/redo",
+                {"resolution_mode": "best_effort", "preview": "apply_directly"},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.redo_amendment(
+                    CTX,
+                    ids["fork"],
+                    ids["amendment"],
+                    AmendmentSessionRequest(
+                        resolution_mode="best_effort", preview="apply_directly"
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            status=lambda body: 201,
+        ),
+        # #225: two of the fork's entities merged (best_effort, applied in the call).
+        Step(
+            "merge_entities",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/entities/merge",
+                {
+                    "entity_ids": [ids["merge_a"], ids["merge_b"]],
+                    "resolution_mode": "best_effort",
+                    "preview": "apply_directly",
+                },
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.merge_entities(
+                    CTX,
+                    ids["fork"],
+                    MergeRequest(
+                        entity_ids=[ids["merge_a"], ids["merge_b"]],
+                        resolution_mode="best_effort",
+                        preview="apply_directly",
+                    ),
+                    viewpoint="omniscient",
+                )
+            ),
+            status=lambda body: 201,
+            prepare=_merge_pair,
+        ),
+        # #226: an author's ephemeral directive on the fork (no model call: the kind is given).
+        Step(
+            "apply_directive",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/directives",
+                {"text": "Make this scene tense.", "kind": "ephemeral"},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _directed(
+                e.apply_directive(
+                    CTX,
+                    ids["fork"],
+                    DirectiveRequest(text="Make this scene tense.", kind="ephemeral"),
+                    viewpoint="omniscient",
+                )
+            ),
+        ),
+        # A second session, cancelled.
+        Step(
+            "open_rewrite",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{fork}/rewrites",
+                {"instruction": REWRITE_INSTRUCTION},
+                params=OMNISCIENT_QUERY,
+            ),
+            lambda e, ids: _rewrite(
+                e.open_rewrite(
+                    CTX,
+                    ids["fork"],
+                    RewriteRequest(instruction=REWRITE_INSTRUCTION),
+                    viewpoint="omniscient",
+                )
+            ),
+            _keep("rewrite", "id"),
+            status=lambda body: 201,
+            prepare=_script_rewrite,
+        ),
+        Step(
+            "cancel_rewrite",
+            lambda ids: Rest(
+                "POST", "/stories/{fork}/rewrites/{rewrite}/cancel", params=OMNISCIENT_QUERY
+            ),
+            lambda e, ids: _rewrite(
+                e.cancel_rewrite(CTX, ids["fork"], ids["rewrite"], viewpoint="omniscient")
+            ),
+        ),
+        # #247: pruning the main story's inactive records (its regenerated variants).
+        Step(
+            "prune_story",
+            lambda ids: Rest("POST", f"{s}/prune", {"ignore_warnings": True}),
+            lambda e, ids: _pruned(
+                e.prune_story(CTX, ids["story"], PruneRequest(ignore_warnings=True))
+            ),
+        ),
+        # #249: an export queued (202); its state; its bundle before the job ran (409).
+        Step(
+            "export_story",
+            lambda ids: Rest("POST", f"/admin{s}/export"),
+            lambda e, ids: _export_started(e.export_story(CTX, ids["story"])),
+            _keep("export", "job_id"),
+            status=lambda body: 202,
+        ),
+        Step(
+            "export_status",
+            lambda ids: Rest("GET", "/admin/stories/exports/{export}"),
+            lambda e, ids: _dumped(e.export_status(CTX, ids["export"])),
+        ),
+        Step(
+            "open_export_bundle",
+            lambda ids: Rest("GET", "/admin/stories/exports/{export}/bundle"),
+            lambda e, ids: _bundle(e.open_export_bundle(CTX, ids["export"])),
+        ),
+        # #250: a minimal bundle (a story with no history) imported as a new story (201).
+        Step(
+            "import_story",
+            lambda ids: Rest("POST", "/admin/stories/import", content=IMPORT_BUNDLE),
+            lambda e, ids: _imported(e),
+            status=lambda body: 201,
+        ),
+        Step(
+            "list_prune_runs",
+            lambda ids: Rest("GET", f"{s}/prune-runs"),
+            lambda e, ids: _dumped(e.list_prune_runs(CTX, ids["story"])),
         ),
         Step(
             "delete_story",
@@ -1609,6 +2015,15 @@ def _steps() -> list[Step]:
             lambda e, ids: _state(e.get_state(CTX, ids["story"], "gold", viewpoint="omniscient")),
         ),
         Step(
+            "get_state_definition",
+            lambda ids: Rest(
+                "GET", f"{s}/states/gold/definition", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _state_definition_read(
+                e.get_state_definition(CTX, ids["story"], "gold", viewpoint="omniscient")
+            ),
+        ),
+        Step(
             "set_state",
             lambda ids: Rest("PUT", f"{s}/states/gold", {"delta": 5, "reason": "a purse"}),
             lambda e, ids: _state_written(
@@ -1664,6 +2079,24 @@ def _steps() -> list[Step]:
                     CompensateRequest.model_validate(_compensation(ids)),
                 )
             ),
+        ),
+        # #661: the resolve-only action on a listed consumer-applied effect.
+        Step(
+            "resolve_listing",
+            lambda ids: Rest(
+                "POST",
+                "/stories/{listed_story}/reconciliation/{consumer_request}/resolve",
+                {"resolution": "applied_elsewhere"},
+            ),
+            lambda e, ids: _resolved(
+                e.resolve_listing(
+                    CTX,
+                    ids["listed_story"],
+                    ids["consumer_request"],
+                    ResolveRequest(resolution="applied_elsewhere"),
+                )
+            ),
+            prepare=_consumer_listed,
         ),
         Step(
             "approve_state_proposal",
@@ -2374,6 +2807,16 @@ def _steps() -> list[Step]:
             ),
             group=PROFILE_GROUP,
         ),
+        Step(  # #229: no story pinned to an older version: an empty report, applied
+            "upgrade_pinned_stories",
+            lambda ids: Rest(
+                "POST", "/engine-profiles/{profile}/upgrade-pinned", {"ignore_warnings": True}
+            ),
+            lambda e, ids: _profile_edit(
+                e.upgrade_pinned_stories(CTX, ids["profile"], UpgradePinned(ignore_warnings=True))
+            ),
+            group=PROFILE_GROUP,
+        ),
         Step(
             "get_profile",
             lambda ids: Rest("GET", "/engine-profiles/{profile}", params={"version": 1}),
@@ -2449,6 +2892,71 @@ def _steps() -> list[Step]:
                 )
             ),
             group=PROFILE_GROUP,
+        ),
+        # -- certifications (#233): a run's estimate (nothing written), a hand run's record
+        # imported and read back, the list, and an unknown run (404 on both)
+        Step(
+            "request_certification_run",
+            lambda ids: Rest(
+                "POST", "/engine-profiles/{profile}/certification-runs", CERTIFICATION_RUN
+            ),
+            lambda e, ids: _certification_run(
+                e.request_certification_run(
+                    CTX, CertificationRunRequest(**CERTIFICATION_RUN), profile_id=ids["profile"]
+                )
+            ),
+            prepare=_harness,
+        ),
+        Step(
+            "request_certification_run",
+            lambda ids: Rest("POST", f"{s}/certification-runs", CERTIFICATION_RUN),
+            lambda e, ids: _certification_run(
+                e.request_certification_run(
+                    CTX, CertificationRunRequest(**CERTIFICATION_RUN), story_id=ids["story"]
+                )
+            ),
+            prepare=_harness,
+        ),
+        Step(
+            "import_certification",
+            lambda ids: Rest("POST", "/admin/certifications/import", CERTIFICATION_RECORD),
+            lambda e, ids: _certification_imported(
+                e.import_certification(CTX, CERTIFICATION_RECORD)
+            ),
+        ),
+        Step(
+            "get_certification",
+            lambda ids: Rest("GET", f"/certifications/{CERTIFIED}"),
+            lambda e, ids: _dumped(e.get_certification(CTX, CERTIFIED)),
+        ),
+        Step(
+            "list_certifications",
+            lambda ids: Rest("GET", "/certifications"),
+            lambda e, ids: _dumped(e.list_certifications(CTX)),
+        ),
+        # #234: declared drift marks the imported certification stale.
+        Step(
+            "invalidate_certification",
+            lambda ids: Rest("POST", f"/admin/certifications/{CERTIFIED}/invalidate", DRIFT),
+            lambda e, ids: _certification_invalidated(
+                e.invalidate_certification(CTX, CERTIFIED, InvalidateRequest(**DRIFT))
+            ),
+        ),
+        # #532: the eval runs (the committed reports; the harness is installed above).
+        Step(
+            "list_eval_runs",
+            lambda ids: Rest("GET", "/admin/evals/runs", params={"limit": 3}),
+            lambda e, ids: _dumped(e.list_eval_runs(CTX, limit=3)),
+        ),
+        Step(
+            "get_eval_run",
+            lambda ids: Rest("GET", f"/admin/evals/runs/{COMMITTED_RUN}"),
+            lambda e, ids: _dumped(e.get_eval_run(CTX, COMMITTED_RUN)),
+        ),
+        Step(
+            "get_certification_run",
+            lambda ids: Rest("GET", f"/certification-runs/{MISSING_RUN}"),
+            lambda e, ids: _dumped(e.get_certification_run(CTX, MISSING_RUN)),
         ),
         # -- a story's configuration (#109): a preview that writes nothing, and the read
         Step(
@@ -2729,6 +3237,16 @@ async def _history(engine: Engine, story_id: str, **params: Any) -> dict[str, An
     return dump(HistoryResponse.of(found), exclude_unset=True)
 
 
+async def _outbox(engine: Engine, ids: Ids) -> dict[str, Any]:
+    page = await engine.list_outbox(CTX, ids["story"], viewpoint="omniscient")
+    return dump(OutboxBody(rows=page.rows, next_after=page.next_after))
+
+
+async def _operations(engine: Engine, ids: Ids) -> dict[str, Any]:
+    page = await engine.list_operations(CTX, ids["story"], kind="turn")
+    return dump(OperationsBody.of(page))
+
+
 async def _operation(engine: Engine, ids: Ids) -> dict[str, Any]:
     viewpoint = f"character:{ids['wren']}"
     view = await engine.get_operation(CTX, ids["turn_operation"], viewpoint=viewpoint)
@@ -2778,6 +3296,7 @@ async def _feedback_exports(engine: Engine) -> dict[str, Any]:
 async def _regenerate(engine: Engine, story_id: str) -> dict[str, Any]:
     request = RegenerateRequest.model_validate({"prompt_params": {"length": "short"}})
     result = await engine.regenerate(CTX, story_id, request)
+    assert isinstance(result, RegenerateResult)  # no directive: never held (#241)
     return dump(RegeneratedBody.of_regenerate(result))
 
 
@@ -3053,6 +3572,10 @@ async def _state(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(StateViewBody.of(await call))
 
 
+async def _state_definition_read(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(StateDefinitionBody.of(await call))
+
+
 async def _state_written(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(StateWrittenBody.of(await call))
 
@@ -3083,6 +3606,10 @@ async def _settled_now(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _compensated(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CompensatedBody.of(await call))
+
+
+async def _resolved(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ResolvedBody.of(await call))
 
 
 async def _proposal_approved(call: Awaitable[Any]) -> dict[str, Any]:
@@ -3241,6 +3768,212 @@ async def _impact(engine: Engine, story_id: str, body: dict[str, Any]) -> dict[s
 
 async def _dumped(call: Awaitable[BaseModel]) -> dict[str, Any]:
     return dump(await call)
+
+
+async def _coverage_gap(engine: Engine, ids: Ids) -> None:
+    """Drop the story's ``pipeline`` coverage: its turns become the gap fill's range (#228)."""
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text("DELETE FROM capability_coverage WHERE story_id = :s AND capability = 'pipeline'"),
+            {"s": ids["story"]},
+        )
+
+
+async def _bundle(call: Awaitable[Any]) -> dict[str, Any]:
+    """A bundle download (never ready in this replay: both surfaces refuse it alike)."""
+    found = await call
+    return {"filename": found.filename, "sha256": found.sha256}
+
+
+def _import_bundle() -> bytes:
+    """A minimal valid bundle: a manifest and a story with no history (#250)."""
+    import hashlib
+    import io
+    import tarfile
+
+    story = json.dumps({"id": "01JB00000000000000000STORY", "name": "Imported"}).encode()
+    manifest = json.dumps(
+        {
+            "format_version": "1.0.0",
+            "source_story_id": "01JB00000000000000000STORY",
+            "exported_revision": 0,
+            "files": [{"path": "records/story.json", "sha256": hashlib.sha256(story).hexdigest()}],
+        }
+    ).encode()
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+        for name, data in (("manifest.json", manifest), ("records/story.json", story)):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+IMPORT_BUNDLE = _import_bundle()
+
+
+async def _imported(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.admin.bundles import ImportedBody
+    from epistrel.core.bundles.importing import ImportRequest
+
+    return dump(ImportedBody.of(await engine.import_story(CTX, IMPORT_BUNDLE, ImportRequest())))
+
+
+async def _export_started(call: Awaitable[Any]) -> dict[str, Any]:
+    from epistrel.api.routes.admin.bundles import ExportStartedBody
+
+    return dump(ExportStartedBody.of(await call))
+
+
+async def _pruned(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PruneBody.of(await call))
+
+
+async def _conflict_resolved(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ConflictResolvedBody.of(await call))
+
+
+async def _awaiting_conflict(engine: Engine, ids: Ids) -> None:
+    """A backfill of the story paused for one open conflict (#230), both statements already in
+    canon (so resolving writes nothing but the resolution) and no speaker (no in-world claim)."""
+    story = ids["story"]
+    backfill, operation, conflict = new_ulid(), new_ulid(), new_ulid()
+    ids["conflict"] = conflict
+    statements = [
+        {
+            "statement_id": f"{n}:0-0",
+            "event_id": None,
+            "turn": n,
+            "beat": 1,
+            "position": n,
+            "speaker": None,
+            "source": "transcript",
+            "value": n,
+            "fact_id": new_ulid(),
+        }
+        for n in (1, 2)
+    ]
+    async with engine.db.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO operations (operation_id, story_id, kind, principal, status, "
+                "membership_tx, committed_at) VALUES (:o, :s, 'backfill', :p, 'committed', "
+                "transaction_timestamp(), transaction_timestamp())"
+            ),
+            {"o": operation, "s": story, "p": PRINCIPAL},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO story_backfills (id, story_id, operation_id, status, kind, "
+                "capabilities, range_from_turn, range_to_turn, requested_by) VALUES "
+                "(:b, :s, :o, 'paused_for_conflicts', 'gap_fill', '{}', 1, 1, :p)"
+            ),
+            {"b": backfill, "s": story, "o": operation, "p": PRINCIPAL},
+        )
+        await conn.execute(
+            text("UPDATE stories SET status = 'paused', paused_by = :b WHERE id = :s"),
+            {"b": backfill, "s": story},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO backfill_conflicts (id, backfill_id, story_id, subject, "
+                "statements, status) VALUES (:c, :b, :s, CAST(:subject AS jsonb), "
+                "CAST(:statements AS jsonb), 'open')"
+            ),
+            {
+                "c": conflict,
+                "b": backfill,
+                "s": story,
+                "subject": json.dumps({"entity_id": None, "predicate": "age"}),
+                "statements": json.dumps(statements),
+            },
+        )
+
+
+REWRITE_INSTRUCTION = "The first reply was calmer."
+OMNISCIENT_QUERY = {"viewpoint": "omniscient"}
+REWRITE_ASKS = json.dumps(
+    {
+        "changes": [],
+        "ambiguities": [
+            {
+                "about": "tone",
+                "question": "How calm was it?",
+                "options": ["quiet", "gentle"],
+                "recommended": 0,
+            }
+        ],
+    }
+)
+REWRITE_PARSED = json.dumps(
+    {
+        "changes": [
+            {
+                "kind": "record",
+                "ref": {"turn": 1},
+                "action": "replace",
+                "new_text": "A quieter reply.",
+            }
+        ]
+    }
+)
+
+
+async def _script_rewrite(engine: Engine, ids: Ids) -> None:
+    """#223: the fork's ``rewrite_parse`` asks about the tone first, then (with the answer)
+    corrects turn 1's reply."""
+    assert engine.models.stub is not None
+    engine.models.stub.script("rewrite_parse", [REWRITE_ASKS, REWRITE_PARSED])
+
+
+async def _merge_pair(engine: Engine, ids: Ids) -> None:
+    """#225: two entities of the fork's to merge (the same kind)."""
+    from epistrel.core.propositions import store
+
+    async with engine.db.begin() as conn:
+        ids["merge_a"] = await store.add_entity(conn, ids["fork"], "other", "the lantern")
+        ids["merge_b"] = await store.add_entity(conn, ids["fork"], "other", "the old lamp")
+
+
+async def _directed(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(DirectiveBody.of(await call))
+
+
+async def _rewrite(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(RewriteSessionBody.of(await call))
+
+
+async def _applied(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(AppliedBody.of(await call))
+
+
+async def _gap_fill(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(GapFillBody.of(await call))
+
+
+async def _cancelled(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(BackfillCancelledBody.of(await call))
+
+
+async def _harness(engine: Engine, ids: Ids) -> None:
+    """The eval harness the certification-run estimate needs (#233), over this surface's
+    engine (the estimate plays nothing)."""
+    install(engine)
+
+
+async def _certification_run(call: Awaitable[Any]) -> dict[str, Any]:
+    found = await call
+    if found.timeline_revision is not None:
+        return dump(StoryCertificationRunBody.of(found))
+    return dump(CertificationRunBody.of(found))
+
+
+async def _certification_imported(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CertificationImportedBody.of(await call))
+
+
+async def _certification_invalidated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(CertificationInvalidatedBody.of(await call))
 
 
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:

@@ -1,14 +1,12 @@
 """U-28 (M4) and C-16 (M4) (docs/04): the dependency rules M4 puts on the delivered path, the
-capability map, and the interim rule for a data-producing increase (#129).
+capability map (#129). The interim rule for a data-producing increase (``test_c_16__m4_interim``,
+until M7) is retired by #229: ``tests/integration/test_c_16_m7.py`` holds its M7 outcome.
 
 C-16 (M4) has exactly this file (traceability allows one file per test ID and milestone): #129's
 parts and #132's.
 
 - ``test_u_28__m4_dependencies``: each dependency rule now on the delivered path, violated by a
   fixture that is refused naming what it lacks, and accepted with it present.
-- ``test_c_16__m4_interim``: switching one module on for a profile's stories cannot reach the
-  one with history until M7, which keeps its version; a behavioral edit of the gate threshold
-  applies at the next turn boundary.
 - ``test_c_16__capabilities``: the map as FR-PROF-13 writes it and as docs/capability-map.md
   renders it; the seeded ``Structured (M4)`` profile; the capabilities and guarantees reports
   read from the map.
@@ -47,8 +45,7 @@ from epistrel.core.profiles.capabilities import (
     level_at_least,
     module_on,
 )
-from epistrel.core.profiles.effective import effective_configuration, merged_settings
-from epistrel.core.profiles.estimates import CALL_LATENCY_MS
+from epistrel.core.profiles.effective import merged_settings
 from epistrel.core.profiles.guarantees import (
     GUARANTEE,
     GUARANTEES,
@@ -66,11 +63,11 @@ from epistrel.core.profiles.validate import (
     validate_profile,
 )
 from epistrel.core.seeds.profiles import (
+    FULL_NAME,
+    FULL_VERSION,
     LITE_PRESET_ID,
     STRUCTURED_M4_NAME,
     STRUCTURED_M4_VERSION,
-    STRUCTURED_NAME,
-    STRUCTURED_VERSION,
     lite_settings,
     profile_defaults,
     structured_m4_settings,
@@ -80,18 +77,14 @@ from epistrel.tools import guarantees as guarantee_tool
 from epistrel.tools.capability_map import MAP_PATH, render
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
-from tests.event_support import rows, scalar
+from tests.event_support import rows
 from tests.profile_support import (
     M4_MODULES,
     PROFILES,
-    REDERIVATION,
     STRUCTURED_DOCUMENT,
-    UNAVAILABLE_WARNINGS,
-    configuration_rows,
     delivered_rules,
     map_units,
     merged,
-    nest,
     prof_13_units,
     profile_body,
     violating,
@@ -253,130 +246,6 @@ async def test_u_28__m4_dependencies(stub_settings: Settings, engine: AsyncEngin
 # -- C-16 (M4) -----------------------------------------------------------------------------------
 
 
-@pytest.mark.part("M4", "FR-PROF-7", interim_until="M7")
-async def test_c_16__m4_interim(scratch: Space) -> None:
-    """Until M7 nothing re-derives a story's data from its transcript. Two stories follow a
-    structured profile with episodic memory and verification at ``entailment``; one has played
-    a turn. Switching consolidation on, without ``ignore_warnings``, changes nothing and
-    reports, by story id: the story with history ``upgrade_unavailable``, its re-derivation
-    needed with an estimate over its transcript, keeping its fingerprint and its capabilities
-    (no consolidation); the story without turns gaining consolidation with nothing to re-derive
-    (complement). With ``ignore_warnings`` the edit applies to the second story, which runs on
-    version 2 with consolidation, while the first keeps version 1, pinned, and its next turn
-    runs on it.
-
-    A behavioral edit of the gate threshold (version 3) then applies at once with no warning:
-    one configuration change for the version and one, prospective, for
-    ``verification.entailment_gate``; no job is queued. At the following story's next turn
-    boundary it runs on version 3 with the new threshold; the pinned story is not affected."""
-    base = merged(
-        STRUCTURED_DOCUMENT,
-        nest("memory.episodic.enabled", True),
-        nest("verification.level", "entailment"),
-        nest(GATE, 0.5),
-    )
-    grown = merged(base, nest(CONSOLIDATION, True))
-    async with respond_client(scratch.settings, scratch.db) as (client, _):
-        profile = await _profile(client, base)
-        played, actor = await _story(client, profile)
-        fresh, fresh_actor = await _story(client, profile)
-        first = await _play(client, played, actor)
-        assert first["profile"] == {"id": profile, "version": 1}
-        before = {s: (await _effective(client, s))["fingerprint"] for s in (played, fresh)}
-        sizes = await rows(
-            scratch.db,
-            "SELECT count(*), sum(length(text)) FROM transcript_messages "
-            "WHERE story_id = :s AND membership = 'active'",
-            s=played,
-        )
-        (messages, characters) = tuple(sizes[0])
-        edit = {"name": "Structured trial", "settings": grown}
-
-        unchanged = await configuration_rows(scratch.db)
-        held = await ok(await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers()))
-        assert held["applied"] is False
-        assert await configuration_rows(scratch.db) == unchanged
-        report = held["impact"]
-        assert report["warnings"] == UNAVAILABLE_WARNINGS
-        entries = {e["story_id"]: e for e in report["affected_stories"]}
-        assert list(entries) == sorted([played, fresh])
-        kept, moved = entries[played], entries[fresh]
-        assert (kept["upgrade_unavailable"], kept["capabilities_gained"]) == (
-            True,
-            ["consolidation"],
-        )
-        assert kept[REDERIVATION] == {
-            "needed": True,
-            "estimate": {
-                "model_calls": -(-messages // 30),
-                "tokens": characters // 4,
-                "duration_s": -(-messages // 30) * CALL_LATENCY_MS / 1000,
-            },
-        }
-        assert kept["fingerprint_before"] == kept["fingerprint_after"] == before[played]
-        assert "consolidation" not in kept["capabilities_after"]
-        assert (moved["upgrade_unavailable"], moved["capabilities_gained"]) == (
-            False,
-            ["consolidation"],
-        )
-        assert moved[REDERIVATION] == {"needed": False, "estimate": None}
-        assert moved["fingerprint_before"] == before[fresh] != moved["fingerprint_after"]
-        assert "consolidation" in moved["capabilities_after"]
-
-        confirmed = await ok(
-            await client.put(
-                f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=headers()
-            )
-        )
-        assert (confirmed["applied"], confirmed["result"]["version"]) == (True, 2)
-        stays, goes = await _effective(client, played), await _effective(client, fresh)
-        assert (stays["profile"]["version"], stays["profile"]["pinned"]) == (1, True)
-        assert stays["capabilities"] == kept["capabilities_after"]
-        assert stays["fingerprint"] == before[played]
-        assert (goes["profile"]["version"], goes["profile"]["pinned"]) == (2, False)
-        assert goes["capabilities"] == moved["capabilities_after"]
-        assert goes["effective"]["memory"]["consolidation"]["enabled"] is True
-        again = await _play(client, played, actor)
-        assert (again["profile"], again["fingerprint"]) == (
-            {"id": profile, "version": 1},
-            before[played],
-        )
-
-        # -- a behavioral edit of the gate threshold: at once, no warning, next turn boundary
-        revision = int(await scalar(scratch.db, "SELECT config_revision FROM deployment_state"))
-        jobs = await scalar(scratch.db, JOBS)
-        tightened = {"name": "Structured trial", "settings": merged(grown, nest(GATE, 0.8))}
-        edited = await ok(
-            await client.put(f"{PROFILES}/{profile}", json=tightened, headers=headers())
-        )
-        assert (edited["applied"], edited["result"]["version"]) == (True, 3)
-        assert edited["impact"]["warnings"] == []
-        (entry,) = edited["impact"]["affected_stories"]
-        assert entry["story_id"] == fresh
-        assert (entry["capabilities_gained"], entry["capabilities_lost"]) == ([], [])
-        assert entry[REDERIVATION] == {"needed": False, "estimate": None}
-        changes = await rows(
-            scratch.db,
-            'SELECT setting, old, new, "class" FROM config_changes WHERE scope = '
-            "'deployment' AND config_revision = :r ORDER BY setting",
-            r=revision + 1,
-        )
-        assert [tuple(c) for c in changes] == [
-            (f"engine_profile:{profile}", 2, 3, "prospective"),
-            (f"engine_profile:{profile}.{GATE}", 0.5, 0.8, "prospective"),
-        ]
-        assert await scalar(scratch.db, JOBS) == jobs
-        assert (await _effective(client, fresh))["effective"]["verification"][
-            "entailment_gate"
-        ] == 0.8
-        later = await _play(client, fresh, fresh_actor)
-        assert later["profile"] == {"id": profile, "version": 3}
-        async with scratch.db.connect() as conn:
-            resolved = await effective_configuration(conn, fresh)
-        assert resolved.settings.verification.entailment_gate == 0.8
-        assert (await _effective(client, played))["profile"]["version"] == 1
-
-
 @pytest.mark.part("M4", "FR-PROF-12,13")
 async def test_c_16__capabilities(scratch: Space) -> None:
     """The capability map holds FR-PROF-13's areas exactly as written: the requirement groups
@@ -416,13 +285,13 @@ async def test_c_16__capabilities(scratch: Space) -> None:
         "CROSS JOIN deployment_state d WHERE p.id = :p",
         p=structured_m4(),
     )
-    # #181 renamed the row in place and added version 2 (#203: version 3); version 1 is M4's,
-    # unchanged.
+    # #181 renamed the row in place and added version 2 (#203: version 3; #227 converted it
+    # into a preset and added version 4); version 1 is M4's, unchanged.
     assert tuple(stored)[:6] == (
-        STRUCTURED_NAME,
+        FULL_NAME,
         "system",
-        False,
-        STRUCTURED_VERSION,
+        True,
+        FULL_VERSION,
         structured_m4_settings(),
         LITE_PRESET_ID,
     )
@@ -518,8 +387,9 @@ def test_c_16__guarantee_table() -> None:
     NFR-QUAL ids (``metric_ids``, which #134's report check reads)."""
     rendered = guarantee_tool.render()
     assert rendered == guarantee_tool.TABLE_PATH.read_text(encoding="utf-8")
-    lite, latest = guarantee_tool.SEEDED
-    assert (lite.profile_id, latest.profile_id) == (LITE_PRESET_ID, structured_m4())
+    lite = guarantee_tool.SEEDED[0]
+    (latest,) = [p for p in guarantee_tool.SEEDED if p.profile_id == structured_m4()]
+    assert lite.profile_id == LITE_PRESET_ID
     # The table publishes the latest version (#181); M4's part reads its version 1.
     structured = guarantee_tool.SeededProfile(
         STRUCTURED_M4_NAME, structured_m4(), structured_m4_settings()

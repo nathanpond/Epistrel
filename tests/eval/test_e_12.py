@@ -1,5 +1,6 @@
 """E-12: engine interventions and prose, in aggregate (docs/04 §8; NFR-QUAL-8,14), its M4 and M9
-parts (#158; NFR-QUAL-14 gates from M9 per ADR-164, and this stub test runs in CI either way).
+parts (#158; NFR-QUAL-14 gates from M9 per ADR-164, and this stub test runs in CI either way),
+and its M7 part (#233): a certification lists the intervention types the floor covers.
 
 ``test_e_12`` plays the ``e12`` suite over every intervention scenario
 (``evals/sets/scenarios``) on the stub, two seeds, after calibrating the stub's judge on the
@@ -26,8 +27,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.evals import SUITES, AdapterConfig, Verdict, run
+from epistrel.evals.certify import floors_of, record_from
 from epistrel.evals.gate import RELATIVE_MIN_PAIRS, Direction, Metric, Rule, SeedTally, judge
 from epistrel.evals.judging import CALIBRATION_FLOOR, load_pairs
+from epistrel.evals.report import Host, JudgeCalibrationRef, MetricResult, Report, SuiteResult
 from epistrel.evals.runner import CalibrationMissing
 from epistrel.evals.suites.e12_interventions import FLOOR, changed_id, metric_id
 from epistrel.evals.suites.scenario_play import CONFIGS, INTERVENTION_TYPES, ScenarioCase
@@ -164,3 +167,83 @@ async def test_e_12(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
                 calibration_file=tmp_path / "none.json",
             )
         assert len(lib.models.stub.calls) == calls
+
+
+def _e12_report(calibration: str, tallies: dict[str, list[SeedTally]]) -> Report:
+    """A run whose E-12 rows (the run's own configuration) judged ``tallies`` per type."""
+    rows = [
+        MetricResult.of(metric, judge(metric, found))
+        for kind, found in tallies.items()
+        for metric in [
+            Metric(metric_id("structured", kind), Rule.relative, FLOOR, Direction.at_most)
+        ]
+    ]
+    for row in rows:
+        row.judge_based = True
+    result = SuiteResult(
+        name="e12",
+        title="E-12",
+        ci_gate=False,
+        cases=len(tallies),
+        seeds=list(SEEDS),
+        metrics=rows,
+        verdict=Verdict.insufficient_evidence,
+        calibration=JudgeCalibrationRef(status=calibration, judge_model="stub", pairs=200),
+    )
+    return Report(
+        run_id="e12-m7",
+        started_at="2026-11-02T10:00:00+00:00",
+        model="stub",
+        fingerprint="sha256:" + "c" * 64,
+        fingerprint_profile="Full v4",
+        adapter="stub",
+        engine_sha="0" * 7,
+        host=Host(kind="ci"),
+        seed_base=SEEDS[0],
+        seeds=list(SEEDS),
+        suites=[result],
+    )
+
+
+@pytest.mark.part("M7", "FR-PROF-15")
+def test_e_12__m7() -> None:
+    """A certification lists the intervention types NFR-QUAL-14's floor covers (E-12 M7): with a
+    calibrated judge, a type at 300 non-tied pairs a seed whose draft preference stays under 55 %
+    is covered, and one at 120 pairs is listed insufficient; NFR-QUAL-14 is a floor passed.
+    Complement: with an uncalibrated judge both lists are empty, NFR-QUAL-14 is not passed and
+    the record says ``judge_calibrated: false``."""
+    tallies = {
+        "repair_rung_1": [SeedTally(s, RELATIVE_MIN_PAIRS, 90) for s in SEEDS],
+        "repair_rung_2": [SeedTally(s, 120, 30) for s in SEEDS],
+    }
+    report = _e12_report("calibrated", tallies)
+    record = record_from(
+        report,
+        "# E-12\n",
+        fingerprint=report.fingerprint,
+        profile_id=None,
+        profile_version=None,
+        models={},
+    )
+    assert record is not None
+    assert record.intervention_types_covered == ["repair_rung_1"]
+    assert record.intervention_types_insufficient == ["repair_rung_2"]
+    assert record.judge_calibrated is True
+    assert [f.metric_id for f in record.floors_passed] == ["NFR-QUAL-14"]
+
+    weak = _e12_report("uncalibrated", tallies)
+    for row in weak.suites[0].metrics:
+        row.verdict = Verdict.report_only  # what an uncalibrated judge makes of judge rows
+    assert (
+        record_from(
+            weak,
+            "# E-12\n",
+            fingerprint=weak.fingerprint,
+            profile_id=None,
+            profile_version=None,
+            models={},
+        )
+        is None
+    )
+    passed, _, _, covered, lacking, calibrated = floors_of(weak)
+    assert (passed, covered, lacking, calibrated) == ([], [], [], False)

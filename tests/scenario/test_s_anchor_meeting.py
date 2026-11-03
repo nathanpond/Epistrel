@@ -53,7 +53,7 @@ from tests.auth_support import auth_settings
 from tests.event_support import rows
 from tests.respond_support import body, respond, respond_client
 from tests.story_support import WRITE
-from tests.structured_turn_support import beat, structured_story, turn_report
+from tests.structured_turn_support import beat, claim, structured_story, turn_report
 
 ONE, TWO, THREE = 13 * 60, 14 * 60, 15 * 60
 SIX = 18 * 60
@@ -173,7 +173,7 @@ async def advances(engine: AsyncEngine, story: str) -> list[tuple[str, int, Any,
         "SELECT c.source, c.delta, c.stopped_by_event_id, c.paused_for_event_id FROM "
         "state_changes c JOIN state_definitions d ON d.id = c.state_id WHERE c.story_id = :s "
         "AND d.name = 'world_clock' AND c.membership = 'active' "
-        "ORDER BY c.narrative_turn, c.slot_k, c.beat, c.step",
+        "ORDER BY c.narrative_turn, c.slot_k, c.beat, c.step, c.id",  # id: #684 (ties)
         s=story,
     )
     return [(r.source, int(r.delta), r.stopped_by_event_id, r.paused_for_event_id) for r in found]
@@ -396,3 +396,120 @@ async def test_s_anchor_meeting(
                 say="We linger till later.",  # #199: the player invites the skip
             )
             assert (await meeting_of(engine, story, meeting)).status.value == "missed", switch
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-18")
+async def test_s_anchor_meeting__patched_and_rendered(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#645: under the range anchor [13:00, 15:00) a time of day is held at its frame minute
+    whichever path makes it. ``PATCH`` to "17:00" holds the meeting at 17:00 (``pending``);
+    to "14:00", already inside the range, ``possibly_due`` at once. Jenni's own plan in a render,
+    "the bank at four", is a canon event held at 16:00, and "the post office at two" is
+    ``possibly_due`` from the start. Complement asserted: ``PATCH`` to an exact offset clears
+    the time of day it was held at."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await market(client, engine)
+        url = f"/stories/{story}/scheduled-events/{meeting}"
+        moved = await client.patch(url, json={"planned": "17:00"}, headers=WRITE)
+        assert moved.status_code == 200, moved.text
+        event = await meeting_of(engine, story, meeting)
+        assert (event.status.value, event.planned_anchor) == ("pending", {"at": 17 * 60})
+        moved = await client.patch(url, json={"planned": "14:00"}, headers=WRITE)
+        assert moved.status_code == 200, moved.text
+        event = await meeting_of(engine, story, meeting)
+        assert (event.status.value, event.planned_anchor) == ("possibly_due", {"at": 14 * 60})
+        moved = await client.patch(url, json={"planned": 300}, headers=WRITE)
+        assert moved.status_code == 200, moved.text
+        event = await meeting_of(engine, story, meeting)
+        assert (event.status.value, event.planned_anchor, event.planned) == ("pending", None, 300)
+
+        await ms.per_character(
+            engine,
+            story,
+            character_knowledge={"partitions": True},
+            perception={"level": "co_location"},
+        )
+        for text, errand, said, held, status in (
+            ("I'll go to the bank at four.", "the bank errand", "4 pm", 16 * 60, "pending"),
+            ("I'll go to the post office at two.", "the post office", "2 pm", 14 * 60, None),
+        ):
+            await turn(
+                client,
+                stub,
+                story,
+                ids,
+                beat("say", text, propositions=[claim("I", "scheduled", errand, time=said)]),
+            )
+            (made,) = [
+                e
+                for e in await ck.events(engine, story)
+                if e.event_id != meeting and (e.planned_anchor or {}).get("at") == held
+            ]
+            assert made.owner == ids["Jenni"]
+            assert made.status.value == (status or "possibly_due")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-18")
+async def test_s_anchor_meeting__mid_turn_pause(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#646 (owner decision): in a sequential turn, Jenni's render wanders for two hours and
+    pauses for her ``possibly_due`` meeting at +61; Mira, rendering after her in the same turn,
+    is steered to establish the current time (``TIME_STEERING``), and the next turn's narrator
+    still is. Complement asserted: the same two renders with no pause give Mira no steer."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for paused in (True, False):
+            story, ids = await structured_story(client, "Cal", "Jenni", "Mira")
+            place = await ps.place_entity(engine, story, "the market")
+            for who in ids.values():
+                await ps.put(engine, story, who, place)
+            await ck.set_clock(engine, story, "on")
+            await ck.anchor_range(engine, story, ONE, THREE)
+            await ms.per_character(engine, story)
+            created = await client.post(
+                f"/stories/{story}/scheduled-events",
+                json={
+                    "proposition": "Jenni's meeting",
+                    "planned": "16:00",
+                    "participants": [ids["Jenni"]],
+                    "owner": "world",
+                },
+                headers=WRITE,
+            )
+            assert created.status_code == 201, created.text
+            stub.reset()
+            effects = [skip(120)] if paused else []
+            ms.renders_for(
+                stub,
+                "Jenni",
+                ms.render(beat("do", "They set off between the stalls.", effects=effects)),
+            )
+            ms.renders_for(stub, "Mira", ms.render(beat("say", "Wait for me.")))
+            stub.script("regeneration", [json.dumps({"text": DRIFT})])
+            answer = await respond(
+                client,
+                story,
+                body(
+                    ids["Cal"],
+                    WANDER,
+                    render_character_ids=[ids["Jenni"], ids["Mira"]],
+                    interaction_mode="sequential",
+                ),
+            )
+            assert answer.status_code == 200, answer.text
+            (mira,) = ms.render_prompts(stub, "Mira")
+            assert (prompts.TIME_STEERING in mira) is paused
+            if paused:
+                report = await turn_report(engine, story)
+                assert report["clock"]["stops"]["establish_time"] is True

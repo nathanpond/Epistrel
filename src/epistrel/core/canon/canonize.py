@@ -137,18 +137,7 @@ async def canonize(
     if chosen not in CANONIZING_PROVENANCES:
         raise ValueError(f"a canonized claim's provenance is not {chosen.value!r}")
     if introduces:
-        registry = registry or await load(conn, story_id)
-        predicate = registry.get(claim.predicate_id)
-        for new in introduces:
-            await store.add_entity(
-                conn,
-                story_id,
-                kind_for(claim, new.entity_id, predicate),
-                new.name,
-                entity_id=new.entity_id,
-                descriptors=descriptors_of(new.name),
-                operation_id=operation.operation_id,
-            )
+        await introduce(conn, story_id, claim, introduces, operation=operation, registry=registry)
     anchor = anchored_to if anchored_to is not None else anchor_for(claim, neighborhood)
     return await commit_fact(
         conn,
@@ -188,6 +177,41 @@ class CanonRequest:
             self.claim.model_dump_json(),
             self.provenance.value,
             self.visibility.model_dump_json(),
+        )
+
+
+async def introduce(
+    conn: AsyncConnection,
+    story_id: str,
+    claim: Proposition,
+    introduces: Sequence[NewEntity],
+    *,
+    operation: FactOperation,
+    registry: Registry | None = None,
+    skip_existing: bool = False,
+) -> None:
+    """Create the minted entities ``claim`` names (``introduces``) in ``operation``'s commit:
+    canonization's first step, and #641's for a belief that names a minted plan and is never
+    canon (``skip_existing``: one an earlier write of the turn created stays as it is)."""
+    from sqlalchemy import select
+
+    from epistrel.core.tables.propositions import entities
+
+    registry = registry or await load(conn, story_id)
+    predicate = registry.get(claim.predicate_id)
+    for new in introduces:
+        if skip_existing and await conn.scalar(
+            select(entities.c.id).where(entities.c.id == new.entity_id)
+        ):
+            continue
+        await store.add_entity(
+            conn,
+            story_id,
+            kind_for(claim, new.entity_id, predicate),
+            new.name,
+            entity_id=new.entity_id,
+            descriptors=descriptors_of(new.name),
+            operation_id=operation.operation_id,
         )
 
 
@@ -264,6 +288,7 @@ __all__ = [
     "anchor_for",
     "canonize",
     "canonize_all",
+    "introduce",
     "kind_for",
     "visibility_of",
 ]

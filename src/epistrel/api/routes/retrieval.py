@@ -17,11 +17,12 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.routes.scene import EntityProfileBody
 from epistrel.core.resolution.types import Uncertain
+from epistrel.core.retrieval.coverage_marks import CoverageGap
 from epistrel.core.retrieval.pipeline import RetrievalResult, RetrievedMemory
 
 router = APIRouter(prefix="/stories", tags=["stories"])
@@ -157,6 +158,12 @@ class RetrievalBody(BaseModel):
     model_calls: int
     embedding_model_version: str | None
     timings: dict[str, float]
+    coverage_gaps: list[CoverageGap] = Field(
+        default_factory=list,
+        description="#229 (FR-PROF-8): each `{capability, from_turn, to_turn}` run of turns, "
+        "overlapping the query's window, that a capability retrieval reads has no data for "
+        "(an upgrade applied `forward_only`, or a backfill not yet run); empty when none.",
+    )
 
     @classmethod
     def of(cls, r: RetrievalResult) -> RetrievalBody:
@@ -229,6 +236,7 @@ class RetrievalBody(BaseModel):
             degradation=list(r.degradation),
             skipped=list(r.skipped),
             model_calls=r.model_calls,
+            coverage_gaps=list(r.coverage_gaps),
             embedding_model_version=r.embedding_model_version,
             timings=dict(r.timings),
         )

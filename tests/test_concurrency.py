@@ -86,7 +86,9 @@ def test_member_hashes_are_canonical() -> None:
 
 
 def test_read_set_members_are_fixed() -> None:
-    assert READ_SET_MEMBERS == (
+    """The M2/M3 members lead the tuple in order (later members are appended: the full pin is
+    I-18 M7's ``test_i_18__m7_members``, #662)."""
+    assert READ_SET_MEMBERS[:8] == (
         "window",
         "segments",
         "pins",

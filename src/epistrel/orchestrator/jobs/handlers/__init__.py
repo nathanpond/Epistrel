@@ -13,7 +13,8 @@ recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 ``state_proposal_analysis`` (#192), and the outbox dispatcher's ``outbox_dispatch``,
 its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#210), and the
 ``reservation_expiry`` timer kind that releases an expired State hold (#216), and the late
-settlement of an outcome at the next inter-turn slot, ``outcome_settlement`` (#217). A kind
+settlement of an outcome at the next inter-turn slot, ``outcome_settlement`` (#217). M7 adds
+the on-demand ``certification_run`` (#233) and ``backfill`` (#228). A kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -21,6 +22,14 @@ no handler is registered for is refused at enqueue and ends ``failed`` if a work
 
 from __future__ import annotations
 
+from epistrel.orchestrator.jobs.handlers.backfill import BACKFILL_HANDLER
+from epistrel.orchestrator.jobs.handlers.certification_canary import (
+    CERTIFICATION_CANARY_HANDLER,
+    CERTIFICATION_CANARY_TASK_DEFINITION,
+    CERTIFICATION_RECERTIFY_HANDLER,
+    CERTIFICATION_RECERTIFY_TASK_DEFINITION,
+)
+from epistrel.orchestrator.jobs.handlers.certification_run import CERTIFICATION_RUN_HANDLER
 from epistrel.orchestrator.jobs.handlers.consolidation import CONSOLIDATION_HANDLER
 from epistrel.orchestrator.jobs.handlers.erasure_reconcile import (
     ERASURE_RECONCILE_HANDLER,
@@ -42,6 +51,7 @@ from epistrel.orchestrator.jobs.handlers.outbox import (
     OUTBOX_RECOVERY_HANDLER,
     OUTBOX_RECOVERY_TASK,
 )
+from epistrel.orchestrator.jobs.handlers.prune_policy import PRUNE_RUN_HANDLER, PRUNE_RUN_TASK
 from epistrel.orchestrator.jobs.handlers.rating_check import RATING_CHECK_HANDLER
 from epistrel.orchestrator.jobs.handlers.rebuild import REBUILD_HANDLER
 from epistrel.orchestrator.jobs.handlers.reembed import EMBED_HANDLER, REEMBED_HANDLER
@@ -57,7 +67,12 @@ from epistrel.orchestrator.jobs.handlers.retirement import (
     RECONCILE_TASK,
     RETIREMENT_HANDLER,
 )
+from epistrel.orchestrator.jobs.handlers.rewrite_expiry import (
+    REWRITE_EXPIRY_HANDLER,
+    REWRITE_EXPIRY_TASK,
+)
 from epistrel.orchestrator.jobs.handlers.state_proposals import STATE_PROPOSAL_HANDLER
+from epistrel.orchestrator.jobs.handlers.story_export import STORY_EXPORT_HANDLER
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
 from epistrel.orchestrator.jobs.settlement import SETTLE_HANDLER
@@ -108,9 +123,17 @@ for _handler in (
     OUTBOX_RECOVERY_HANDLER,
     RESERVATION_EXPIRY_HANDLER,
     SETTLE_HANDLER,
+    CERTIFICATION_RUN_HANDLER,
+    CERTIFICATION_CANARY_HANDLER,
+    CERTIFICATION_RECERTIFY_HANDLER,
+    BACKFILL_HANDLER,
+    REWRITE_EXPIRY_HANDLER,
+    PRUNE_RUN_HANDLER,
+    STORY_EXPORT_HANDLER,
 ):
     register(_handler)
 for _task in (
+    PRUNE_RUN_TASK,
     IDEMPOTENCY_TASK,
     RETENTION_TASK,
     TURN_QUEUE_TASK,
@@ -120,6 +143,9 @@ for _task in (
     IMPORTANCE_TASK,
     RECONCILE_TASK,
     OUTBOX_RECOVERY_TASK,
+    CERTIFICATION_CANARY_TASK_DEFINITION,
+    CERTIFICATION_RECERTIFY_TASK_DEFINITION,
+    REWRITE_EXPIRY_TASK,
 ):
     register_recurring(_task)
 

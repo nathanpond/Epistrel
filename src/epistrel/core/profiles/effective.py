@@ -8,8 +8,9 @@ over the other (``layered``: an object merges into an object, any other value re
    document seeded from the Lite preset, edited through ``/admin/settings``);
 2. the story's engine profile (``stories.engine_profile_id``) at the version it runs on: the
    profile's latest (FR-PROF-6), unless the story keeps an earlier one
-   (``stories.engine_profile_version_pin``, set when a confirmed data-producing edit could not
-   apply to it: FR-PROF-7's ``upgrade_unavailable``, M3's interim rule until M7). A stored
+   (``stories.engine_profile_version_pin``: a confirmed data-producing edit keeps it there until
+   its queued backfill completes, #229; M3-M6's interim and seed pins until ``upgrade-pinned``
+   brings it forward). A stored
    version may be sparse;
 3. the story's own overrides (``story_profile_overrides``): a sparse settings document with a
    ``revision`` (0 while the story has none). They persist across the profile's versions and a
@@ -63,13 +64,13 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.errors import InvalidProfile, InvalidRequest, ProfileDeleted, StoryNotFound
-from epistrel.core.profiles import guarantees, schema
+from epistrel.core.profiles import guarantees, schema, tiers
 from epistrel.core.profiles.fingerprint import QualityStatus, RuntimeFacts, Stamp, stamp
 from epistrel.core.profiles.schema import (
     PATCH_SCHEMA,
@@ -93,8 +94,10 @@ from epistrel.core.tables import (
     engine_profile_versions,
     engine_profiles,
     stories,
+    story_backfills,
     story_profile_overrides,
 )
+from epistrel.core.tables.backfill import ACTIVE_STATUSES
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 
 STORED = ("settings",)
@@ -412,6 +415,8 @@ class StoryProfile:
     config_revision: int
     """The story's own ``config_revision``."""
     settings: ProfileSettings = field(repr=False)
+    strongest: str | None = None
+    """The deployment's ``model_tiers.strongest`` (#227), what ``"@strongest"`` resolves to."""
 
     def configuration(self) -> Configuration:
         return Configuration(self.profile_id, self.version, self.settings)
@@ -444,7 +449,8 @@ class StoryProfile:
             overrides_revision=self.overrides_revision,
             deployment_revision=self.deployment_revision,
             config_revision=self.config_revision,
-            settings=settings,
+            settings=tiers.resolved(settings, self.strongest),
+            strongest=self.strongest,
         )
 
 
@@ -481,6 +487,7 @@ async def effective_configuration(
                 o.c.settings.label("overrides"),
                 o.c.revision.label("overrides_revision"),
                 d.c.profile_defaults,
+                d.c.settings.label("deployment_settings"),
                 d.c.config_revision.label("deployment_revision"),
             )
             .select_from(
@@ -512,6 +519,8 @@ async def effective_configuration(
     elif settings is None:
         settings = resolve_layers(defaults, document, overrides, purposes=purposes, field=STORED)
         CACHE.put(story_id, key, settings)
+    strongest = tiers.strongest_of(row.deployment_settings)
+    settings = tiers.resolved(settings, strongest)
     return StoryProfile(
         story_id=story_id,
         profile_id=profile_id,
@@ -526,6 +535,7 @@ async def effective_configuration(
         deployment_revision=deployment_revision,
         config_revision=int(row.config_revision),
         settings=settings,
+        strongest=strongest,
     )
 
 
@@ -615,7 +625,10 @@ def resolve(
         if overrides is None
         else patched(current.overrides, overrides, purposes=purposes, field=field)
     )
-    return resolve_layers(current.defaults, document, stacked, purposes=purposes, field=field)
+    return tiers.resolved(
+        resolve_layers(current.defaults, document, stacked, purposes=purposes, field=field),
+        current.strongest,
+    )
 
 
 async def store_overrides(
@@ -798,8 +811,8 @@ class StoryProfileRef(ProfileVersionRef):
 
 class ProfileRef(BaseModel):
     """The engine profile a story runs under and the version it runs on. ``pinned``: the story
-    keeps an earlier version, because a data-producing edit could not apply to its history
-    (``upgrade_unavailable``, M3's interim rule); ``false`` while it follows the latest.
+    keeps an earlier version (its backfill queued, #229, or left behind by M3-M6's interim rule
+    until ``upgrade-pinned``); ``false`` while it follows the latest.
     ``deleted``: the profile is deleted and still serves the story."""
 
     model_config = ConfigDict(frozen=True)
@@ -835,6 +848,12 @@ class EffectiveConfig(BaseModel):
     fingerprint: str
     capabilities: list[str]
     quality_status: QualityStatus
+    pending_backfill: dict[str, str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="#228: the running backfill (`{id}`) whose completion applies a held "
+        "change; until then this is the configuration the story runs under.",
+    )
 
 
 def view(found: StoryProfile, facts: RuntimeFacts) -> EffectiveConfig:
@@ -861,7 +880,16 @@ async def read(db: AsyncEngine, story_id: str, facts: RuntimeFacts) -> Effective
     story."""
     async with db.connect() as conn:
         found = await effective_configuration(conn, story_id)
-    return view(found, facts)
+        pending = await conn.scalar(
+            select(story_backfills.c.id).where(
+                story_backfills.c.story_id == story_id,
+                story_backfills.c.status.in_(ACTIVE_STATUSES),
+            )
+        )
+    shown = view(found, facts)
+    if pending is not None:
+        shown = shown.model_copy(update={"pending_backfill": {"id": str(pending)}})
+    return shown
 
 
 async def read_guarantees(db: AsyncEngine, story_id: str) -> guarantees.GuaranteeTable:

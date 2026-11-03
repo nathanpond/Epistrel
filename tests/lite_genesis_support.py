@@ -51,11 +51,10 @@ NEVER_DEFERRED = (
 
 UNUSED_SETTINGS = {
     "interaction_mode": "multi_character",
-    "ambiguous_retcon_timing": "history_rewrite",
-    "backfill_conflict_policy": "history_rewrite",
 }
 """Each story setting a Lite story keeps inactive, with the capability it waits for
-(``required_providers`` is live since #204 delivered ``providers``)."""
+(``required_providers`` is live since #204 delivered ``providers``, ``ambiguous_retcon_timing``
+since #240 made it a story setting, and ``backfill_conflict_policy`` since #230)."""
 
 
 def sunday_dinner(locked: str, default: str) -> dict[str, Any]:

@@ -17,11 +17,13 @@ from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictBool,
     StrictFloat,
     StrictInt,
+    StringConstraints,
     model_validator,
 )
 
@@ -40,11 +42,15 @@ from epistrel.core.settings_schema import (
     PlayerView,
     SequenceOrder,
 )
+from epistrel.core.trimmed import trim_as_sent
 from epistrel.core.viewpoint import AudienceFilter
 from epistrel.core.world_clock.service import TurnClock
 from epistrel.orchestrator.models.metrics import ModelCall
+from epistrel.orchestrator.rewrite.api import PreviewMode, ResolutionMode
 
 MAX_INPUT_CHARS = 8_000
+DIRECTIVE_MAX = 2_000
+"""#241: a regeneration directive's longest text."""
 MAX_RECENT_MESSAGES = 20
 MAX_RECENT_MESSAGE_CHARS = 2_000
 MAX_ID_CHARS = 64
@@ -223,6 +229,18 @@ def body_of(request: RespondRequest, *exclude: str) -> dict[str, Any]:
     return request.model_dump(mode="json", exclude={*exclude, *unset})
 
 
+class RegenerateDirective(BaseModel):
+    """#241: an author's direction for one regeneration."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    text: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=DIRECTIVE_MAX, strip_whitespace=True),
+        BeforeValidator(trim_as_sent(DIRECTIVE_MAX)),
+    ]
+
+
 class RegenerateRequest(BaseModel):
     """``POST /stories/{id}/regenerate`` and ``Engine.regenerate`` (#66, FR-STORE-12).
 
@@ -252,6 +270,14 @@ class RegenerateRequest(BaseModel):
     output_viewpoint: str | None = Field(default=None, max_length=MAX_ID_CHARS + 16)
     prompt_params: GenerationSettings | None = None
     budget: BudgetOverride | None = None
+    directive: RegenerateDirective | None = None
+    """#241 (FR-COMMIT-12): the author directs the outcome ("the knocker is George, her ex"):
+    gated like any input, parsed by ``directive_parse``; a binding of an open question is
+    reconciled with recorded history before anything commits (a conflict proceeds as a
+    ``directed_resolution`` amendment under ``resolution_mode`` and ``preview``). On a Lite story
+    (#244, FR-LITE-8) the directive is a nudge for that regeneration only."""
+    resolution_mode: ResolutionMode = "synchronous"
+    preview: PreviewMode = "preview_first"
 
 
 class CorrectRequest(BaseModel):
@@ -456,6 +482,9 @@ class RespondResult:
     """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the turns
     the commit took out of the active timeline (a regenerate's retired variant, a rewound tail
     written over), ``{outbox_id, provider, status, value?}``; empty when none."""
+    coverage_gaps: list[dict[str, Any]] = field(default_factory=list)
+    """#229 (FR-PROF-8): a structured turn's ``{capability, from_turn, to_turn}`` runs of turns
+    a capability its reads use has no data for; empty when none."""
     notices: list[dict[str, Any]] = field(default_factory=list)
     """#598 (FR-RESP-14): a structured turn under ``player_authority = co_author`` and
     ``co_author_knowledge = confirm``, one ``implausible_knowledge`` notice per presupposition of
@@ -489,6 +518,7 @@ __all__ = [
     "GuardrailViolationItem",
     "PlayerInputBody",
     "RecentMessage",
+    "RegenerateDirective",
     "RegenerateRequest",
     "RegenerateResult",
     "RespondRequest",

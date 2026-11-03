@@ -655,6 +655,16 @@ def _mapped_or_null(column: str) -> str:
 _ACTIVE = f"'{Membership.ACTIVE.value}'"
 
 OVERRIDES: dict[str, dict[str, str]] = {
+    # #239: a fork copies no rewrite session, so its amendments name none; a part's superseded
+    # facts name the fork's copies (one the fork left behind is dropped).
+    "amendments": {"session_id": "NULL"},
+    "amendment_parts": {
+        "superseded_fact_ids": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.superseded_fact_ids) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
+    },
     operations.name: {
         "membership": _ACTIVE,
         "membership_tx": (
@@ -669,6 +679,13 @@ OVERRIDES: dict[str, dict[str, str]] = {
     # Bitemporal canon (#133): links to other versions name the fork's copies; a version
     # closed by one the fork does not copy (after N) keeps its tx_to but loses the link, and is
     # current in the fork, since no copied row closes it.
+    # #228: a closed coverage interval past the fork point ends there; an open one stays open.
+    "capability_coverage": {
+        "to_turn": "CASE WHEN t.to_turn IS NULL THEN NULL ELSE LEAST(t.to_turn, "  # noqa: S608
+        "(SELECT COALESCE(max(o.narrative_turn), 0) FROM operations o "
+        f"WHERE o.operation_id IN (SELECT old_id FROM {_MAP} WHERE kind = 'operation'))) END",
+        "operation_id": "NULL",
+    },
     "facts": {
         # #154: a version a regeneration reverted (``revised``, out of the timeline) that the
         # fork copies into its active timeline is committed there again, as a swap back would.
@@ -828,10 +845,38 @@ def _overrides(table: Table) -> dict[str, str]:
 
 _EVENT_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'event')"  # noqa: S608
 _OPERATION_IDS = f"(SELECT old_id FROM {_MAP} WHERE kind = 'operation')"  # noqa: S608
+_THROUGH = (
+    "(SELECT COALESCE(max(o.narrative_turn), 0) FROM operations o "  # noqa: S608
+    f"WHERE o.operation_id IN {_OPERATION_IDS})"
+)
+"""The last turn a fork copies (its fork point)."""
 
 ROW_FILTERS: dict[str, str] = {
     events.name: f"t.id IN {_EVENT_IDS}",
+    # #220: an edge of a copied operation whose dependent and target the fork copied too (a
+    # fork keeps an unmapped id as it is, so an edge naming a record left behind is excluded).
+    "dependency_edges": (
+        f"t.operation_id IN {_OPERATION_IDS} "  # noqa: S608
+        f"AND t.dependent_id::text IN (SELECT old_id FROM {_MAP}) "
+        f"AND t.target_id::text IN (SELECT old_id FROM {_MAP})"
+    ),
     transcript_messages.name: f"t.message_id IN {_EVENT_IDS}",
+    # Capability coverage (#228): the intervals that begin at or before the fork point.
+    "capability_coverage": f"t.from_turn <= {_THROUGH}",
+    # Amendments (#221): an amendment follows its operation (the default); its parts follow it,
+    # and (#239) a record part only when the fork copies its record (a record correction lives
+    # and dies with its record; the record's operation decides, as it does the record's copy).
+    "amendment_parts": (
+        f"t.amendment_id::text IN (SELECT old_id FROM {_MAP} WHERE kind = 'amendments') "  # noqa: S608
+        "AND (t.record_id IS NULL "
+        f"OR (t.record_table = 'events' AND t.record_id::text IN {_EVENT_IDS}) "
+        + " ".join(
+            f"OR (t.record_table = '{name}' AND t.record_id IN "  # noqa: S608 - fixed names
+            f'(SELECT r.id FROM "{name}" r WHERE r.operation_id IN {_OPERATION_IDS}))'
+            for name in ("facts", "beliefs", "memories", "utterances", "state_changes")
+        )
+        + ")"
+    ),
     # The outbox's outcome records (#210) follow the outbox rows the fork copies, and (#217) a
     # consumer-applied effect's follow its copied ``requested_effect`` (whose effect id a fork
     # keeps: a payload id is mapped only when the fork copies a row with that id).

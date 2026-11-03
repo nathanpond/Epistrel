@@ -319,6 +319,21 @@ CHARACTER_VIEWPOINT_PREFIX = "character:"
 OMNISCIENT = "omniscient"
 
 
+RetconTiming = Literal["include_if_possible", "ask_author"]
+"""#240: ``StorySettings.ambiguous_retcon_timing``'s values."""
+BackfillConflictPolicy = Literal["last_mention", "first_mention", "ask"]
+"""#230: ``StorySettings.backfill_conflict_policy``'s values."""
+
+
+class PrunePolicy(BaseModel):
+    """#248 (FR-STORE-32): prune the story's dormant continuations and discarded tails older
+    than ``older_than_days`` (1 to 3650), daily."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    older_than_days: Annotated[StrictInt, PROSPECTIVE] = Field(ge=1, le=3650)
+
+
 class StorySettings(BaseModel):
     """A story's settings: what the story is, never how hard the engine works (FR-PROF-5; the
     engine dials are its profile's, ``SUPERSEDED_STORY_SETTINGS``). Unknown keys are kept so
@@ -360,6 +375,11 @@ class StorySettings(BaseModel):
     """How many days this story's audit records are kept before the ``retention_sweep`` deletes
     them (FR-STORE-30; #71), 1 to 3650. ``None``: the deployment's ``audit_retention_days``
     (default 90). Never affects story history. Prospective."""
+
+    prune_policy: Annotated[PrunePolicy | None, PROSPECTIVE] = None
+    """The story's opt-in pruning policy (FR-STORE-32; #248): ``null`` (the default) keeps every
+    discarded tail and dormant continuation; ``{older_than_days}`` has the daily ``prune_run``
+    prune those older than that. Setting or changing it deletes nothing by itself. Prospective."""
 
     allow_new_arrivals: Annotated[StrictBool, INTERPRETIVE] = True
     """Whether new arrivals may be introduced (FR-VERIFY-11; #144): a director pass's arrival
@@ -409,6 +429,24 @@ class StorySettings(BaseModel):
     their character is not in), still never a ``think`` or ``latent``. The character's own
     partition and memory are the same under both. A no-op where perception is ``none``. A
     request (and a history read) overrides it. Prospective."""
+
+    ambiguous_retcon_timing: Annotated[RetconTiming, PROSPECTIVE] = "include_if_possible"
+    """How a rewrite places a correction whose absolute time the clock's anchor cannot decide
+    (FR-STORE-20; #240): ``include_if_possible`` (the default) includes it at every checkpoint
+    it might precede and marks it ``timing_uncertain``; ``ask_author`` asks the author, in every
+    resolution mode, and stores the answer as the part's position bound. Read when a rewrite is
+    planned: parts already stored keep their flag or bound. Genesis copies the scenario's
+    ``story_settings_defaults.ambiguous_retcon_timing``. No effect under Lite. Prospective."""
+
+    backfill_conflict_policy: Annotated[BackfillConflictPolicy, PROSPECTIVE] = "last_mention"
+    """How a backfill settles the story's old text contradicting itself (FR-PROF-10; #230):
+    ``last_mention`` (the default) makes the latest statement canon for the overlap,
+    ``first_mention`` the earliest, and ``ask`` lists the conflicts for the author and keeps the
+    story paused until they are resolved (or the backfill is resumed with ``ignore_warnings``,
+    leaving them uncertain). The losing statements stay in the transcript as in-world claims.
+    Read when a backfill starts (``story_backfills.report.policy``): a change while one runs
+    affects the next. Genesis copies the scenario's
+    ``story_settings_defaults.backfill_conflict_policy``. Prospective."""
 
     player_authority: Annotated[PlayerAuthority, INTERPRETIVE] = DEFAULT_PLAYER_AUTHORITY
     """The player's authority over the other characters (FR-RESP-11; #180; the owner's default
@@ -710,7 +748,15 @@ class MediaSettings(BaseModel):
 MEDIA_SWEEP_TASK = "media_sweep"
 """The media sweep's recurring task (and job kind; ``orchestrator.jobs.handlers.media_sweep``)."""
 
-RECURRING_INTERVAL_SETTINGS: Mapping[str, str] = {"media_sweep_interval": MEDIA_SWEEP_TASK}
+CERTIFICATION_CANARY_TASK = "certification_canary"
+CERTIFICATION_RECERTIFY_TASK = "certification_recertify"
+"""#234's recurring tasks (``orchestrator.jobs.handlers.certification_canary``)."""
+
+RECURRING_INTERVAL_SETTINGS: Mapping[str, str] = {
+    "media_sweep_interval": MEDIA_SWEEP_TASK,
+    "certification_canary_interval_s": CERTIFICATION_CANARY_TASK,
+    "certification_recertify_interval_s": CERTIFICATION_RECERTIFY_TASK,
+}
 """Deployment settings (seconds) that set a recurring task's interval, by setting: the task's
 name. A settings write moves the task's ``recurring_tasks`` row, and every worker's start-up
 reconcile reads the setting (``orchestrator.jobs.timers.reconcile``)."""
@@ -853,6 +899,106 @@ class FeedbackSettings(BaseModel):
 
 ErasureSharedMedia = Literal["purge", "retire"]
 DEFAULT_ERASURE_SHARED_MEDIA: ErasureSharedMedia = "purge"
+
+
+DEFAULT_DEPENDENCY_SEARCH_MAX_RESULTS = 500
+"""How many dependents one ``core.edges.dependents`` search answers at most (#220)."""
+DEFAULT_DEPENDENCY_SEARCH_MAX_DEPTH = 3
+"""How deep a ``derives`` chain one search follows at most (#220)."""
+
+
+class DependencySettings(BaseModel):
+    """The dependency search's bounds (FR-DIRECT-7; #220), stored under
+    ``deployment_state.settings``: a search answers at most ``dependency_search_max_results``
+    dependents (``truncated`` past it) and follows ``derives`` chains at most
+    ``dependency_search_max_depth`` deep (a deeper request is clamped). Prospective: a search
+    reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    dependency_search_max_results: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_DEPENDENCY_SEARCH_MAX_RESULTS, ge=1, le=100_000
+    )
+    dependency_search_max_depth: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_DEPENDENCY_SEARCH_MAX_DEPTH, ge=1, le=10
+    )
+
+
+class RewriteSettings(BaseModel):
+    """The history side-channel's dials (FR-REWRITE-1,2; #223), stored under
+    ``deployment_state.settings``: two entity candidates whose resolution scores are within
+    ``rewrite_ambiguity_margin`` of each other are asked about, not guessed; a story has at most
+    ``rewrite_max_open_sessions`` open sessions; a session idle ``rewrite_session_ttl_minutes``
+    expires; an ``apply_directly`` apply whose plan went stale re-plans and retries
+    ``rewrite_stale_retries`` times (#237). Prospective: a session reads them when it is opened or
+    written."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    rewrite_ambiguity_margin: Annotated[StrictFloat, PROSPECTIVE] = Field(
+        default=0.15, ge=0.0, le=1.0
+    )
+    rewrite_max_open_sessions: Annotated[StrictInt, PROSPECTIVE] = Field(default=5, ge=1, le=100)
+    rewrite_session_ttl_minutes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=1_440, ge=10, le=30 * 1_440
+    )
+    rewrite_stale_retries: Annotated[StrictInt, PROSPECTIVE] = Field(default=2, ge=0, le=10)
+
+
+DAY_S = 86_400
+DEFAULT_CANARY_INTERVAL_S = 7 * DAY_S
+
+
+class CertificationCanarySettings(BaseModel):
+    """The certification canary and re-certification (FR-PROF-17; #234), stored under
+    ``deployment_state.settings``: **off by default** (the owner's decision 3: every canary run
+    costs real model calls). With ``certification_canary_enabled``, every
+    ``certification_canary_interval_s`` (1 hour to 90 days) each in-use valid certification is
+    re-checked on ``certification_canary_sample_size`` cases (10-1000) per suite over
+    ``certification_canary_seeds`` seeds (1-5); with ``certification_recertify_interval_s`` (1 to
+    365 days; ``null``: never) each in-use certified configuration is certified again in full.
+    Prospective: a run reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    certification_canary_enabled: Annotated[StrictBool, PROSPECTIVE] = False
+    certification_canary_interval_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CANARY_INTERVAL_S, ge=3_600, le=90 * DAY_S
+    )
+    certification_canary_sample_size: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=50, ge=10, le=1_000
+    )
+    certification_canary_seeds: Annotated[StrictInt, PROSPECTIVE] = Field(default=1, ge=1, le=5)
+    certification_recertify_interval_s: Annotated[StrictInt | None, PROSPECTIVE] = Field(
+        default=None, ge=DAY_S, le=365 * DAY_S
+    )
+
+    @property
+    def recertify_interval_s(self) -> int:
+        """The re-certification task's interval (its row exists even while it is off)."""
+        return self.certification_recertify_interval_s or DEFAULT_CANARY_INTERVAL_S
+
+
+class ModelTiers(BaseModel):
+    """The deployment's model tiers (#227): ``strongest`` is the model id a profile's
+    ``"@strongest"`` route resolves to (``core.profiles.tiers``); ``null`` (the default): each
+    such purpose uses its own configured model."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    strongest: Annotated[str | None, PROSPECTIVE] = Field(
+        default=None, min_length=1, max_length=200
+    )
+    """A model ``/admin/model-config`` lists (422 ``validation_error`` otherwise). Prospective:
+    a story picks a change up at its next turn boundary, and its fingerprint changes."""
+
+
+class ModelTierSettings(BaseModel):
+    """``model_tiers`` (#227), stored under ``deployment_state.settings``."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    model_tiers: ModelTiers = Field(default_factory=ModelTiers)
 
 
 class ErasureSettings(BaseModel):
@@ -1209,6 +1355,10 @@ class DeploymentSettings(
     RetrievalSettings,
     VerifySettings,
     ProviderSettings,
+    DependencySettings,
+    ModelTierSettings,
+    CertificationCanarySettings,
+    RewriteSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

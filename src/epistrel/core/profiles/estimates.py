@@ -1,9 +1,8 @@
 """What a backfill would cost, for an impact report's estimate (FR-PROF-7,9; #109).
 
-M3 has no backfill (FR-PROF-9 arrives in M7), but a report must say what one would take for a
-story that cannot gain a data-producing capability without it (``upgrade_unavailable``): its
-model calls, tokens and duration. The estimate reads the story's transcript length and these
-constants, never ``docs/`` (which the image does not ship):
+A report says what a backfill would take for a story that gains a data-producing capability over
+its history (#228, #229): its model calls, tokens and duration. The estimate reads the story's
+transcript length and these constants, never ``docs/`` (which the image does not ship):
 
 - the history is read in chunks of ``CHUNK_MESSAGES`` transcript messages, one model call per
   chunk for each module the change adds;

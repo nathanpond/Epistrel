@@ -271,6 +271,18 @@ class ReferenceReplay(Exception):
         }
 
 
+def jsonb_ordered(value: Any) -> Any:
+    """#614: ``value`` (JSON data) with every object's keys in the order Postgres JSONB keeps
+    them (shorter keys first, then bytewise), so a result read back from ``idempotency_keys``
+    has the order it was stored with and a replay's body is byte-identical to the original."""
+    if isinstance(value, dict):
+        ordered = sorted(value, key=lambda k: (len(str(k).encode()), str(k).encode()))
+        return {k: jsonb_ordered(value[k]) for k in ordered}
+    if isinstance(value, list):
+        return [jsonb_ordered(v) for v in value]
+    return value
+
+
 def mark_replayed[T](value: T) -> T:
     """``value`` with ``replayed=True`` (every mutating result dataclass has the field)."""
     if (
@@ -314,7 +326,14 @@ class ResultCodec[T]:
         return cls(TypeAdapter(type_), status_of, mark, revision_field)
 
     def store(self, value: T) -> StoredResult:
-        return StoredResult(self.status(value), self.adapter.dump_python(value, mode="json"))
+        return StoredResult(
+            self.status(value), jsonb_ordered(self.adapter.dump_python(value, mode="json"))
+        )
+
+    def settle(self, value: T) -> T:
+        """#614: ``value`` as its replay reads it back (stored and loaded, unmarked): a keyed
+        call answers this, so the original and the replay answer the same bytes."""
+        return self.adapter.validate_python(self.store(value).body)
 
     def load(self, stored: StoredResult) -> T:
         return self.mark(self.adapter.validate_python(stored.body))
@@ -354,6 +373,12 @@ def detached() -> Iterator[None]:
         yield
     finally:
         _CURRENT.reset(token)
+
+
+def waiting_on_original(call: IdempotentCall) -> None:
+    """Called each time ``claim`` finds the key's original in flight under its lease and is
+    about to wait for it. A no-op: tests replace it to prove a duplicate really waited (#609),
+    since a duplicate arriving after the original finished replays the same answer."""
 
 
 class IdempotentCall:
@@ -456,6 +481,7 @@ class IdempotentCall:
                     "the original request under this Idempotency-Key is still running",
                     {"operation_id": row.operation_id or await self._running_operation()},
                 )
+            waiting_on_original(self)
             await asyncio.sleep(delay)
             delay = min(delay * 2, POLL_MAX_S)
 
@@ -709,7 +735,7 @@ class IdempotentCall:
         if self.result_in_commit is not None and bound == operation.operation_id:
             value = await self.result_in_commit(conn, operation)
             await self._store(conn, self.codec.store(value), revision_of(value))
-            self.committed_value = value
+            self.committed_value = self.codec.settle(value)
             self.stored_in_commit = True
 
     async def bind_configuration(self, conn: AsyncConnection, *, operation_id: str) -> None:
@@ -770,6 +796,7 @@ class IdempotentCall:
         without storing again."""
         if self.claimed:
             await self._store(conn, self.codec.store(value), revision_of(value))
+            value = self.codec.settle(value)
         self.committed_value = value
         self.stored_in_commit = True
 
@@ -783,7 +810,7 @@ class IdempotentCall:
             return value
         async with self.db.begin() as conn:
             await self._store(conn, self.codec.store(value), revision_of(value))
-        return value
+        return self.codec.settle(value)
 
     async def release(self) -> None:
         """The call failed: free the key (failures are never stored). If the call's operation
@@ -911,6 +938,7 @@ __all__ = [
     "detached",
     "drop_results",
     "idempotency_settings",
+    "jsonb_ordered",
     "mark_replayed",
     "purge_expired",
     "read_idempotency_settings",
@@ -918,4 +946,5 @@ __all__ = [
     "staged_open",
     "stored_result",
     "validate_key",
+    "waiting_on_original",
 ]

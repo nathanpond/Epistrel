@@ -41,6 +41,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import world_clock
 from epistrel.core.enums import ClockMode, ScheduledStatus, StateChangeSource
 from epistrel.core.membership import Position
 from epistrel.core.propositions.model import Granularity, Instant, Interval
@@ -344,6 +345,90 @@ async def test_u_23__stamps(
         assert [b["start"] for b in report["clock"]["beats"]][-1] == 55
 
 
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-17")
+async def test_u_23__stamps_after_the_commit(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    clock_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#631: after the commit, a beat's records read their step's start. In a simultaneous
+    turn Jenni's render declares two timed steps (35 and 20 minutes) and Bobby's none: every
+    render starts at the turn's start, so no fold of the positioned advances can say Jenni's
+    step 2 starts at +55. ``story_time_at`` at each beat's position, as a memory (no
+    valid-time column) reads it, equals the time its events were stamped with (an utterance
+    names its event). Complement asserted: Bobby's beat, in the same turn, still reads the
+    turn's start."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Jenni", "Bobby")
+        garage = await ps.place_entity(engine, story, "the garage")
+        for who in ids.values():
+            await ps.put(engine, story, who, garage)
+        await ck.set_level(engine, story, "on")
+        patched = await client.patch(
+            f"/stories/{story}/clock", json={"mode": "manual"}, headers=WRITE
+        )
+        assert patched.status_code == 200, patched.text
+        await ms.per_character(engine, story)
+        advance = {"kind": "time_advance", "state": "world_clock", "reason": "the drive"}
+        ms.renders_for(
+            stub,
+            "Jenni",
+            ms.render(
+                beat("do", "She starts the car.", step=1, effects=[{**advance, "minutes": 35}]),
+                beat("say", "Nearly there now.", step=2, effects=[{**advance, "minutes": 20}]),
+                steps=[{"index": 1, "kind": "time"}, {"index": 2, "kind": "time"}],
+            ),
+        )
+        ms.renders_for(stub, "Bobby", ms.render(beat("say", "I'll wait here.")))
+        answer = await respond(
+            client,
+            story,
+            body(
+                ids["Cal"],
+                None,
+                do="waits",
+                render_character_ids=[ids["Jenni"], ids["Bobby"]],
+                interaction_mode="simultaneous",
+            ),
+        )
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["interaction_mode"] == "simultaneous"
+        (zero,) = await rows(engine, "SELECT story_minute_zero FROM stories WHERE id = :s", s=story)
+        minute_zero = int(zero.story_minute_zero)
+        stamped = await rows(
+            engine,
+            "SELECT character_id, turn_variant, beat, step, valid_time_minutes FROM events "
+            "WHERE story_id = :s AND narrative_turn = 1 AND type IN ('beat_do', 'beat_say') "
+            "ORDER BY beat",
+            s=story,
+        )
+        read: list[tuple[str, int]] = []
+        async with engine.connect() as conn:
+            for r in stamped:
+                at = Position(1, int(r.turn_variant), 0, int(r.beat), int(r.step or 0))
+                minute = await world_clock.story_time_at(conn, story, at)
+                assert minute == int(r.valid_time_minutes), r
+                read.append((r.character_id, minute - minute_zero))
+        assert read == [(ids["Jenni"], 35), (ids["Jenni"], 55), (ids["Bobby"], 0)]
+        # A memory (no valid-time column) at its own position reads its beat's stamp.
+        by_beat = {int(r.beat): int(r.valid_time_minutes) for r in stamped}
+        kept = await rows(
+            engine,
+            "SELECT turn_variant, beat, step FROM memories WHERE story_id = :s "
+            "AND narrative_turn = 1 AND beat IS NOT NULL AND beat = ANY(:b) ORDER BY beat",
+            s=story,
+            b=list(by_beat),
+        )
+        assert {int(r.beat) for r in kept} == set(by_beat)
+        async with engine.connect() as conn:
+            for r in kept:
+                at = Position(1, int(r.turn_variant), 0, int(r.beat), int(r.step))
+                assert await world_clock.story_time_at(conn, story, at) == by_beat[int(r.beat)]
+
+
 # -- the appointment (#196) -------------------------------------------------------------------
 
 MEETING_ID = "01J9Z8Q4N5V6W7X8Y9Z0A1B2M1"
@@ -435,3 +520,22 @@ def test_u_23__appointment() -> None:
     assert stops.check_advance(span, set(), "diner", events=[at_scene], stops=True) == stops.Stop(
         at_scene, 55
     )
+
+
+@pytest.mark.part("M6", "FR-CLOCK-17")
+def test_u_23__later_render_time() -> None:
+    """#640: a sequential turn's later render is verified from where the earlier renders
+    ended: with Jenni's render (a declared 30-minute wait) timed before it, Bobby's beat starts
+    at +30 in his render's scope. Complement asserted: timed alone, as before, it would start
+    at the turn's start (0)."""
+    jenni = [do(2, "She waits.", advances=(DeclaredAdvance("waits", minutes=30),))]
+    bobby = [TurnBeat("say", 3, "Done yet?", "bobby")]
+    clocking.attempt("s-640", clock(0))
+    with clocking.render_scope("s-640", 1, bobby, before=jenni):
+        times = world_clock._in_turn("s-640")
+        assert times is not None
+        assert times.offset(3, 0) == 30
+    with clocking.render_scope("s-640", 1, bobby):
+        times = world_clock._in_turn("s-640")
+        assert times is not None
+        assert times.offset(3, 0) == 0

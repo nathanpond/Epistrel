@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.concurrency import (
+    READ_SET_MEMBERS,
     LiteReadSet,
     RevalidationRequired,
     decide,
@@ -111,7 +112,8 @@ async def test_base_and_read_set_are_captured(engine: AsyncEngine) -> None:
     held = await start_turn(engine, story, "two")
     status, base, read_set, attempts, _, _ = await operation_row(engine, held.op.operation_id)
     assert (status, base, attempts) == ("in_flight", 2, [])
-    assert set(read_set) == {
+    assert set(read_set) == set(READ_SET_MEMBERS)  # every member, #662's appended ones too
+    assert {
         "window",
         "segments",
         "pins",
@@ -120,7 +122,7 @@ async def test_base_and_read_set_are_captured(engine: AsyncEngine) -> None:
         "guidance_text",
         "scenario_text",
         "director_notes",
-    }
+    } <= set(read_set)
     assert all(len(digest) == 64 for digest in read_set.values())
     await held.release()
     result = await held.task

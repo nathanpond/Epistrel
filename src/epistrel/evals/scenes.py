@@ -1,8 +1,9 @@
 """Scratch scenes #157's suites build through the engine's own paths.
 
-- ``structured(engine, ctx, story_id, dials)``: put a scratch story on the seeded
-  ``Structured`` profile's latest version (``Engine.assign_engine_profile``) with dial overrides
-  (``Engine.set_profile_overrides``), as an author would.
+- ``structured(engine, ctx, story_id, dials)``: put a scratch story on the run's preset (#227;
+  Full, the seeded structured row, by default) at its latest version
+  (``Engine.assign_engine_profile``) with dial overrides (``Engine.set_profile_overrides``), as
+  an author would.
 - ``add_entities``: the story's entities (#131's store), the cast's own with their character.
 - ``episodes``: turns whose commit writes their episodic memories through
   ``core.memory.records.write_episodic`` (each a ``do`` beat of its actor), the
@@ -30,11 +31,12 @@ from epistrel.core.events import Operation
 from epistrel.core.memory import records
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import store
-from epistrel.core.seeds.profiles import STRUCTURED_PROFILE_ID
+from epistrel.core.settings_schema import merge_patch
 from epistrel.core.stories import CreatedStory
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.model_config import model_config
 from epistrel.engine import Engine
+from epistrel.evals.presets import RUN_PRESET
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING
 from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.handlers import reembed
@@ -50,13 +52,16 @@ async def structured(
     story_id: str,
     dials: Mapping[str, Any] | None = None,
 ) -> None:
-    """Run ``story_id`` on the seeded ``Structured`` profile's latest version with ``dials`` (a
-    settings merge patch)."""
+    """Run ``story_id`` on the run's preset (``presets.RUN_PRESET``, #227: Full unless the run
+    names another) at its latest version, with ``dials`` (a settings merge patch)."""
+    preset = RUN_PRESET.get()
     await engine.assign_engine_profile(
         ctx,
         story_id,
-        ProfileAssignment(profile_id=STRUCTURED_PROFILE_ID, ignore_warnings=True),
+        ProfileAssignment(profile_id=preset.profile_id, ignore_warnings=True),
     )
+    if preset.overrides:
+        dials = merge_patch(dict(preset.overrides), dict(dials or {}))
     if dials:
         await engine.set_profile_overrides(
             ctx,

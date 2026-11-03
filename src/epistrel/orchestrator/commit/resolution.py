@@ -111,6 +111,22 @@ def rejected_result(c: CheckedClaim, conflict: Conflict) -> VerifyResult:
     )
 
 
+def _accepted(c: CheckedClaim) -> CheckedClaim:
+    """#241: a directed binding's claim taken as novel (the author's decision)."""
+    assert c.result is not None  # noqa: S101 - the caller checked
+    return replace(
+        c,
+        result=replace(
+            c.result,
+            verdict=Verdict(VerdictKind.NOVEL),
+            kind=VerdictKind.NOVEL,
+            disposition=None,
+            resolution_conflict=False,
+            hidden_conflict=False,
+        ),
+    )
+
+
 async def screen(
     conn: AsyncConnection,
     story_id: str,
@@ -122,11 +138,19 @@ async def screen(
     """Reconcile every claim that would resolve an open thunk (see the module docstring):
     ``checked`` with each rejected binding's verdict replaced, and the rejections."""
     wanted = {id(c) for c in candidates(checked)}
+    # #241 (FR-COMMIT-12): an author-directed binding is never rejected and re-steered here;
+    # its reconciliation ran before the turn (``orchestrator.commit.directed``).
+    directed = lifecycle.AUTHOR_DIRECTED.get()
     out: list[CheckedClaim] = []
     rejected: list[RejectedBinding] = []
     for c in checked:
         proposition = c.claim.proposition
         thunk_id = c.claim.matched_thunk_id
+        if thunk_id is not None and thunk_id in directed and proposition is not None:
+            # The author's decision stands against what it contradicts: recorded history was
+            # settled before the turn (no conflict, or the directed resolution's amendment).
+            out.append(_accepted(c) if c.result is not None and c.result.needs_repair else c)
+            continue
         if id(c) not in wanted or proposition is None or thunk_id is None:
             out.append(c)
             continue

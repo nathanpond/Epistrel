@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import own_predicates, summary
+from epistrel.core import own_predicates, summary, turn_memo
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.errors import (
     ErasedSubjectReferenced,
@@ -74,10 +74,15 @@ READ_SET_MEMBERS: tuple[str, ...] = (
     "guidance_text",
     "scenario_text",
     "director_notes",
+    "time",
+    "tracked_values",
 )
 """The Lite read set (FR-CONC-4: the assembled prompt's inputs); a story created from a
 scenario adds its two rendered blocks (``scenario_text``, ``director_notes``: each the block's
-text, hashed; #122). Guardrail and policy sets are
+text, hashed; #122); the prompt-only clock and States add what their sections show (``time``,
+``tracked_values``: #662, read by ``core.lite_context``, the prompt's own reader; empty unless
+the story runs the Lite pipeline with that module on). Members are appended, never
+reordered. Guardrail and policy sets are
 not members: they belong to #64's configuration dependency set, which is re-checked. Neither is
 the configuration (the generation settings, the window): a turn captures it at its start and
 runs under it, so a change of the profile, the overrides or the defaults is prospective and
@@ -282,11 +287,13 @@ class LiteReadSet:
     """The Lite read set of a story: one hash per member of ``READ_SET_MEMBERS``.
 
     ``window_turns`` bounds the verbatim window to the latest N active turns (``None``: all).
+    ``before_turn`` (#662): a regenerate's turn, whose ``time`` is the clock as it started.
     The same object computes the base read set at start and the current one under the lock,
     so the rebase decision is a hash compare, not a re-read of the inputs.
     """
 
     window_turns: int | None = None
+    before_turn: int | None = None
 
     async def values(self, conn: AsyncConnection, story_id: str) -> dict[str, Any]:
         return {
@@ -404,6 +411,27 @@ async def _director_notes(conn: AsyncConnection, story_id: str, spec: LiteReadSe
     return (await read_rendered(conn, story_id)).director_notes
 
 
+async def _time(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """The Lite prompt's ``## Time`` lines (#662), as ``core.lite_context`` reads them."""
+    from epistrel.core.lite_context import lite_pipeline, read_lite_context
+
+    if not await lite_pipeline(conn, story_id):
+        return []
+    found = await read_lite_context(conn, story_id, before_turn=spec.before_turn)
+    return list(found.time_lines)
+
+
+async def _tracked_values(conn: AsyncConnection, story_id: str, spec: LiteReadSet) -> Any:
+    """The Lite prompt's ``## Tracked values`` lines (#662), as ``core.lite_context`` reads
+    them."""
+    from epistrel.core.lite_context import lite_pipeline, read_lite_context
+
+    if not await lite_pipeline(conn, story_id):
+        return []
+    found = await read_lite_context(conn, story_id, before_turn=spec.before_turn)
+    return list(found.tracked_values)
+
+
 for _name, _loader in (
     ("window", _window),
     ("segments", _segments),
@@ -413,6 +441,8 @@ for _name, _loader in (
     ("guidance_text", _guidance_text),
     ("scenario_text", _scenario_text),
     ("director_notes", _director_notes),
+    ("time", _time),
+    ("tracked_values", _tracked_values),
 ):
     register_read_set_member(_name, _loader)
 
@@ -515,6 +545,8 @@ async def run_with_revalidation(
             try:
                 await op.commit(decide=decide)
             except RevalidationRequired as signal:
+                # #619: the story moved under the turn: its per-turn memo reads it again.
+                turn_memo.clear()
                 outcome, state = signal.outcome, signal.state
                 if isinstance(outcome, Abandon):
                     await op.abandon()

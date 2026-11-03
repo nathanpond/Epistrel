@@ -338,6 +338,15 @@ Index(
     memories.c.event_type,
     memories.c.narrative_turn,
 )
+# #622 (migration 0106): the consolidation scheduler's shared-scope window read, in turn order.
+Index(
+    "ix_memories_shared_episodic_turn",
+    memories.c.story_id,
+    memories.c.narrative_turn,
+    postgresql_where=text(
+        f"kind = 'episodic' AND holder_character_id IS NULL AND {active_only_predicate()}"
+    ),
+)
 
 MEMORIES = register_derived(DerivedTable(memories))
 """``memories`` in ``core.membership.DERIVED_TABLES``: truncation, untruncation, swap,

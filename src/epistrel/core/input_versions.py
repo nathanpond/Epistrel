@@ -8,9 +8,11 @@ or no longer the same version — the job's output is then dropped and the job r
 
 Versions by table (a reader is registered per table; later stories add theirs):
 
-- ``operations:<operation_id>`` → ``[membership, membership_tx]``: the operation must still be
-  ``active`` and its membership must not have moved (a truncate and an untruncate both move
-  ``membership_tx``, so a discard-and-restore is a change too);
+- ``operations:<operation_id>`` → ``[membership, membership_tx, record_version]``: the
+  operation must still be ``active`` and its membership must not have moved (a truncate and an
+  untruncate both move ``membership_tx``, so a discard-and-restore is a change too), and
+  ``record_version`` is the latest active record part's ``tx_from`` over the operation's events
+  (an amendment that corrected one of them without discarding it, #236; ``None``: none);
 - ``stories:<story_id>`` → ``timeline_revision``;
 - ``story_texts:<story_id>`` → #47's hash of the pinned memories and custom instructions.
 
@@ -22,12 +24,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.concurrency import hash_member
 from epistrel.core.enums import Membership
-from epistrel.core.tables import operations, stories, story_texts
+from epistrel.core.tables import amendment_parts, events, operations, stories, story_texts
 
 Version = Any
 """A JSON value; compared for equality only."""
@@ -128,18 +130,28 @@ async def stale_inputs(conn: AsyncConnection, declared: Mapping[str, Version]) -
 # -- the M2 readers ---------------------------------------------------------------------------
 
 
-async def _operation_version(conn: AsyncConnection, operation_id: str) -> Version | None:
-    row = (
-        await conn.execute(
-            select(operations.c.membership, operations.c.membership_tx).where(
-                operations.c.operation_id == operation_id
-            )
+async def record_versions(conn: AsyncConnection, ids: Sequence[str]) -> dict[str, str]:
+    """Per operation of ``ids``, the latest active record part's ``tx_from`` over its events
+    (an operation no amendment corrected is absent; #236)."""
+    p, e = amendment_parts.c, events.c
+    found = await conn.execute(
+        select(e.operation_id, func.max(p.tx_from))
+        .select_from(
+            amendment_parts.join(events, and_(p.record_table == "events", p.record_id == e.id))
         )
-    ).one_or_none()
-    if row is None:
-        return None
-    tx = row.membership_tx.isoformat() if row.membership_tx is not None else None
-    return [str(row.membership), tx]
+        .where(e.operation_id.in_(list(ids)), p.kind == "record", p.status == "active")
+        .group_by(e.operation_id)
+    )
+    return {str(row[0]): row[1].isoformat() for row in found if row[1] is not None}
+
+
+async def record_version(conn: AsyncConnection, operation_id: str) -> str | None:
+    """``record_versions`` for one operation (``None``: no amendment corrected its events)."""
+    return (await record_versions(conn, [operation_id])).get(operation_id)
+
+
+async def _operation_version(conn: AsyncConnection, operation_id: str) -> Version | None:
+    return (await _operation_versions(conn, [operation_id])).get(operation_id)
 
 
 async def _operation_versions(conn: AsyncConnection, ids: Sequence[str]) -> dict[str, Version]:
@@ -147,12 +159,15 @@ async def _operation_versions(conn: AsyncConnection, ids: Sequence[str]) -> dict
     rows = await conn.execute(
         select(o.operation_id, o.membership, o.membership_tx).where(o.operation_id.in_(list(ids)))
     )
+    found = list(rows)
+    corrected = await record_versions(conn, [str(row.operation_id) for row in found])
     return {
         str(row.operation_id): [
             str(row.membership),
             row.membership_tx.isoformat() if row.membership_tx is not None else None,
+            corrected.get(str(row.operation_id)),
         ]
-        for row in rows
+        for row in found
     }
 
 
@@ -194,6 +209,8 @@ __all__ = [
     "input_key",
     "read_version",
     "read_versions",
+    "record_version",
+    "record_versions",
     "register_version_reader",
     "stale_inputs",
 ]

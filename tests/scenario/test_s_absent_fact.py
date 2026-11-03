@@ -255,3 +255,107 @@ async def test_s_absent_fact__verify(engine: AsyncEngine) -> None:
     assert [a["outcome"] for a in quiet.op.attempts] == ["rebase"]
     assert quiet.model.calls == 1
     assert checks == 1
+
+
+# -- M7: the lock arrives through an amendment (#236) -----------------------------------------
+
+
+@pytest.mark.part("M7", "FR-CONC-12")
+async def test_s_absent_fact__m7(engine: AsyncEngine) -> None:
+    """The same holds when the lock arrives through an amendment (#236): its proposition part
+    writes #136's ``proposition_changes`` through #133's fact hooks, so the turn's empty "locks
+    on this door" key matches and the turn regenerates and narrates the lock. Complements: an
+    unrelated proposition-only amendment only rebases the turn; an amendment with a record part
+    is a control action, so the turn in flight abandons with ``timeline_changed``; and with the
+    hook skipped (``amendment_proposition_changes_skipped``) the lock lands unnoticed and the
+    turn rebases and opens a locked door."""
+    from epistrel.core.amendments.store import PropositionPartDraft, RecordPartDraft
+    from epistrel.core.errors import EpistrelError
+    from epistrel.testing.faults import amendment_proposition_changes_skipped
+    from tests import amendment_support as am
+
+    d = await _door(engine)
+    held = await _start(engine, d)
+    await am.amend(engine, d.story_id, [PropositionPartDraft(d.lock(), valid_from_minutes=0)])
+    await held.release()
+    first = held.op.attempts[0]
+    assert (first["outcome"], first["reason"]) == ("regenerate", "read_set_touched")
+    assert await _finish(engine, held) == LOCKED
+
+    calm = await _door(engine)
+    quiet = await _start(engine, calm)
+    moved = at(calm.world.people["Ann"], calm.world.places["garden"], 0, None)
+    await am.amend(engine, calm.story_id, [PropositionPartDraft(moved, valid_from_minutes=0)])
+    assert await _finish(engine, quiet) == OPENS
+    assert [a["outcome"] for a in quiet.op.attempts] == ["rebase"]
+    assert quiet.model.calls == 1
+
+    corrected = await _door(engine)
+    replies = await am.play(engine, corrected.story_id, 1)
+    busy = await _start(engine, corrected)
+    (reply,) = replies.values()
+    await am.amend(
+        engine,
+        corrected.story_id,
+        [RecordPartDraft("events", reply, "replace", {"text": "A quieter reply."})],
+    )
+    with pytest.raises(EpistrelError) as abandoned:
+        await _finish(engine, busy)
+    assert abandoned.value.code == "timeline_changed"
+
+    unseen = await _door(engine)
+    with amendment_proposition_changes_skipped():
+        missed = await _start(engine, unseen)
+        await am.amend(
+            engine, unseen.story_id, [PropositionPartDraft(unseen.lock(), valid_from_minutes=0)]
+        )
+        assert await _finish(engine, missed) == OPENS
+    assert [a["outcome"] for a in missed.op.attempts] == ["rebase"]
+
+
+@pytest.mark.part("M7", "FR-CONC-12")
+async def test_s_absent_fact__m7_staged(
+    pg_url: str, engine: AsyncEngine, states_delivered: None, drained_embedding_jobs: None
+) -> None:
+    """A staged turn already past its intent commit (#212) is not abandoned by an amendment
+    with a record part (a control action): while its payment is being sent, the author
+    corrects an earlier reply; the turn's remaining stages revalidate under #214's rules and
+    it completes, the payment confirmed once and the outcome narrated."""
+    from epistrel.core.amendments.store import RecordPartDraft
+    from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
+    from tests import amendment_support as am
+    from tests import provider_support as ps
+    from tests import staged_support as sts
+    from tests import state_support as ss
+    from tests.auth_support import auth_settings
+    from tests.respond_support import respond_client
+    from tests.scenario.test_s_config_race import _around
+
+    async with respond_client(auth_settings(pg_url, model_adapter="stub"), engine) as (
+        client,
+        lib,
+    ):
+        story, cal, _, fake = await sts.sync_story(client, engine, lib)
+        fake.script_writes("gold", "confirmed")
+        (reply,) = (await am.play(engine, story, 1)).values()
+        sts.script_purchase(lib.models.stub, cal)
+        before = await sts.revision(engine, story)
+
+        async def correct() -> None:
+            await am.amend(
+                engine, story, [RecordPartDraft("events", reply, "replace", {"text": "Hm."})]
+            )
+
+        with _around(dispatcher, "send", correct) as fired:
+            answer = await sts.buy(client, story, cal)
+        assert fired
+        assert answer.status_code == 200, answer.text
+        assert sts.WENT in [b.get("text") or "" for b in answer.json()["beats"]]
+        op = await sts.staged_op(engine, story)
+        assert (op.status, op.turn_stage) == ("committed", "completed")
+        (row,) = await ps.outbox_rows(engine, story)
+        assert row.status == "confirmed"
+        assert len(fake.writes) == 1
+        assert await sts.revision(engine, story) > before
+        await ps.drop_outbox_jobs(engine, story)
+        await ss.set_level(engine, story, None)

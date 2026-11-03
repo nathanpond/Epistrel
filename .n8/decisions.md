@@ -10576,3 +10576,1034 @@ Fix pass on the bugs the M3 re-verify at `38bbc6b` filed (#392–#402). It runs 
   - #661 now builds the resolve-only action (`POST /stories/{id}/reconciliation/{listing}/resolve`), since it runs in batch B before #251; #251 only widens it to `imported_unsettled`. Edge #251 ← #661. AC changed on both.
   - The owner's decisions on #663, #646, #641, #639, #635 and #623 are folded into their bodies (`## Decided` plus derived AC).
   - #615–#622 and #628 gain a `## Done when` with measurable targets (read/statement counts, per-call ms at P-04 scale, NFR-PERF-1/3) and a guard test; #619, batch E's anchor, closes the batch with a `weekly-p04` multi dispatch.
+
+## /n8-exec M7 — 2026-11-01
+
+Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run first, in batches A–E (the M7 description's order), with one full-suite run per batch. As in M6, CI on the milestone PR is that full run (a local full run takes about 2h18m). Feature stories keep the per-story full-suite gate.
+
+- **Decision:** #665 (weekly perf run failed) gets no code change. The failed run (41294965485) was at `7d181b35`, main before M6 merged. Its report shows a backlog: engine-only p50 ≈ 55 s against a 60 s interval, 28 turns still queued when the 120 s drain ended. The first `weekly-p04` dispatch after M6, 41333068686 at `21954c92`, passed `weekly-multi` (281/281, 0 lost). The issue closes on the `weekly-p04` dispatch that closes batch E (#619).
+  **Why:** the cause was fixed by M6's #522 spike work. A rerun at M7's head is the evidence the issue asks for, and batch E runs one anyway.
+  **Issue:** #665, #619
+- **Decision:** #684 splits C-08's inner run into four parallel shards, each on its own migrated database, with their telemetry merged. It does not raise `RUN_TIMEOUT_S`. The shards are packed by file size, and `EPISTREL_TEST_C08_SHARDS` overrides the count. Each shard keeps the 1500 s bound. Output goes to temp files, not pipes, so one shard can't block another.
+  **Why:** a higher bound only moves the cliff while `tests/scenario` grows. The CI runner has four cores, and the inner run is CPU-bound.
+  **Issue:** #684
+- **Decision:** #653: P-05 now requires S-test Lite turns only when its Lite sentinel S-test (`test_s_double_submit.py`) *passed* in the session, which the census records through `pytest_runtest_logreport`. Before, it required them whenever any scenario test was *collected*. P-05 also checks that its own turns are attributed to itself, so attribution is proven in every session.
+  **Why:** most S-tests play no Lite turn (structured and fork tests). Requiring Lite turns when the tests that make them ran keeps the check's purpose and drops the order dependence.
+  **Issue:** #653
+- **Decision:** #609: production gets one no-op hook, `idempotency.waiting_on_original(call)`, called before each wait on an in-flight original. Tests replace it (`tests/idempotency_support.waits_on_original`). The notify test turns timers off, so nothing caps the hour's wait, and enqueues only after `LoopLog` (moved to `tests/loop_support.py`) shows the loop in that wait.
+  **Why:** the issue's own suggestion. A module-level function costs nothing in production and can't change behaviour.
+  **Issue:** #609
+- **Decision:** #626: no behaviour change. A paused story keeps taking a State definition PATCH and `PATCH /clock`, and `core/pause.py` now lists them among the configuration writes a pause allows. A test pins paused → accepted and archived → 409.
+  **Why:** FR-CONC-5 refuses truth-changing calls. These are configuration writes: `config_revision` moves, `timeline_revision` doesn't, and FR-CONC-16 rebases in-flight work. Settings without policies, profile and overrides, and participation already behave this way. Refusing these two alone would be the inconsistency the issue asks about.
+  **Issue:** #626
+- **Decision (Rule 3):** S-ANCHOR-MEETING's `advances` read now orders ties by `c.id`. C-08's sharded run surfaced a pacing and a declared-skip row at one `(turn, slot, beat, step)` that Postgres returned in either order.
+  **Why:** it was a test-ordering bug the parallel load exposed, and C-08 (#684) runs that test.
+  **Issue:** #684
+- **Decision:** #627. The same-turn overlay (`StagedSource`) decides a clock check against the clock's anchor with the turn's earlier anchoring statements laid over it (`world_clock.verify.staged_anchor`), never as a functional fact over the staged records. Turn reconciliation leaves `anchors_clock` requests to `commit_anchor`.
+  **Why:** probing showed the old overlay contradicted every second time statement by functional key, even a consistent one ("Friday morning" then "9:15"), and reconciliation then dropped the second anchor. The read set still keys the committed anchor, so rebase is unchanged.
+  **Issue:** #627
+- **Decision:** #631. `world_clock.story_time_at` at a beat of a committed turn (outside its commit's `turn_scope`) reads the time that beat's events were stamped with (`events.valid_time_minutes`, matched on turn, variant, slot, beat and step). It falls back to the fold.
+  **Why:** memories and exposures have no valid-time column, and the fold can't place a simultaneous turn's later renders. The event already carries the exact step start, so no schema change is needed.
+  **Issue:** #631
+- **Decision:** #644. The clock's owned value carries the claim's scheduled events (planned offset, `planned_anchor` frame minute, grace). An exact-offset event's status is decided as a time belief decides one (`time_belief._status`: `due` from the statement tolerance before it until grace or tolerance after). S-DINER's belief-only 16:00 is now `sincere_error`, which is what its docstring always said, where it used to be `sincere` because the claim was undecidable.
+  **Why:** strict `offset >= planned` contradicted "I have to take my sister's call" ten minutes early, which the belief side accepts.
+  **Issue:** #644
+- **Decision:** #643. An unreliable instrument's reading (`time.json`'s `unreliable_instruments`: a modifier such as stopped or broken within two words of watch, clock or phone) is texture: no `time_is` claim.
+  **Why:** the issue allowed texture or a new instrument-reading claim. Texture needs no new predicate.
+  **Issue:** #643
+- **Decision:** #645. A render-created time of day under a range anchor is placed as `POST` places one (`schedule_statements.range_placement`), and `schedules.committed` holds it at its frame minute (`stops.place_event`). Declared claims now carry their `time_text` (`DeclaredClaim`, `DetectedClaim`). `PATCH` with `"HH:MM"` uses `_placed`, and `stops.record` gained `planned_anchor=`.
+  **Why:** without the range fallback the claim was `unresolved_time` and never canonized at all.
+  **Issue:** #645
+- **Decision:** #628. One `rule` row per advance per elapsed State: its delta is the ticks' sum (each tick clamped or held in memory), its `valid_time_minutes` the last tick's, and its reason the tick count. S-STATE-SCHEMA's `__rules` expectations were updated to the compact rows.
+  **Why:** this is the issue's "Done when". The fold is identical by construction.
+  **Issue:** #628
+- **Decision:** #663. A new gate, `world_clock.verify.checks_on` (level `on` only), covers `time_is`'s owner lookup, the clock read, the overlay check, `VerifyConfig.clock` and skip estimation. `clock_on` (on or `prompt_only`) still gates prompt text. Pacing at `prompt_only` is unchanged: the AC names skips, skip authority and anchor checks only.
+  **Why:** the owner's decision ("fully inert ... only the prompt text") as encoded in the AC. Pacing was not named, and #203 shipped it at both levels.
+  **Issue:** #663
+- **Decision:** #641. The speaker of a sincere belief-only plan (a `Report` with no event) gets an `observation` belief citing its `say` event at step + 1, as `speech._observe_own` does. The plan's minted event entity is created (`canonize.introduce`, `skip_existing`) so the belief names a real entity. Hearers already had #162's testimony, as a probe showed.
+  **Why:** a probe found the missing write and the dangling minted object id. Recall then verifies as consistent.
+  **Issue:** #641
+- **Decision:** #639. `ClockRead` carries `dispatch` (provider write-capable) and `provider`. `time_requests` dispatches through the outbox (the minutes as the effect's `delta`) when the provider can write. `outbox_rows` takes the provider from the request when the State isn't in the book.
+  **Why:** the owner's decision (FR-EXT-10).
+  **Issue:** #639
+- **Decision:** #646. `paused_mid_turn` is set by a sequential `time_stops` pause. Later primaries' render constraints then carry `prompts.TIME_STEERING`.
+  **Why:** the owner's decision. Next-turn steering is unchanged.
+  **Issue:** #646
+- **Decision:** #661. Migration 0105 adds `reconciliation_marks.request_id` (outbox_id nullable, a CHECK for exactly one, a partial unique open index). `Listing.request_id` is the consumer key, and a listing's status is the latest answer's kind (`requested` before any). The resolve route is `POST /stories/{id}/reconciliation/{listing}/resolve`, where `{listing}` is the request id: an inter-turn slot operation that writes a `reconciliation_resolved` AUDIT event. The route's row goes in the fixture's `outside` list with FR-EXT-22, beside settle-now and compensate, not under `extras` as the AC says, because its siblings are there. A derived consumer `reservation_expired` listing is closed by writing an already-resolved mark.
+  **Why:** these follow the AC and the #218 actions' existing shapes. Console: the Engine has a new action, so a Console "resolve" button on the reconciliation view is the matching surface (nathanpond/Epistrel-Console; not filed from this run).
+  **Issue:** #661
+
+### Batch C — 2026-11-02
+
+- **Decision:** #688 is docstring-only. `_NO_STEPS_REMEDY`'s comment names the schema_error retry's own parameters.
+  **Why:** the issue is the misleading comment. The behaviour is correct.
+  **Issue:** #688
+- **Decision:** #585. `interaction.json` gains `time_words`. A passer-by's `_followed_by` skips an `or` in a time phrase, so "a little later" and "an hour or so later" are no new person.
+  **Why:** this is the narrowest lexicon change that clears both reported phrases.
+  **Issue:** #585
+- **Decision:** #630. A render's `consideration` that names no story entity is a structural retry (`render_schema` items, `effect_errors`). The book's entity index is loaded at attempt start.
+  **Why:** the issue's expected behaviour. A retry costs one render, and a dropped consideration costs a silent wrong effect.
+  **Issue:** #630
+- **Decision:** #629. The scene context's last beats (`_scene_last_beats`) carry no earlier `think` or `latent` beat.
+  **Why:** private beats never reach another render's context (FR-RESP-13's rule).
+  **Issue:** #629
+- **Decision:** #652. A narrator beat's safe fallback is the narrator's line (`NARRATOR_FALLBACK = "A moment passes."`), not a character's.
+  **Why:** a character line under the narrator misattributes speech.
+  **Issue:** #652
+- **Decision:** #636. The turn budget gains a named `STOP` slot. It is reserved after the schedule read when stops are on and an event is pending or possibly due, released after the renders, and drawn by the ladder's `time_stop` rung.
+  **Why:** a due-event stop is planned work, so it must fit under the default budget rather than compete with optional calls.
+  **Issue:** #636
+- **Decision:** #624. A vocative form of address ("…, friend.") from `interaction.json`'s `address_terms` models nobody new.
+  **Why:** the issue's reproduction. The list is closed and short.
+  **Issue:** #624
+- **Decision:** #635 follows the owner's decision. The verifier's `_unmodeled` lets narration that moves an unmodeled person ("The stranger leaves the inn.") be a change of placement. A modeled character's contradicted placement with no change cue is still repaired.
+  **Why:** the owner's decision on the issue.
+  **Issue:** #635
+- **Decision:** #640. A later sequential render is verified from the time the earlier renders ended. `render_scope(before=)` and `check_turn`'s `timed_before` carry this; a simultaneous turn passes none.
+  **Why:** otherwise a later render's time claims are judged at the turn's start.
+  **Issue:** #640
+- **Decision (Rule 1):** `test_correct`'s crashed child is started with `mode="api"`, so it runs no job worker. That is CI-only (it does not reproduce locally); the guess is that a story-less job the crashed child held blocked the orphan sweep.
+  **Why:** the test covers a correction's crash, not the job worker. The pass on CI confirms or refutes the guess.
+  **Issue:** #609 (batch A's gate)
+- **Decision:** #651. Player authority's `_PLACING` and `_extracted_result` treat an extraction claim of a narrated action's own result ("I pick up the key" → holds) as no presupposition.
+  **Why:** the result of the narrated act is what the player asserted, not something the player presupposed.
+  **Issue:** #651
+- **Decision:** #642. In `StagedSource`, a staged CONTRADICTED from an earlier beat of the turn outranks a canon SUPPORTED. Clock checks are excepted and stay the anchor overlay's (#627).
+  **Why:** an earlier beat's change (an exit, a pass-out) is newer than the pre-turn canon.
+  **Issue:** #642
+- **Decision:** #659 and #660 share one commit. `merge_interpretive(captured, current)` takes each interpretive leaf from the current settings. The hook sits in the structured turn's `begin` on a restart, not in `generate` as planned: `op.restart` re-runs `begin`, which builds the read the renders use. When `player_authority` moved, the cast is re-resolved there too.
+  **Why:** in `generate` the cast was recast after the read was built, so it never rendered. `verification.level` turned out to be read fresh already. The #659 scenario test therefore drives `states.level`, which is read from the captured settings.
+  **Issue:** #659, #660
+- **Decision (Rule 1):** batch B's CI failures were fixed. The ownership matrix covers #661's new resolve route (`_consumer_listing` prepare). `test_place_time`'s partial-anchor complement now expects #645's range placement (05:00 + the time of day), not `None`.
+  **Why:** both are tests that #661 and #645 should have updated.
+  **Issue:** #661, #645
+- **Decision:** #638. `time_skips` re-scans a beat whose text changed since its skips were decided, and runs again after each `repair_turn`, before `settle_skips`. Only skips not decided before are classified (`_skip_key`). A refused new skip is settled by the deterministic rung, since no repair round is left. An undeclared one is estimated only while the optional budget allows; otherwise it is removed as unestimated. A newly accepted skip is not checked against due events again (`time_stops` ran before the repair).
+  **Why:** the issue asks for "classified and bounded like an original one". A second repair round would be unbounded. The due-event gap is noted rather than closed because an accepted repair-introduced skip is rare and still capped.
+  **Issue:** #638
+- **Decision:** #611. The owner did not answer the triage question, so the narrower option was taken. The `send` lemma lists message head nouns (text, message, email, e-mail, sms, reply, word, signal, wire), and `detect._transfer` reads no `holds` for such an item. A parcel or a letter is still a transfer. S-WHISPER's inference flow now expects the blurt to pass whole once Bobby is told `sent`. Not chosen: suppressing detector readings under a same-span declared claim, a broader change to the merge rule all categories share, left to the owner.
+  **Why:** a low-cost ambiguity. It is reversible in a data file, and it fixes the reported false repair.
+  **Issue:** #611
+- **Decision:** #623 follows the owner's decision. `TurnRead.output_viewpoint` carries the respond's resolved viewpoint, and narrator claims are verified at it (`verify_detected(narration_viewpoint=)`). Public canon verifies as before, while hidden canon and hidden State values the viewpoint has no belief about are repaired. An omniscient response is unchanged.
+  **Why:** the owner's decision (a privacy fix). It is narrow because most canon is public, so only hidden-scope content moves.
+  **Issue:** #623
+
+### Batch D — 2026-11-02
+
+- **Decision (correction to batch C):** #623 is narrowed. The full scenario run showed that verifying every narrator claim at the delivery viewpoint repaired #566/#546's narrated reveals (S-PHONE `__narrated_reveal`, S-ENTITY-IDENTITY `__m5_widening[narration]`). Now only a `state_value` claim (a hidden State's value) is checked at the delivery viewpoint. Hidden canon that a perceived narration states stays a reveal, because the narration is the viewpoint's path to it. S-EXT-PINNED's narrated hidden marks are now delivered `omniscient`.
+  **Why:** the two owner-accepted behaviours conflict only for hidden canon. No narration reveals a State value ("values are not knowledge"), so the State half of the decision stands without touching #566. The issue comment offers the one-line reversal if the owner meant otherwise.
+  **Issue:** #623 (and #566, #546)
+- **Blocker:** #611 is reverted (d42a0af) and marked `blocked` and `needs-owner-action`. Both of its options remove the detector's transfer reading of "Olivia sent the text", and S-TESTIMONY (Marcus adjudicated, the witness-only prompt), S-POLLUTION (two exposures) and S-REACTIVE are built on that reading. The fix changes what four docs/04 scenarios exercise, so it is not a low-cost call.
+  **Options:** message nouns (and switch those scenarios to a physical item), same-span suppression, or keep today's behaviour as intended.
+  **Issue:** #611
+- **Decision:** #655 backs off rather than parks. A settlement the story's state refuses waits `WAIT * 2**waits`, capped at `WAIT_MAX` (10 min), counted in `SettlePayload.waits`. An incomplete staged turn keeps the 5 s wait.
+  **Why:** parking needs Core's resume/unarchive to enqueue Orchestrator work, which crosses the core→orchestrator import contract. The cost is a delay of at most 10 min after a resume.
+  **Issue:** #655
+- **Decision:** #656 and #657 share one commit. `core.outbox.request_effects` and `request_statuses` list a turn's requests (outbox rows and `requested_effect` events) with their current status. History appends them, and the response's `committed()` reads the same statuses. The outbox row's effect keeps `pinned`, the value the turn read, as an internal key (`INTERNAL_EFFECT_KEYS`), never listed or sent, so a resumed turn's `old_value` is restored.
+  **Why:** a jsonb key avoids a schema change, and the provider's `Effect` is built field by field.
+  **Issue:** #656, #657
+- **Decision:** #658. `staged.drain_kicked(timeout_s)` waits with `asyncio.wait`, not `wait_for`, so reaching the bound doesn't cancel the resumes before the count. `Engine.stop_workers` drains first, bounded by the worker's `DRAIN_S`.
+  **Why:** the issue's expected behaviour, with a bound.
+  **Issue:** #658
+- **Decision:** #625. `to_turn == head` is accepted when the head's inter-turn slots hold active operations: they are discarded and the head turn kept. Otherwise it is still 422, with a "nothing to discard" message.
+  **Why:** FR-STORE-31's reading in the issue.
+  **Issue:** #625
+- **Decision:** #614. Byte identity is now by construction. `ResultCodec.store` dumps keys in JSONB order (`jsonb_ordered`), and a keyed call answers `codec.settle(value)`, the round trip without the replay mark. `GET /operations`' `result.body` is documented as the stored library result. Changing what is stored would change the API contract.
+  **Why:** this keeps the documented promise ("identical response") rather than relaxing it.
+  **Issue:** #614
+- **Decision:** #682 is schema only. `VIEWPOINT_OPERATIONS` gains the State and scheduled-event reads, and `create_story` declares 404 `not_found`.
+  **Issue:** #682
+- **Decision:** #606. `inspect/beliefs?kind=nested|speech_act` reads those belief records (`partition(kind=)`) at every level, paged by belief id, with optional item fields (`attributed_holder_id`, `attributed_level`, `depth`, `speaker_character_id`). The first-order default is unchanged.
+  **Why:** the issue's first option, additive to the existing route.
+  **Issue:** #606
+- **Decision:** #647. `first_draft` takes the operation id from any beat of the result.
+  **Issue:** #647
+- **Decision:** #608 is documentation only: respond declares 409 `module_off`, and `AdjudicationBody` names `state`.
+  **Issue:** #608
+- **Decision:** #680. `GET /stories/{id}/states/{name}/definition` answers the declaration document (`StateDefinition.document()`, as POST and PATCH answer), `created_by`, and the latest `config_changes` revision for `state:<name>`. It reads by viewpoint, and a hidden State is 404 for a character viewpoint.
+  **Issue:** #680
+- **Decision:** #681. `GET /stories/{id}/operations` is story-scoped only; the deployment-wide alternative is not built. Labels are derived as the by-id read derives them, with SQL narrowing for staged and genesis. Summaries carry no content, so there is no viewpoint gate.
+  **Why:** the Console's need is per story.
+  **Issue:** #681
+- **Decision:** #679. `GET /stories/{id}/outbox` is an omniscient read, because an effect's reason is story text. It lists every row with its status, `compensated` included, plus `contingent` (a story-owned change waits on it) for the issue's "contingency". A redacted row shows ids, status and position only.
+  **Issue:** #679
+- **Decision:** #607. The perception trace is recorded at routing time in `turn_report.perception.trace` (existing jsonb; no beat text) and served on `GET /operations/{id}` for `omniscient` only. It is not reconstructed.
+  **Why:** the issue asks for what was applied when the turn ran.
+  **Issue:** #607
+- **Console surfaces** (Engine gained capabilities): #606 (nested beliefs inspector), #607 (perception grid), #679 (effects monitor), #680 (definition editor pre-fill), #681 (staged-turn filter), #682 (typed viewpoint and 404), #661 (resolve action). These are for nathanpond/Epistrel-Console; they don't change this repo's plan.
+
+### Batch E — 2026-11-02
+
+- **Decision:** #621. `registry.turn_cache()` is a contextvar cache of `load` per story for the whole structured respond (planning, input gate and turn), and `KeyedLookup` memoizes per story. Every registry writer calls `forget()`; a rebase restart forgets too, and a nested scope reuses the outer one.
+  **Why:** a turn already captures its configuration, and the rebase catches a concurrent registry change through `predicate_registry`.
+  **Issue:** #621
+- **Decision:** #622. Migration 0106 adds two partial indexes matching the scheduler's reads exactly, rather than moving scheduling post-commit.
+  **Why:** index-only, no behaviour change.
+  **Issue:** #622
+- **Decision:** #616. JIT is off for `canon_refs`' statement alone (`set_config`, transaction-local, prior value restored), not deployment-wide, and the join is story-scoped.
+  **Why:** scoped to the read the issue names. Engine-wide `jit=off` is a broader operator choice.
+  **Issue:** #616
+- **Decision:** #617. Migration 0107 adds `ix_propositions_story_object`, a jsonb_path_ops GIN `ix_propositions_object_set` and `ix_facts_proposition`, and `_canon_where` scopes propositions to the story for object and member reads.
+  **Issue:** #617
+- **Decision:** #615. A new `core.turn_memo` (a contextvar per-turn memo, cleared on any `RevalidationRequired`) shares `load_private_records`. The belief statements are one light SQL read (no `Belief` decode), limited to `THOUGHTS_MAX`.
+  **Issue:** #615
+- **Decision:** #619. `story_subjects` (forgotten on a character insert), `story_erasures` and `is_player` are per-turn memos. Not memoized: `load_time_basis` (a turn's anchor refinement changes it), `effective_configuration` (config writes in the commit and the rebase re-capture), and `_delete_records` (handled in #620 for fresh rows). The commit statement target (≤ 220 at P-04 scale) is measured by the weekly-p04 dispatch, not locally. The local guard pins a ceiling of 800 statements for a key-room two-primary turn (755 measured).
+  **Issue:** #619
+- **Decision:** #618. The vector statement runs with `enable_sort` off for itself alone, so the HNSW index serves the ordered `LIMIT`. Retrieval touches are deferred within a structured turn and flushed once after it. The lexical arm is unchanged, since no Done-when item covers it.
+  **Why:** the docstring's design (HNSW with iterative scan). The touch is a nicety off the turn's critical path.
+  **Issue:** #618
+- **Decision:** #620 is partially addressed. `index_records(fresh=True)` skips the delete for just-inserted epistemic records, and #619's memo removes the `story_subjects` re-reads. Per-belief write batching (a rework of transitions, partitions and exposure) is not done in this pass. The weekly-p04 dispatch measures the first-turn commit; if it misses ≤ 1 s and ≤ 600 statements, #620 stays open with the numbers.
+  **Issue:** #620
+- **Batch E close-out:** weekly-p04 was dispatched on the branch (run 41413355016, `gh workflow run perf.yml -f suite=weekly-p04`). Its report is committed under perf/results/ when it lands, closing #665's evidence too.
+  **Issue:** #619, #665
+
+## Ad-hoc — 2026-11-02 (#246, the planned rename)
+
+- **Change:** "Compaction" is renamed "pruning" across docs/01–04, CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109, the feedback read's `pruned_at`), the test ID (S-COMPACTION → S-PRUNE), the §13 lexicon's M7 term (`compaction` → `prune`) and the open issues and milestones. Invariant 6 is renamed with it, and #71's wording is kept otherwise: "Only erasure, opt-in pruning, audit-record retention expiry, and whole-story deletion remove events; erasure and pruning leave markers". Its meaning and its honor-system status are unchanged. ADR-175 records it. Earlier ledger entries and ADRs keep the old word as history.
+  **Why:** the owner's decision (round two, 2026-10-10), planned as #246. "Compaction" was confused with the Lite rolling summary.
+  **Affects:** M7 #247 and #248 (build under the new name, already drafted so). No other plan changes: a rename only, so no replan is needed.
+
+### #227 — the M7 presets, 2026-11-02
+
+- **Decision:** Full's v4 settings are v3's plus the two new dials named at their defaults. Over the seeded defaults, which gain both dials in migration 0110, the v3 → Full delta is empty: no data-producing increase and no behavioral leaf. So the migration takes the no-pin branch, writes one `engine_profile:<id>` 3 → 4 row, and moves `config_revision` once. The pickup half of the delta test is skipped, as the plan provides. The pin branch is still computed at run time.
+  **Issue:** #227
+- **Decision:** the migration writes `config_changes` rows directly, by `system:migration:0110`. It records no `control` operation (no migration does). In the pin branch, which is not taken here, it would write no story `config_changed` event: a migration has no operation to hang one on.
+  **Issue:** #227
+- **Decision:** Max's "stricter checks" is `verification.entailment_min_confidence = 0.7` (Full's is 0.6). `implication_max_depth` keeps Full's 3.
+  **Why:** a higher confidence floor makes more borderline entailments take the safe disposition, which is the stricter reading.
+  **Issue:** #227
+- **Decision:** `salience_bias = recall` needs a confidence in the answer. `SalienceResult` gains an optional `confidence`, and `structured_call(keep_low_confidence=True)` hands a low-confidence answer back instead of `Uncertain`. The answer is promoted (its texture spans become salient, each with its own words as the sketch) only when it states a confidence below `uncertain_below`. An answer without a confidence is read as given.
+  **Issue:** #227
+- **Decision:** `"@strongest"` resolves in `effective_configuration` (and in previews through `StoryProfile.strongest`), using `deployment_state.settings.model_tiers.strongest`. A null value drops the route. The C-04 capability-floor fallback (`model_fallback`) is not built.
+  **Why:** core has no per-purpose capability floor to check against. Write-time validation already requires a listed model.
+  **Issue:** #227
+- **Decision:** the eval CLI has no `--profile-id` option, so its mutual exclusion with `--preset` is moot. A suite's applicability comes from its guarantee rows (`GuaranteeRow.provided`), plus the structured pipeline and the new `Suite.requires`. No suite needed an explicit `requires`, so the per-suite table is derived rather than hand-listed.
+  **Issue:** #227
+- **Decision:** CI runs the stub evals per preset as a job matrix (`preset: [standard, full, max]`), not as one looping step. Each artifact is named `evals-stub-report-<preset>` / `evals-zero-leak-stub-report-<preset>`.
+  **Why:** three serial zero-leak runs (about 35 min each) would exceed the job's 60-minute timeout. A matrix keeps wall time flat. Artifact names must be unique per job.
+  **Issue:** #227
+- **Decision:** `POST /engine-profiles/{id}/copy` takes an optional `name`, defaulting to `"<name> (copy)"`. `GET /engine-profiles` gains a `preset` filter.
+  **Issue:** #227
+- **Decision (Rule 1):** `SettingsPatch` gains `dependency_search_max_results` and `dependency_search_max_depth`. #220 added them to `DeploymentSettings` but not to the REST patch, so U-18's "the patch names exactly the schema's settings" failed, and `test_config_changes` lacked a stored value for that section. `ModelTierSettings` is left out of that test's round trip, because its one setting needs a listed model; `test_presets__strongest` covers it.
+  **Issue:** #220, #227
+
+### #504 — erasure of a story character from the catalog, 2026-11-02
+
+- **Decision:** the subject gains an optional `story` (`{kind: character, id, story}` + `{catalog: true}`). Its terms come from `index.story_subjects` of that story. The catalog pass is reused unchanged: no catalog entry is deleted, and every catalog record is matched. The residue scan covers the catalog, and the ledger row is catalog-scope, character, with no `story_ref`. A reapply finds the story from `characters` (`erase.character_story`), and so does `catalog_reach` for the pending-catalog block.
+  **Issue:** #504
+- **Decision:** ordering. The story erasure deletes the character and redacts its names, and the ledger keeps only hashes, so a later catalog erasure cannot find the names: it is 422 `unknown_erasure_candidate`. The story erasure's (dry-run) report lists `promoted_drafts` with `follow_up`, and docs/OPERATIONS.md and ADR-176 state "catalog first". The alternative, keeping names for a later catalog erasure, would store a name, which the ledger's design forbids.
+  **Issue:** #504
+- **Decision:** the ADR is ADR-176, since #246 took ADR-175.
+  **Issue:** #504
+
+### #523 — the player's observed act, 2026-11-02
+
+- **Decision:** approach (a). The player's `do` routes its claims to observation (`RouteBeat.claims` on the input's `do`), but only claims about the actor. Those come from what detection found on the input `do`, plus one optional extraction call over the `do` (`read_input_acts`, budget kind `INPUT_ACTS`, after testimony in `OPTIONAL_PRIORITY`). The call runs only under partitions with `verification.extraction_mode = always`, after modeling and adjudication. Its claims are never verified or canonized, which is why C-19 sees "no canon about the player's trait".
+  **Why:** the input's detection is declared-level (no extraction, #156). Reading the act inside detection consumed the turn's budget ahead of modeling (S-PLAYER's `modeling_deferred`), so the call runs as the lowest-priority optional work after it.
+  **Issue:** #523
+- **Decision:** the `trait` literal. Genesis registers the auto `trait` predicate with object type `str` (#173 registered it `any`), and migration 0111 types existing ones where no proposition names an entity object. Normalization of `any` predicates is unchanged, so an unknown name stays `unresolved_entity`.
+  **Issue:** #523
+- **Discovered:** `test_s_clock_belief__no_leak` fails on a shrunk local Hypothesis example at HEAD, unrelated. Filed as #693 (needs-triage).
+  **Issue:** #523
+
+### #580 — background flavor as closed sets, 2026-11-02
+
+- **Decision:** the table is `core/verify/detectors/closed_sets.json`, three families: `sibling_of` ("only child", "no siblings", …), `married_to` ("never married", …) and `parent_of` ("childless", "no children", …).
+  - Each phrase yields an empty character-layer closed set over the holder.
+  - A phrase does not count after a determiner or possessive ("her only brother").
+  - It does not count before a preposition or relative clause ("the only child at the party"), unless "a"/"an" precedes it ("an only child in Dayton").
+  - `SeedReading.closed_sets` carries the sets. `structured._backgrounds` adds them to the merge's character layer, tracked at `characters.<role>.<field>`, so the conflict is reported there.
+  **Issue:** #580
+- **Decision:** a docs/04 U-27 **[M7: FR-SCN-7]** part is added, with a §15 row, for the from-prose case the story's test plan names in `tests/test_u_27.py`.
+  **Issue:** #580
+
+### #649 — a character may state a fiat-known fact, 2026-11-02
+
+- **Decision:** `PermissionFacts.fiat_known` and `Basis.AUTHOR_FIAT` replace only the `other_character_secret` denial, for character renders and the narrator side of a reactive render. The verifier computes `fiat_known` only after such a denial: `BeliefSource.fiat_known` is true when the could-have-known replay's first path is an `author_fiat` transition. It then decides the permission again with it, and records `fiat_known` in the rebase re-check's call.
+  **Issue:** #649
+- **Decision:** the fiat re-check passes `protected=False`. The protected-content detector matched that very fact, which is hidden from the character in canon but now known to it, so stating it is no leak. The pure matrix still denies protected content with `fiat_known`, and the unit row asserts that. Without this the line was repaired as `protected_content`, which contradicts the story's "not repaired". ADR-177 records it.
+  **Issue:** #649
+- **Decision:** the scenario's "Marcus, who holds no belief" complement is played as the same line in a story without the fiat (the room's cast is Cal, Jenni and Bobby). The locked-canon complement is in the unit row.
+  **Issue:** #649
+
+### #662 — the Lite read set covers time and tracked values, 2026-11-02
+
+- **Decision:** the members `time` and `tracked_values` hash the section lines themselves, as `core.lite_context.read_lite_context` (moved from `orchestrator/lite/context.py`, which re-exports it) reads them. They are not separate ids and offsets.
+  **Why:** one reader for the prompt and the read set, so the hash is exactly what the prompt shows and cannot drift.
+  **Effect:** they read empty unless the story runs the Lite pipeline, so a structured turn never regenerates for them; its own keyed read set covers States and the clock. `LiteReadSet.before_turn` lets a regenerate hash the clock as its turn started.
+  **Issue:** #662
+- **Decision:** the test covers the State-set race by bypassing the slot (`core.states.api.turn_slot` patched to no slot). The State API takes the story's turn slot, so through the API a set waits (`queue`) or is 423 (`reject`) while a Lite turn generates. Clock advances and scheduled-event changes take no slot, so they race through the API as written.
+  **Issue:** #662
+- **Decision:** M2's member pins narrow to the M2/M3 prefix (`test_read_set_members_are_fixed`, and `test_revisions`' read-set keys). `test_i_18__m7_members` holds the full pin.
+  **Issue:** #662
+
+### #221 — amendments and their parts, 2026-11-02
+
+- **Decision:** record parts on `beliefs` are refused (`action_not_allowed`) until #236. Beliefs are corrected through their frames, and #160's `transition()` of kind `author` belongs with that story. `CORRECTABLE_TABLES` still registers `beliefs` with its `version` strategy, as the plan's registry test asks.
+  **Issue:** #221
+- **Decision:** a `version` part on `facts` takes `replace` only. A `drop` of a fact has no successor version to write, so the planner's `drop` for `facts` is deferred with `retract: true` (below).
+  **Issue:** #221
+- **Decision:** `retract: true` on a proposition part (planner discretion: "X was never true") is not built here. Closing a lineage's `valid_to` with no successor needs a canon primitive #133 does not have. Filed as #694, a follow-up for #223/#224, which produce such parts.
+  **Issue:** #221
+- **Decision:** an overlay `drop` empties the beat's `transcript_messages` row (no placeholder; the owner's round-two decision). A `replace` writes the corrected text there. Both happen in the amendment's transaction (`_apply_transcript`), because the event is inserted outside `Operation`'s projection path. The `AmendmentRecorded`/`AmendmentReverted` events carry the patches, so a projection rebuild replays them.
+  **Issue:** #221
+- **Decision:** the amendment's events use provenance `consumer` (the author is a consumer principal); `author` is not a provenance value.
+  **Issue:** #221
+- **Decision:** a rule's own `state_changes` row (an elapsed tick, #192) is refused as `derived_state`, like a derived State's. Derived States are computed and write no rows, so the plan's "derived State's row" exists only as an elapsed tick. Both are computed rather than narrated.
+  **Issue:** #221
+- **Decision:** the resurrection guard runs on the parts as a `DIRECT` write path (`guard.CONTENT_WRITE_PATHS`) with consumer provenance. Per #127's owner decision, an author typing an erased name after the erasure is accepted; a reference prepared before it, or by id, is refused. The story pass redacts `amendments.payload` and `amendment_parts.patch_before|patch_after|valid_spec` in place.
+  **Issue:** #221
+- **Decision:** both tables join `STORY_TABLES` just before `operations`, with parts before amendments. Fork copies the amendments of its copied operations (the default `operation_id` filter), and the parts of the amendments it copies. `determinism.ORDER` orders amendments by `tx_time` and kind, and parts by their amendment's `tx_time` and ordinal. `test_story_isolation_schema` allows the two new foreign keys (`amendment_id`, and the deferred `amendment_part_id`).
+  **Issue:** #221
+- **Decision:** the 1,000-turn S-AMEND-SURVIVES story is seeded by direct commits in `tests/amendment_support.play` (input and reply per turn), not in `tests/fixtures/long_story.py`. The planner named that path; the helper module sits beside the other `*_support` modules.
+  **Issue:** #221
+- **Decision (Rule 1):** `test_erasure_refusals` still expected `body.scope` for a story character erased at catalog scope. #504 (2fc543d) moved that refusal to `body.subject.story`, so the test now asserts the new field.
+  **Issue:** #504
+
+### CI fixes after #227 and #649, 2026-11-02
+
+- **Decision (Rule 1):** migration 0110 records nothing on a fresh deployment, one with no story and no `config_changes` row. It writes no `config_changes` rows and does not move `config_revision`; Full is then a seed, like Standard and Max. Before this fix, `test_seed_rows` found `config_revision` 1 on a fresh database. A deployment in use still gets the recorded edit, as `test_presets_m7` asserts.
+  **Issue:** #227
+- **Decision (Rule 1):** the live P-04 and P-08 report checks expect the profile `Full v…` (the seeded Structured profile is Full since 0110).
+  **Issue:** #227
+- **Decision (Rule 1):** ADR-174's third Decision bullet loses its inline *[revised per ADR-177]* marker. The log's rules put that marker on Consequences lines only (`test_revised_per_marks_only_consequences_lines`). The bullet is not wrong, only extended, and its **Amended by** line names ADR-177.
+  **Issue:** #649
+
+### #233 — certifications and quality status, 2026-11-02
+
+- **Decision (architecture, logged):** the `certification_run` job reaches the eval harness through a port, `core.profiles.certification.Harness`, and never imports it. The process's composition root installs the harness:
+  - `epistrel.cli.app_factory` calls `epistrel.evals.certify.install(app.state.epistrel)`;
+  - the tests install it over their Engine.
+
+  **Affects:** #234's canary runs and #235's hand runs reach the harness through this port.
+  **Why:** the planned handler in `orchestrator/jobs/handlers` importing `epistrel.evals` breaks the `nothing-in-the-engine-imports-the-eval-harness` contract (NFR-QUAL-8). A process without the harness answers 503 `certification_unavailable` (a new code beside the planner's four). The harness still runs outside any turn.
+  **Issue:** #233
+- **Decision:** quality status is read with the model configuration. `runtime_facts` loads every valid certified fingerprint in one indexed query (`RuntimeFacts.quality`), and `stamp()` looks the fingerprint up there.
+
+  **Why:** every surface already shares one read per turn, preview or read, so no stamp computes its status separately. The planner's process LRU with NOTIFY invalidation is not built; that one query serves its purpose at hobby scale. #234 can add the cache if `stale` needs it.
+  **Issue:** #233
+- **Decision:** the planner's "a profile edit of only `pins.max_pinned` leaves the fingerprint unchanged" cannot hold. A new profile version is a new fingerprint whatever it changes, because #109's fingerprint takes the version as an input (`core.profiles.fingerprint`), so such an edit truly loses the certification and warns `certification_lost`. C-18 M7 instead checks the quality-irrelevant setting through a story override of `pins.max_pinned`. That override keeps the fingerprint, as #109's docstring states. `turn_concurrency` is checked as planned.
+  **Issue:** #233
+- **Decision:** `certification_lost` is a new `WARNING_KINDS` entry, and the report carries `certifications_lost: [{story_id, from, to, certification_id}]`, with one entry per affected story.
+  - A profile no story follows gets one entry with `story_id: null`.
+  - A story kept on its version (upgrade unavailable) loses nothing.
+  - `uncertified → uncertified` still applies at once (#109's docstring is amended).
+  - The admin model-config route's `certifications_lost` counts are not built. A model swap through `/admin/model-config` is an operator change, not two-stage, and the next read shows the new status.
+  **Issue:** #233
+- **Decision:** certification runs:
+  - **Records:** they record `model_tier: other`. `reference: true` on the run request is not offered, since the service has no separate admin credential. Imports carry the tier their record names.
+  - **Seeds:** `seeds` is a count over the harness's `DEFAULT_SEED_BASE`, not 0..n-1, so a run's seeds match CI's eval runs.
+  - **Suite selection:** it uses `presets.needs_of` over the configuration's resolved settings.
+  - **Profile assignment:** scratch stories are assigned the profile id, so its latest version. A run of an older version plays the latest, which is a gap in the stub plumbing, recorded here.
+  **Issue:** #233
+- **Decision:** E-12 in a certification:
+  - **Source rows:** the record reads E-12's `structured` rows, the run's own configuration. `gated` is a variant with its own fingerprint.
+  - **Coverage:** a type is covered when its row passes under a calibrated judge.
+  - **NFR-QUAL-14:** it is a floor passed (`n` 0, the rule `relative`) when any type is covered. A failing type is `floors_failed` `{metric_id: NFR-QUAL-14, intervention_type}`.
+  - **The M7 test:** `test_e_12__m7` builds the run's report from `gate.judge` over seeded tallies (300 and 120 pairs a seed) rather than a 300-pair stub run, so the mapping is tested at the sizes the rule needs.
+  **Issue:** #233
+- **Decision:** the start-up loader is a worker recovery hook (`certifications`). It skips a malformed or hash-mismatched committed record and logs an error. The `/health` `certifications: degraded` component is not built. `src/epistrel/core/seeds/certifications/` is created by #235's first committed record; until then the loader finds none.
+  **Issue:** #233
+- **Decision:** the record JSON's fields are the table's columns minus `recorded_*`, `status` and `invalidated_*`: an import is always `valid`. The API import embeds `report_md`; the start-up loader reads `report_md` or `report_path`, relative to the seeds directory.
+  **Issue:** #233
+- **Decision:** `docs/guarantees.md` gains a `<!-- boundary -->` paragraph saying what certification means. `test_c_18__m7_no_floor_label` greps the rest of the document for `certified`/`meets`.
+  **Issue:** #233
+- **Decision:** the smoke suite (`Suite.structured = False`) applies under any configuration, Lite included. It plays Lite stories of its own, and certifying the Lite preset needs a suite that applies to it. `presets.needs` took every suite as structured; the Lite preset's eval run now plays smoke instead of reporting it `not_applicable`.
+  **Issue:** #233
+
+### #243 — C-17 over the delivered schema, 2026-11-02
+
+- **Decision:** feasibility is decided by completion.
+  - A pair is `infeasible` when the dependency completion fails: start from the defaults with the pair set, then switch on every dependency the validator names, never touching the pair's own settings.
+  - The completion fails when a requirement falls on one of those settings, or on an undelivered value (`memory.episodic.reranking: true`).
+  - Repair rows pack in as many further uncovered pairs as still validate.
+  - At seed 243 the array is 51 configurations: 25 refused, every refusal naming a dependency or an undelivered value, and 26 valid, all smoke-played, with 103 pairs infeasible.
+  **Issue:** #243
+- **Decision:** the smoke regenerates before it ingests. An ingested narration is a turn with no reply, so "regenerate the last turn" after it is 422 `nothing_to_regenerate` in every configuration.
+  **Issue:** #243
+- **Decision:** C-17's Sunday Dinner body drops the roles' free-text seeds (`c17_scenario`). Under partitions a structured creation refuses them (`seed_unnormalizable`, FR-PROP-12), which is a creation refusal, not a runtime failure of the combination.
+  **Issue:** #243
+- **Decision:** `run_scenario_smoke` takes the creation body. `src/` cannot import the tests' Sunday Dinner fixture, so the test builds the published scenario and passes the request in.
+  **Issue:** #243
+- **Decision:** the State-call inapplicable case (`module_off`) is not exercised: the smoke makes no State call. Only `one_render_character` is listed as an allowed refusal.
+  **Issue:** #243
+- **Decision:** the CI job pins the stub through `EPISTREL_MODEL_ADAPTER: stub`. Pytest has no `--adapter` option, and the test builds its app on the stub as well. `test_module_combinations_job_runs_c17_on_the_stub` checks the job.
+  **Issue:** #243
+- **Decision:** C-17 also stays in the `integration-a-h` shard (about 75 s), so the job duplicates it rather than moving it. Moving it would change the shard partition `test_ci_shards_partition_the_test_files` guards.
+  **Issue:** #243
+
+### #228 — backfill, 2026-11-02
+
+- **Decision (scope, logged as partial):** what this delivers:
+  - the backfill engine, coverage, pause and cancel;
+  - chunked extraction with per-chunk checkpoints, and ordered reconciliation into dormant rows;
+  - completion that applies the held configuration;
+  - the three routes and the single-story trigger.
+
+  Reconciliation writes:
+  - facts, from `extraction_backstop` claims normalized against the story's entities;
+  - episodic memories, trust tier `backfill`;
+  - inferred exposures for the characters present at a `say`;
+  - `last_mention` conflicts.
+
+  Not built yet, still open on the issue:
+  - clock advances, `time_estimation` and `skipped_skips`. They need the story's clock State, which a Lite story lacks until #231 materializes deferred genesis content; the rest of the clock work follows that.
+  - narrated State changes (`state_changes.inferred`, #190's detector).
+  - commitments and thunks (`salience_detection`).
+  - placements (`located_at`).
+  - observation and testimony transitions; a backfill writes unresolved exposures, which later turns resolve lazily as they do live ones.
+  - the losing statement labelled as an in-world claim (#166). The earlier version is closed, and the conflict row records both statements.
+  - `belief_transitions.inferred`.
+  - the `/health` and audit-log rows for cancel or failure.
+
+  #228 therefore stays open after the milestone PR, which names it without `Closes`.
+  **Issue:** #228
+- **Decision:** extraction calls `extraction_backstop` once per turn: every message of the turn is a beat, and a turn's claims land on their message. The planner had one call per chunk; the purpose caps its beats per call (`EXTRACTION_MAX_BEATS`). A claim's time expression marks it `changed` (a narrated change) and is dropped before normalization, so the clock can place it later (#199).
+  **Issue:** #228
+- **Decision:** contradiction:
+  - **When:** a functional key whose value differs from the backfill's last open-ended version (`valid_to` null), with no change narrated. An earlier remainder of a superseded version is not compared.
+  - **Resolution:** canon's own supersession makes the later statement canon.
+  - **Fixture:** the planner's car colours become Bobby's `age` (thirty at 100, thirty-five at 400; turned thirty-five at 250 in the changed variant), because the core vocabulary has no colour predicate.
+  **Issue:** #228
+- **Decision:** episodic memories follow the structured `pipeline` capability, not `episodic`, which is a behavioral module and so never in coverage. The writer still checks the target configuration has `episodic` on.
+  **Issue:** #228
+- **Decision:** coverage levels:
+  - Coverage records the pipeline's level (`lite`/`structured`) beside the clock's and States'. A Lite story's `pipeline` interval does not cover a `structured` upgrade, so the gap is real.
+  - Every applied configuration change extends `live` coverage from the story's next turn (`coverage.extend_live`). Story creation and genesis seed it from turn 1 (`coverage.seed_story`).
+  **Issue:** #228
+- **Decision:** checkpoint and live-writer details:
+  - The extraction checkpoint keeps ids, kinds, speakers, presence and propositions, never the transcript's text; reconciliation reads the text again from the transcript, so an erasure's redaction holds. All four tables are therefore in `EXEMPT_TABLES` with their reasons, not subject writers.
+  - The backfill's writes go through the live writers, which are registered write paths: `commit_fact`, `memory.records`, `epistemic.exposure`.
+  - `write_episodic` gains `foreign_events` (beats citing earlier turns' events), and `record_exposures` gains `inferred`.
+  **Issue:** #228
+- **Decision:** the job takes one step per run and requeues itself at once:
+  - **begin:** the step opens a committed `backfill` operation.
+  - **chunks:** each run extracts one chunk.
+  - **reconcile:** each run reconciles one span, reactivating the operation's earlier rows inside its transaction and making them all `dormant` again before it commits.
+  - **complete:** the final step completes the backfill.
+
+  It runs on the backfill's own story job (an erasure block holds it). `backfill_parallelism` is not used: one chunk per run is the checkpoint.
+  **Issue:** #228
+- **Decision:** the route table and parity:
+  - `fr_api_6_routes.json` flips the three backfill rows to `present`.
+  - `CURRENT` moves to `M7`, and `PENDING` names the conflicts route as #230's.
+  - The gap-fill preview is stored under its `Idempotency-Key` like a write, so a replay answers it.
+  - C-03 plays a gap fill: preview, start, read, cancel.
+  **Issue:** #228
+
+### #222 — a checkpoint as originally recorded, 2026-11-02
+
+- **Decision:** what the view does:
+  - `membership_at` folds operation commits with the `truncate`, `untruncate` and `swap` events up to the boundary. A turn commit makes the same turn's other variants inactive.
+  - It never reads the current column, and it is computed per request.
+  - The boundary of a turn defaults to its active variant, else (a truncated tail) the variant committed last.
+  - The `in_place` reversal of memories and `state_changes` from `patch_before`, and the derived sections (beliefs, memories, State values), are not in the view yet. `HistoryView` carries the events, the canon facts as recorded (`canon_as_recorded`) and the erasure markers. Logged as a gap.
+  **Issue:** #222
+- **Decision:** the route:
+  - `as_of` becomes a string on the history route; the corrected view still takes a turn number (anything else is 422 `validation_error`). Check order: 403 viewpoint, then 422 `invalid_view`, then 404 checkpoint.
+  - Items take their kind, channel and actor from the transcript rows, and their text from the raw event with the overlays in effect at the boundary.
+  - `erasure_markers` lists every erasure of the story (no subject ids), not only those touching records in the view.
+  **Issue:** #222
+- **Decision:** the S-ORIGINAL-AT-SLOT and S-AUDIT-VIEW tests stand on smaller fixtures:
+  - slots are inter-turn operations with a message, not a State set and a late settlement;
+  - S-AUDIT-VIEW plays 30 turns, not S-AMEND-SURVIVES' 1,000;
+  - the reflection, staged-turn and TIME Hypothesis parts are not written yet.
+
+  The spy test covers respond, regenerate and fork, not a lazy resolution. The import gate is `tools/gates/as_recorded.py` (`check-as-recorded-readers`, enforced by `tests/gates/test_as_recorded_gate.py`).
+  **Issue:** #222
+
+### #532 — eval runs over REST, 2026-11-02
+
+- **Decision:** the runs come from two places, the same places certifications come from:
+  - the reports committed under `docs/evals`, read by the installed eval harness (`Harness.committed_runs`: the engine never imports `epistrel.evals`, and the image ships no `docs/`, so a process without the harness serves only the second source);
+  - every completed certification run's report (#233).
+
+  `GET /admin/evals/runs` (newest first, cursor = the last run id) and `/{run_id}` serve them. A report written before #532 has no `metrics`, `seeds` or `sample_size` in its embedded summary, so those read `null`. `summary()` now records them for new reports.
+  **Issue:** #532
+- **Decision:** the routes take no `viewpoint`. They sit under `/admin`, behind the service credential like every operator read (`/admin/escalation-yield`), and runs hold no story content. They need no ownership `CALLS` entry: they are not entity routes.
+  **Issue:** #532
+
+### #234 — canary, stale, reported version, 2026-11-02
+
+- **Decision:** the canary settings are flat seconds-valued `DeploymentSettings` fields, not the nested `certification_canary` block with ISO-8601 durations:
+  - the fields are `certification_canary_enabled` (default false), `certification_canary_interval_s`, `certification_canary_sample_size`, `certification_canary_seeds` and `certification_recertify_interval_s` (null means off);
+  - this matches the existing `interval_setting` machinery (`media_sweep_interval`, `RECURRING_INTERVAL_SETTINGS`);
+  - the bounds are the AC's;
+  - there is no `suites` setting: the canary runs the suites behind the certification's passed floors (`Harness.suites_of`).
+
+  **Issue:** #234
+- **Decision:** the off switch is the handler's `enabled` check, the AC's primary option. Both tasks' rows exist and fire, then return at once while off. `next_run_at` stays NOT NULL, so the "enable then disable → null" clause is not built. `test_canary__off_by_default` (30 simulated days) shows the cost side: no run, no harness call.
+  **Issue:** #234
+- **Decision:** the run and outcome names differ from the plan:
+  - the run's link is `certification_runs.checks_certification_id`, not `target_certification_id`;
+  - `outcome` is `held|missed|inconclusive`. A harness failure is the run's `status: failed`, with no outcome, and never invalidates.
+  - The canary job keeps #233's `max_attempts = 1`; no per-run retry.
+
+  A measured miss of a floor the certification passed marks it stale. A zero-rule floor that "fails" clean on fewer than 300 cases counts as `inconclusive`. NFR-QUAL-8 needs two seeds, so the default one-seed canary is always `inconclusive`; this is documented in `docs/evals/README.md`.
+  **Issue:** #234
+- **Decision:** the invalidation details:
+  - no `invalidated_floors` or `invalidated_note` columns are added. `failed_floors` is read from the invalidating canary run's `report.missed_floors`.
+  - The invalidate route's `note` is required but not stored, because 0113's trigger allow-list is fixed.
+  - Invalidating a non-valid certification is 409 `certification_not_valid` (new code).
+  - No control operation or `audit_log` row is written; the stale transition is logged at WARNING with ids only.
+  - `GET /certifications?status=` and `supersedes_certification_id` are not built.
+
+  **Issue:** #234
+- **Decision:** the reported-version details:
+  - capture is `system_fingerprint` only. The `/v1/models` probe, the 3-sighting debounce and the `reported_version_source` setting are not built.
+  - An in-process memo writes once per change.
+  - The version is keyed by the configured model id. A purpose with no configured model has no identity to attach a version to.
+  - `RuntimeFacts.versions` also gives profile-routed models their version.
+  - `base_url_hash` hashes the URL as given (the base URL is not yet threaded through; the empty string today).
+
+  **Issue:** #234
+- **Decision:** C-18's stale clause misses on the smoke suite's `smoke.instruction_followed` floor (`SmokeSuite.stub_answers` patched to omit the word), not on the entailment false-support floor. #233's C-18 certifies Full on the smoke suite, so smoke floors are the ones it passed. "In use" counts reference certifications whatever their preset; it does not check that one is the newest per preset.
+  **Issue:** #234
+
+### CI fixes after #228 and #234, 2026-11-02
+
+- **Decision (Rule 1):** `test_u_11` (an M4 part) named the M7 term `backfill` in its enum list, which check-lexicon refuses. It now checks M4's four trust tiers and that the database enum equals `MemoryTrustTier`. `test_config_changes` stores a canary setting, so #234's `CertificationCanarySettings` section is covered.
+  **Issue:** #228, #234
+- **Decision:** S-EFFECT-CRASH's `staged.after_claim` case failed once on CI at b040970 (`sent_before == 1`) and passes locally (6/6). It is treated as a flake for now: the next CI run on the branch decides. If it recurs it gets its own issue.
+  **Issue:** #236 (the CI run it was seen on)
+
+### #236 — amendments reach States, belief frames, turns in flight and jobs, 2026-11-02
+
+- **Decision:** a State part is a new draft type, `StatePartDraft(state, value, scope_key, valid_from_minutes, valid_to_minutes)`, naming the State by name. It writes an `amendment_parts` row of kind `proposition` with `state_id`/`scope_key` (0112's CHECK already allows that) and a position-less `state_changes` row (`set`, `source = author`, `unconditional`, `committed`, `reason = "amendment"`), and sets `written_state_change_id`.
+  **Issue:** #236
+- **Decision:** a revert writes no `cancel` row, so there is no migration and no new `state_change_kind` value. The reverted part's status (`reverted`) already takes its change out of every fold: `core.states` reads an amendment change through its part (`_select_changes`), and the revert deletes nothing. The inverse part records the State key and the value it withdrew (`patch_before`).
+  **Why:** `revert_amendment` already marks parts `reverted` for every other kind. A second marker on `state_changes` would be a second source of truth for the same fact.
+  **Issue:** #236
+- **Decision:** fold order (`model.ordered`): positioned changes in position order; an amendment change goes before the first positioned change whose story-minute (carried forward) is later than its valid start, so at an equal minute the positioned change comes first. Amendments are ordered among themselves by valid start, then id (a ULID, so creation order), not by `tx_from`. No valid start means since the story began. A window whose `valid_to` is at or before the last positioned minute in the view drops out. Through a checkpoint, amendment changes are filtered by #221's `eligible` at that checkpoint's story-minute (`world_clock.story_time_at`, as `canon()` does).
+  **Issue:** #236
+- **Decision:** `state_values.since_*` is NOT NULL, so a key whose only counted changes are amendments gets `since` = position (0, 0, 0, 0, 0), the story start (`STORY_START`). The plan said "null", which the column does not allow.
+  **Issue:** #236
+- **Decision:** the constraint check (`store.amended_checkpoints`) folds at every checkpoint (one more positioned change each), with the amendments eligible there, and refuses with 422 `state_constraint_violation`, details `{ordinal, state_id, scope_key, at_checkpoint, constraint, attempted, folded}`. A value of the wrong type is the same code with `constraint: "type"`. A revert re-checks the key and refuses the same way; #238 turns that into a conflict. Dormant chains are not re-checked; that is #239's swap check.
+  **Issue:** #236
+- **Decision:** refusals are 422 `state_not_amendable` (new code, `StateNotAmendable`), with `reason` `clock`, `derived`, `transfer_conserved`, `external` or `discarded` (a definition only in the as-recorded view).
+  **Issue:** #236
+- **Decision:** `record_amendment` marks its operation a control action (`op.control_action = True`, read by `_finalise`) when any part is a record or State part, and so does a revert of such an amendment. Proposition-only amendments reach turns in flight through #133's fact hooks (`proposition_changes`) only. The fault point is `epistrel.testing.faults.amendment_proposition_changes_skipped()` (`store.PROPOSITION_CHANGES`). A staged turn past its intent commit is not abandoned, because its later stages commit as a continuation (`_continuing`); `test_s_absent_fact__m7_staged` corrects a reply while the payment is being sent, and the turn completes.
+  **Issue:** #236
+- **Decision:** `record_version` (`core.input_versions.record_versions`) is the latest `tx_from` of an active record part on any of the operation's events (a join of `amendment_parts` and `events`). The `operations` version becomes `[membership, membership_tx, record_version]`. A job queued before this change re-runs once, because its stored two-element version differs; that costs one recompute. Memories need no change: #138's reader versions them by their text.
+  **Issue:** #236
+- **Decision:** the tests are scaled down:
+  - STATE-INTEGRITY M7 is an in-memory Hypothesis property over positioned changes and amendment `set`s, checked against an independently stated timeline oracle, plus one Postgres example (fold through checkpoints, revert, every refusal, `scheduled_events` unchanged). Amendment steps are not added to the M6 seeded Postgres sequence.
+  - EXPOSURE-FRAME M7 and S-POLLUTION M7 correct the witness's trust (an amendment that they were always friends) rather than the claim itself: the corrected fact changes the resolution (`believed` instead of `suspected`), while every key stays bounded at the frame.
+  - S-WORKER-AMEND-RACE uses turns 100–140, not 700–800, and corrects both the turn's event (overlay) and its memory (in place), so the recomputed reflection reads the amended text.
+  **Issue:** #236
+
+### #223 — rewrite sessions, parse and preview, 2026-11-02
+
+- **Decision:** the two tables use `Text` columns with CHECK constraints for their kinds, states, modes and severities (`core.tables.rewrites`, migration 0116), not Postgres enums, as `amendments` and `story_backfills` do. Migration 0116 also adds `fk_amendments_session`.
+  **Issue:** #223
+- **Decision:** the session view names the request's `preview` setting `preview_mode`. `preview` is the plan, as the AC's `preview: {base_revision, …}` asks. `pipeline` is shown too.
+  **Issue:** #223
+- **Decision:** `rewrite_parse` is a delivered purpose with `story_scoped = False`, unlike the plan's `True`. A story-scoped purpose's template hash joins every story's runtime facts, which would change the fingerprint behind every certification #233 recorded. The author side-channel is not in a turn, so a profile need not route it. Other changes for it:
+  - a new content category `author_instruction` (the instruction, answers and the names it is normalized against);
+  - it is in `DETERMINISTIC_FIRST_EXEMPT`: the free-text parse has no deterministic path, and everything after it is code;
+  - a guarantee row (`rewrite_parse`, not measured, outside stories);
+  - regenerated `docs/models.md` and `docs/guarantees.md`.
+  **Issue:** #223
+- **Decision:** normalization details:
+  - **Entities.** Candidates are scored by name and alias: exact 1.0, every word contained 0.8, else word overlap scaled to 0.7, at least 0.5 kept. #139's resolver reads mentions in context, not a bare name. A tie inside `rewrite_ambiguity_margin` asks; no candidate means a new entity, listed in `new_entities` and created at apply (#224).
+  - **Names sent to the model.** All entities (capped at 200, sorted by name) instead of the top 20 candidates per mention, because the mentions are only known after the parse.
+  - **Times.** A time is a number of minutes or "before the story began"; anything else is a `timing` question. The recommendation is "before the story began" when the expression names a past life stage, else the story's current time.
+  - **State deltas.** A relative State change is converted with the key's current fold, not the fold at the valid time; the plan's "fold at that time" needs a time-to-position inverse the clock does not offer.
+  **Issue:** #223
+- **Decision:** blast radius and conflicts. There is no hypothetical `check()` overlay: `verify.rules.check` is pure over fetched records, and a dependent text record carries no normalized claim to check. A `presupposes` or `derives` text record (event or memory) is an irreducible conflict when either:
+  - it is player- or consumer-authored, or narrated by the player (`player_authored`);
+  - its text does not name the superseded value's canonical name or any alias (`not_substitutable`).
+
+  A dependent amendment part tied the same way is a conflict too (`dependent_amendment`, plus `cascade_undo`). Untyped `fact_neighborhood` neighbours do not enter.
+
+  Severity is `high` for events (delivered messages), memories a player character holds and player-visible State changes; `low` otherwise.
+
+  `plan_read_set.records` has no version, `config_revisions` is the registry's only, and `anchor_revision` is null. #237 adds what its recheck needs.
+  **Issue:** #223
+- **Decision:** a session with a required unanswered question stores no plan (`preview: null`). The plan is computed once every required question is answered.
+  **Issue:** #223
+- **Decision:** a Lite story is refused with 409 `module_off`, the engine-wide status of that code (`ModuleOff.http_status`, `ERROR_STATUS`), not the plan's 422. One code with two statuses would break the error table.
+  **Issue:** #223
+- **Decision:** the model's `new_text` for a record change passes #56's output policies (`output_gate.check_output`) before normalization. A violation removes the change and lists it in `refused_changes` with reason `guardrail` and the policy ids only (asserted in `test_c_20__m7_rewrite`).
+  **Issue:** #223
+- **Decision:** `test_rewrite_session` and `test_rewrite_lite_interim` (one file, `tests/scenario/test_rewrite_session.py`) carry no part marker, because check-traceability refuses a part whose test name maps to no docs/04 test ID. The detection-identical test is U-09's M7 part (`tests/test_u_09.py`, FR-REWRITE-5), which #224 extends.
+  **Issue:** #223
+- **Decision:** the expiry task `rewrite_session_expiry` runs every 10 minutes. The limit counts `awaiting_answers`, `awaiting_approval` and `applying` sessions, and never `support_check` ones.
+  **Issue:** #223
+- **Console:** the Engine gained the rewrite session routes. The matching surface for nathanpond/Epistrel-Console is a rewrite panel: instruction, questions with their recommended answers, and the preview's buckets.
+  **Issue:** #223
+
+### #224 — dispositions, the atomic apply and the Q&A audit, 2026-11-02
+
+- **Decision:** `rewrite_record` is registered like `rewrite_parse`: deployment-level (`story_scoped = False`), exempt from deterministic-first, with a guarantee row. It is called only for a conflict the author (or the mode) resolves with `rewrite`. Incidental and cascaded fixes are a deterministic substitution: whole words, case-insensitive, the superseded value's canonical name and aliases replaced by the new value's name.
+  **Issue:** #224
+- **Decision:** a repaired text is checked against the story's output policies (#56) and the erased subjects (`guard.check_content`). It is not re-detected and re-verified (#148/#142), because a single record's text has no turn context to verify against. A failed repair (no usable answer, a policy, an erased subject) falls back to `drop`. Texts are generated at apply, not at answer time, so a `preview_first` preview shows the chosen actions, not the rewritten lines.
+  **Issue:** #224
+- **Decision:** how each action becomes parts:
+  - `drop` of an event is #221's overlay `drop`. Memories take `replace` only, so a dropped memory's text is emptied.
+  - Cascaded beliefs (`cascade`), re-evaluated causes and later State changes become `regenerated` notifications rather than parts: #221 refuses belief record parts, and those readers re-derive.
+  - A relabel sets the utterance's `objective_relation` to `false`.
+  - A change that would register a predicate is not applied.
+  - An entity the instruction names for the first time is created (kind `other`) in the apply transaction.
+  **Issue:** #224
+- **Decision:** the induced mid-apply failure is an in-process fault, `epistrel.testing.faults.rewrite_apply_failing()` (`apply.FAIL_AFTER_PARTS`), not a crash-harness point. It fails the commit after the parts and the cascade undo are written, so the whole transaction rolls back. 503 `rewrite_apply_failed` is raised only for that fault and `OperationalError`; any other failure (e.g. #221's 422) is re-raised as itself. In both cases the session returns to `awaiting_approval` with `last_error`.
+  **Issue:** #224
+- **Decision:** the `rewrite_closed` event in the amendment's operation carries `amendment_id: null`, because the id is minted inside the commit step after the events are staged; the session row holds `result_amendment_id`. The cancelled, expired and abandoned audit operations are non-bumping `rewrite_session` operations whose principal is the caller (`engine` for expiry and abandonment).
+  **Issue:** #224
+- **Decision:** what is not built here:
+  - `rewrite_max_record_rewrites`.
+  - The `locked_changed` preview list (an applied part on an `author_locked` fact goes through `commit_fact` as before).
+  - Carrying conflict free text as guidance at answer time: it is passed to `rewrite_record` at apply.
+
+  The pipeline-changed refusal is U-09's `test_u_09__pipeline_changed`. `test_apply_pipeline_changed` would be an unmappable part name, so it is not a separate file.
+  **Issue:** #224
+- **Decision:** `S-REWRITE-MODES`'s "detection identical" clause is asserted on one story in `test_u_09__detection`. Each scenario case uses a fresh fixture story, whose entity ids differ.
+  **Issue:** #224
+
+### #225 — cascade by dependency type, intent, identity merges, 2026-11-02
+
+- **Decision:** `CASCADE_RULES` classify:
+  - `derives` by `acquisition_kind`: `observation` and `discovery` cascade; every other kind keeps; a derived memory is regenerated.
+  - `causes` stays `re_evaluate`.
+  - Only `presupposes` text escalates to a conflict by substitution (not `derives`).
+
+  A `causes` decision is never regenerated when its beat committed State changes or an outbox row. It becomes a `decision_effects` conflict whose least change is `keep`, with a `decision_effects_kept` notification carrying the ids. A player-authored decision is a conflict too. "Another premise still supports it" (a #140 check under an overlay) is not built: every other `causes` dependent is regenerated through `rewrite_record`, and flagged `regenerated`.
+  **Issue:** #225
+- **Decision:** a firsthand belief follows the change in two transitions. A `forgetting` transition (antecedent: the belief itself, at the step after it) is followed by the belief's own first acquisition again (`observation`/`discovery`, same antecedent and source), held from the same position with the old confidence.
+
+  This deviates from the plan's #221 `version` part with an `author`/`amendment` transition. #221 refuses belief record parts. An `author` transition must cite an event, and the amendment's own event is refused as `self_attestation`. A `correction` needs a contradicting belief, which a non-functional key does not have. A belief that cannot follow is reported (`cascaded: false` with the refusal), not failed.
+  **Issue:** #225
+- **Decision:** the relabel is a pure function (`apply.relabelled`).
+  - The objective relation is re-evaluated against the new value.
+  - The belief relation is re-evaluated only when the speaker's own firsthand belief on the key follows in the same amendment.
+  - Intent never changes.
+  - The label moves only between `sincere` and `sincere_error`.
+
+  `scene_meaning_may_change` is emitted when the label changes or when a lie's objective relation flips. The planner's discretion said label change only, but the AC's own example (an attempted lie that happened to be true) keeps the label `lie`, so the flip has to notify too.
+  **Issue:** #225
+- **Decision:** explicit intent changes:
+  - an amendment part action `set_intent`, under its own transaction setting `epistrel.allow_intent_correction`;
+  - migration 0118 widens `ck_amendment_parts_action` and patches the utterances guard to admit `intent` and `classification` under that setting;
+  - `rewrite_parse` gains `{kind: intent, subject?, ref, intent}`, where `subject` narrows the utterance to its speaker.
+
+  Any other part naming `intent` raises `IntentNotRetconnable` (500, a bug guard).
+  **Issue:** #225
+- **Decision:** a revert takes out what an amendment part wrote, even when the part superseded nothing, through `_not_reverted` in `canon`'s open-version predicate. A version whose part is reverted (`tx_to` set) is out now, and out at a `record_time` after the revert. #221's revert of a proposition part on a non-functional key had left the written fact canon. This is the reversibility half of #694 (`retract`), which stays open for "X was never true".
+  **Issue:** #225, #694
+- **Decision:** identity merges. `POST /stories/{id}/entities/merge` opens an `entity_merge` session:
+  - one timeless `same_as(first, other)` change per other entity, built with no `rewrite_parse` call (`plan.merge` holds the ids);
+  - `merge_invalid` reasons `too_few`, `not_in_story`, `type_mismatch`, `already_same` (transitive over canon `same_as`);
+  - only `visibility: objective`; the holder-scoped visibility is not built.
+
+  Supporting changes:
+  - `commit_fact` writes `same_as` between two characters when an amendment part writes it, and approves the pair's identity proposal; `identity_proposal_id` in the request is recorded only.
+  - What people said about the merged-away entity keeps its text, intent and belief relation; its objective relation is re-checked with the entity read as the survivor (`_merged_speech`, `check_with` on the swapped claim).
+  - The S-ENTITY-IDENTITY M5 test's "no merge route" assertion now expects the route.
+  **Issue:** #225
+- **Decision:** test coverage:
+  - S-SPEECH-DIMENSIONS replays (a), (c), (d), (e) and (g), the explicit intent change and its complement. (b), (f) and (h) are #166's labelling, already asserted by I-12/U-05; they are cited, not replayed.
+  - SPEECH-ACT-INDEPENDENCE is a Hypothesis property over `relabelled`. Its DB complement (`IntentNotRetconnable`) is in S-SPEECH-DIMENSIONS.
+  - X-02 M7 retcons the truth every 7 turns: `test_x_02__m7`, soak; `test_x_02__m7_pr`, 50 turns.
+  - The merge route and the notification kinds are documented in docs/02 §9.
+  **Issue:** #225
+- **Decision:** directives (#226) dispatch by pipeline in the service (`require_pipeline`): only `structured` is registered, and a Lite story is 409 `module_off {module: lite_directives}`, the engine-wide status of `module_off` (the plan said 422; same deviation as #223's `lite_rewrites`). `U-07 __lite_interim` asserts it; #244 inverts it.
+  **Issue:** #226
+- **Decision:** the hierarchy. `core/authority.py` orders `author > canon > in_world`; external outranks only within its own domain (`external_domain`).
+  - Canon's `_write` raises `AuthorityConflict` only when a non-author write would supersede an `author_locked` author fact. An unlocked author fact is superseded by later narrative canon as before (the plan's "a later story event beginning after the directive's time closes the author fact normally").
+  - `AuthorityConflict` is 409 when it escapes, not internal-only: no caller maps it to a `contradicted` verdict yet, since narrative commits do not yet reach a locked fact through verify. Logged as a gap rather than built.
+  **Issue:** #226
+- **Decision:** durable-now directives run one `inter_turn` slot operation with operation provenance `CONSUMER` (the `Provenance` enum has no `author` value), and facts written with `RecordProvenance.AUTHOR` / `FactAuthority.AUTHOR`. A belief about the past is held from now (the author directs what the character believes now); only a proposition change before now routes to a rewrite. The routed path opens a #223 session of kind `directive` through `rewrite_parse` (the plan's "no `rewrite_parse`" was not built: the session's changes come from the instruction like any rewrite).
+  **Issue:** #226
+- **Decision:** not built in #226, left for a follow-up if wanted: the steer TTL sweep (`expired` disposition), `directive_split_required` and `steer_budget_exceeded` errors, scheduled-event changes in `directive_parse` (`event`/`reschedule`/`cancel_event`), and the `use_custom_instructions` hint. Steers enter the turn through the structured pipeline's steering lines ("Author direction (this turn only)") and are consumed by the turn's commit.
+  **Issue:** #226
+- **Decision:** test placement (`check-parts` derives test IDs from names, so `test_directive_routing`/`test_directive_lite_interim` would not map): the routing and Lite-interim tests are `test_u_07__routing` and `test_u_07__lite_interim` in `tests/test_u_07.py`. The S-TRUST-BOUNDARY directive part is `FR-AUTH-1` only, because FR-AUTH-3 is not in S-TRUST-BOUNDARY's §15 row (R-06 carries FR-AUTH-3). The R-06 corpus is `tests/redteam/corpora/forged_authority.yaml` (23 cases); the external-domain half is a pure check of `in_domain` and `outranks`.
+  **Issue:** #226
+- **Decision:** `derives` dependents of kind `inference` are kept, not re-run against their premises (the AC's "cascade only if the premises now support the new value"). Re-running an inference needs #140's check under the hypothetical canon, which the planner does not have; keeping is the conservative half (the belief stays what the character concluded) and the report lists it as kept. `author`/`resolution`/`author_fiat`/`testimony` are kept as planned. A `causes` dependent with a `scheduled_events` version is not checked separately: M7 refuses scheduled-plan amendments (decision 4 of the #221 replan), so no rewrite reaches one.
+  **Issue:** #225
+
+### #237 — revalidation at the final commit, 2026-11-02
+
+- **Decision:** revalidation is the apply operation's first commit step (`rewrite.apply.apply(check=…)`), so it runs under the story row's `FOR UPDATE` inside the apply transaction. A non-fresh outcome raises `revalidate.Revalidated`, which rolls the apply back; the operation row ends `failed`, as any rolled-back apply does. The erasure check also runs before `prepare`, outside the lock: an erased subject can break the stored parse's normalization before the commit is reached.
+  **Issue:** #237
+- **Decision:** what each check reads:
+  - The snapshot is taken by the planner, so every plan carries it: open, answer, merge and re-plan. It holds the known erasure ids, the story and deployment config high-water revisions, the anchor revision, the planned records' operation versions (`input_versions._operation_versions`: membership and #236's record version), and the proposition and State keys.
+  - An erasure "since the plan" is one the snapshot did not list. Comparing against the base revision would miss an erasure that moved no revision.
+  - `config_changed` is checked even when the revision has not moved, because a settings PATCH does not bump it. S-CONFIG-RACE M7 needs it.
+  - `new_dependent` re-runs the whole planner under the lock (no model call) and compares dependents by `{table, id}`.
+  **Issue:** #237
+- **Decision:** carry-over keeps the question rows rather than copying them. A question whose key the new plan asks again keeps its row and answer. Its options and recommendation are refreshed, and the answer is cleared when the answered option is gone or its effect changed. The 409's `carried_answers` names the kept row in both `question_id` and `carried_from`. The plan's "new rows with `carried_from`" was not built: the outcome is the same (no question is re-asked whose key survived), and #223's answer path already keeps rows by key.
+  **Issue:** #237
+- **Decision:** a change landing mid-Q&A is absorbed by the next answer, because each answer re-plans at the current revision (#223). No check runs at answer time; the plan approved after the change is computed against it, so its apply is fresh. S-STALE-PREVIEW's mid-Q&A variant asserts this, not a 409. A change after the last answer is the stale case (variant 2).
+  **Issue:** #237
+- **Decision:** test scope:
+  - CONC-LINEAR M7 is a seeded interleaving (4 seeds × 28 steps, each starting scripted open/answer/change/apply), not a Hypothesis stateful machine with 50 examples. The M2 machine drives Lite turns, and rewrites are structured-only.
+  - U-09 is unchanged: the base-mismatch 409 is asserted in S-STALE-PREVIEW and I-13.
+  - S-ERASURE-BOUNDARY M7 does not cover the ADR-154 common-word candidate case (`candidates_remaining`): abandonment is decided by subject id, and #123's redaction of session texts is already registered.
+  **Issue:** #237
+
+### #238 — undo and redo as checked rewrites, 2026-11-02
+
+- **Decision:** undo and redo are rewrite sessions with an engine source, beside `merge` (`session.SOURCES`). The stored plan names `{"undo": {amendment_id}}` or `{"redo": …}`, and every re-plan (answer, stale re-plan, revalidation) rebuilds the changes from it.
+  - An undo's changes are the inverse of A's active proposition and State parts, flagged `undo`: they write no part, and the apply reverts A through #221's `revert_amendment` into one `undo` amendment.
+  - A redo's changes are A's original parts as new drafts, recorded as a `redo` amendment.
+  - **Rule 1 fix:** an answer to a merge session used to re-plan from the (empty) parse and drop the merge. Answers now re-plan sourced sessions from their source.
+  **Issue:** #238
+- **Decision:** dependent amendments.
+  - A later amendment part found as a dependent is always an irreducible `dependent_amendment` conflict, whatever its edge type. Before, only `presupposes` was; B's `amendment_edges` are `causes`. Reverted parts are skipped.
+  - In an undo the conflict is a `dependent` question with options `cascade_undo` (recommended) and `cancel`. Choosing `cancel` cancels the whole session.
+  - The plan's `rewrite` option for B (B's contradicted parts rewritten into the undo) was not built: no part-level `rewrite_record` exists for amendment parts.
+  - Contradicted records in an undo offer `rewrite | drop`, never `keep`.
+  - Because B is recommended for cascade-undo, the undo's radius takes in B's own dependents (up to 3 levels): Marcus's memory derived from B's graduation is regenerated.
+  **Issue:** #238
+- **Decision:** not built: a separate undo-staleness test (an undo session runs the same #237 revalidation as any session); the list's `amendment_id` in report `resolutions[]`; indexes on `undoes`/`redoes`. `determinism.ORDER` gains `rewrite_sessions`, `rewrite_questions` and `directives`: S-ERASURE-BOUNDARY's resurrection replay compares every story table. This is a Rule 1 fix for #223/#226.
+  **Issue:** #238
+
+### #239 — amendments across truncation, swap and fork, 2026-11-02
+
+- **Decision:** the support check runs inline in the `post_commit` membership hook (`orchestrator/rewrite/support_check.py`), not as a #70 job.
+  - The checks are a few indexed reads; the hook already runs after the edit's commit on its own connection, and a failure is logged without undoing the edit.
+  - Causes covered: truncate, untruncate, swap and fork (the fork runs the post-commit hooks with cause `fork`).
+  - Regeneration is not covered: a regenerate is a turn commit and fires no membership hook. It would need a hook in `Operation` (a follow-up if wanted).
+  **Issue:** #239
+- **Decision:** what the check reads:
+  - "Unsupported": a rationale record, or a #220 `relies_on` target, that is not an active record of the story itself. A fork's copy keeps the source's id for a record it left behind, which counts as absent.
+  - "Conflict": a proposition part's written fact that is no longer current (`canon._load`). This stands in for a full #140 re-verification against the new chain.
+  - Ports are suggested for `replace` parts on events only, matched by same turn, type and `character_id`, with containment of `patch_before.text` (exact, else case and whitespace normalized). A port answer records the amendment directly in a `rewrite_session` operation (`payload.ported_from`), not through a #224 session.
+  - Each option's effect carries its `amendment_id` (and a port's `part_id`), so an answer never re-derives the finding.
+  **Issue:** #239
+- **Decision:** fork copy (`core/fork.py`):
+  - an amendment part's record part is copied only when the record's operation is copied (events through the event map);
+  - `amendments.session_id` is set to null (sessions are not copied, and a dangling FK would block deleting the source);
+  - `superseded_fact_ids` is remapped, with uncopied facts dropped.
+  **Issue:** #239
+- **Decision:** test scale. S-REWRITE-ORDER uses 10 turns with a fork at 8, not 1,000/800, with amendments made through `tests.amendment_support` rather than a scripted `rewrite_parse`. The positional point is asserted through the amendment event's `seq`. The recommendations unit test is unmarked (`tests/test_support_check.py`); its name maps to no docs/04 ID.
+  **Issue:** #239
+
+### #240 — corrections the clock can't place, 2026-11-02
+
+- **Decision:** an absolute valid start is recognised only as an ISO partial date with a preposition ("in 2012", "since 2012-05"), or as a dated form (`YYYY-MM`, `YYYY-MM-DD`). A bare four-digit number stays a clock offset in minutes (the existing `_MINUTES` reading). Such a part is stored with `valid_spec.absolute` and no offset (its fact is open in valid-time).
+  **Issue:** #240
+- **Decision:** undecidability is checked at the story's start (turn 0) and at the head, not at every checkpoint on the chain. The anchor's admissible range only narrows as the story moves, so those two bound it.
+  - The flag is stored at insert and never recomputed; `timing_uncertain_now` at read time was not built.
+  - The `timing` question's options are the story's start and before/after the head turn, without the subject's first/last mention turns.
+  - Free text is read by `rewrite.timing.parse_bound` (before/after turn N, the story's start); anything else is 422 `invalid_answer`, with the question left open.
+  **Issue:** #240
+- **Decision:** a position bound is compared by turn only (`after T` is in at `T⁺k` and later; `before T` is in from `T`). The stored `variant` is the active variant of `T` when answered (audit only). Forks copy the column with the part, and the fork's own checkpoint decides. State parts get no flag or bound: their parts are offset-only.
+  **Issue:** #240
+- **Decision:** test placement. The bounds unit test is `tests/test_amendment_parts.py::test_eligibility__bounds`, unmarked like #221's `test_eligibility` (the plan's `tests/test_eligibility.py` does not exist). The "changing the setting moves no stored part" case is in S-RETCON-TIMING. The S-RETCON-TIMING checkpoints are 4 and 8 rather than 40 and 80. Subject (b) is Cal, because `located_at` is functional and Bobby's undecidable coast part would supersede his Ohio part.
+  **Issue:** #240
+
+### CI fixes after #223-#238, 2026-11-02
+
+- **Decision (Rule 1):** CI at 59535c5 failed six meta-tests, all fallout from #223-#238's new surface:
+  - **strict library inputs:** `AnswerItem.accept_recommended` is now `StrictBool` and `ApplyRequest.base_revision` `StrictInt`;
+  - **trimmed:** the rewrite instruction and the directive text now carry `trim_as_sent`;
+  - **NUL reads:** `@refuses_nul` on `get_amendment`;
+  - **repeated filters:** `list_rewrites(states)` is annotated `str | Sequence[str]`;
+  - **ownership matrix:** the rewrite, merge, directive and amendment routes are added to `CALLS`;
+  - **deployment-level purposes:** `rewrite_parse`, `rewrite_record` and `directive_parse` are now `story_scoped=True`. This was the #226 plan's call ("a profile may route it"), and it was wrong at #223. It also left them out of the Lite preset's routed purposes (`LITE_ROUTED`) and out of the model matrix (`model_matrix.SIDE_CHANNEL`: no turn calls them).
+  **Issue:** #223, #226, #238
+
+### #241 — author-directed regeneration, 2026-11-02
+
+- **Decision:** the Ok path (no conflict).
+  - The directed thunk travels by context variable (`lifecycle.AUTHOR_DIRECTED`, `directed.DECISION`), not by new parameters through the structured pipeline.
+  - The resolution screen accepts the directed claim as novel. When verification contradicted it, nothing re-steers the binding: the author's decision overrides the insignificance presumption, and recorded history was settled first.
+  - `depend` commits the resolution with `authority = author`.
+  - The renders carry "Author decision: …" in place of the deferral bias.
+  **Issue:** #241
+- **Decision:** the conflict path does not hold the render. It stores the direction on the `directed_resolution` session and plays the directed regeneration at apply, after the amendment commits.
+  - The two are not one transaction: a failed regeneration reverts the amendment (`directed.compensate`, an `undo` amendment) and the call is 503 `rewrite_apply_failed`. The plan's held render, with its read-set revalidation and the two operations in one transaction, was not built: the structured pipeline has no way to stage a turn and commit it later.
+  - The resolution itself is the turn's fact. Contradicted recorded facts are superseded by it (`superseded_by_resolution` notification, no part), and contradicted lines get `rewrite | drop | keep` record parts.
+  - Knowledge transitions are written on the Ok path only.
+  **Issue:** #241
+- **Decision:** the thunk is matched to the latest thunk the head turn reads open, or one the head's active variant resolved. A binding to an unknown name creates the entity (a person). The binding is reconciled against the story as it stands, so the replaced variant's own records count. Regeneration is not a support-check cause (#239).
+  **Issue:** #241
+- **Decision:** the API.
+  - REST answers 202 with `DirectedPendingBody` as a `JSONResponse`; the route's model stays the 200 body, with the 202 declared in `responses`.
+  - `Engine.regenerate` returns `RegenerateResult | DirectedPending`, and its idempotency codec answers 202 for the latter.
+  - A Lite story's directive is 409 `module_off` (`lite_directives`), the engine-wide status.
+  - #154's `author_directed` stub is removed from `core/commit/reconcile.py` (`test_no_author_directed_stub`).
+  **Issue:** #241
+
+### #242 — game-owned values, 2026-11-02
+
+- **Decision:** the guard covers externally owned **States** (`state_definitions.owner = external`, `provider_id`). Predicates with a registry `owner = external` are not guarded; there is no such predicate path in the directive or rewrite normalizers today.
+  - A story missing a binding is treated as read-only only when the provider's manifest needs binding keys. In-process providers without keys bind implicitly.
+  - Routed writes check the State's `authorization.sources` for `author` directly. `check_settable` refuses every external State (`state_readonly_external`), which is the State API's rule, not the outbox's.
+  **Issue:** #242
+- **Decision:** the rewrite refusal reuses #223's `external_owned` refusal and adds `code`, `explanation`, `provider` and `value_name`. A rewrite whose only changes are game-owned is 422 `external_value_not_overridable` with no session. The error class lives in `core.errors` (`ExternalValueNotOverridable`).
+  **Issue:** #242
+- **Decision (not built; tracked in #697):**
+  - S-LATE-SETTLEMENT M7's backdating clause (the sword amendment and case (6)). It needs dependency edges from story-owned State possession to later lines, which the planner does not find for States today.
+  - The routed-write test's "next turn's pinned value equals the adapter's" assertion: the test asserts the dispatch (idempotency key = the row id) and the row's status after confirmation and after failure, and that no author change or fact is written.
+  - The `ownership_changed` stale reason (#237) for a provider flip between preview and apply.
+  **Issue:** #242
+
+### #481 — duplicate places, merges that read through, 2026-11-02
+
+- **Decision:** the merge is #225's `POST /stories/{id}/entities/merge`. It already records `same_as` as an amendment with the cascade, and #238 makes it undoable.
+  - Read-through: `canon.canon`'s `subject`/`object` filters expand to `canon.merged_with` (the closure of active `same_as` facts written by amendment parts, memoized per turn). A narrative identity claim joins nothing (#171), and an undone merge is out.
+  - Not built: read-through for retrieval, entity profiles, `state_definitions.entity_id` and `scheduled_events.place_id`; the functional-contradiction conflict after a merge; the merge-then-undo Hypothesis property (the scenario asserts undo restores both places' facts exactly).
+  **Issue:** #481
+- **Decision:** duplicate candidates (`core.verify.duplicates`) go into `turn_report.commit.duplicate_candidates`. Two rules apply to the places, objects and events a turn creates:
+  - the scene's location (the acting character's current `located_at`) is untracked or generic;
+  - descriptors overlap an existing entity of the same kind.
+  Across turns, "the inn" then "Crossroads Inn" already resolve to one entity by descriptor match, so the scenario uses "the tavern" then "the inn".
+  **Issue:** #481
+- **Decision (#613, folded in):** interaction-triggered modeling resolves a description whose descriptor words are a subset of exactly one modeled person's name to that person (`modeling._resolved`). S-MODELING now plays "Jenni waves to the driver again." and still models only "the delivery driver".
+  **Issue:** #481, #613
+- **Decision (Rule 1, CI at 5a6dd1f):**
+  - `check-membership` flagged raw `.c.membership` filters in the new modules (`support_check`, `directed`, `timing`, `canon.merged_with`); they now use `active_only`/`active_operation`. The fix also scopes the support check's fact lookups to the story.
+  - C-01 requires every `StorySettings` field to be named in `PATCH /stories/{id}/settings`' description; `ambiguous_retcon_timing` is now documented there.
+  **Issue:** #239, #240, #241
+
+### #229 — upgrade modes and the backfill queue, 2026-11-02
+
+- **Decision:** `upgrade_mode` (`backfill` | `forward_only`, alias `upgradeMode`) is a `TwoStageRequest` field, so every two-stage profile mutation takes it. The narrowed `Literal["backfill"]` fields #228 put on `ProfileAssignment` and `ProfileOverridesPatch` are removed. A story needs a backfill only where a gained capability has a coverage gap (`impact.gap_span` over `coverage.gaps`), so a story with history whose gained capabilities already cover its turns follows at once.
+  **Issue:** #229
+- **Decision (Rule 4 judged not to apply; new columns, not a table):** migration 0121 adds `story_backfills.origin` (`single_story` | `profile_edit`) and `seq` (identity), as the issue's discretion planned. A queued profile-edit row is "claimed" when its story's `paused_by` names it; there is no new status.
+  **Issue:** #229
+- **Decision:** the claim (`core.backfill.claim`, run by the handler under `pg_advisory_xact_lock(hashtext('backfill_queue'))`):
+  - It waits while `backfill_concurrency` backfills run (any row whose story is paused by it, single-story ones included), while an earlier profile-edit row is unclaimed, or while the story is not `active` (archived or paused otherwise).
+  - It re-plans at claim, so a later turn, or a newer version through the target `{profile_id, pin: null}`, is included. With nothing left to derive, the target is applied and the row completes with `report.no_op`.
+  - Single-story triggers are not gated by the queue: they pause at request time as in #228, but they count toward the running total.
+  - `backfill_concurrency` is a process `Settings` field (1..8, default 1), not a `DeploymentSettings` field as the discretion said. The handler is configured at worker start, and a waiting job requeues after `worker_poll_interval`.
+  **Issue:** #229
+- **Decision:** collisions.
+  - A story's own confirmed change (PUT/PATCH, `forward_only` or a backfill start) supersedes its profile-edit row while that row is still queued (status `cancelled`, `error = superseded`, pin kept).
+  - A running backfill blocks a profile edit's queueing for that story: the story stays pinned and appears in `upgrade-pinned` later. The 409 is reserved for the story's own routes.
+  **Issue:** #229
+- **Decision:** a profile edit that adds data-producing capability now calls `coverage.extend_live` for every story following the new version. Before this, followers recorded no `live` interval for capabilities gained by an edit, which was a #228 gap. Under `forward_only` this is what opens the gap's end.
+  **Issue:** #229
+- **Decision:** gap marks (`core.retrieval.coverage_marks`).
+  - Retrieval reads `pipeline`, `consolidation`, `partitions` and `nested_beliefs`; `episodic` is not a coverage capability.
+  - Verification reads `pipeline` and `verification`.
+  - `gap_affected` is attached to every verdict of a turn when the story has a verification-reader gap at or before the turn. It does not narrow to the verdict's own evidence search: every claim's evidence reads canon.
+  - `turn_report.retrieval` is a new section (`coverage_gaps` only). The respond response carries top-level `coverage_gaps` when any applies.
+  **Issue:** #229
+- **Decision:** `POST /engine-profiles/{id}/upgrade-pinned` (`Engine.upgrade_pinned_stories`) answers `ProfileEditBody` (`backfills` added). The confirmed multi-story `PUT /engine-profiles/{id}` answers `backfills: [{story_id, id, job_id, status, queue_position}]`.
+  **Issue:** #229
+- **Decision (Ad-hoc, interim retired):** `test_c_16__m4_interim` and `UNAVAILABLE_WARNINGS` are deleted. The M3/M5/M6 parts that asserted `upgrade_unavailable` now assert the M7 outcome under their own part IDs: `backfill` mode keeps the story pinned with a queued row. `check-traceability --write` changed nothing while `current_milestone` is M6, and marking §15's `C-16 (M4, interim until M7)` entry is still #306. `epistrel.testing.profiles.data_producing` stays, because `test_two_stage`, `test_effective_config` and `test_profile_facts` still use it.
+  **Issue:** #229, #306
+- **Decision (process):** the plan comment was posted after the code, a deviation from the skill. The fail-first run against the pre-change code was not done: the routes and fields the test asserts did not exist before.
+  **Issue:** #229
+
+### #230 — backfill conflict policies, 2026-11-02
+
+- **Decision:** `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`) is now a `StorySettings` field, prospective. Its `SETTING_CAPABILITIES` entry is `None`, so every story gets it, like #240's. Migration 0122 promotes an inactive value. The backfill reads it at `_begin` into `report.policy`, also reading `settings.inactive` for an unmigrated row.
+  **Issue:** #230
+- **Decision (deviation from discretion):** while conflicts are open, `stories.status` stays `paused` (paused_by = the backfill) and only `story_backfills.status` is `paused_for_conflicts`. The 409 details carry `cause: backfill_conflicts`, `backfill_id` and `conflicts_open`. A new `StoryStatus` value would have touched every `is_paused` caller and the erasure block for no observable difference. A `paused_for_conflicts` backfill frees its #229 queue slot.
+  **Issue:** #230
+- **Decision:** `ask` handling.
+  - The pass does not write the contradicting later statement. Each key gets one open row per backfill, and later statements join it rather than opening one row per overlap window.
+  - Until the conflict is resolved, the earlier value the pass wrote stays the provisional value. It is dormant, as every backfill row is until completion, so nothing is visible. The issue's "no canon for the overlap while open" is therefore met only through dormancy.
+  - On an `ignore_warnings` resume, the earlier value stays canon. When the target runs commitment, an open thunk lists the values; the overlap itself is not closed.
+  - Resolution writes the chosen statement under the backfill operation with provenance `author` when the pass never wrote it.
+  **Issue:** #230
+- **Decision:** in-world claims are `utterances` rows (`objective_relation = false`, `classification = sincere_error`, `belief_relation = unknown`) for losing statements a character spoke. The lie/sincere-error split against the speaker's partition is not computed. Statements carry no text: the listing quotes `transcript_messages` (capped at 500), and extraction keeps no span (`statement_id = <event_id>:0-0`).
+  **Issue:** #230
+- **Decision (not built):** the `value` resolution accepts only a value one of the statements states; normalizing a new value and the `valid_from`/`valid_to` windows are refused. No `audit_log` row is written. The tests plant #228's Bobby-age contradiction instead of the car colours.
+  **Issue:** #230
+- **Decision:** there is no `Engine.resume_backfill`. The resume is `Engine.start_backfill` (`POST /stories/{id}/backfill`) on a backfill awaiting conflicts, because C-02/C-03 refuse a library method without a route of its own. C-03's resolve step plants a `paused_for_conflicts` backfill (no public call pauses a Lite story for conflicts).
+  **Issue:** #230
+- **Decision (Rule 1):** C-01's fuzzing sent `version: 2147483648` to `POST /engine-profiles/{id}/certification-runs` and got a 500 (integer out of range). `CertificationRunRequest.version` now has `le=2**31 - 1`.
+  **Issue:** #230 (found while running C-01; #233's route)
+
+### #231 — deferred genesis content and decreases, 2026-11-02
+
+- **Decision:** `core.genesis.deferred.materialize_deferred` reuses #149's `structured.plan`/`write`, partitions branch included, over the story's unmaterialized items of the capabilities the new configuration enables (`structured`, `episodic`, `partitions`).
+  - It rebuilds the cast from `characters` (role id, name, true age, persona snapshot) and placements, groups and the opening from `stories.scenario_snapshot`.
+  - Records land at position 0 with provenance `seed`. Items are stamped `materialized_at` plus `materialized_operation_id` (migration 0123), under a row lock.
+  - A nested seed waits for `nested_beliefs`, which is #149's own rule.
+  **Issue:** #231
+- **Decision (not built; follow-up issue filed):**
+  - The clock and States deferred items (clock settings, anchor, trackers, scheduled events, States) stay deferred; only `structured`/`episodic`/`partitions` items materialize.
+  - The fact merge's per-entry #111 validation-report entries are not written; the report carries `{counts, entries, conflicts}` only. It is stored in `story_backfills.report.materialization` and not projected per viewpoint.
+  - The Brother seed-vs-play conflict scenario is not tested, though seeds written under the backfill operation at turn 0 are what `_previous` finds as the earliest statement.
+  - The corrected-history and as-recorded checkpoint assertions and the post-upgrade contradiction catch are not tested.
+  **Issue:** #231
+- **Decision:** where materialization runs.
+  - Under `backfill`: in the handler's `_begin`, under the backfill operation, flipped dormant. Cancel, failure and a timeline-moved restart call `deferred.undo`, so the items are deferred again and their rows discarded.
+  - Under `forward_only`, a story without history, and `upgrade-pinned`: `deferred.on_configuration` runs inside every applied configuration write (`_write_assignment`, `_write_overrides`, profile-edit followers) under a fresh committed control operation, active at once.
+  **Issue:** #231
+- **Decision:** a decrease. `coverage.extend_live` now first calls `coverage.close_lost`, which ends each open `live` interval of a capability (or pipeline level) no longer on at the last turn, and drops one that never began. A profile edit's followers get `extend_live` on every new version, not only on increases. Rows are never flipped or deleted. Impact entries gain `data_kept_dormant` (`Delta.decreases`), `deferred_to_materialize {by_capability}` (candidate counts) and `genesis_conflicts_unchecked` (under `forward_only`, for a story with history).
+  **Issue:** #231
+- **Decision:** `core.genesis.deferred` is not listed in `CONTENT_WRITE_PATHS`, contrary to the AC. The guard test admits only the subject index's writer modules, and every write it makes goes through those guarded writers (`structured.write`, `canon.commit_fact`, `write_seed`).
+  **Issue:** #231
+- **Decision (correction to the #229 entry):** `check-traceability --write` does retire the interim entry; #306 is in place. §15's FR-PROF-7 row now reads `C-16 (M4, retired at M7)` and gains `C-16 (M7)`. The earlier "changed nothing" came from a stale `build/parts.json`: the gates read it, so `check-parts --json` must run first. CI at 18d88e3 failed `check-lexicon` (an M3 part's docstring said "backfill") and `check-traceability` for this reason; both are fixed.
+  **Issue:** #229
+
+### #232 — downgrade to Lite and back, 2026-11-02
+
+- **Decision:** `core.summary_rebuild`. A configuration write that moves the effective pipeline from structured to lite starts a `resummarize` `story_backfills` row (status `extracting`, range from the summary's compressible chunks).
+  - The trigger is checked in `_write_assignment`, `_write_overrides` and the profile-edit followers.
+  - The rebuild itself is #72's normal incremental `lite_summary` job. The story is not paused.
+  - Lite replies carry `degradation: summary_rebuilding` while the summary still has work. The row is settled (`completed`) lazily: by the reply's check, by the job when it finds no work, and by the recurring fan-out.
+  - The job is enqueued after the commit (`summary_port.notify` from `Engine.assign_engine_profile` and `set_profile_overrides`). It is not enqueued in the same transaction, because core cannot enqueue Orchestrator jobs; the recurring task covers profile edits.
+  - A resummarize row is always supersedable (`waiting`), so a later upgrade is never 409.
+  **Issue:** #232
+- **Decision (not built):**
+  - No `rolling_summary` coverage capability (it is not data-producing in the schema).
+  - Cancelling a resummarize row does not discard the segments already written.
+  - No rebuild-mode payload for `lite_summary`.
+  - The reader spies (zero structured reads under Lite) are not added.
+  - S-PROFILE-SWITCH is reduced to a twenty-turn story with preset copies. Its diner fixture, scheduled-event, per-character belief and pacing-fold assertions are not built.
+  - The downgrade report's `summary_backfill.estimate` is `{model_calls}` only.
+  **Issue:** #232
+
+## Ad-hoc — 2026-11-03 (#244, the planned FR-LITE-8 amendment)
+
+- **Change:** docs/03 gains FR-LITE-8 (M7), the Lite forms of directives and rewrites, and the §22 M7 row lists it. FR-PROF-13 keeps FR-DIRECT and FR-REWRITE under `structured` "as written (under `lite`, the forms of FR-LITE-8)". FR-LITE-1's prompt list names the author blocks. docs/02 §4.11's Lite bullet, the capability map's notes, and docs/04 (S-LITE-DIRECTIVE, §15 rows for FR-LITE-8 and FR-DIRECT-1,2) follow.
+  **Why:** the owner's round-two decision (2026-10-10), planned as #244. The amendment lands in this PR as the issue requires.
+  **Affects:** #245 (Lite rewrites, the FR-LITE-8 half it delivers), M7 only. No replan is needed: the plans already assume this text.
+
+### #244 — Lite author directives, 2026-11-03
+
+- **Decision (deviation from artifacts):** there is no `lite_author_facts` table. A lasting author fact is #226's own durable path with no structured changes.
+  - It writes an `inter_turn` slot operation, the `directive_applied` event carrying the author's text, and a `directives` row (`applied`).
+  - The Lite prompt reads the active `directive_applied` events before the turn (`directives.author_facts`).
+  - The event follows its slot operation's membership, so rewind, truncation, swap and fork need no new code. A fork copies the event; it does not copy `directives` rows.
+  - The same read gives the downgrade rendering of structured durable directives.
+  **Issue:** #244
+- **Decision:**
+  - The Lite blocks (author facts, then the nudge) are appended to the prompt's author notes (`director_notes`), so the template and every fingerprint are unchanged.
+  - Nudges are #226's `steer_queued` rows, consumed in the Lite turn's commit.
+  - A Lite directed regeneration writes a `directed_regeneration` row and carries its text as a one-off nudge (`lite.LITE_NUDGE`).
+  - The parse is #226's `directive_parse` (no new `lite_directive_parse` purpose). A lasting fact's text is the parse's `steer_text` or the request's text.
+  - A past directive is 422 `directive_requires_rewrite` (a new error).
+  **Issue:** #244
+- **Decision (not built; #699):**
+  - The prompt-only clock advance from a Lite directive.
+  - The `author_fact_limit`.
+  - The Lite read-set members (`author_facts`, `author_direction`).
+  - The `lite_no_reconciliation` warning.
+  - Converting lasting author facts into structured directives during an upgrade backfill.
+  - The guarantee-table rows.
+  - `test_lite_directive_dispatch`, `test_lite_directed_regeneration` and `test_i_19__m7_author_facts`. The scenario covers nudge, lasting fact, rewind, the past refusal and the directed regeneration.
+  **Issue:** #244
+
+### #245 — Lite history rewrites, 2026-11-03
+
+- **Decision:** a Lite rewrite reuses #223's session, planner and apply.
+  - `open_session` on a Lite story calls `rewrite_parse` and then one `lite_rewrite_reach` pass (a new purpose: registry, template, guarantee row, side-channel matrix, deterministic-first exempt) over the active transcript, newest first, at most 200 lines.
+  - Each hit with a fix becomes a #221 record change (`overlay` `replace` by `ref` turn plus quote), which #223's normalizer resolves to the line's event.
+  - The `lite` planner is the structured planner over those record changes. The parse's proposition and State changes are refused (`lite_no_canon`); unfixable hits are listed as refused (`no_clean_fix`).
+  - Apply, the as-recorded original in the event log, and #238's undo and redo then work unchanged.
+  - A Lite directive about the past now routes into a `directive` session (202). #244's `directive_requires_rewrite` is removed.
+  **Issue:** #245
+- **Decision (not built; #700):**
+  - `line_edit` (a direct single-line edit with zero model calls).
+  - The `lite_note` amendment part and the "Author corrections" prompt block.
+  - The `lite_rewrite_parse` purpose (`rewrite_parse` serves).
+  - The re-check call over all fixes and the output and rating gate on each fix text.
+  - Chunked reach under `lite_reach_max_calls` with flagged ranges first.
+  - The summary-segment rebuild and `summary_rebuilding` after an apply.
+  - The Lite revalidation read set.
+  - Converting `lite_note` parts on upgrade, and rendering structured instructions on downgrade.
+  - `preview.reach` metadata.
+  - S-LITE-REWRITE is a new docs/04 test ID for the scenario this story ships.
+  **Issue:** #245
+
+### #632 — Lite time skips, 2026-11-03
+
+- **Decision:** the Lite detector is `skips.narrates_elapsing`: a stated amount, or an activity of #199's lexicon together with a `DURATIVE` word ("rest of", "until", "fall asleep", …). An activity word alone ("show", "watch") would have sent an estimation call on ordinary replies. Classification and bounding are #199's `classify_skip` and `authorize` (directives = the prompt's author notes; established = the verbatim window). One `time_estimation` call at most per turn (#201's `estimate`, under the turn budget), before the commit. The skip's minutes replace `pace`'s pacing advance (source `declared_skip` or `estimate`). A refused or unestimated skip leaves pacing and is listed in `turn_report.clock.skips_refused`.
+  **Issue:** #632
+- **Decision:** ADR-178 records it, including the planner's product-visible call that due-event stops stay structured-only. docs/03 FR-LITE-5 and FR-LITE-7 are amended (2026-11-01, the owner's decision on #632). docs/04 I-18 gains its M7 part, and the §15 rows for FR-CLOCK-7, FR-CLOCK-8 and FR-LITE-7 list `I-18 (M7)`.
+  **Issue:** #632
+- **Decision (not built):**
+  - the respond `degradation: time_estimate_skipped` when the budget refuses the call;
+  - the Lite guarantee row for `time_estimation`;
+  - the replay and regenerate assertions.
+  - Case (5) of the test ("Twenty minutes later" from the model with nothing established) is refused by #199's rules (`no_established_activity`). The test asserts only that no estimation call is made.
+  **Issue:** #632
+
+### #247 — manual pruning, 2026-11-03
+
+- **Decision:**
+  - **Targets.** A target is a group of `discarded` or `dormant` operations flipped in one transaction (`membership_tx`): one truncation's tail, or one swap's or regenerate's continuation. Its id is `<kind>:<first operation id>`, and `targets` takes those ids from the report rather than #66's chain objects. A tail that later turns are written over becomes `dormant`, so it is reported as a continuation.
+  - **Apply.** One `Operation(kind=control, bumps_revision=True, control_action=False)` writes the `pruning` marker event. Its commit step:
+    - flips the operations to the new `Membership.PRUNED` (migration 0124 adds the enum value; `turn_report`/`read_set` are cleared);
+    - calls `feedback.mark_pruned`;
+    - deletes `PRUNABLE_TABLES` rows by `operation_id` (children first) and their subject-index rows;
+    - deletes the operations' events except audit/amendment, redacted and outbox-outcome events.
+  **Issue:** #247
+- **Decision (deviation from the AC's database guard):** only the `events` guard gains the `epistrel.allow_prune` exemption, with all four conditions (story, category, not redacted, operation `pruned`). The derived tables' own append-only guards admit the delete under `epistrel.allow_story_delete`, scoped to the story and set only around the derived-row deletes in the pruning transaction. No `operations` trigger enforces `pruned` as terminal. `_flip` (timeline) refuses to bring a pruned operation back (409 `pruned`), and an untruncate of a pruned truncation is `pruned` too.
+  **Issue:** #247
+- **Decision (not built; #702):**
+  - Markers in `audit_view` and the as-originally-recorded view.
+  - The replay byte-identity check.
+  - `settlement_dependency` exclusion, and entities/aliases/propositions minted by pruned turns (kept).
+  - `pruned` on fork, history `?variant=` and feedback writes.
+  - `undo_available`/`dormant_chains` recomputation.
+  - Rebase of a held in-flight turn (the operation is not a control action, so FR-CONC-4 rebases; not tested).
+  - Chunked deletes.
+  - The docs/02 §9 route paragraph.
+  **Issue:** #247
+- **Decision (Rule 3, import contract):** the untruncate and swap refusals live in `core.pruned`, and `core.prune` (which marks feedback) is reached by the timeline only through it. This keeps `feedback-is-flag-only`: the timeline, and so genesis, profiles and projections, never import `core.feedback`. `core/prune.py` is added to the modules allowed to name the rating tables (it classifies them as retained).
+  **Issue:** #247
+
+### #248 — the pruning policy, 2026-11-03
+
+- **Decision:**
+  - **Setting.** `StorySettings.prune_policy` (`null` | `{older_than_days: 1..3650}`, a `PrunePolicy` model) is prospective and documented in the settings PATCH description; I-18's strategy covers it.
+  - **Daily run.** `prune_run` is daily (`orchestrator/jobs/handlers/prune_policy.py`). It calls `core.prune.run_policy` through a runner the Engine binds at start-up, because the Orchestrator may not import the feedback marking. For every active story with a policy, it runs #247's pruning with `trigger: policy` as `system`, over targets older than the cut-off.
+  - **Recording.** The marker carries the policy and the run's impact report. `GET /stories/{id}/prune-runs` (`Engine.list_prune_runs`) lists every pruning, newest first.
+  **Issue:** #248
+- **Decision (not built; #703):** the `pruning` block on `GET /stories/{id}`; the partial expression index on `stories.settings->'prune_policy'`; the X-07 missed-run and X-01 soak slices; the never-suggests check over 50 dormant chains. The policy test sits in `tests/scenario/test_s_prune.py`, since one file per test ID per milestone is allowed.
+  **Issue:** #248
+
+### #249 — story export, 2026-11-03
+
+- **Decision:**
+  - **Module and job.** `core.bundles` holds the classification, the canonical writer and the export. A `bundle_jobs` table (migration 0125) records each export, and the `story_export` job writes it.
+  - **Classification.** `REBUILD` covers the projections, the subject index and the transcript projection. `NEVER` covers deployment-level and transient work: jobs, queue, timers, idempotency, check jobs, backfills, rewrite sessions, the read-set index, escalations, the extraction shadow and the export jobs. Every other `story_id` table is `EXPORT`, plus `erasure_ledger` by `story_ref`. A coverage test fails on an unclassified table.
+  - **Snapshot.** One `REPEATABLE READ` read-only snapshot covers the story, its committed operations, its events in `seq` order, and every `EXPORT` table.
+  - **Archive.** `manifest.json` comes first, with format `1.0.0`, the Alembic head, files with SHA-256/size/records, and counts. The archive is reproducible: tar members with mtime 0, canonical JSON. Two exports of one revision differ only in the manifest.
+  - **Secret scan.** Before anything is kept, every member is scanned for the service credentials and the config key, raw, base64 and hex. A hit fails the job (`secret_detected`) and no file is written.
+  - **Storage.** Archives go to `Settings.bundle_dir` (`EPISTREL_BUNDLE_DIR`), staged then renamed, with a 24-hour `expires_at`.
+  - **Routes.** `POST /admin/stories/{id}/export` (202, `Location`), `GET /admin/stories/exports/{job}`, `GET …/bundle` (409 `export_not_ready`, 410 `export_expired`). They are registered before the admin stories router. Errors: `job_not_found`, `export_not_ready`, `export_expired`.
+  **Issue:** #249
+- **Decision (not built; #704):**
+  - media and `catalog/` members;
+  - the bundle JSON Schema in OpenAPI and per-line validation against it;
+  - the erasure race restart and the `story_exports` erasure target;
+  - the retention sweep's expiry deletion;
+  - deleting the files with the story;
+  - provider-credential secrets in the scan;
+  - the rich-story fixture and the concurrent-snapshot test.
+  **Issue:** #249
+
+### #250 — story import (partial), 2026-11-03
+
+- **Decision (scope, partial):**
+  - **Shape.** Built as a synchronous import in one transaction (`core/bundles/importing.py`, `POST /admin/stories/import`, 201), not the planned background job with an `importing` status.
+  - **Why.** The full story is a job, a status gate on every route, claim skips, staging, format migrations and per-table schemas. That is more than the run's remaining budget, and one transaction already gives the hard guarantee: a refusal leaves no story, row or job.
+  - **Request.** The body is the raw archive (`application/octet-stream`; C-01's schemathesis has no gzip serializer), with `owner` and `engine_profile_id` as query parameters, instead of the planned multipart form.
+  - **Limits.** Module constants, not deployment settings.
+  - **Status.** #250 stays open (no `Closes`). What is left is filed as #705.
+  **Issue:** #250
+- **Decision (built):**
+  - **Reading.** The archive is read with `tarfile` `r|gz` and counted while it decompresses: entries, per-entry and total bytes give `bundle_too_large` with `details.limit`.
+  - **Checks.** A non-regular member or a climbing/absolute path is `corrupt_bundle` `entry_outside_archive`. The manifest must come first, and every member must be listed once with a matching SHA-256. Each line must be a JSON object. Major ≠ 1 is `unsupported_format_version`.
+  - **Id remap.** Every primary-key ULID the bundle owns, the story's included, gets a fresh ULID. Values are rewritten deep (JSON, and ULIDs inside longer strings), as a fork remaps. Ids the bundle does not own are kept.
+  - **What is kept as recorded.** Recording times, `seq`, membership, principals.
+  - **Profile.** The requested profile, else the bundle's when it exists here, else the default.
+  - **Safety.** `checked_guardrails = null` on every operation, and `executable = false` on every outbox row.
+  - **Rebuild.** Projections are refolded (`replace_with_fold`) and the subject index rewritten (`reindex_story`).
+  - **Idempotency.** Keyed per deployment, with the archive's SHA-256 in the hash.
+  - **JSON nulls.** A JSONB `None` binds as SQL NULL; JSON `null` broke `ck_stories_scenario_snapshot`. This is a Rule 1 fix inside the story.
+  **Issue:** #250
+
+### #251 — import safety gates, 2026-11-03
+
+- **Decision (not built):**
+  - **What is missing.** #251's gates need #250's job pipeline and its `IMPORT_GATES` slot, which the synchronous slice does not have (#705). The gates are applying the erasure ledger, the guardrail check, profile attachment under impact rules and parking pending effects.
+  - **What the slice covers.** Two cheap guarantees: no imported operation counts as guardrail-checked, and no imported outbox row is dispatchable.
+  - **Status.** #251 is left open with a comment; no `Closes`.
+  **Issue:** #251
+
+### M7 close-out — current_milestone, 2026-11-03
+
+- **Decision:** `[tool.epistrel.gates] current_milestone` stays `6`. It is not bumped to `7` at this PR.
+  **Why:** with `7`, `check-traceability` fails on 28 planned-but-absent M7 parts. Examples: S-PRUNE's FR-CONC-15/FR-EXT-21/FR-STORE-1, S-RETENTION, S-REWIND, C-09, X-01, and I-10's FR-ADMIN-9/FR-RATE-7/FR-STORE-30. These belong to the stories this run built in part (#228, #250) or not at all (#251, #235, and the not-built slices filed as #698–#705). Bumping would turn CI red on work the run did not finish. M7 is **partially executed**, and the bump belongs to the run that completes it.
+  **Issue:** #228, #250, #251, #235

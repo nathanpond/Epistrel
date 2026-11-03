@@ -73,6 +73,7 @@ from sqlalchemy import (
     literal,
     or_,
     select,
+    text,
     tuple_,
     update,
 )
@@ -482,12 +483,26 @@ def _open(
 ) -> list[ColumnElement[bool]]:
     """Version ``f`` is in the record and not closed (now, or at ``record_time``), in the view
     through ``through`` when given (a version a later row closes is current through N)."""
-    where = [~_closed_by(f, record_time, through)]
+    where = [~_closed_by(f, record_time, through), _not_reverted(f, record_time)]
     if through is not None:
         where.append(_through(f, through))
     if record_time is None:
         return [active_only(f), *where]
     return [f.c.tx_from <= record_time, active_as_of(f, record_time), *where]
+
+
+def _not_reverted(f: Any, record_time: datetime | None) -> ColumnElement[bool]:
+    """A version an amendment part wrote is out once that part is reverted (#225: a revert
+    closes what the part wrote even when it superseded nothing; at ``record_time``, out only if
+    reverted by then)."""
+    from epistrel.core.tables.amendments import amendment_parts
+
+    p = amendment_parts.c
+    reverted = p.tx_to.is_not(None) if record_time is None else p.tx_to <= record_time
+    return or_(
+        f.c.amendment_part_id.is_(None),
+        ~exists().where(p.id == f.c.amendment_part_id, reverted),
+    )
 
 
 def _select(f: Any) -> Any:
@@ -580,6 +595,8 @@ class _Write:
     replaces: Fact | None = None
     thunk_id: str | None = None
     resolution_level: str | None = None
+    amendment_part_id: str | None = None
+    """#221: the amendment part this write applies (every row it writes carries it)."""
 
 
 def _event_provenance(operation: FactOperation) -> Provenance:
@@ -725,6 +742,14 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
             ):
                 return current
     conflicting = [c for c in overlapping if _conflicts(predicate, stored, c)]
+    if w.authority is not FactAuthority.AUTHOR and any(c.author_locked for c in conflicting):
+        # FR-DIRECT-6 (#226): narrative canon never supersedes the author's locked canon.
+        from epistrel.core.errors import AuthorityConflict
+
+        raise AuthorityConflict(
+            "a narrative write cannot supersede the author's locked fact",
+            {"fact_ids": [c.id for c in conflicting if c.author_locked]},
+        )
     closing = ([old] if old is not None else []) + conflicting
 
     proposition_id = await store.write_proposition(conn, w.story_id, w.proposition, found)
@@ -814,6 +839,9 @@ async def _write(conn: AsyncConnection, w: _Write, registry: Registry | None) ->
         # A position-less or event-less write's source is its own derived event.
         for row in rows:
             row["source_event_ids"] = [event_id]
+    if w.amendment_part_id is not None:
+        for row in rows:
+            row["amendment_part_id"] = w.amendment_part_id
 
     for current in closing:
         await conn.execute(
@@ -952,6 +980,7 @@ async def commit_fact(
     thunk_id: str | None = None,
     resolution_level: str | None = None,
     holder: str = HolderKind.CANON.value,
+    amendment_part_id: str | None = None,
 ) -> Fact:
     """Write ``proposition`` as a new fact version in ``operation``'s commit transaction (see
     the module docstring); answers the version, with the versions it closed in
@@ -968,10 +997,12 @@ async def commit_fact(
     An affirmed ``same_as`` between two entities (FR-PROP-7, #171) files an identity proposal
     for the pair in the same transaction (``registry.file_identity_proposal``: the engine never
     merges them itself); one between two of the story's characters is 422
-    ``identity_merge_not_yet`` (merging two modeled characters is M7's amendment)."""
+    ``identity_merge_not_yet`` unless an amendment writes it (#225's merge, which also approves
+    the pair's proposal)."""
     refuse_holder(holder)
     pair = pair_of(proposition)
-    if pair is not None:
+    if pair is not None and amendment_part_id is None:
+        # #225: an amendment is how two characters become one referent (the merge route).
         await refuse_character_merge(conn, story_id, pair)
     fact = await _write(
         conn,
@@ -993,13 +1024,23 @@ async def commit_fact(
             commit_state=commit_state,
             thunk_id=thunk_id,
             resolution_level=resolution_level,
+            amendment_part_id=amendment_part_id,
         ),
         registry,
     )
     if pair is not None:
-        await file_identity_proposal(
+        proposal = await file_identity_proposal(
             conn, story_id, pair, reason="canon_same_as", fact_ids=[fact.id]
         )
+        if amendment_part_id is not None:
+            # #225: an author's merge decides the pair: its proposal is approved.
+            from epistrel.core.tables import predicate_proposals
+
+            await conn.execute(
+                update(predicate_proposals)
+                .where(predicate_proposals.c.id == proposal)
+                .values(status="approved")
+            )
     if fact.predicate_id == SCHEDULED and fact.commit_state is FactCommitState.COMMITTED:
         # #196 (FR-CLOCK-9): a canon scheduled event is an event of ``scheduled_events``,
         # written with its fact (here: the clock reads canon).
@@ -1052,6 +1093,7 @@ async def supersede(
     registry: Registry | None = None,
     author_locked: bool | None = None,
     holder: str = HolderKind.CANON.value,
+    amendment_part_id: str | None = None,
 ) -> Fact:
     """Close version ``fact_id`` in transaction-time and write ``new_proposition`` as its
     successor in the same lineage (never a delete, FR-BITEMP-2). Provenance, visibility,
@@ -1097,6 +1139,7 @@ async def supersede(
             author_locked=old.author_locked if author_locked is None else author_locked,
             commit_state=old.commit_state,
             replaces=old,
+            amendment_part_id=amendment_part_id,
         ),
         registry,
     )
@@ -1121,14 +1164,19 @@ def _canon_where(
     reading: Reading = "every",
     ids: Sequence[str] | None = None,
     written_in: tuple[int, int] | None = None,
+    subjects: Sequence[str] | None = None,
+    objects: Sequence[str] | None = None,
     member: str | None = None,
     overlapping: tuple[int | None, int | None] | None = None,
+    include_closed: bool = False,
 ) -> list[ColumnElement[bool]]:
     """``canon``'s selection on ``f`` (a ``facts`` alias joined to ``propositions``), shared by
-    every read that must select exactly what ``canon`` does (``canon_links``, #470)."""
+    every read that must select exactly what ``canon`` does (``canon_links``, #470).
+    ``include_closed``: active versions whatever closes them (#221's excluded parts read the
+    versions they superseded)."""
     where: list[ColumnElement[bool]] = [
         f.c.story_id == story_id,
-        *_open(f, record_time, through_position),
+        *([active_only(f)] if include_closed else _open(f, record_time, through_position)),
     ]
     if story_time is not None:
         t = literal(story_time, BigInteger)
@@ -1145,12 +1193,22 @@ def _canon_where(
     visible = visible_clause(f, viewpoint)
     if visible is not None:
         where.append(visible)
-    if subject is not None:
+    if subjects is not None:
+        where.append(f.c.subject_id.in_(list(subjects)))
+    elif subject is not None:
         where.append(f.c.subject_id == subject)
     if predicate is not None:
         where.append(f.c.predicate_id == predicate)
+    if object is not None or member is not None:
+        # #617: the story's propositions naming it (``ix_propositions_story_object``, and the
+        # ``object_set`` GIN index), joined to their facts by ``ix_facts_proposition``.
+        where.append(propositions.c.story_id == story_id)
     if object is not None:
-        where.append(propositions.c.object_id == object)
+        where.append(
+            propositions.c.object_id.in_(list(objects))
+            if objects is not None
+            else propositions.c.object_id == object
+        )
     if member is not None:
         # The object is ``member``, or a set object holds it (#542).
         where.append(
@@ -1170,6 +1228,65 @@ def _canon_where(
         if lo is not None:
             where.append(or_(f.c.valid_to.is_(None), f.c.valid_to > lo))
     return where
+
+
+async def merged_with(conn: AsyncConnection, story_id: str, entity_id: str) -> tuple[str, ...]:
+    """#481 (FR-PROP-7): ``entity_id`` and every entity an author's merge made one with it: the
+    closure of the active ``same_as`` facts amendment parts wrote (a merge is an amendment;
+    undone, it is out). An identity a narrative claim states is a held proposition (#171), not a
+    merge, and joins nothing."""
+    from epistrel.core import turn_memo
+
+    key = ("merged_entities", story_id)
+    links = turn_memo.get(key)
+    if links is turn_memo.MISSING:
+        links = await _merge_links(conn, story_id)
+        turn_memo.put(key, links)
+    if not links:
+        return (entity_id,)
+    found = {entity_id}
+    frontier = [entity_id]
+    while frontier:
+        nxt = []
+        for one in frontier:
+            for other in links.get(one, ()):
+                if other not in found:
+                    found.add(other)
+                    nxt.append(other)
+        frontier = nxt
+    return (entity_id, *sorted(found - {entity_id}))
+
+
+async def _merge_links(conn: AsyncConnection, story_id: str) -> dict[str, set[str]]:
+    from epistrel.core.propositions.vocabulary import SAME_AS
+    from epistrel.core.tables import amendment_parts
+
+    p = amendment_parts.c
+    rows = list(
+        await conn.execute(
+            select(propositions.c.subject_id, propositions.c.object_id)
+            .select_from(
+                facts.join(propositions, propositions.c.id == facts.c.proposition_id).join(
+                    amendment_parts, p.id == facts.c.amendment_part_id
+                )
+            )
+            .where(
+                facts.c.story_id == story_id,
+                propositions.c.predicate_id == SAME_AS,
+                facts.c.superseded_by.is_(None),
+                facts.c.tx_to.is_(None),
+                active_only(facts),
+                p.status == "active",
+            )
+        )
+    )
+    links: dict[str, set[str]] = {}
+    for a, b in rows:
+        if a is None or b is None:
+            continue
+        links.setdefault(str(a), set()).add(str(b))
+        links.setdefault(str(b), set()).add(str(a))
+    return links
 
 
 async def canon(
@@ -1205,6 +1322,9 @@ async def canon(
     if not viewpoint_checked:
         await check_viewpoint(conn, story_id, viewpoint)
     f = _CANON
+    # #481 (FR-PROP-7): an entity the author merged reads as one with its merged ones.
+    subjects = await merged_with(conn, story_id, subject) if subject is not None else None
+    objects = await merged_with(conn, story_id, object) if object is not None else None
     where = _canon_where(
         f,
         story_id,
@@ -1220,11 +1340,118 @@ async def canon(
         written_in=written_in,
         member=member,
         overlapping=overlapping,
+        subjects=subjects if subjects is not None and len(subjects) > 1 else None,
+        objects=objects if objects is not None and len(objects) > 1 else None,
     )
     query = _select(f).where(*where).order_by(f.c.valid_from.nulls_first(), f.c.id)
     if limit is not None:
         query = query.limit(limit)
-    return [_fact_of(r) for r in await conn.execute(query)]
+    rows = list(await conn.execute(query))
+    if through_position is not None and any(r.amendment_part_id is not None for r in rows):
+        # #221 (FR-STORE-20): an amendment part not eligible at the checkpoint reads the
+        # versions it superseded instead (per part, never per amendment).
+        excluded, restore = await _ineligible(conn, story_id, rows, through_position)
+        if excluded:
+            rows = [r for r in rows if str(r.id) not in excluded]
+            if restore:
+                again = _canon_where(
+                    f,
+                    story_id,
+                    story_time=story_time,
+                    viewpoint=viewpoint,
+                    subject=subject,
+                    predicate=predicate,
+                    object=object,
+                    reading=reading,
+                    ids=sorted(restore),
+                    member=member,
+                    overlapping=overlapping,
+                    include_closed=True,
+                )
+                rows += list(await conn.execute(_select(f).where(*again)))
+                rows.sort(key=lambda r: (r.valid_from is not None, r.valid_from or 0, r.id))
+    return [_fact_of(r) for r in rows]
+
+
+async def _ineligible(
+    conn: AsyncConnection, story_id: str, rows: Sequence[Any], through: Position
+) -> tuple[set[str], set[str]]:
+    """The amendment-written versions among ``rows`` whose part is excluded at ``through``,
+    and the versions to read in their place (walking ``superseded_fact_ids`` down to a version
+    that is included or not amendment-written)."""
+    from epistrel.core import world_clock
+    from epistrel.core.amendments.eligibility import PartTiming, checkpoint_period, eligible
+    from epistrel.core.tables import amendment_parts
+
+    story_time = await world_clock.story_time_at(conn, story_id, through)
+    absolute = checkpoint_period(
+        (await world_clock.anchor_at(conn, story_id, through)).absolute_at(story_time)
+    )
+    p = amendment_parts.c
+
+    async def parts_of(ids: Iterable[str]) -> dict[str, Any]:
+        wanted = sorted(set(ids))
+        if not wanted:
+            return {}
+        found = await conn.execute(
+            select(
+                p.id, p.valid_from_minutes, p.valid_spec, p.superseded_fact_ids, p.position_bound
+            ).where(p.id.in_(wanted), p.status == "active")
+        )
+        return {str(r.id): r for r in found}
+
+    checkpoint = (
+        (int(through[0]), int(through[1]))
+        if isinstance(through, tuple)
+        else (int(through.turn), int(through.slot_k))
+    )
+
+    def excluded_part(part: Any) -> bool:
+        timing = PartTiming.of(part.valid_from_minutes, part.valid_spec, part.position_bound)
+        return not eligible(
+            timing, story_time=story_time, absolute=absolute, checkpoint=checkpoint
+        ).folds
+
+    parts = await parts_of(str(r.amendment_part_id) for r in rows if r.amendment_part_id)
+    excluded = {
+        str(r.id)
+        for r in rows
+        if r.amendment_part_id is not None
+        and (part := parts.get(str(r.amendment_part_id))) is not None
+        and excluded_part(part)
+    }
+    restore: set[str] = set()
+    pending = [
+        list(parts[str(r.amendment_part_id)].superseded_fact_ids or [])
+        for r in rows
+        if str(r.id) in excluded
+    ]
+    frontier = [fid for group in pending for fid in group]
+    seen: set[str] = set()
+    while frontier:
+        found = await conn.execute(
+            select(facts.c.id, facts.c.amendment_part_id).where(facts.c.id.in_(frontier))
+        )
+        frontier = []
+        versions = list(found)
+        nested = await parts_of(
+            str(v.amendment_part_id) for v in versions if v.amendment_part_id is not None
+        )
+        for version in versions:
+            fid = str(version.id)
+            if fid in seen:
+                continue
+            seen.add(fid)
+            part = (
+                nested.get(str(version.amendment_part_id))
+                if version.amendment_part_id is not None
+                else None
+            )
+            if part is not None and excluded_part(part):
+                frontier += list(part.superseded_fact_ids or [])
+            else:
+                restore.add(fid)
+    return excluded, restore
 
 
 @dataclass(frozen=True, slots=True)
@@ -1277,12 +1504,24 @@ async def canon_refs(
             p.c.qualifiers,
         )
         .select_from(f.join(p, p.c.id == f.c.proposition_id))
-        .where(f.c.story_id == story_id, *_open(f, None, through_position))
+        # #616: the story's propositions only (``ix_propositions_story_subject_predicate``),
+        # never every story's scanned into the join.
+        .where(
+            f.c.story_id == story_id, p.c.story_id == story_id, *_open(f, None, through_position)
+        )
         .order_by(f.c.valid_from.nulls_first(), f.c.id)
     )
     parsed: dict[Any, Visibility] = {}
     found: list[FactRef] = []
-    for row in await conn.execute(query):
+    # #616: the plan's cost sits just above ``jit_above_cost``, and compiling it was most of the
+    # read; JIT is off for this statement alone (transaction-local, the prior value restored).
+    prior = await conn.scalar(text("SELECT current_setting('jit')"))
+    await conn.execute(text("SELECT set_config('jit', 'off', true)"))
+    try:
+        rows = list(await conn.execute(query))
+    finally:
+        await conn.execute(text("SELECT set_config('jit', :v, true)"), {"v": str(prior)})
+    for row in rows:
         raw = row.visibility
         key = _visibility_key(raw)
         visibility = parsed.get(key)

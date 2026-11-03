@@ -41,6 +41,8 @@ class Membership(StrEnum):
     DISCARDED = "discarded"
     DORMANT = "dormant"
     SUPERSEDED = "superseded"
+    PRUNED = "pruned"
+    """#247 (FR-STORE-32): terminal; the operation's records were pruned, its row is a marker."""
 
 
 class Provenance(StrEnum):
@@ -197,14 +199,28 @@ class MemoryKind(StrEnum):
 class MemoryTrustTier(StrEnum):
     """How far a memory is trusted (FR-MEM-4; #135), derived mechanically from its provenance
     (``core.memory.records.trust_tier_of``): ``author`` (the author or a scenario seed),
-    ``external`` (an external authority), ``engine`` (consolidation, a resolution, a backfill)
-    or ``in_world`` (what happened or was said in the story). Postgres enum
+    ``external`` (an external authority), ``engine`` (consolidation, a resolution)
+    ``in_world`` (what happened or was said in the story) or ``backfill`` (re-derived from the
+    transcript, #228; the lowest). Postgres enum
     ``memory_trust_tier``."""
 
     AUTHOR = "author"
     EXTERNAL = "external"
     ENGINE = "engine"
     IN_WORLD = "in_world"
+    BACKFILL = "backfill"
+    """#228: re-derived from the transcript, the lowest tier (below ``in_world``)."""
+
+
+TRUST_RANK: dict[MemoryTrustTier, int] = {
+    MemoryTrustTier.AUTHOR: 4,
+    MemoryTrustTier.EXTERNAL: 3,
+    MemoryTrustTier.ENGINE: 2,
+    MemoryTrustTier.IN_WORLD: 1,
+    MemoryTrustTier.BACKFILL: 0,
+}
+"""#228's explicit order of the trust tiers (higher wins a tie), never the enum's order:
+``author > external > engine > in_world > backfill``."""
 
 
 class RetrievalTier(StrEnum):
@@ -257,6 +273,31 @@ class BeliefTransitionKind(StrEnum):
     AUTHOR = "author"
     RESOLUTION = "resolution"
     AUTHOR_FIAT = "author_fiat"
+
+
+class DependencyEdgeType(StrEnum):
+    """Why a record depends on a fact (FR-DIRECT-7; #220): it was a reason for an event or a
+    decision (``causes``), narration assumes it true (``presupposes``), a belief or inference
+    was drawn from it (``derives``), a passing reference names it (``mentions``), or a speech
+    act claims it, true or not (``asserts``). Postgres enum ``dependency_edge_type``."""
+
+    CAUSES = "causes"
+    PRESUPPOSES = "presupposes"
+    DERIVES = "derives"
+    MENTIONS = "mentions"
+    ASSERTS = "asserts"
+
+
+class DependencyTarget(StrEnum):
+    """What a dependency edge points at (#220): a fact version, a proposition, an entity, an
+    amendment part (FR-REWRITE-11) or a State's value (``target_id`` the State's definition id,
+    ``target_subject_id`` its scope key). Postgres enum ``dependency_target``."""
+
+    FACT = "fact"
+    PROPOSITION = "proposition"
+    ENTITY = "entity"
+    AMENDMENT_PART = "amendment_part"
+    STATE = "state"
 
 
 class AntecedentKind(StrEnum):
@@ -549,6 +590,8 @@ PG_ENUM_TYPES: dict[str, type[StrEnum]] = {
     "external_value_source": ExternalValueSource,
     "scheduled_status": ScheduledStatus,
     "turn_stage": StagedTurnStage,
+    "dependency_edge_type": DependencyEdgeType,
+    "dependency_target": DependencyTarget,
 }
 """Postgres enum type name (``<schema>.<name>`` outside ``public``) → the Python enum whose
 values it holds (creation order)."""

@@ -265,8 +265,10 @@ async def first_draft(
     """The turn's first draft, the deterministic assembly of its released beats, the
     intervention types that fired (module docstring) and its turn report."""
     rendered = [b for b in result.beats if b.kind.startswith(RENDER_PREFIX) and b.beat is not None]
-    operation_id = rendered[0].operation_id if rendered else result.message.message_id
-    originals = await _rejected_originals(ctx, operation_id) if rendered else {}
+    # #647: the turn's operation from any of its beats (its input and message carry it too), so
+    # a turn whose render beats were all dropped still has its report read.
+    operation_id = next((b.operation_id for b in result.beats if b.operation_id), None)
+    originals = await _rejected_originals(ctx, operation_id) if operation_id else {}
     released = [
         AssemblyBeat(b.kind.removeprefix(RENDER_PREFIX), b.text, b.actor_character_id, b.beat or 0)
         for b in rendered
@@ -286,7 +288,7 @@ async def first_draft(
     viewpoint = result.output_viewpoint
     draft = deterministic_assembly(raw, names, viewpoint)
     verified = deterministic_assembly(released, names, viewpoint)
-    report = await _report(ctx, operation_id) if rendered else {}
+    report = await _report(ctx, operation_id) if operation_id else {}
     return draft, verified, interventions(report, result.message.text, verified), report
 
 

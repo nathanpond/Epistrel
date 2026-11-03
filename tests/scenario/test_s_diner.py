@@ -1019,8 +1019,10 @@ async def test_s_diner__belief(
         )
         assert answer.status_code == 200, answer.text
         verdict = await timed_verdict(engine, story)
+        # #644: the claim is now checked against the meeting's plan (17:00): objectively false,
+        # belief-consistent, a sincere error that stands.
         assert (verdict["speech"]["classification"], verdict["speech"]["belief_relation"]) == (
-            "sincere",
+            "sincere_error",
             "consistent",
         )
         assert es.regenerations(stub) == []
@@ -1028,3 +1030,100 @@ async def test_s_diner__belief(
         sense = prompt.split("## Your sense of time", 1)[1].split("\n## ", 1)[0]
         assert "Jenni's meeting: 16:00" in sense  # as he believes it
         assert await ck.statuses(engine, story, meeting) == ["pending"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-19,10")
+async def test_s_diner__belief_only_report(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#641: Jenni says her sister Ruth's flight lands at nine: a plan that is neither canon nor
+    hers (a report of no event). Jenni holds it as her own belief and Marcus, who heard it, by
+    testimony; it is never canon and no scheduled event exists, so no clock stops for it; when
+    Jenni says it again, her claim is consistent with what she holds. Complement asserted: the
+    canon meeting is the story's only scheduled event."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await diner(client, engine, partitions=True, others=("Marcus",))
+        async with engine.begin() as conn:
+            await store.add_entity(conn, story, "person", "Ruth")
+        said = beat(
+            "say",
+            "My sister Ruth lands at nine.",
+            propositions=[claim("Ruth", "scheduled", "the flight", time="9 pm")],
+        )
+        await turn(client, stub, story, ids, said)
+        verdict = await statement_of(engine, story)
+        assert verdict["schedule"] == {"kind": "report", "event_id": None, "refused_change": False}
+        held = await rows(
+            engine,
+            "SELECT b.holder_character_id AS holder FROM beliefs b JOIN propositions p "
+            "ON p.id = b.proposition_id WHERE b.story_id = :s AND b.kind = 'first_order' "
+            "AND p.predicate_id = :p",
+            s=story,
+            p=SCHEDULED,
+        )
+        assert {r.holder for r in held} == {ids["Jenni"], ids["Marcus"]}
+        assert [e.event_id for e in await ck.events(engine, story)] == [meeting]
+        canon = await rows(
+            engine,
+            "SELECT count(*) AS n FROM facts WHERE story_id = :s AND predicate_id = :p",
+            s=story,
+            p=SCHEDULED,
+        )
+        assert canon[0].n == 1  # the meeting's own
+
+        await turn(client, stub, story, ids, said)
+        verdict = await statement_of(engine, story)
+        assert verdict["speech"]["belief_relation"] == "consistent"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M6", "FR-CLOCK-9,16")
+async def test_s_diner__stop_under_the_default_budget(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#636: with the default turn budget, a narrator-and-character turn whose render skips
+    past the 17:00 meeting is stopped there and its interrupted beat is regenerated to end at
+    the cutoff (the reserved ``time_stop`` regeneration), never replaced by the safe fallback
+    line. Complement asserted: the clock stops at 17:00 and the sentinel past it never
+    commits."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids, meeting = await diner(client, engine)
+        await ck.advance(engine, story, 345)  # 16:45
+        stub.reset()
+        es.narrator(stub, es.render(beat("narration", "The diner hums around them.")))
+        ms.renders_for(
+            stub,
+            "Jenni",
+            ms.render(
+                beat("say", "We could talk forever.", effects=[skip(75)]),
+                beat("do", f"They end up {SENTINEL}."),
+            ),
+        )
+        stub.script("regeneration", [json.dumps({"text": INTERRUPTED})])
+        answer = await respond(
+            client,
+            story,
+            body(
+                ids["Cal"],
+                None,
+                do="loses track of time and talks until 6",
+                render_character_ids=[ids["Jenni"]],
+            ),
+        )
+        assert answer.status_code == 200, answer.text
+        found = answer.json()
+        texts = " ".join(b["text"] for b in found["beats"])
+        assert INTERRUPTED in texts
+        assert "changes the subject" not in texts
+        assert SENTINEL not in texts
+        assert found["clock"]["after"]["offset"] == MEETING
+        assert await ck.statuses(engine, story, meeting) == ["pending", "due", "surfaced"]

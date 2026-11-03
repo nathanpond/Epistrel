@@ -161,7 +161,7 @@ Logs carry ids and counts only (invariant 3).
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
 from types import SimpleNamespace
@@ -170,7 +170,7 @@ from typing import Any, cast
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from epistrel.core import idempotency, pause, turn_gate, world_clock
+from epistrel.core import idempotency, pause, turn_gate, turn_memo, world_clock
 from epistrel.core import outbox as core_outbox
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
@@ -185,6 +185,7 @@ from epistrel.core.enums import (
     OperationStatus,
     Provenance,
     RecordProvenance,
+    ScheduledStatus,
     StagedTurnStage,
     StateType,
     StoryStatus,
@@ -216,7 +217,14 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import filtered_turn_beats
-from epistrel.core.membership import Position, active_operation, beat_steps, excluding, step_of
+from epistrel.core.membership import (
+    Position,
+    active_operation,
+    beat_steps,
+    bound_of,
+    excluding,
+    step_of,
+)
 from epistrel.core.memory import records
 from epistrel.core.policies.evaluate import evaluate
 from epistrel.core.policies.model import ModelAssistedRule, Target
@@ -228,7 +236,8 @@ from epistrel.core.profiles.effective import (
 )
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.reservation import extraction_on
-from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.profiles.schema import ON as ON_LEVEL
+from epistrel.core.profiles.schema import ProfileSettings, merge_interpretive
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Polarity, Proposition, TemporalKind
 from epistrel.core.propositions.registry import (
@@ -238,18 +247,23 @@ from epistrel.core.propositions.registry import (
     consider_proposals,
     file_identity_proposal,
 )
+from epistrel.core.propositions.registry import forget as forget_registries
 from epistrel.core.propositions.registry import load as load_registry
-from epistrel.core.propositions.vocabulary import CORE_BY_NAME
+from epistrel.core.propositions.registry import turn_cache as registry_turn_cache
+from epistrel.core.propositions.vocabulary import CLOCK_CHECKS, CORE_BY_NAME
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution import identity as identity_rules
-from epistrel.core.resolution.context import load_context
+from epistrel.core.resolution.context import load_context, load_index
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
 from epistrel.core.resolution.types import Mention
+from epistrel.core.retrieval import coverage_marks
 from epistrel.core.retrieval.lexical import LexicalSearch
 from epistrel.core.retrieval.pipeline import (
     RetrievalQuery,
     RetrievalResult,
     beat_occasion,
+    deferring_touches,
+    flush_touches,
     retrieve,
 )
 from epistrel.core.settings_schema import (
@@ -296,7 +310,7 @@ from epistrel.core.turns.beats import (
     write_introductions,
     write_utterances,
 )
-from epistrel.core.verify import attribution
+from epistrel.core.verify import attribution, duplicates
 from epistrel.core.verify.detect import DeclaredClaim, DetectBeat, DetectedClaim
 from epistrel.core.verify.introduce import Introductions
 from epistrel.core.verify.normalize import (
@@ -307,7 +321,7 @@ from epistrel.core.verify.normalize import (
 )
 from epistrel.core.verify.permission import Asserter
 from epistrel.core.verify.protected import PrivateRecord
-from epistrel.core.verify.rules import CANON, Record, VerdictKind, VerdictReason, check
+from epistrel.core.verify.rules import CANON, Record, Verdict, VerdictKind, VerdictReason, check
 from epistrel.core.viewpoint import (
     is_omniscient,
     resolve_viewpoint,
@@ -317,6 +331,7 @@ from epistrel.core.visibility import Visibility
 from epistrel.core.world_clock import schedule_statements
 from epistrel.core.world_clock import skips as skip_rules
 from epistrel.core.world_clock import timing as timing_rules
+from epistrel.core.world_clock import verify as clock_verify
 from epistrel.core.world_clock.service import turn_clock_of
 from epistrel.core.world_clock.timing import SEQUENTIAL as SEQUENTIAL_MODE
 from epistrel.core.world_clock.timing import SIMULTANEOUS as SIMULTANEOUS_MODE
@@ -329,11 +344,14 @@ from epistrel.observability.metrics import (
     count_perception_repair,
     count_repair,
 )
+from epistrel.orchestrator import directives as author_directives
 from epistrel.orchestrator.budget import (
     EXTRACTION,
     FOLLOW_UP,
+    INPUT_ACTS,
     NARRATOR_RENDER,
     SALIENCE,
+    STOP,
     TurnBudget,
     counted_embedder,
 )
@@ -384,7 +402,7 @@ from epistrel.orchestrator.providers.in_process import InProcessRegistry
 from epistrel.orchestrator.providers.pinned import PinnedReads
 from epistrel.orchestrator.repair import ladder as repair_ladder
 from epistrel.orchestrator.repair.ladder import Recheck, RepairLadder, RepairResult
-from epistrel.orchestrator.structured import clocking, multi, planner, stopping
+from epistrel.orchestrator.structured import clocking, multi, planner, stopping, turn_edges
 from epistrel.orchestrator.structured import effects as state_effects
 from epistrel.orchestrator.structured import player_authority as authority_rules
 from epistrel.orchestrator.structured import prompt as prompts
@@ -427,6 +445,7 @@ from epistrel.orchestrator.verify.extraction import (
     DetectionOutcome,
 )
 from epistrel.orchestrator.verify.verifier import (
+    ANCHORING,
     ENTAILMENT_BUDGET,
     ClaimSource,
     TimeFrame,
@@ -526,6 +545,14 @@ def resolve_structured_cast(
     return ResolvedCast(actor=resolved.actor, render=(chosen,))
 
 
+def _skip_key(candidate: skipping.Candidate) -> tuple[Any, ...]:
+    """#638: one skip as the turn decided it: its beat and, declared, its reason and minutes;
+    undeclared, the sentence that narrates it."""
+    if candidate.declared:
+        return (candidate.beat, True, candidate.reason, candidate.minutes)
+    return (candidate.beat, False, candidate.text)
+
+
 def _planned_cast(cast_: ResolvedCast, plan: planner.TurnPlan) -> ResolvedCast:
     """The cast the plan renders (#174: the primaries the budget deferred left out)."""
     if len(cast_.render) <= plan.primaries:
@@ -549,7 +576,40 @@ async def respond(
     lexical: LexicalSearch | None = None,
     providers: InProcessRegistry | None = None,
 ) -> RespondResult:
-    """Play one structured turn; see the module docstring (the prechecks are Lite's)."""
+    """Play one structured turn; see the module docstring (the prechecks are Lite's). #621:
+    the whole turn reads each predicate registry once (``registry.turn_cache``)."""
+    with registry_turn_cache(), turn_memo.scope(), deferring_touches():
+        try:
+            return await _respond(
+                db,
+                models,
+                ctx,
+                story_id,
+                request,
+                principal=principal,
+                gate=gate,
+                queue_turn=queue_turn,
+                lexical=lexical,
+                providers=providers,
+            )
+        finally:
+            # #618: the retrieved memories' ``last_accessed_at``, once, off the hot path.
+            await flush_touches(db)
+
+
+async def _respond(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    ctx: RequestContext,
+    story_id: str,
+    request: RespondRequest,
+    *,
+    principal: str,
+    gate: lite.Gate,
+    queue_turn: lite.QueueTurn,
+    lexical: LexicalSearch | None = None,
+    providers: InProcessRegistry | None = None,
+) -> RespondResult:
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
     story = await read_story_cast(db, story_id)
     concurrency = await turn_gate.read_concurrency(db, story_id)
@@ -873,6 +933,13 @@ class TurnRead:
     scene_doings: tuple[str, ...] = ()
     """#199 (FR-CLOCK-8): the ``do`` beats of the working-memory window (the player's inputs'
     included), oldest first: what the scene established as under way."""
+    steers: tuple[tuple[str, str], ...] = ()
+    """#226 (FR-DIRECT-2): the author's queued ephemeral directives ``(id, text)``, oldest
+    first: every render of this turn carries them, and its commit consumes them."""
+    output_viewpoint: str = OMNISCIENT
+    """#623 (owner decision): the viewpoint the turn is delivered to; a narrated hidden State's
+    value is verified at it, so one the viewpoint holds no belief about is repaired, not
+    supported (hidden canon a perceived narration states stays #566's reveal)."""
 
 
 async def _deferred(conn: AsyncConnection, story_id: str, turn: int) -> bool:
@@ -910,12 +977,29 @@ async def _flagged(conn: AsyncConnection, story_id: str, turn: int) -> bool:
 
 def _steering(read: TurnRead) -> str:
     """The renders' ``resolution_steering`` line(s): the deferral bias (#154) and the knowledge
-    steer after a could-have-known flag (#165)."""
+    steer after a could-have-known flag (#165). #241: a directed regeneration's "Author
+    decision" replaces the deferral bias (FR-COMMIT-12: author authority overrides the
+    insignificance presumption)."""
+    from epistrel.orchestrator.commit import directed
+
+    decision = directed.DECISION.get()
     lines = [
-        prompts.RESOLUTION_STEERING if read.deferred else "",
+        decision if decision else (prompts.RESOLUTION_STEERING if read.deferred else ""),
         prompts.KNOWLEDGE_STEERING if read.flagged else "",
+        author_directives.steering_line(read.steers),
     ]
     return " ".join(x for x in lines if x)
+
+
+def _scene_last_beats(beats: Sequence[Any], character_id: str) -> tuple[str, ...]:
+    """The scene context's last beats (detection's: the extraction backstop's, salience's): the
+    rendering character's last observable beats, never a ``think`` or a ``latent`` of an
+    earlier turn (#629, FR-MODEL-13: a model sees a thought only in its own render)."""
+    return tuple(
+        b.text
+        for b in beats
+        if b.character_id == character_id and b.kind not in ("think", "latent")
+    )[-QUERY_BEATS:]
 
 
 def _with_time_steering(steering: str, schedule: stopping.Schedule | None) -> str:
@@ -992,7 +1076,7 @@ async def read_turn(
         for b in everyone
         if b.kind not in ("think", "latent")
     )
-    last_beats = tuple(b.text for b in mine if b.character_id == character.id)[-QUERY_BEATS:]
+    last_beats = _scene_last_beats(mine, character.id)
     scene_doings = tuple(b.text for b in everyone if b.kind == "do")
     lookup = KeyedLookup(conn, read_set)
     location, scene = await _scene(lookup, story_id, head - 1)
@@ -1043,6 +1127,7 @@ async def read_turn(
         deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
         characters=tuple(current.get(c.id, c) for c in cast_.render),
+        steers=tuple(await author_directives.queued_steers(conn, story_id)),
     )
 
 
@@ -1353,14 +1438,21 @@ async def plan_modeling(
 # -- the same-turn overlay -----------------------------------------------------------------------
 
 
+CONCLUSIVE = (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED)
+CROSSABLE = frozenset({ScheduledStatus.PENDING, ScheduledStatus.POSSIBLY_DUE})
+"""#636: the events an advance can still stop at (a stop's regeneration is reserved for them)."""
+
+
 class StagedSource:
     """A ``ClaimSource`` over canon with the turn's earlier permitted claims laid over it (the
     same-turn overlay, #144's carried note): a claim canon leaves ``novel`` or ``uncertain`` is
-    checked against the staged claims too, and a conclusive verdict there wins."""
+    checked against the staged claims too, and a conclusive verdict there wins; one canon
+    ``supported`` loses to a staged ``contradicted`` (#642: an earlier beat's change)."""
 
     def __init__(self, inner: ClaimSource) -> None:
         self.inner = inner
         self.staged: list[Record] = []
+        self._clock: bool | None = None
 
     def stage(self, claim: Proposition, claim_id: str) -> None:
         self.staged.append(Record(claim, f"staged:{claim_id}"))
@@ -1373,7 +1465,16 @@ class StagedSource:
         if found is None or not self.staged:
             return found
         verdict, fetched = found
-        if verdict.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN):
+        if verdict.kind not in (VerdictKind.NOVEL, VerdictKind.UNCERTAIN, VerdictKind.SUPPORTED):
+            return found
+        if claim.predicate_id in CLOCK_CHECKS and await self._runs_clock():
+            if verdict.kind is VerdictKind.SUPPORTED:
+                return found
+            # #627: a clock check is the clock's: decided against the anchor as the turn's
+            # earlier anchoring statements narrow it, never as a functional fact over them.
+            clocked = await self._clock_check(claim, **kwargs)
+            if clocked is not None and clocked.kind in CONCLUSIVE:
+                return clocked, fetched
             return found
         staged = check(
             claim,
@@ -1383,9 +1484,49 @@ class StagedSource:
             position=kwargs.get("position"),
             mover=kwargs.get("mover"),  # #518: a fluent change over the overlay too
         )
-        if staged.kind in (VerdictKind.SUPPORTED, VerdictKind.CONTRADICTED):
+        if verdict.kind is VerdictKind.SUPPORTED:
+            # #642: an earlier beat of the turn changed it (an exit, a pass-out): the staged
+            # change is newer than the pre-turn canon that still holds during the turn.
+            if staged.kind is VerdictKind.CONTRADICTED:
+                return staged, [*fetched, *self.staged]
+            return found
+        if staged.kind in CONCLUSIVE:
             return staged, [*fetched, *self.staged]
         return found
+
+    async def _runs_clock(self) -> bool:
+        """Whether the story runs the world clock (read once per turn's overlay)."""
+        if self._clock is None:
+            conn = getattr(self.inner, "conn", None)
+            story_id = getattr(self.inner, "story_id", None)
+            self._clock = (
+                conn is not None
+                and story_id is not None
+                and await clock_verify.checks_on(conn, story_id)
+            )
+        return self._clock
+
+    async def _clock_check(self, claim: Proposition, **kwargs: Any) -> Verdict | None:
+        """#627: a canon holder's clock check against the clock's anchor as the turn's earlier
+        anchoring statements narrow it (``world_clock.verify.staged_anchor``); ``None`` for a
+        belief holder's, or when nothing anchoring is staged."""
+        holder = kwargs.get("holder")
+        if holder is not None and holder.kind == "belief":
+            return None
+        anchoring = [r.proposition for r in self.staged if r.proposition.predicate_id in ANCHORING]
+        if not anchoring:
+            return None
+        position = kwargs.get("position")
+        owned = await clock_verify.read(
+            self.inner.conn,  # type: ignore[attr-defined]
+            self.inner.story_id,  # type: ignore[attr-defined]
+            None,
+            None if position is None else bound_of(position),
+            kwargs.get("viewpoint", OMNISCIENT),
+        )
+        if not owned:
+            return None
+        return clock_verify.verdict(claim, [clock_verify.staged_anchor(owned[0], anchoring)])
 
     async def neighbors(self, claim: Proposition, **kwargs: Any) -> Any:
         return await self.inner.neighbors(claim, **kwargs)
@@ -1454,6 +1595,9 @@ class Checked:
     names (``canon_requests``)."""
     perception_repairs: list[perception.Repair] = field(default_factory=list)
     """The perception qualifiers dropped before staging (#161; FR-TURN-13), in beat order."""
+    input_acts: list[Any] = field(default_factory=list)
+    """#523: what the player's ``do`` shows its witnesses (``observes_input_acts``): propositions
+    about the actor, routed to observation with the input's ``do`` and never canonized."""
     qualifier_rejected: list[tuple[TurnBeat, tuple[perception.Repair, ...]]] = field(
         default_factory=list
     )
@@ -1709,12 +1853,19 @@ async def check_turn(
     """``_check_turn`` with the render's beats at their declared steps (#168: ``step_of``) and
     its verified steps staged for the could-have-known replay (``replay.staged_paths``); #174:
     the rendering character's acceptances of earlier staged beats (``staged_beliefs``) staged
-    there too."""
+    there too; #640: ``timed_before``, a sequential turn's earlier renders, timed first."""
     owners = render_steps.beat_steps([b for b in rendered.beats if not b.narrator])
+    before: Checked | None = kwargs.pop("timed_before", None)
     with (
         beat_steps(str(kwargs["operation_id"]), owners),
         replay.staged_paths(),
-        clocking.render_scope(story_id, read.turn, rendered.beats, steps=_render_steps(rendered)),
+        clocking.render_scope(
+            story_id,
+            read.turn,
+            rendered.beats,
+            steps={**_before_steps(before), **_render_steps(rendered)},
+            before=() if before is None else before.beats,
+        ),
     ):
         for accepted in kwargs.get("staged_beliefs", ()):
             replay.stage_path(
@@ -1832,7 +1983,12 @@ async def _check_turn(
                     )
                 else:
                     found.append(
-                        DeclaredClaim(claim_id, proposition=normalized, attribution=attributed)
+                        DeclaredClaim(
+                            claim_id,
+                            proposition=normalized,
+                            attribution=attributed,
+                            time_text=_sketch(sketch).time_text,
+                        )
                     )
             declared[beat.beat] = tuple(found)
         # #168: the character render's declared steps, normalized in the speaker's view at the
@@ -2043,6 +2199,7 @@ async def _check_turn(
                 (turn, number),
                 operation_id=operation_id,
                 player_id=read.player_id,
+                narration_viewpoint=read.output_viewpoint,
                 scope_of=scope_of,
                 start=first_claim + len(checked),
                 intent_of=intent_of,
@@ -2133,7 +2290,13 @@ async def _check_turn(
             if not sal_beats:
                 continue
             verdict = await salience.detect_salience(
-                sal_beats, scene_context, mode=mode, models=models, budget=budget, routes=routes
+                sal_beats,
+                scene_context,
+                mode=mode,
+                models=models,
+                budget=budget,
+                routes=routes,
+                bias=salience.salience_bias(settings),
             )
             degradation += [(d, "salience") for d in verdict.degradation]
             if SALIENCE_SKIPPED in verdict.degradation:
@@ -2364,6 +2527,7 @@ async def _follow_up(
                     states_level=None if book is None else book.level,
                     clock_level=None if book is None else book.clock_level,
                     clock_fixed=False if book is None else book.clock_fixed,
+                    items=None if book is None else book.names_item,
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,
@@ -2929,6 +3093,95 @@ def _qualifier_events(checked: Checked) -> list[tuple[str, Any]]:
     ]
 
 
+def observes_input_acts(settings: ProfileSettings) -> bool:
+    """#523: whether a turn reads the player's ``do`` for what it shows its witnesses: under
+    per-character partitions (only partitions observe) with extraction run on every beat
+    (``verification.extraction_mode = always`` at ``extraction`` or above)."""
+    return (
+        settings.pipeline == "structured"
+        and module_on(settings, belief_transitions.PARTITIONS_MODULE)
+        and settings.verification.level in ("extraction", "entailment")
+        and settings.verification.extraction_mode == "always"
+    )
+
+
+async def read_input_acts(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    read: TurnRead,
+    *,
+    do: str | None,
+    settings: ProfileSettings,
+    budget: TurnBudget,
+) -> list[Any]:
+    """#523: what the player's ``do`` shows its witnesses, read by one extraction call
+    (``observes_input_acts``): the propositions about the actor, routed to observation with the
+    input's ``do``, never verified or canonized (the player's own act, FR-RESP-11). Optional
+    work (``INPUT_ACTS``), after the modeling and testimony; unfunded, nothing is read."""
+    if not do or not observes_input_acts(settings):
+        return []
+    held = budget.held
+    if not budget.try_optional(INPUT_ACTS, 1):
+        return []
+    try:
+        async with db.begin() as conn:
+            config = DetectionConfig.of(settings, await read_section(conn, VerifySettings))
+            speaker = PLAYER if read.actor.id == read.player_id else read.actor.id
+            env = await extraction.load_env(
+                conn,
+                story_id,
+                StructuredReadSet(),
+                position=(read.turn, 0),
+                speakers=[speaker],
+                config=config,
+                addressed=read.actor.id,
+            )
+            detector = ClaimDetector(
+                config,
+                env,
+                models=models,
+                budget=budget,
+                routes=routes_of(settings),
+                scene_context=SceneContext(
+                    present_entities=list(read.present)[:100], last_beats=list(read.last_beats)
+                ),
+                conn=conn,
+                story_id=story_id,
+            )
+            acts = await detector.input_acts(
+                DetectBeat(1, DO, do, speaker, input=True), (read.turn, 0)
+            )
+    finally:
+        budget.release_to(held)
+    return [
+        c.proposition
+        for c in acts
+        if c.proposition is not None and c.proposition.subject_id == read.actor.id
+    ]
+
+
+def input_act_claims(checked: Checked, actor: str) -> tuple[Any, ...]:
+    """#523: the propositions the player's ``do`` states about the actor: what detection found
+    on the input's ``do`` and what extraction read there (``Checked.input_acts``)."""
+    detected = [
+        c.claim.proposition
+        for c in checked.checked
+        if c.claim.beat == 1
+        and c.claim.channel == DO
+        and c.claim.proposition is not None
+        and c.claim.proposition.subject_id == actor
+    ]
+    found: list[Any] = []
+    seen: set[tuple[Any, ...]] = set()
+    for proposition in (*detected, *checked.input_acts):
+        key = (*proposition.normalized_key(), proposition.polarity.value)
+        if key not in seen:
+            seen.add(key)
+            found.append(proposition)
+    return tuple(found)
+
+
 def _routed_beats(
     checked: Checked,
     read: TurnRead,
@@ -2956,6 +3209,8 @@ def _routed_beats(
                     kind=cast(perception.RouteKind, kind),
                     beat=1,
                     actor=read.actor.id,
+                    # #523: the player's act, observed by its content perceivers.
+                    claims=input_act_claims(checked, read.actor.id) if kind == DO else (),
                     # #177: the player's whisper qualifies the input's ``say``.
                     qualifiers=input_qualifiers
                     if kind == SAY and input_qualifiers is not None
@@ -3131,7 +3386,39 @@ async def route_committed(
         "level": level,
         "routed": len(results),
         "qualifiers_repaired": [r.report() for r in repairs],
+        # #607: what each beat's routing decided, as applied now (no beat text).
+        "trace": _perception_trace(results, state.characters),
     }
+
+
+def _perception_trace(
+    results: Sequence[perception.PerceptionResult], present: Iterable[str]
+) -> list[dict[str, Any]]:
+    """#607: each routed beat's perceivers (fidelity, channel, envelope kind) and the scene's
+    other characters (``unperceived``: fidelity ``none``)."""
+    everyone = sorted(set(present))
+    found: list[dict[str, Any]] = []
+    for result in results:
+        perceivers = [
+            {
+                "character_id": p.character_id,
+                "fidelity": p.fidelity,
+                "channel": p.channel,
+                **({} if p.envelope is None else {"envelope": p.envelope.kind}),
+            }
+            for p in result.perceived
+        ]
+        seen = result.perceivers
+        found.append(
+            {
+                "beat": result.beat.beat,
+                "kind": result.beat.kind,
+                "location": result.location,
+                "perceivers": perceivers,
+                "unperceived": [c for c in everyone if c not in seen],
+            }
+        )
+    return found
 
 
 def _hidden_latent(beat: TurnBeat) -> bool:
@@ -4131,12 +4418,19 @@ async def play(
     """#196: the beats regenerated under a due event's cutoff (FR-CLOCK-16), by beat."""
     surfacing: list[Any] = []
     """#196: the events a pacing clamp surfaced to the turn's later renders (sequential)."""
+    paused_mid_turn: list[bool] = [False]
+    """#646: a sequential render paused for a ``possibly_due`` event: the turn's later renders
+    are steered to establish the time (``prompts.TIME_STEERING``)."""
     cuts: list[Any] = [None]
     """#196: the turn's final cut (``stops.Cut``) and its renders, once timed."""
     lifecycle_plan: list[stopping.Planned] = []
     """#196: the scheduled events' lifecycle steps the commit writes."""
     skip_seen: set[int] = set()
     """#199: the beats whose skips the turn has decided."""
+    skip_text: dict[int, str] = {}
+    """#638: each decided beat's text as it was decided (a repair that rewrites it re-scans)."""
+    skip_keys: set[tuple[Any, ...]] = set()
+    """#638: the skips the turn has decided, so a re-scanned beat decides only new ones."""
     skip_decisions: list[skipping.Decision] = []
     """#199: what the turn decided for each skip (``turn_report.clock.skips``)."""
     refused_skips: set[int] = set()
@@ -4268,6 +4562,8 @@ async def play(
         for stopped in found.stops:
             # #197: a possibly_due pause surfaces nothing (no line calls the event due).
             if stopped.pause:
+                if mode == SEQUENTIAL_MODE:
+                    paused_mid_turn[0] = True  # #646: the later renders are steered
                 continue
             if not stopped.skip and all(e.event_id != stopped.event.event_id for e in surfacing):
                 surfacing.append(stopped.event)
@@ -4334,12 +4630,23 @@ async def play(
         at once by the deterministic rung (``unestimated_skip_removed``). Runs before the
         due-event check (``time_stops``), which every accepted skip then meets."""
         read_clock = books[0].clock
-        if read_clock is None:
+        if read_clock is None or read_clock.level != ON_LEVEL:
+            # #663: at ``prompt_only`` a skip is neither estimated nor refused.
+            budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
             return
-        fresh = [b for b in target.beats if b.beat not in skip_seen]
+        # #638: a beat a repair rewrote since its skips were decided is scanned again, for the
+        # skips its new text brings (each skip is decided once).
+        fresh = [
+            b
+            for b in target.beats
+            if b.beat not in skip_seen or skip_text.get(b.beat, b.text) != b.text
+        ]
         skip_seen.update(b.beat for b in fresh)
-        found = skipping.candidates(fresh, read_clock)
+        scanned = {b.beat for b in fresh}
+        found = [c for c in skipping.candidates(fresh, read_clock) if _skip_key(c) not in skip_keys]
+        skip_keys.update(_skip_key(c) for c in found)
         if not found:
+            skip_text.update({b.beat: b.text for b in target.beats if b.beat in scanned})
             budget.settle_optional(skipping.TIME_ESTIMATION_KIND)
             return
         player = " ".join(t for t in (typed_say, typed_do) if t)
@@ -4426,6 +4733,7 @@ async def play(
             beat = next(b for b in target.beats if b.beat == number)
             claims = state_effects.claims_of(mine_, [beat], f"{op.operation_id}:unestimated")
             _merge_repair(target, repair_ladder.settled(beat, claims))
+        skip_text.update({b.beat: b.text for b in target.beats if b.beat in scanned})
 
     def settle_skips(target: Checked) -> None:
         """#199: each beat whose skip was refused stays in the present: one the ladder could
@@ -4638,6 +4946,25 @@ async def play(
         log.debug("simultaneous turn: %d conflicts, %d adjudicated", len(conflicts), len(settled))
 
     async def begin(conn: AsyncConnection) -> TurnRead:
+        nonlocal settings, configuration, cast_
+        if op.attempts:
+            forget_registries()  # #621: a restart reads the registry as it now stands
+            turn_memo.clear()  # #615: and the story-constant reads
+        if op.attempts:
+            # #659 (FR-CONC-16): a rebase re-check failed, so this attempt runs under every
+            # interpretive setting as it stands now (prospective ones as captured).
+            now = (await effective_configuration(conn, story_id, validate=False)).settings
+            settings = merge_interpretive(settings, now)
+            configuration = replace(configuration, settings=settings)
+            mode = authority_rules.captured_mode(op, story.settings)
+            if mode != authority_rules.mode_of(story.settings):
+                # #660: the cast follows a ``player_authority`` changed mid-turn (an
+                # ``own_character`` request now renders the character it addresses).
+                moved = story.settings.model_copy(update={"player_authority": mode})
+                recast = resolve_structured_cast(
+                    replace(story, settings=moved), request, settings, story_id
+                )
+                cast_ = recast if plan is None else _planned_cast(recast, plan)
         clock.reset()
         pins.reset()  # #205: a new attempt reads every external value live again
         reading = time.perf_counter()
@@ -4661,7 +4988,7 @@ async def play(
             **stamped[0].record(captured.profile_id, captured.version),
             "overrides_revision": configuration.overrides_revision,
         }
-        return read
+        return replace(read, output_viewpoint=viewpoint)
 
     async def retrieve_for(actor: str, viewpoint_: str, text: str) -> RetrievalResult:
         embeddings = models.embeddings
@@ -4849,6 +5176,9 @@ async def play(
         # #187: the attempt's States (their declarations and values at its start).
         async with db.connect() as conn:
             books[:] = [await state_effects.load(conn, story_id, settings)]
+            if books[0].on:
+                # #630: an effect's ``consideration`` is validated against the story's entities.
+                books[0].index = await load_index(conn, story_id)
             # #194: the world clock as the attempt starts (its renders' time advances, pacing).
             books[0].clock = await clocking.read_clock(conn, story_id)
             # #196: its scheduled events, who is present and whether stops apply.
@@ -4862,9 +5192,25 @@ async def play(
             pending_lines = await state_effects.pending_outcomes(
                 conn, story_id, read.turn, books[0].names or dict(read.names)
             )
+        # #636: a due-event stop's regeneration is planned work: one is reserved (inside the
+        # cap, from the remainder) while stops apply and an open event could be crossed.
+        budget.release_named(STOP)
+        schedule_now = schedules[0]
+        if (
+            schedule_now is not None
+            and schedule_now.stops
+            and any(e.status in CROSSABLE for e in schedule_now.events)
+        ):
+            extraction = 1 if plan is not None and plan.reservation.extraction else 0
+            stop_cost = 1 + extraction + output_checks
+            if not budget.expired() and budget.can_afford_unreserved(stop_cost):
+                budget.reserve(STOP, stop_cost)
         stop_marks.clear()
         surfacing.clear()
+        paused_mid_turn[0] = False
         skip_seen.clear()
+        skip_text.clear()
+        skip_keys.clear()
         skip_decisions.clear()
         refused_skips.clear()
         fluents[0] = None
@@ -5076,6 +5422,7 @@ async def play(
                                 states_level=book.level,
                                 clock_level=book.clock_level,
                                 clock_fixed=book.clock_fixed,
+                                items=book.names_item,
                             ),
                             variant=NARRATOR_VARIANT,
                             params=params,
@@ -5104,7 +5451,10 @@ async def play(
                 )
                 if knowing.retrieval is not None:
                     retrievals.append(knowing.retrieval)
-                sections = replace(base, constraints=(*constraints, *due_for(read_k.character.id)))
+                steer = (prompts.TIME_STEERING,) if paused_mid_turn[0] and not first else ()
+                sections = replace(
+                    base, constraints=(*constraints, *due_for(read_k.character.id), *steer)
+                )
                 timing.assemble_s += time.perf_counter() - assembling
                 inputs: GenerationInputs = prompts.character_inputs(
                     knowing,
@@ -5128,6 +5478,7 @@ async def play(
                         states_level=book.level,
                         clock_level=book.clock_level,
                         clock_fixed=book.clock_fixed,
+                        items=book.names_item,
                     ),
                     variant=STRUCTURED,
                     params=params,
@@ -5301,7 +5652,11 @@ async def play(
                     )
                 if k == 0:
                     released[:] = [rendered_k]
-                wanted = 0 if books[0].clock is None else skipping.undeclared(rendered_k.beats)
+                wanted = (
+                    0
+                    if books[0].clock is None or books[0].clock.level != ON_LEVEL
+                    else skipping.undeclared(rendered_k.beats)
+                )
                 if wanted:
                     # #199: the render's undeclared skips' estimates, pre-allocated before its
                     # verification so an earlier entailment call cannot starve them.
@@ -5329,6 +5684,8 @@ async def play(
                     release_extraction=last,
                     settle_salience=last,
                     staged_beliefs=turn_stage.accepted(primary.id),
+                    # #640: a sequential render starts where the earlier ones ended.
+                    timed_before=None if simultaneous else merged,
                 )
                 # #187: the render's effects dry-run, its narrated State changes read.
                 await read_states(checked_k, turn_stage, read_k.turn)
@@ -5405,6 +5762,8 @@ async def play(
                         book=book,
                         stage=turn_stage,
                     )
+                    # #638: a beat the ladder rewrote is decided again for any skip it brings.
+                    await time_skips(read_k, checked_k, [] if merged is None else merged.beats)
                     settle_skips(checked_k)
                     reach_stops(checked_k)
                     checked_k.staged = _restaged(() if merged is None else merged.staged, checked_k)
@@ -5511,6 +5870,8 @@ async def play(
             book=book,
             stage=turn_stage,
         )
+        # #638: a beat the ladder rewrote is decided again for any skip it brings.
+        await time_skips(read_k, checked, [])
         settle_skips(checked)
         reach_stops(checked)
         clock.add("repair", time.perf_counter() - repairing)
@@ -5636,6 +5997,11 @@ async def play(
             read_set=read_set,
         )
         checked.degradation += checked.adjudications.degradation
+        # #523: what the player's ``do`` shows its witnesses, read once the turn's other work
+        # is funded.
+        checked.input_acts = await read_input_acts(
+            db, models, story_id, read, do=do, settings=settings, budget=budget
+        )
         found[:] = [checked]
         # #212 (FR-EXT-15,16): an effect on a synchronous provider makes the turn a staged turn,
         # decided here, after every planned render was verified and before the single commit
@@ -5646,6 +6012,8 @@ async def play(
             # #214: the turn's last render finished without a synchronous effect, so the
             # outcome step's reservation (O) goes back to the pool; the polish may use it.
             planner.release_outcome(budget)
+        # #636: every render and its repairs are done: an unused stop regeneration goes back.
+        budget.release_named(STOP)
         if call is not None:
             call.result_in_commit = None if staged_turn[0] else result
         composing_at = time.perf_counter()
@@ -5868,8 +6236,13 @@ async def play(
             requested += state_effects.requested_of(books[0], checked.beats)
         if timings[0] is not None:
             if books[0].clock is not None and books[0].clock.external:
-                # #209 (FR-CLOCK-5): an external clock's advances are requested, not written.
-                requested += state_effects.time_requests(timings[0])
+                # #209 (FR-CLOCK-5): an external clock's advances are requested, not written;
+                # #639 (FR-EXT-10): through the outbox when its provider is write-capable.
+                requested += state_effects.time_requests(
+                    timings[0],
+                    dispatch=books[0].clock.dispatch,
+                    provider=books[0].clock.provider,
+                )
             else:
                 # #194: the turn's clock advances, the commit's first step.
                 op.add_commit_step(partial(record_clock, timing=timings[0]))
@@ -5899,6 +6272,15 @@ async def play(
         references = external_facts.references(pins, checked.checked)
         if references:
             op.add_commit_step(partial(external_facts.commit, op=op, references=references))
+        if read.steers:
+            # #226: the turn that carried the author's steers consumes them as it commits.
+            op.add_commit_step(
+                partial(
+                    author_directives.consume_steers,
+                    ids=[i for i, _ in read.steers],
+                    operation_id=op.operation_id,
+                )
+            )
         if regenerating is not None:
             op.add_commit_step(fail_queue)
 
@@ -6005,6 +6387,7 @@ async def play(
         (``outcome_step``) runs the same hooks over its own beats only (no player input, no
         same-turn stage), and leaves the intent's turn report as it is."""
         committing = time.perf_counter()
+        depended_pairs: list[tuple[CheckedClaim, lifecycle.Dependence]] = []
         ids = await beat_event_ids(conn, op.operation_id)
         say_, do_ = (None, None) if outcome_step else (say, do)
         turn_stage = (
@@ -6055,12 +6438,27 @@ async def play(
             operation=op,
             registry=registry,
         )
+        # #481: likely duplicates among the places and objects this turn created (a notice).
+        duplicate_candidates = await duplicates.find(
+            conn,
+            story_id,
+            list(dict.fromkeys(e.entity_id for r in requests for e in r.introduces)),
+            character_id=read.actor.id,
+        )
         # #198 (FR-CLOCK-19, FR-EPI-14): a new plan's belief citing its canon fact; a change's
         # reschedule and the speaker's new time.
         await schedule_commit.committed(
-            conn, op, checked.checked, canonized, settings=settings, registry=registry
+            conn,
+            op,
+            checked.checked,
+            canonized,
+            settings=settings,
+            registry=registry,
+            introductions=checked.introductions,
         )
         utterance_rows = []
+        # #220: each utterance's beat and stored (proposition id, proposition) pairs.
+        uttered: list[tuple[int, list[tuple[str, Proposition]]]] = []
         # #166: each say's stored proposition per claim id (a lie's divergence names it).
         said: list[tuple[int, str, dict[str, str]]] = []
         for beat in checked.beats:
@@ -6075,6 +6473,7 @@ async def play(
                 if c.proposition is not None
             ]
             utterance_rows.append(utterance_of(beat, props))
+            uttered.append((beat.beat, turn_edges.stored_props(asserted, props)))
             said.append(
                 (
                     beat.beat,
@@ -6103,6 +6502,7 @@ async def play(
                     props,
                 )
             )
+            uttered.append((1, turn_edges.stored_props(asserted, props)))
             said.append(
                 (
                     1,
@@ -6346,6 +6746,7 @@ async def play(
                     read_set=read_set,
                     registry=registry,
                     visibility_of=agent_scope(results) if partitioned else None,
+                    paired=depended_pairs,
                 )
                 depended += await resolve_details(conn, op, details, registry=registry)
                 await settle_follow_up(conn, op, checked, read_set=read_set, registry=registry)
@@ -6370,6 +6771,11 @@ async def play(
                         "path": _close_path(checked.follow_up, closed.minimal_commits),
                     },
                     **(await _boundary_report(conn, story_id, regenerating, depended, checked)),
+                    **(
+                        {"duplicate_candidates": duplicate_candidates}
+                        if duplicate_candidates
+                        else {}
+                    ),
                 }
             if "epistemic" in fixed:
                 # #165: the turn's could-have-known checks (its resolutions' soft flags).
@@ -6390,6 +6796,7 @@ async def play(
                     else {}
                 ),
                 **({"identity_refused": identity_refused} if identity_refused else {}),
+                **({"duplicate_candidates": duplicate_candidates} if duplicate_candidates else {}),
             }
         fixed["commit"] = commit_report
         # FR-PROP-4: the auto predicates this turn's propositions used may now earn a
@@ -6422,14 +6829,31 @@ async def play(
                 if v.claim_id is not None
             },
         )
+        # #220 (FR-DIRECT-7): the turn's typed dependency edges.
+        fixed["dependency_edges"] = await turn_edges.turn_edges(
+            conn,
+            op,
+            turn=read.turn,
+            beats=checked.beats,
+            checked=checked.checked,
+            event_ids=ids,
+            utterances=[
+                (uid, beat, pairs)
+                for uid, (beat, pairs) in zip(utterance_ids, uttered, strict=False)
+            ],
+            depended=depended_pairs,
+            mentions=await turn_edges.beat_mentions(conn, op.operation_id),
+        )
         if outcome_step:
             # #212: the intent's turn report stands; the completion adds its own section.
             return
         fixed["raw_render_event_ids"] = await _raw_render_ids(conn, op.operation_id, ids, checked)
         clock.add("commit", time.perf_counter() - committing)
-        await write_report(conn, rendered, checked)
+        await write_report(conn, rendered, checked, op_turn=read.turn)
 
-    async def write_report(conn: AsyncConnection, rendered: Rendered, checked: Checked) -> None:
+    async def write_report(
+        conn: AsyncConnection, rendered: Rendered, checked: Checked, *, op_turn: int
+    ) -> None:
         fixed["elapsed_ms"] = budget.elapsed_ms()
         report = lite.turn_report(
             calls,
@@ -6506,6 +6930,22 @@ async def play(
                 report["verify_primaries"] = [v.report() for v in checked.more_verifiers]
         if checked.follow_up_verifier is not None:
             report["verify_follow_up"] = checked.follow_up_verifier.report()
+        # #229 (FR-PROF-8): the gaps the turn's retrieval met, and the verdicts they mark.
+        met = {g for r in rendered.retrievals for g in r.coverage_gaps}
+        report["retrieval"] = {
+            "coverage_gaps": [
+                g.model_dump()
+                for g in sorted(met, key=lambda g: (g.capability, g.from_turn, g.to_turn))
+            ]
+        }
+        checking = await coverage_marks.gaps(
+            conn, story_id, settings, readers=coverage_marks.VERIFICATION_READERS
+        )
+        for section in ("verify", "verify_follow_up"):
+            if isinstance(report.get(section), dict):
+                coverage_marks.mark_verdicts(report[section], checking, op_turn)
+        for primary in report.get("verify_primaries", []):
+            coverage_marks.mark_verdicts(primary, checking, op_turn)
         report["commit"] = fixed.get("commit", {})
         if "perception" in fixed:
             report["perception"] = fixed["perception"]
@@ -6693,6 +7133,7 @@ async def play(
                     states_level=book.level,
                     clock_level=book.clock_level,
                     clock_fixed=book.clock_fixed,
+                    items=book.names_item,
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,
@@ -7017,6 +7458,14 @@ async def play(
                 for r in committed.effects.reconciliation_required
             ],
         }
+        # #229 (FR-PROF-8): the earlier turns a capability the turn read has no data for.
+        if isinstance(conn, AsyncConnection):
+            gapped = await _coverage_gaps(conn, story_id, settings, committed.narrative_turn)
+        else:
+            async with conn.connect() as reading:
+                gapped = await _coverage_gaps(reading, story_id, settings, committed.narrative_turn)
+        if gapped:
+            fields["coverage_gaps"] = [g.model_dump() for g in gapped]
         noticed = authority[0].notices(committed.narrative_turn) if authority else ()
         if noticed:
             # #598 (FR-RESP-14): the turn's notices, with whether it has external effects.
@@ -7065,7 +7514,13 @@ async def play(
     retiring = () if regenerating is None else await _retiring(db, story_id, regenerating.turn)
     # A regenerate reads the story as it stood before the variant it replaces (#154): that
     # variant's records are left out of every derived read; its own commit retires them.
-    with excluding(retiring), external_values.pinning(pins):
+    # #621: the turn reads each registry once per attempt (``begin`` starts each afresh).
+    with (
+        excluding(retiring),
+        external_values.pinning(pins),
+        registry_turn_cache(),
+        turn_memo.scope(),
+    ):
         await run_with_revalidation(
             op,
             begin=begin,
@@ -7156,6 +7611,16 @@ async def _boundary_report(
     }
 
 
+async def _coverage_gaps(
+    conn: AsyncConnection, story_id: str, settings: ProfileSettings, turn: int
+) -> list[coverage_marks.CoverageGap]:
+    """#229: the gaps before ``turn`` of every capability the turn's reads use."""
+    readers = tuple(
+        dict.fromkeys((*coverage_marks.RETRIEVAL_READERS, *coverage_marks.VERIFICATION_READERS))
+    )
+    return await coverage_marks.gaps(conn, story_id, settings, readers=readers, window=(1, turn))
+
+
 def _with_context(draft: Draft, retrieval: RetrievalResult) -> Draft:
     """``draft`` carrying, beside what it already holds, the records and pins ``retrieval``
     placed in its prompt (FR-GUARD-5)."""
@@ -7224,6 +7689,11 @@ def _degradation(
             steps.append(DegradationStep(step=step, cause=cause))
     # NFR-PERF-7's steps first, in its order; the rest as taken (#156).
     return sorted(steps, key=lambda s: planner.ladder_rank(s.step))
+
+
+def _before_steps(before: Checked | None) -> dict[int, list[int]]:
+    """#640: the earlier renders' declared steps (``_declared_steps``; none: nothing before)."""
+    return {} if before is None else _declared_steps(before)
 
 
 def _render_steps(rendered: Rendered) -> dict[int, list[int]]:

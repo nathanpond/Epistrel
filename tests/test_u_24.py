@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import replace
+from typing import Any
 
 import pytest
 from hypothesis import assume, given, settings
@@ -408,3 +409,36 @@ def test_u_24__possibly_due() -> None:
     assert {nine.scheduled(at, t) for t in range(240)} == {"not_due"}
     assert stops.window(_meeting(nine, 780), nine) == (240, 240)
     assert stops.pause_at(_meeting(nine, 780), 0, 600, nine, nine.revision) is None
+
+
+def _scheduled(anchor: Anchor, status: str, event: dict[str, Any], offset: int = 130) -> Any:
+    owned = owned_value(CLOCK, anchor, offset=offset, tolerance=15, events={EVENT: event})
+    return rules.check(_claim(SCHEDULED_STATUS, status), registry=REGISTRY, owned=[owned]).kind
+
+
+@pytest.mark.part("M6", "FR-CLOCK-3")
+def test_u_24__scheduled_status() -> None:
+    """#644: a ``scheduled_status`` claim carries its event's plan, so it is decided. An event
+    at an exact offset (+100) is ``due`` at +130 (within its grace) and at +90 (within the
+    statement tolerance), ``not_due`` at +50 and ``past`` at +200, never ``possibly_due``; one
+    held at a time of day under "Saturday morning" ([05:00, 12:00) at +130) is ``not_due`` at
+    15:00 and ``possibly_due`` (never yet ``due``) at 10:00. Complement asserted: a claim about
+    an event the clock does not know stays ``uncertain``."""
+    exact = {"planned": 100, "at": None, "grace": 30}
+    anchor = _saturday_morning()
+    assert _scheduled(anchor, "due", exact) is VerdictKind.SUPPORTED
+    assert _scheduled(anchor, "not_due", exact) is VerdictKind.CONTRADICTED
+    assert _scheduled(anchor, "possibly_due", exact) is VerdictKind.CONTRADICTED
+    assert _scheduled(anchor, "due", exact, offset=50) is VerdictKind.CONTRADICTED
+    assert _scheduled(anchor, "not_due", exact, offset=50) is VerdictKind.SUPPORTED
+    assert _scheduled(anchor, "due", exact, offset=90) is VerdictKind.SUPPORTED
+    assert _scheduled(anchor, "past", exact, offset=200) is VerdictKind.SUPPORTED
+    assert _scheduled(anchor, "due", exact, offset=200) is VerdictKind.CONTRADICTED
+    assert _scheduled(Anchor.unanchored(), "due", exact) is VerdictKind.SUPPORTED
+    afternoon = {"planned": 400, "at": 15 * 60, "grace": 30}
+    assert _scheduled(anchor, "not_due", afternoon) is VerdictKind.SUPPORTED
+    assert _scheduled(anchor, "due", afternoon) is VerdictKind.CONTRADICTED
+    morning = {"planned": 200, "at": 10 * 60, "grace": 30}
+    assert _scheduled(anchor, "possibly_due", morning) is VerdictKind.SUPPORTED
+    assert _scheduled(anchor, "due", morning) is VerdictKind.UNCERTAIN
+    assert _verdict(anchor, _claim(SCHEDULED_STATUS, "due")).kind is VerdictKind.UNCERTAIN

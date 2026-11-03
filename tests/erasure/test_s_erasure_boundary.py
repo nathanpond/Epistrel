@@ -1281,3 +1281,49 @@ async def test_s_erasure_boundary__m6_outcome(
 
 async def _no_gate(groups: Any) -> None:
     return None
+
+
+@pytest.mark.part("M7", "FR-ADMIN-9")
+async def test_s_erasure_boundary__m7_rewrite(
+    erasure_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """M7 (#237): a rewrite whose plan reads an erased subject is abandoned at its apply. Two
+    OSU stories each hold an answered "Bobby actually went to UCLA" session; Marcus is erased
+    from the first and Bobby from the second. The first session's plan does not reference
+    Marcus: it applies. The second's references Bobby: the apply is 409
+    ``erased_subject_referenced`` (withholding the subject id), the session ``abandoned``, no
+    amendment written, and its stored instruction no longer names Bobby (#123's redaction)."""
+    from tests import rewrite_support as rs
+
+    async with respond_client(erasure_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        stub.when("", rs.UCLA, purpose="rewrite_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        sessions = []
+        for _ in range(2):
+            deps = await rs.story(client, engine)
+            opened = await rs.open_session(client, deps.story_id)
+            answered = await rs.answer_all(client, deps.story_id, opened.json())
+            assert answered.status_code == 200, answered.text
+            sessions.append((deps, answered.json()))
+        (other, kept), (erased, lost) = sessions
+        assert other.ed.marcus is not None
+        await e.erase(client, "character", other.ed.marcus, other.story_id, confirm_all=True)
+        await e.erase(client, "character", erased.ed.bobby, erased.story_id, confirm_all=True)
+
+        fine = await rs.apply(client, other.story_id, kept["id"], kept["base_revision"])
+        assert fine.status_code == 200, fine.text
+
+        refused = await rs.apply(client, erased.story_id, lost["id"], lost["base_revision"])
+        assert refused.status_code == 409, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "erased_subject_referenced"
+        assert erased.ed.bobby not in refused.text
+        (row,) = await rows(
+            engine,
+            "SELECT state, instruction FROM rewrite_sessions WHERE id = :i",
+            i=lost["id"],
+        )
+        assert row.state == "abandoned"
+        assert not e.naming(row.instruction, ["Bobby"])
+        assert await rs.count(engine, "amendments", erased.story_id) == 0

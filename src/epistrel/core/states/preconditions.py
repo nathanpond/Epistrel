@@ -602,7 +602,41 @@ def evaluate(
         # An item named nowhere in the story: uncertain(unresolved_entity), which never
         # escalates (docs/02 §4.9), so the safe disposition at once.
         return Unpermitted(reason_of(AVAILABILITY))
+    _remember_reads(effect, parties, context)
     return None
+
+
+READS_KEY = "precondition_reads"
+"""#220: ``core.turn_memo``'s key prefix for the canon facts a permitted effect's
+preconditions read, by beat (``reads_at``)."""
+
+
+def _remember_reads(effect: StateEffect, parties: Parties, context: Context) -> None:
+    """#220 (FR-DIRECT-7): the canon facts a permitted effect's preconditions read (its item's
+    ``holds``/``owns``, its counterparty's ``agreed_to``), for its ``causes`` edges."""
+    from epistrel.core import turn_memo
+
+    if not turn_memo.active():
+        return
+    canon = context.canon
+    records = [
+        *(canon.holds.get(parties.item, ()) if parties.item else ()),
+        *(canon.owns.get(parties.item, ()) if parties.item else ()),
+        *(canon.agreed.get(parties.counterparty, ()) if parties.counterparty else ()),
+    ]
+    key = (READS_KEY, effect.beat)
+    found = turn_memo.get(key)
+    held: set[str] = set() if found is turn_memo.MISSING else set(found)
+    held.update(r.fact_id for r in records if r.fact_id is not None)
+    turn_memo.put(key, frozenset(held))
+
+
+def reads_at(beat: int | None) -> frozenset[str]:
+    """#220: the canon facts the permitted effects at ``beat`` read (none outside a turn)."""
+    from epistrel.core import turn_memo
+
+    found = turn_memo.get((READS_KEY, beat))
+    return frozenset() if found is turn_memo.MISSING else frozenset(found)
 
 
 def _reserved_for_another(parties: Parties, context: Context) -> bool:
@@ -727,6 +761,7 @@ __all__ = [
     "possession_item",
     "preconditions_for",
     "read",
+    "reads_at",
     "reason_of",
     "resolve",
     "verdict_of",

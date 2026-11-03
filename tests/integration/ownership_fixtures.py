@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx2 as httpx
@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core.ids import new_ulid
 from epistrel.core.ownership import REGISTRY
+from epistrel.core.profiles.certification import install_harness
 from epistrel.core.seeds.profiles import LITE_PRESET_ID
 from epistrel.core.tables.ownership import EntityType
 from tests.auth_support import bearer
@@ -218,6 +219,22 @@ Prepare = Callable[[httpx.AsyncClient, Kind, Entity], Awaitable[dict[str, Any]]]
 
 
 async def _nothing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {}
+
+
+CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
+
+
+async def _harness(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """The eval harness a certification run's estimate needs (#233; it plays nothing)."""
+    from epistrel.evals.certify import EvalHarness
+
+    install_harness(EvalHarness(cast(Any, None)))
+    return {}
+
+
+async def _no_harness(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    install_harness(None)
     return {}
 
 
@@ -440,6 +457,52 @@ async def _outbox_effect(client: httpx.AsyncClient, kind: Kind, entity: Entity) 
         db, epistrel, entity.id, bank.name, entity.ids["wren"], entity.ids["ada"]
     )
     return {"outbox_id": listed}
+
+
+async def _consumer_listing(
+    client: httpx.AsyncClient, kind: Kind, entity: Entity
+) -> dict[str, Any]:
+    """#661: a listed consumer-applied effect for the resolve action: the story, on
+    ``Structured (M4)`` with States on, with a turn's ``requested_effect`` listed
+    ``settlement_conflict`` (no public call lists one)."""
+    from epistrel.core import outbox as core_outbox
+    from epistrel.core.enums import OperationKind, Provenance
+    from epistrel.core.events.operation import Operation
+    from epistrel.core.events.types import REQUESTED_EFFECT, RequestedEffect
+    from epistrel.core.seeds.profiles import STRUCTURED_M4_PROFILE_ID
+    from tests import state_support as ss
+
+    db = client._transport.app.state.epistrel.db  # type: ignore[attr-defined]
+    async with db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE stories SET engine_profile_id = :p, engine_profile_version_pin = 1 "
+                "WHERE id = :s"
+            ),
+            {"s": entity.id, "p": STRUCTURED_M4_PROFILE_ID},
+        )
+    await ss.set_level(db, entity.id, "on")
+    request_id = new_ulid()
+    async with Operation(
+        db, story_id=entity.id, kind=OperationKind.TURN, principal="p-owner"
+    ) as op:
+        op.append("player_input", {"text": "pays"}, provenance=Provenance.PLAYER)
+        op.append(
+            REQUESTED_EFFECT,
+            RequestedEffect(
+                effect_id=request_id,
+                state="gold",
+                scope_key=entity.ids["wren"],
+                delta=-5,
+                reason="a sword",
+            ),
+            provenance=Provenance.ENGINE,
+        )
+        op.append("message_rendered", {"text": "paid"})
+        await op.commit()
+    async with db.begin() as conn:
+        await core_outbox.mark(conn, entity.id, None, "settlement_conflict", request_id=request_id)
+    return {"listing": request_id}
 
 
 def _refund(entity: Entity) -> dict[str, Any]:
@@ -713,9 +776,80 @@ ENTRY_READS: tuple[dict[str, str], ...] = (
     {"draft": "true", "projection": "full"},
 )
 
+NO_SUCH = "01J00000000000000000000000"
+"""An id no story holds: the rewrite and amendment routes below answer 404 for it (#223-#238)."""
+
+
+async def _no_session(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"session_id": NO_SUCH}
+
+
+async def _no_conflict(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"cid": NO_SUCH}
+
+
+async def _no_amendment(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"amendment_id": NO_SUCH}
+
+
 CALLS: dict[tuple[str, str], Call] = {
     # -- stories: writes
     ("POST", f"{S}/respond"): Call(200, respond_body),
+    # #223-#226, #238: the history side-channel on a Lite story (no planner: 409 module_off),
+    # its reads, and the routes of a session or an amendment the story does not hold (404).
+    # #245: a Lite story's session runs (the stub's reach finds no line: a no-op).
+    ("POST", f"{S}/rewrites"): Call(
+        422, {"instruction": "Ada was always a sailor."}, queries=(OMNISCIENT,)
+    ),
+    ("GET", f"{S}/rewrites"): Call(200, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/rewrites/{{session_id}}"): Call(404, queries=(OMNISCIENT,), prepare=_no_session),
+    ("POST", f"{S}/rewrites/{{session_id}}/answers"): Call(
+        404,
+        {"answers": [{"question_id": NO_SUCH, "accept_recommended": True}]},
+        queries=(OMNISCIENT,),
+        prepare=_no_session,
+    ),
+    ("POST", f"{S}/rewrites/{{session_id}}/apply"): Call(
+        404, {"base_revision": 0}, queries=(OMNISCIENT,), prepare=_no_session
+    ),
+    ("POST", f"{S}/rewrites/{{session_id}}/cancel"): Call(
+        404, queries=(OMNISCIENT,), prepare=_no_session
+    ),
+    ("POST", f"{S}/entities/merge"): Call(
+        422, {"entity_ids": [NO_SUCH, NO_SUCH]}, queries=(OMNISCIENT,)
+    ),
+    # #244: a Lite story's nudge (steer_queued) for every requester.
+    ("POST", f"{S}/directives"): Call(
+        200, {"text": "Make this scene tense.", "kind": "ephemeral"}, queries=(OMNISCIENT,)
+    ),
+    ("GET", f"{S}/amendments"): Call(200, queries=(OMNISCIENT,)),
+    ("GET", f"{S}/amendments/{{amendment_id}}"): Call(
+        404, queries=(OMNISCIENT,), prepare=_no_amendment
+    ),
+    ("POST", f"{S}/amendments/{{amendment_id}}/undo"): Call(
+        404, {}, queries=(OMNISCIENT,), prepare=_no_amendment
+    ),
+    ("POST", f"{S}/amendments/{{amendment_id}}/redo"): Call(
+        404, {}, queries=(OMNISCIENT,), prepare=_no_amendment
+    ),
+    # #228: a story with no backfill reads and cancels none (404 for every requester).
+    ("GET", f"{S}/backfill"): Call(404),
+    ("DELETE", f"{S}/backfill"): Call(404),
+    ("POST", f"{S}/backfill"): Call(409, {}),  # a story with no turn has nothing to backfill
+    # #247: nothing to prune: the report, applied false.
+    ("POST", f"{S}/prune"): Call(200, {"ignore_warnings": True}),
+    ("GET", f"{S}/prune-runs"): Call(200),  # #248
+    # #230: no backfill, so no conflict to resolve.
+    ("POST", f"{S}/backfill/conflicts/{{cid}}"): Call(
+        404, {"accept_recommendation": True}, prepare=_no_conflict
+    ),
+    # #233: a certification run's estimate (the harness installed; nothing written).
+    ("POST", f"{S}/certification-runs"): Call(
+        200, CERTIFICATION_RUN, prepare=_harness, cleanup=_no_harness
+    ),
+    ("POST", f"{P}/certification-runs"): Call(
+        200, CERTIFICATION_RUN, prepare=_harness, cleanup=_no_harness
+    ),
     ("POST", f"{S}/regenerate"): Call(200, {}, prepare=_played),
     # #598 (FR-RESP-14): the played turn replaced with new input.
     ("POST", f"{S}/correct"): Call(
@@ -774,6 +908,7 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"delta": 5, "reason": "found a purse"}, prepare=_state_name
     ),
     ("POST", f"{S}/states"): Call(201, {"definition": GOLD}, prepare=_prompt_only),
+    ("GET", f"{S}/states/{{name}}/definition"): Call(200, prepare=_state_name),  # #680
     ("PATCH", f"{S}/states/{{name}}/definition"): Call(200, {"unit": "coins"}, prepare=_state_name),
     # -- stories: engine-proposed States (#192), on the story running States at prompt_only
     ("POST", f"{S}/state-proposals/analyze"): Call(202, prepare=_prompt_only),
@@ -784,10 +919,18 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/state-proposals/{{proposal_id}}/dismiss"): Call(200, prepare=_state_proposal),
     # -- stories: the reconciliation status of its external effects (#210)
     ("GET", f"{S}/reconciliation"): Call(200),
+    # #679: the story's outbox rows (an omniscient read)
+    ("GET", f"{S}/outbox"): Call(200, queries=({"viewpoint": "omniscient"},)),
+    # #681: the story's operations, listed
+    ("GET", f"{S}/operations"): Call(200),
     # #218: the explicit actions on a listed effect (#203: on a story running States)
     ("POST", f"{S}/reconciliation/{{outbox_id}}/settle-now"): Call(200, prepare=_outbox_effect),
     ("POST", f"{S}/reconciliation/{{outbox_id}}/compensate"): Call(
         201, _refund, prepare=_outbox_effect
+    ),
+    # #661: the resolve-only action on a listed consumer-applied effect
+    ("POST", f"{S}/reconciliation/{{listing}}/resolve"): Call(
+        200, {"resolution": "applied_elsewhere"}, prepare=_consumer_listing
     ),
     # -- stories: a character's participation role (#176)
     ("PATCH", f"{S}/characters/{{character_id}}/participation"): Call(
@@ -912,6 +1055,8 @@ CALLS: dict[tuple[str, str], Call] = {
     # writes nothing, a delete) and the ownership routes
     ("PUT", P): Call(200, {"name": "Brisk Lite", "settings": EDITED}),
     ("POST", f"{P}/copy"): Call(201, {"name": "My copy"}),
+    # #229: no story is pinned to an older version: an empty report, applied.
+    ("POST", f"{P}/upgrade-pinned"): Call(200, {"ignore_warnings": True}),
     ("POST", f"{P}/validate"): Call(200, {"settings": EDITED}),
     ("DELETE", P): Call(200),
     ("PUT", f"{P}/owner"): Call(200, {"principal": NEW_OWNER}),

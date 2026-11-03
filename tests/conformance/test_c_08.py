@@ -1,7 +1,8 @@
 """C-08, observability contract (FR-OBS-1, NFR-SEC-4; #74): the invariant 3 guard.
 
 ``test_c_08`` runs the scenario suite (``tests/scenario``), C-03 (every ``Engine`` operation over
-REST and the library) and the planted canaries (``canary_scenario.py``) in a subprocess at DEBUG,
+REST and the library) and the planted canaries (``canary_scenario.py``) in subprocesses at DEBUG
+(parallel shards, each on its own database, their telemetry merged; #684),
 with ``telemetry_canary`` capturing exactly what ``epistrel serve`` would write: the JSON log
 lines, the finished spans (behind the production content filter) and the ``/metrics`` text. It
 asserts that every operation produced a summary line, a span and a count, and that no planted
@@ -26,10 +27,12 @@ import re
 import secrets
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 import pytest
 from prometheus_client.parser import text_string_to_metric_families
@@ -45,6 +48,10 @@ PLUGIN = "tests.conformance.telemetry_canary"
 CANARY_FILE = "tests/conformance/canary_scenario.py"
 SUITE = ("tests/scenario", "tests/conformance/test_c_03.py", CANARY_FILE)
 RUN_TIMEOUT_S = 1500
+"""Each inner shard's bound (#684: the whole inner run reached it on CI as one process)."""
+C08_SHARDS = 4
+"""Parallel inner runs (the CI runner has four cores); ``EPISTREL_TEST_C08_SHARDS`` overrides."""
+SHARDS_VAR = "EPISTREL_TEST_C08_SHARDS"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
 
 ENUM = re.compile(r"^[a-z_]+$")
@@ -82,36 +89,87 @@ class Telemetry:
         return "\n".join([*self.raw_logs, json.dumps(self.spans), self.metrics])
 
 
+def shards(paths: tuple[str, ...], count: int) -> list[list[str]]:
+    """``paths`` split into at most ``count`` groups for parallel inner runs (#684): every test
+    file under a directory in ``paths`` is packed, largest first, into the lightest group by
+    size (a rough proxy for run time); a file named directly joins the lightest group too."""
+    files: list[Path] = []
+    for path in paths:
+        found = REPO_ROOT / path
+        files += sorted(found.glob("test_*.py")) if found.is_dir() else [found]
+    groups: list[list[Path]] = [[] for _ in range(max(1, min(count, len(files))))]
+    weights = [0] * len(groups)
+    for file in sorted(files, key=lambda f: (-f.stat().st_size, f.name)):
+        lightest = weights.index(min(weights))
+        groups[lightest].append(file)
+        weights[lightest] += file.stat().st_size
+    return [[str(f.relative_to(REPO_ROOT)) for f in group] for group in groups if group]
+
+
 def run_suite(pg_url: str, paths: tuple[str, ...], *, content_debug: bool) -> Telemetry:
-    """Run ``paths`` under the capture plugin on a fresh database; the run must pass."""
-    name = f"epistrel_c08_{secrets.token_hex(4)}"
-    out = REPO_ROOT / "build" / f"{name}.json"
-    out.parent.mkdir(exist_ok=True)
-    env = {
+    """Run ``paths`` under the capture plugin, split into parallel shards (``shards``), each
+    on a fresh database; every shard must pass, and their telemetry is merged."""
+    groups = shards(paths, int(os.environ.get(SHARDS_VAR, str(C08_SHARDS))))
+    base = {
         key: value
         for key, value in os.environ.items()
         if not key.upper().startswith(("EPISTREL_", "COV_CORE_", "PYTEST_"))
     }
-    env[OUT_VAR] = str(out)
     if content_debug:
-        env[CONTENT_DEBUG_VAR] = "1"
-    with migrated_database(pg_url, name) as url:
-        env[OVERRIDE_VAR] = url
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", PLUGIN, "-p", "no:cacheprovider", *paths],
-            cwd=REPO_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=RUN_TIMEOUT_S,
-            check=False,
-        )
-    try:
-        assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
-        document = json.loads(out.read_text(encoding="utf-8"))
-    finally:
-        out.unlink(missing_ok=True)
-    return Telemetry(document["logs"], document["spans"], document["metrics"], document["harvest"])
+        base[CONTENT_DEBUG_VAR] = "1"
+    (REPO_ROOT / "build").mkdir(exist_ok=True)
+    with ExitStack() as stack:
+        running: list[tuple[subprocess.Popen[str], Path, IO[str]]] = []
+        for group in groups:
+            name = f"epistrel_c08_{secrets.token_hex(4)}"
+            out = REPO_ROOT / "build" / f"{name}.json"
+            stack.callback(out.unlink, missing_ok=True)
+            env = {**base, OUT_VAR: str(out)}
+            env[OVERRIDE_VAR] = stack.enter_context(migrated_database(pg_url, name))
+            command = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                PLUGIN,
+                "-p",
+                "no:cacheprovider",
+                *group,
+            ]
+            # A file, not a pipe: a shard's output must never block it while another is awaited.
+            log: IO[str] = stack.enter_context(tempfile.TemporaryFile("w+", encoding="utf-8"))
+            proc = subprocess.Popen(
+                command, cwd=REPO_ROOT, env=env, stdout=log, stderr=subprocess.STDOUT, text=True
+            )
+            stack.callback(_stop, proc)
+            running.append((proc, out, log))
+        merged = Telemetry([], [], "", [])
+        for proc, out, output in running:
+            proc.wait(timeout=RUN_TIMEOUT_S)
+            output.seek(0)
+            assert proc.returncode == 0, _failures(output.read())
+            document = json.loads(out.read_text(encoding="utf-8"))
+            merged = Telemetry(
+                merged.raw_logs + document["logs"],
+                merged.spans + document["spans"],
+                merged.metrics + document["metrics"],
+                merged.harvest + document["harvest"],
+            )
+    return merged
+
+
+def _failures(text: str) -> str:
+    """A failed shard's report: its failures section when there is one, else its last lines."""
+    start = text.find("= FAILURES =")
+    return text[start : start + 12000] if start >= 0 else text[-8000:]
+
+
+def _stop(proc: subprocess.Popen[str]) -> None:
+    """Kill a shard still running when the run ends early (a timeout or a failed shard)."""
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
 
 
 @pytest.fixture(scope="module")

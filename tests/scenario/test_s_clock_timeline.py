@@ -644,3 +644,245 @@ async def test_s_clock_timeline__external(
         assert _proposed(played) == []
         assert played["clock"]["after"]["offset"] > played["clock"]["before"]["offset"] == 700
         assert await ck.clock_changes(engine, story) > 0
+
+
+@pytest.mark.part("M6", "FR-CLOCK-5")
+async def test_s_clock_timeline__external_outbox(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    stops_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#639 (owner decision, FR-EXT-10): an external clock whose provider can write its value
+    has the turn's pacing increments and declared skip dispatched through the outbox: one
+    ``intended`` outbox row each, the minutes as the effect's ``delta``, listed ``pending``
+    with its ``outbox_id`` in ``state_effects``, and no ``requested_effect`` event. Complement
+    asserted: ``test_s_clock_timeline__external``'s read-only provider keeps the consumer's
+    requests."""
+    name = pv.unique_name("gameclock")
+    spec = pv.in_process_spec(
+        name,
+        {"elapsed": "number"},
+        writable=["elapsed"],
+        confirmation="asynchronous",
+    )
+    await pv.register(engine, spec)
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = pv.ScriptedProvider(name).attach(epistrel)
+        fake.script("elapsed", 600)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal, mira = ids["Cal"], ids["Mira"]
+        square = await ps.place_entity(engine, story, "the square")
+        for who in (cal, mira):
+            await ps.put(engine, story, who, square)
+        await ck.set_clock(engine, story, "on")
+        await pv.bind(engine, story, name, {"player": "p-1"})
+        patched = await client.patch(
+            f"/stories/{story}/clock",
+            json={"mode": "external", "provider_value": f"{name}.elapsed"},
+            headers=WRITE,
+        )
+        assert patched.status_code == 200, patched.text
+        played = await _external_turn(
+            client,
+            stub,
+            story,
+            cal,
+            beat("say", "We could wait here a while.", effects=[_skip(30)]),
+            narration=_words(60),
+        )
+        proposed = _proposed(played)
+        assert 30 in proposed
+        dispatched = [e for e in played["state_effects"] if e.get("kind") == "time_advance"]
+        assert all(e["outbox_id"] == e["effect_id"] for e in dispatched)
+        assert {e["status"] for e in dispatched} == {"pending"}
+        rows_ = await pv.outbox_rows(engine, story)
+        assert sorted(int(r.effect["delta"]) for r in rows_) == sorted(proposed)
+        assert {(r.effect["kind"], r.value_name) for r in rows_} == {("time_advance", "elapsed")}
+        requested = await rows(
+            engine,
+            "SELECT count(*) AS n FROM events WHERE story_id = :s AND type = 'requested_effect'",
+            s=story,
+        )
+        assert requested[0].n == 0
+        assert await ck.clock_changes(engine, story) == 0
+        await pv.drop_outbox_jobs(engine, story)
+
+
+@pytest.mark.part("M6", "FR-CLOCK-3")
+async def test_s_clock_timeline__same_turn_anchor(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    clock_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#627: in one turn on an unanchored clock, the narration's first beat anchors "Friday
+    morning" and its second says "Saturday evening": the second is verified against the
+    anchor as the first beat narrowed it (the same-turn overlay), so it is ``contradicted``
+    and repaired, and only the first anchor commits. Complement: a second beat consistent
+    with the first ("It's 9:15") is not contradicted, and both narrow the anchor."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        market = await ps.place_entity(engine, story, "the market")
+        for who in (cal, ids["Mira"]):
+            await ps.put(engine, story, who, market)
+        await ck.set_level(engine, story, "on")
+        manual = await client.patch(
+            f"/stories/{story}/clock", json={"mode": "manual"}, headers=WRITE
+        )
+        assert manual.status_code == 200, manual.text
+        assert (await _anchor_at(engine, story)).is_unanchored
+
+        stub.reset()
+        es.narrator(
+            stub,
+            es.render(
+                beat("narration", "It was Friday morning at the market."),
+                beat("narration", "It was Saturday evening by then."),
+            ),
+        )
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the step.")))
+        answer = await respond(client, story, body(cal, None, do="looks around"))
+        assert answer.status_code == 200, answer.text
+        report = await turn_report(engine, story)
+        kinds = [v.get("kind") for v in report["verify"]["verdicts"]]
+        assert "contradicted" in kinds, report["verify"]
+        anchor = await _anchor_at(engine, story)
+        assert anchor.absolute_at(0).weekday == Exact("friday")
+        assert len(await _anchor_facts(engine, story)) == 1
+
+        # Complement: a consistent second beat narrows the anchor; nothing is contradicted.
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        market = await ps.place_entity(engine, story, "the market")
+        for who in (cal, ids["Mira"]):
+            await ps.put(engine, story, who, market)
+        await ck.set_level(engine, story, "on")
+        manual = await client.patch(
+            f"/stories/{story}/clock", json={"mode": "manual"}, headers=WRITE
+        )
+        assert manual.status_code == 200, manual.text
+        stub.reset()
+        es.narrator(
+            stub,
+            es.render(
+                beat("narration", "It was Friday morning at the market."),
+                beat("narration", "It's 9:15, said the town clock."),
+            ),
+        )
+        ms.renders_for(stub, "Mira", es.render(beat("say", "Mind the step.")))
+        answer = await respond(client, story, body(cal, None, do="looks around"))
+        assert answer.status_code == 200, answer.text
+        report = await turn_report(engine, story)
+        kinds = [v.get("kind") for v in report["verify"]["verdicts"]]
+        assert "contradicted" not in kinds, report["verify"]
+        here = (await _anchor_at(engine, story)).absolute_at(0)
+        assert here.weekday == Exact("friday")
+        assert [(s.lo, s.hi) for s in here.segments] == [(555, 556)]
+        assert len(await _anchor_facts(engine, story)) == 2
+
+
+@pytest.mark.part("M7", "FR-CLOCK-12")
+async def test_s_clock_timeline__m7_rewrite(
+    stub_settings: Settings, engine: AsyncEngine, clock_delivered: None
+) -> None:
+    """A history-rewrite conversation does not move the clock (#223): opening a session,
+    answering its question and cancelling it leave the story's ``state_changes`` (the clock's
+    included), its clock value and its ``timeline_revision`` exactly as they were."""
+    asks = json.dumps(
+        {
+            "changes": [],
+            "ambiguities": [
+                {
+                    "about": "when",
+                    "question": "When?",
+                    "options": ["dawn", "dusk"],
+                    "recommended": 0,
+                }
+            ],
+        }
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, _ = await structured_story(client, "Cal", "Bobby")
+        await ck.set_level(engine, story, "on")
+        moved = await _advance(client, story, {"minutes": 45, "reason": "a walk"})
+        assert moved.status_code == 200, moved.text
+
+        async def snapshot() -> tuple[Any, ...]:
+            count = await rows(
+                engine, "SELECT count(*) AS n FROM state_changes WHERE story_id = :s", s=story
+            )
+            revision = await rows(
+                engine, "SELECT timeline_revision AS r FROM stories WHERE id = :s", s=story
+            )
+            return count[0].n, (await _clock(client, story))["offset"], revision[0].r
+
+        before = await snapshot()
+        epistrel.models.stub.when("", asks, purpose="rewrite_parse")
+        omniscient = {"viewpoint": "omniscient"}
+        opened = await client.post(
+            f"/stories/{story}/rewrites",
+            params=omniscient,
+            json={"instruction": "It was dawn when they met."},
+            headers=WRITE,
+        )
+        assert opened.status_code == 201, opened.text
+        session = opened.json()
+        path = f"/stories/{story}/rewrites/{session['id']}"
+        answered = await client.post(
+            f"{path}/answers",
+            params=omniscient,
+            json={"answers": [{"question_id": session["questions"][0]["id"], "option_id": "o1"}]},
+            headers=WRITE,
+        )
+        assert answered.status_code == 200, answered.text
+        cancelled = await client.post(f"{path}/cancel", params=omniscient, headers=WRITE)
+        assert cancelled.status_code == 200, cancelled.text
+        assert await snapshot() == before
+        assert before[1] == 45
+
+
+@pytest.mark.part("M7", "FR-CLOCK-12; FR-DIRECT-1")
+async def test_s_clock_timeline__m7_directive(
+    stub_settings: Settings, engine: AsyncEngine, clock_delivered: None
+) -> None:
+    """An author directive "the next morning" (#226, ``directive_parse`` scripted: ten hours)
+    advances the clock at the next inter-turn slot with ``source = author``. Complement: an
+    ephemeral directive "it feels late" advances nothing."""
+    later = json.dumps(
+        {
+            "classification": "durable",
+            "temporal_scope": "now",
+            "changes": [{"kind": "clock", "minutes": 600}],
+        }
+    )
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        story, _ = await structured_story(client, "Cal", "Bobby")
+        await ck.set_level(engine, story, "on")
+        omniscient = {"viewpoint": "omniscient"}
+        before = (await _clock(client, story))["offset"]
+        felt = await client.post(
+            f"/stories/{story}/directives",
+            params=omniscient,
+            json={"text": "It feels late.", "kind": "ephemeral"},
+            headers=WRITE,
+        )
+        assert felt.status_code == 200, felt.text
+        assert (await _clock(client, story))["offset"] == before
+        epistrel.models.stub.when("", later, purpose="directive_parse")
+        moved = await client.post(
+            f"/stories/{story}/directives",
+            params=omniscient,
+            json={"text": "The next morning."},
+            headers=WRITE,
+        )
+        assert moved.status_code == 200, moved.text
+        (change_id,) = moved.json()["applied"]["clock"]
+        (row,) = await rows(
+            engine, "SELECT source::text AS source FROM state_changes WHERE id = :c", c=change_id
+        )
+        assert row.source == "author"
+        assert (await _clock(client, story))["offset"] == before + 600

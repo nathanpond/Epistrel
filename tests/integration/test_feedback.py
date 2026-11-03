@@ -2,7 +2,7 @@
 rated, the context a rating copies (and never recomputes), re-rating, retraction and history in
 detail, ratings that write nothing else, the principal rule, archived stories and turns in
 flight, the deployment's tag set, text cap and retention, story deletion and forks, the
-subject-indexing seams, the M7 compaction hook, concurrent ratings, retractions and tag removals,
+subject-indexing seams, the M7 pruning hook, concurrent ratings, retractions and tag removals,
 and the guard over which modules may name the feedback tables.
 
 The parts are in ``tests/conformance/test_c_26.py``. The tests that change the deployment's
@@ -770,10 +770,10 @@ async def test_the_subject_index_seams(
         assert [r.principal for r in await feedback_rows(engine, story)] == []
 
 
-async def test_compaction_marks_ratings_and_keeps_them(
+async def test_pruning_marks_ratings_and_keeps_them(
     stub_settings: Settings, engine: AsyncEngine
 ) -> None:
-    """``mark_compacted`` (M7's hook) sets ``compacted_at`` once on every rating of the named
+    """``mark_pruned`` (M7's hook) sets ``pruned_at`` once on every rating of the named
     messages of the story and keeps them: a second call marks nothing new, other messages and
     other stories are untouched, and the mark reads back."""
     async with respond_client(stub_settings, engine) as (client, _):
@@ -786,19 +786,18 @@ async def test_compaction_marks_ratings_and_keeps_them(
         answered(await rate(client, other.story_id, other.message_id, {"rating": 2}), 201)
         with clock.frozen_at(T0):
             async with engine.begin() as conn:
-                assert await feedback.mark_compacted(conn, story, [first, other.message_id]) == 2
+                assert await feedback.mark_pruned(conn, story, [first, other.message_id]) == 2
         async with engine.begin() as conn:
-            assert await feedback.mark_compacted(conn, story, [first]) == 0
-            assert await feedback.mark_compacted(conn, story, []) == 0
+            assert await feedback.mark_pruned(conn, story, [first]) == 0
+            assert await feedback.mark_pruned(conn, story, []) == 0
         marked = answered(await read(client, story, first), 200)
-        assert (marked["rating"], marked["compacted_at"]) == (
+        assert (marked["rating"], marked["pruned_at"]) == (
             2,
             T0.isoformat().replace("+00:00", "Z"),
         )
-        assert answered(await read(client, story, second), 200)["compacted_at"] is None
+        assert answered(await read(client, story, second), 200)["pruned_at"] is None
         assert (
-            answered(await read(client, other.story_id, other.message_id), 200)["compacted_at"]
-            is None
+            answered(await read(client, other.story_id, other.message_id), 200)["pruned_at"] is None
         )
         assert len(await feedback_rows(engine, story)) == 3
 
@@ -985,6 +984,7 @@ ALLOWED: dict[str, str] = {
     "core/erasure/index.py": "the subject-index registry lists the indexed tables (#123)",
     "core/feedback_reporting.py": "the aggregates and review lists read ratings (#126)",
     "core/feedback_export.py": "the export reads ratings into labelled cases (#126)",
+    "core/prune.py": "pruning classifies the rating tables as retained (#247; marks via feedback)",
 }
 """The modules that may name the feedback tables, and why. Later stories add theirs: #128's
 route table. (#124's erasure redacts through ``core.feedback`` and names none.)"""

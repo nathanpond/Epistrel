@@ -1775,6 +1775,10 @@ async def genesis(
             await write_policies(conn, story_id, found.draft.story_settings_defaults.policies)
             # The story's ids at its providers (#204), checked against each manifest.
             await providers.bind_all(conn, story_id, request.provider_bindings)
+            # #228: which capabilities' data the story has from its first turn.
+            from epistrel.core.backfill import coverage
+
+            await coverage.seed_story(conn, story_id)
             for player in sorted({m.principal for m in found.members if m.principal}):
                 await ownership.relate_in(
                     conn, EntityType.STORY, story_id, player, PLAYER, principal=principal

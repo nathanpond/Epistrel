@@ -39,11 +39,16 @@ No automated check spends money or calls a real model (the owner's decision, 202
        --hardware "<machine, memory>" --server-version "LM Studio <version>"
    ```
 
+   `--preset lite|standard|full|max` (#227, default `full`) picks the preset every scratch story
+   plays under and the fingerprint names; a suite that needs a module the preset leaves off is
+   reported `not_applicable`, with what it needs, and never runs (NFR-QUAL-11). Run each preset
+   to compare them on quality as well as cost.
    An unreachable endpoint exits 1 before anything is written. `--sample N` runs a seeded
    subset of each set (the same cases on every seed). `--suite <name>` reruns one suite and
    merges it into the same day's run of the same fingerprint, rewriting its report in place.
-4. The run writes `docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md` (a second run that day gets
-   `-2`), regenerates [INDEX.md](INDEX.md), and keeps its JSON and the failed cases' inputs and
+4. The run writes `docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md` (a second run that
+   day gets `-2`; reports written before #227 are named `<fingerprint[:12]>-<YYYY-MM-DD>.md`, and
+   their INDEX row reads preset `structured`), regenerates [INDEX.md](INDEX.md), and keeps its JSON and the failed cases' inputs and
    outputs under `build/evals/` (not committed). It exits 0 whatever the floors say: the
    verdicts are in the report. Commit the report and the index together.
 5. `uv run python -m epistrel.evals --check` (CI's lint job runs it) checks that the suites
@@ -53,7 +58,7 @@ No automated check spends money or calls a real model (the owner's decision, 202
 ## Reading a report
 
 Each report states the model and the version the server reported, the configuration
-fingerprint (FR-PROF-16: the seeded `Structured (M4)` profile with the model as every story
+fingerprint (FR-PROF-16: the run's preset, by default Full, with the model as every story
 purpose's, and a second judge model as `quality_judge`'s when one is set; with
 `--real-purpose`, the stub as every other purpose's, listed as **Routed purposes**), a suite's
 own configuration and fingerprint when its stories run another (#179's M5 modules), the judge,
@@ -253,6 +258,35 @@ each character's definition and the director's drivers to the right contexts (C-
 reports how the output reads as signals, never as a floor or a gate. The only prose floor is
 E-12's NFR-QUAL-14, an aggregate, relative target for the engine's own interventions: individual
 messages may still read worse than their drafts.
+
+## Canaries (opt-in, #234)
+
+A hosted model can change behind an unchanged name. A deployment may re-check its certifications
+in use, but **canaries are off by default** (the owner's decision 3): every canary run costs real
+model calls, and the repository's CI never turns them on.
+
+- `certification_canary_enabled` (default `false`), `certification_canary_interval_s` (default 7
+  days; 1 hour to 90 days), `certification_canary_sample_size` (cases per suite, default 50;
+  10-1000) and `certification_canary_seeds` (default 1; 1-5), through `PUT /admin/settings`.
+- Each due time queues one `certification_run` of `kind: canary` per `valid` certification in use
+  (a live story's current fingerprint, or a reference certification), on the suites behind its
+  passed floors. Its cost is #233's estimate: cases (capped by the sample size) × seeds × the
+  suite's calls per case, at about 2,000 tokens a call.
+- Only a measured miss invalidates: a floor the certification passed that now fails marks it
+  `stale` (`invalidated_reason: canary`, the floors in `failed_floors`). Insufficient evidence
+  is `inconclusive` and changes nothing. NFR-QUAL-8 needs two seeds for a standard deviation,
+  so a one-seed canary is always `inconclusive`; set `certification_canary_seeds` to 2 or more
+  for a canary that can invalidate. A zero-tolerance floor needs 300 cases a seed: a smaller
+  sample can only find violations, never confirm a clean rate.
+- Sample size is the operator's trade-off: a 50-case canary catches a large regression, not a
+  small one.
+- `certification_recertify_interval_s` (default `null`: off; 1-365 days) queues a full
+  certification run (the capability's suites, 3 seeds) per in-use certified fingerprint.
+- `POST /admin/certifications/{id}/invalidate` (`reason: drift|manual`, a `note`) declares drift
+  by hand. A later certification run restores `certified` with a new id; the stale record is
+  kept.
+- A model's reported version (the response's `system_fingerprint`) is part of the fingerprint:
+  a version change is a new, `uncertified` configuration, never `stale`.
 
 ## Labeled sets
 

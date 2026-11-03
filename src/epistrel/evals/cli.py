@@ -5,6 +5,7 @@
         [--concurrency 1] [--hardware "Apple M3 Max"] [--server-version "LM Studio 0.4"] \\
         [--database-url postgresql+psycopg://…]
     uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --fail-on-gate
+    uv run python -m epistrel.evals run --preset standard …  # #227: lite|standard|full|max
     uv run python -m epistrel.evals run --suite smoke …     # rerun one suite into today's run
     uv run python -m epistrel.evals index                    # regenerate docs/evals/INDEX.md
     uv run python -m epistrel.evals --check                  # suites ↔ guarantees ↔ index
@@ -24,8 +25,9 @@ into its model configuration and plays its turns there), else a throwaway one st
 testcontainers (Docker). ``--adapter`` wins over ``EPISTREL_MODEL_ADAPTER`` (default
 ``openai``). Seeds are ``--seed-base`` + 0..N-1. An unreachable endpoint exits 1 before any
 report. Otherwise the run writes its JSON to ``build/evals/<run>.json`` after every suite, then
-its Markdown: ``docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md`` and the regenerated index for a
-real model, ``build/evals/stub-report.md`` for the stub. It exits 0 whatever the floors say —
+its Markdown: ``docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md`` and the regenerated
+index for a real model, ``build/evals/stub-report-<preset>.md`` for the stub. It exits 0 whatever
+the floors say —
 the verdicts are in the report — and 1 on a harness error (a malformed labeled set, a suite
 that could not run, a run that touched a story it did not create) or, with ``--fail-on-gate``
 (CI's stub run), when a suite marked ``ci_gate`` fails.
@@ -67,6 +69,7 @@ from epistrel.evals import check as checks
 from epistrel.evals import report as reports
 from epistrel.evals import sets as labeled_sets
 from epistrel.evals.gate import Verdict
+from epistrel.evals.presets import DEFAULT_PRESET, PRESET_NAMES
 from epistrel.evals.runner import (
     BUILD_DIR,
     DEFAULT_SEED_BASE,
@@ -88,7 +91,12 @@ from epistrel.evals.suites import SUITES, MalformedCase, get_suites
 
 EX_FAILED = 1
 EX_USAGE = 2
-STUB_MARKDOWN = BUILD_DIR / "stub-report.md"
+
+
+def stub_markdown(preset: str) -> Path:
+    """Where a stub run's Markdown goes by default: ``build/evals/stub-report-<preset>.md``
+    (#227: CI runs the stub once per preset)."""
+    return BUILD_DIR / f"stub-report-{preset}.md"
 
 
 def _positive(value: str) -> int:
@@ -159,6 +167,13 @@ def parser() -> argparse.ArgumentParser:
         metavar="PURPOSE",
         help="a purpose the endpoint serves (repeatable; default every purpose): every other "
         "purpose gets the stub's default answers (#179: generation alone on a local model)",
+    )
+    run.add_argument(
+        "--preset",
+        choices=PRESET_NAMES,
+        default=DEFAULT_PRESET,
+        help="the preset the scratch stories play under and the fingerprint names (default "
+        "full); a suite the preset does not enable is reported not_applicable (#227)",
     )
     run.add_argument("--seeds", type=_positive, default=DEFAULT_SEEDS, help="seeds (default 2)")
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
@@ -248,6 +263,7 @@ def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
         judge_base_url=args.judge_base_url.rstrip("/") if args.judge_base_url else None,
         judge_api_key=args.judge_api_key,
         real_purposes=tuple(getattr(args, "real_purposes", None) or ()) or None,
+        preset=getattr(args, "preset", DEFAULT_PRESET),
     )
 
 
@@ -285,9 +301,12 @@ async def _run(args: argparse.Namespace) -> int:
     config = _config(args, adapter)
     now = datetime.now(UTC)
     fingerprint_value = run_fingerprint(
-        config.model_name, judge=config.judge_model, real_purposes=routed_purposes(config)
+        config.model_name,
+        judge=config.judge_model,
+        real_purposes=routed_purposes(config),
+        preset=config.preset,
     )
-    run_id, merge_from = _run_id(args, default_run_id(fingerprint_value, now))
+    run_id, merge_from = _run_id(args, default_run_id(fingerprint_value, now, config.preset))
     prior = reports.Report.from_json(_load(merge_from)) if merge_from is not None else None
     json_path = args.json_dir / f"{run_id}.json"
     failures = args.json_dir / f"{run_id}-failures.jsonl"
@@ -351,7 +370,7 @@ def _write(
     ``docs/evals``); the Markdown's path."""
     reports.write_json(final, json_path)
     if adapter == "stub":
-        markdown: Path = args.markdown or STUB_MARKDOWN
+        markdown: Path = args.markdown or stub_markdown(final.preset or DEFAULT_PRESET)
     else:
         markdown = args.markdown or args.reports_dir / f"{final.run_id}.md"
     reports.write_markdown(final, markdown)

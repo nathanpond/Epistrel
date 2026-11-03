@@ -505,3 +505,53 @@ async def test_time__source_window(engine: AsyncEngine, models: ModelAccessLayer
     assert await run is queue.CommitOutcome.DROPPED
     assert await segment_rows(engine, story) == committed
     assert _covers(await corrected_history(engine, story)) == view_before
+
+
+@pytest.mark.part("M7", "FR-STORE-20,21")
+async def test_time__m7(engine: AsyncEngine) -> None:
+    """#221: (a) the corrected view through N is deterministic (two reads are identical) and
+    contains every part eligible at N (a fact correction from the story's start, a line
+    correction on a reply before N); (d) truncating to N never removes an amendment, only its
+    record parts on discarded records (a correction of a reply after N leaves every view with
+    that reply, and its amendment stays)."""
+    from epistrel.core.amendments.store import PropositionPartDraft, RecordPartDraft
+    from epistrel.core.canon import facts as canon
+    from epistrel.core.views import corrected_history
+    from tests import amendment_support as am
+    from tests import canon_support as c
+
+    w = await c.world(engine)
+    bobby = w.people["Bobby"]
+    await c.commit(engine, w.story_id, c.at(bobby, w.places["school"], None, None))
+    replies = await am.play(engine, w.story_id, 8, start=2)
+    await am.amend(
+        engine,
+        w.story_id,
+        [
+            PropositionPartDraft(c.at(bobby, w.places["garden"], None, None)),
+            RecordPartDraft("events", replies[3], "replace", {"text": "early fix"}),
+            RecordPartDraft("events", replies[8], "replace", {"text": "late fix"}),
+        ],
+    )
+
+    async def view() -> list[tuple[str, str]]:
+        return [
+            (e.id, str(e.payload.model_dump().get("text")))
+            for e in await corrected_history(engine, w.story_id, through_turn=5)
+        ]
+
+    first, second = await view(), await view()
+    assert first == second
+    assert (replies[3], "early fix") in first
+    async with engine.connect() as conn:
+        found = await canon.canon(
+            conn, w.story_id, subject=bobby, predicate=c.LOCATED_AT, through_position=(5, 0)
+        )
+    assert [f.proposition.object_id for f in found] == [w.places["garden"]]
+
+    amendments = await am.table_rows(engine, "amendments", w.story_id)
+    assert await truncate(engine, w.story_id, 5) is not None
+    assert await am.table_rows(engine, "amendments", w.story_id) == amendments
+    ids = {e.id for e in await corrected_history(engine, w.story_id)}
+    assert replies[8] not in ids
+    assert replies[3] in ids

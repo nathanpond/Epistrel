@@ -7,14 +7,25 @@ over ``Engine.get_operation``.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
-from epistrel.api.deps import ContextDep, EngineDep, OperationId
+from epistrel.api.deps import ContextDep, EngineDep, OperationId, StoryId
+from epistrel.core.enums import OperationKind, OperationStatus
 from epistrel.core.genesis.models import CreationReport
-from epistrel.core.operation_view import OperationLabel, OperationView, Stage, StageStatus
+from epistrel.core.ids import ULID_PATTERN
+from epistrel.core.operation_view import (
+    LIST_LIMIT_DEFAULT,
+    LIST_LIMIT_MAX,
+    OperationLabel,
+    OperationPage,
+    OperationSummary,
+    OperationView,
+    Stage,
+    StageStatus,
+)
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -67,7 +78,12 @@ class StoredResultBody(BaseModel):
     """The stored response of the operation's ``Idempotency-Key``: its status and body."""
 
     status: int
-    body: Any
+    body: Any = Field(
+        description="#614: the stored library result the replay is rebuilt from (for a "
+        "`respond`, its `RespondResult` as dumped: null, false and empty fields kept, "
+        "`replayed` false), not the REST response body: it lacks the REST-only fields "
+        "(`idempotency_key`, `message.narrative`), which the replay adds back."
+    )
 
 
 class StageBody(BaseModel):
@@ -171,6 +187,17 @@ class OperationBody(BaseModel):
         exclude_if=lambda s: not s,
         description="A staged turn (#212, FR-EXT-16): `true`; absent for every other operation.",
     )
+    perception: dict[str, Any] | None = Field(
+        default=None,
+        description="#607: a structured turn's perception, for a read naming `omniscient` "
+        "only (null otherwise, and for a turn at perception `none`): its `level`, the beats "
+        "`routed`, the `qualifiers_repaired`, and `trace`, each routed beat as routing "
+        "decided it when the turn ran: `beat`, `kind`, `location`, its `perceivers` "
+        "(`character_id`, `fidelity`: `content` or `envelope`, `channel`: `self`, `room`, "
+        "`eavesdrop`, `remote` or `adjacent`, and an envelope's kind: `whisper`, `aside`, "
+        "`language`, `phone`, `manner` or `sound`) and the scene's other characters "
+        "`unperceived` (fidelity `none`).",
+    )
 
     @classmethod
     def of(cls, view: OperationView) -> OperationBody:
@@ -211,6 +238,7 @@ class OperationBody(BaseModel):
             if view.eval_hooks is None
             else EvalHooksBody.model_validate(view.eval_hooks),
             staged=view.staged,
+            perception=view.perception,
             result=(
                 StoredResultBody(status=view.result.status, body=view.result.body)
                 if view.result is not None
@@ -231,3 +259,97 @@ async def get_operation(
     operation_id: OperationId, ctx: ContextDep, engine: EngineDep
 ) -> OperationBody:
     return OperationBody.of(await engine.get_operation(ctx, operation_id))
+
+
+# -- a story's operations (#681) -----------------------------------------------------------------
+
+story_router = APIRouter(prefix="/stories", tags=["operations"])
+
+
+class OperationSummaryBody(BaseModel):
+    """One operation as a list shows it (#681): `OperationBody`'s summary fields."""
+
+    operation_id: str
+    kind: str
+    label: OperationLabel | None
+    status: str
+    staged: bool
+    narrative_turn: int | None
+    turn_variant: int | None
+    principal: str
+    started_at: datetime
+    committed_at: datetime | None
+
+    @classmethod
+    def of(cls, item: OperationSummary) -> OperationSummaryBody:
+        return cls(
+            operation_id=item.id,
+            kind=item.kind,
+            label=item.label,
+            status=item.status,
+            staged=item.staged,
+            narrative_turn=item.narrative_turn,
+            turn_variant=item.turn_variant,
+            principal=item.principal,
+            started_at=item.started_at,
+            committed_at=item.committed_at,
+        )
+
+
+class OperationsBody(BaseModel):
+    """A page of a story's operations by id, and `next_after` (the id to continue after;
+    `null` on the last page)."""
+
+    story_id: str
+    operations: list[OperationSummaryBody]
+    next_after: str | None
+
+    @classmethod
+    def of(cls, page: OperationPage) -> OperationsBody:
+        return cls(
+            story_id=page.story_id,
+            operations=[OperationSummaryBody.of(i) for i in page.items],
+            next_after=page.next_after,
+        )
+
+
+@story_router.get(
+    "/{story_id}/operations",
+    response_model=OperationsBody,
+    operation_id="list_operations",
+    summary="List a story's operations",
+    description=(
+        "A page of the story's operations by id (#681; `after_id` continues, `limit` at most "
+        "200), each with its kind, `label` (what a long-running operation was for: "
+        "`staged_turn`, `genesis`, `rating_check`, `reactivation_check`, `offboarding`, "
+        "`erasure`; null otherwise), status, `staged`, narrative turn and variant, principal "
+        "and times. Filter by `label`, `kind`, `status`, and `since`/`until` on `started_at`. "
+        "`GET /operations/{id}` reads one in full (its stages and stored result). 404 for an "
+        "unknown story."
+    ),
+)
+async def list_operations(
+    story_id: StoryId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    label: OperationLabel | None = None,
+    kind: OperationKind | None = None,
+    status: OperationStatus | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    after_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    limit: Annotated[int, Query(ge=1, le=LIST_LIMIT_MAX)] = LIST_LIMIT_DEFAULT,
+) -> OperationsBody:
+    return OperationsBody.of(
+        await engine.list_operations(
+            ctx,
+            story_id,
+            label=label,
+            kind=None if kind is None else kind.value,
+            status=None if status is None else status.value,
+            since=since,
+            until=until,
+            after_id=after_id,
+            limit=limit,
+        )
+    )

@@ -207,7 +207,9 @@ reconciliation_marks = Table(
     metadata,
     Column("id", ulid_type(), primary_key=True),
     Column("story_id", ulid_type(), nullable=False),
-    Column("outbox_id", ulid_type(), nullable=False),
+    # #661 (migration 0105): a mark names an outbox row or a consumer-applied effect's request.
+    Column("outbox_id", ulid_type(), nullable=True),
+    Column("request_id", ulid_type(), nullable=True),
     Column("reason", Text, nullable=False),
     Column(
         "since",
@@ -218,6 +220,20 @@ reconciliation_marks = Table(
     Column("resolved_by", Text, nullable=True),
     Column("detail", JSONB, nullable=True),
     CheckConstraint(_in("reason", REASONS), name="reason"),
+    CheckConstraint("(outbox_id IS NULL) <> (request_id IS NULL)", name="one_effect"),
+)
+Index(
+    "ix_reconciliation_marks_story_request",
+    reconciliation_marks.c.story_id,
+    reconciliation_marks.c.request_id,
+)
+Index(
+    "uq_reconciliation_marks_open_request",
+    reconciliation_marks.c.request_id,
+    reconciliation_marks.c.reason,
+    unique=True,
+    postgresql_where=reconciliation_marks.c.resolved_by.is_(None)
+    & reconciliation_marks.c.request_id.is_not(None),
 )
 Index(
     "ix_reconciliation_marks_story",

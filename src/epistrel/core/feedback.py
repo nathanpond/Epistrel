@@ -58,7 +58,7 @@ story view, retrieval index or prompt assembler reads it, and nothing in the eng
 because of it. Only this module (and the modules ``tests/integration/test_feedback.py`` lists:
 the tables, story deletion, the retention sweep, the determinism comparator) names its tables.
 It is deleted with its story, kept by its own ``feedback_retention``, and marked, never deleted,
-when M7's compaction removes its message (``mark_compacted``). Log lines carry ids and the
+when M7's pruning removes its message (``mark_pruned``). Log lines carry ids and the
 outcome only, never a rating, a tag or text (invariant 3).
 """
 
@@ -195,7 +195,7 @@ class Feedback(BaseModel):
     """One principal's rating of one generated message (FR-FB-1): the message (``message_id``,
     its ``turn`` and ``variant``), the ``principal``, the ``rating`` (1 to 5; null when the
     principal has none), its ``tags`` and ``text``, when it was first given and last changed,
-    ``compacted_at`` (set when an opt-in compaction removed the message; the rating is kept), the
+    ``pruned_at`` (set when an opt-in pruning removed the message; the rating is kept), the
     ``context`` the message was produced under (null without a rating), and the ``history`` of
     earlier values, newest first."""
 
@@ -209,7 +209,7 @@ class Feedback(BaseModel):
     rating: int | None
     tags: list[str]
     text: str | None
-    compacted_at: datetime | None
+    pruned_at: datetime | None
     created_at: datetime | None
     updated_at: datetime | None
     context: FeedbackContext | None
@@ -455,7 +455,7 @@ def _feedback(message: _Message, principal: str, row: Any, history: list[Any]) -
         rating=None if row is None else int(row.rating),
         tags=[] if row is None else list(row.tags),
         text=None if row is None else row.text,
-        compacted_at=None if row is None else row.compacted_at,
+        pruned_at=None if row is None else row.pruned_at,
         created_at=None if row is None else row.created_at,
         updated_at=None if row is None else row.updated_at,
         context=None if row is None else _context(row),
@@ -636,7 +636,7 @@ async def retract(
     return FeedbackRetraction(story_id=story_id, message_id=message_id, retracted=retracted)
 
 
-# -- the deployment's tag set, and compaction ------------------------------------------------------
+# -- the deployment's tag set, and pruning ------------------------------------------------------
 
 
 async def refuse_tag_removal(
@@ -664,9 +664,26 @@ async def refuse_tag_removal(
         )
 
 
-async def mark_compacted(conn: AsyncConnection, story_id: str, message_ids: Sequence[str]) -> int:
-    """Mark the ratings of messages an opt-in compaction removed (FR-FB-2, FR-STORE-32): the
-    hook M7's compaction calls in its transaction. The ratings are kept, with ``compacted_at``
+async def count_rated(conn: AsyncConnection, story_id: str, operation_ids: Sequence[str]) -> int:
+    """#247: how many ratings name a message of ``operation_ids`` (a pruning's report)."""
+    if not operation_ids:
+        return 0
+    return int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(message_feedback)
+            .where(
+                message_feedback.c.story_id == story_id,
+                message_feedback.c.operation_id.in_(list(operation_ids)),
+            )
+        )
+        or 0
+    )
+
+
+async def mark_pruned(conn: AsyncConnection, story_id: str, message_ids: Sequence[str]) -> int:
+    """Mark the ratings of messages an opt-in pruning removed (FR-FB-2, FR-STORE-32): the
+    hook M7's pruning calls in its transaction. The ratings are kept, with ``pruned_at``
     set once; returns how many were newly marked."""
     if not message_ids:
         return 0
@@ -675,9 +692,9 @@ async def mark_compacted(conn: AsyncConnection, story_id: str, message_ids: Sequ
         .where(
             message_feedback.c.story_id == story_id,
             message_feedback.c.message_id.in_(list(message_ids)),
-            message_feedback.c.compacted_at.is_(None),
+            message_feedback.c.pruned_at.is_(None),
         )
-        .values(compacted_at=clock.now())
+        .values(pruned_at=clock.now())
     )
     return int(marked.rowcount or 0)
 
@@ -784,7 +801,7 @@ __all__ = [
     "context_of",
     "drop_hook",
     "index_hook",
-    "mark_compacted",
+    "mark_pruned",
     "rate",
     "read",
     "record_id",

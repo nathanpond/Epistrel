@@ -251,6 +251,18 @@ class StatesView:
 
 
 @dataclass(frozen=True, slots=True)
+class DefinitionView:
+    """#680: ``GET /stories/{id}/states/{name}/definition``: the stored declaration (as
+    ``validate_definition`` accepted it), who created it, the story configuration revision of
+    its last change (``None``: unchanged since its declaration) and the viewpoint read for."""
+
+    definition: StateDefinition
+    config_revision: int | None
+    timeline_revision: int
+    output_viewpoint: str
+
+
+@dataclass(frozen=True, slots=True)
 class StateView:
     """``GET /stories/{id}/states/{name}``: the State through ``as_of`` (``None``: the head)."""
 
@@ -445,6 +457,45 @@ async def _declared_by(conn: AsyncConnection, story_id: str, state_id: str) -> P
 
 def _unknown(story_id: str, name: str) -> StateNotFound:
     return StateNotFound(f"the story has no State {name!r}", {"story_id": story_id, "state": name})
+
+
+async def read_definition(
+    db: AsyncEngine,
+    story_id: str,
+    name: str,
+    *,
+    viewpoint: str | None = None,
+    actor_character_id: str | None = None,
+) -> DefinitionView:
+    """#680: State ``name``'s stored definition for one viewpoint: a State the viewpoint may not
+    read (a ``hidden`` one for a character) and the world clock are 404 as an unknown name is;
+    409 ``module_off`` with States off."""
+    from epistrel.core.tables.deployment import config_changes
+
+    async with db.connect() as conn:
+        story = await _story(conn, story_id)
+        resolved = _viewpoint(story, viewpoint, actor_character_id)
+        await states.require_module(conn, story_id)
+        if name == WORLD_CLOCK:
+            raise _unknown(story_id, name)
+        state = await states.definition(conn, story_id, name)
+        if not readable(state, resolved):
+            raise _unknown(story_id, name)
+        x = config_changes.c
+        prefix = f"{states.SETTING_PREFIX}{name}"
+        revision = await conn.scalar(
+            select(func.max(x.config_revision)).where(
+                x.scope == "story",
+                x.scope_id == story_id,
+                (x.setting == prefix) | x.setting.startswith(f"{prefix}."),
+            )
+        )
+    return DefinitionView(
+        definition=state,
+        config_revision=None if revision is None else int(revision),
+        timeline_revision=story.timeline_revision,
+        output_viewpoint=resolved,
+    )
 
 
 async def read_state(
@@ -813,6 +864,7 @@ async def update_state_definition(
 __all__ = [
     "CONSUMER",
     "SCOPES",
+    "DefinitionView",
     "StateConstraintsBody",
     "StateDeclaration",
     "StateDeclared",
@@ -827,6 +879,7 @@ __all__ = [
     "consumer_change",
     "consumer_change_at",
     "define_state",
+    "read_definition",
     "read_state",
     "read_states",
     "readable",

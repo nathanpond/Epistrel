@@ -65,7 +65,7 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
-from sqlalchemy import func, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock, feedback
@@ -86,8 +86,10 @@ from epistrel.core.idempotency import read_idempotency_settings
 from epistrel.core.profiles import effective, schema
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsDocument
+from epistrel.core.profiles.tiers import STRONGEST_SETTING
 from epistrel.core.ratings import require_assignable
 from epistrel.core.settings_schema import (
+    DEFAULT_CANARY_INTERVAL_S,
     DEPLOYMENT_COLUMNS,
     MINOR_AGE_THRESHOLD_MAX,
     MINOR_AGE_THRESHOLD_MIN,
@@ -105,6 +107,7 @@ from epistrel.core.settings_schema import (
 )
 from epistrel.core.tables import deployment_state, recurring_tasks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
+from epistrel.core.tables.model_config import model_config
 
 __all__ = [
     "MINOR_AGE_THRESHOLD_MAX",
@@ -128,12 +131,22 @@ NULLABLE = frozenset(
         "media_moderation_webhook_url",
         "public_base_url",
         "max_characters_at_start_ceiling",
+        "certification_recertify_interval_s",
     }
 )
 """Top-level settings whose ``null`` resets them to their default instead of being refused: no
 moderation hook or base URL (#105), and no starting-cast ceiling (#108)."""
 
 FEEDBACK_TAGS = "feedback_tags"
+
+
+class ModelTiersPatch(BaseModel):
+    """A merge patch of ``model_tiers`` (#227): ``strongest`` a listed model id, or ``null``
+    (each ``"@strongest"`` purpose back to its own model)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    strongest: str | None = None
 
 
 class SettingsPatch(BaseModel):
@@ -162,6 +175,16 @@ class SettingsPatch(BaseModel):
     minor_age_threshold: StrictInt | None = None
     max_characters_at_start_default: StrictInt | None = None
     max_characters_at_start_ceiling: StrictInt | None = None
+    # #234: the certification canary (off by default) and re-certification.
+    rewrite_ambiguity_margin: StrictFloat | None = None
+    rewrite_max_open_sessions: StrictInt | None = None
+    rewrite_session_ttl_minutes: StrictInt | None = None
+    rewrite_stale_retries: StrictInt | None = None
+    certification_canary_enabled: StrictBool | None = None
+    certification_canary_interval_s: StrictInt | None = None
+    certification_canary_sample_size: StrictInt | None = None
+    certification_canary_seeds: StrictInt | None = None
+    certification_recertify_interval_s: StrictInt | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None
@@ -221,6 +244,9 @@ class SettingsPatch(BaseModel):
     gate_promotion_min_agreement: StrictFloat | None = None
     thunks_max_open: StrictInt | None = None
     provider_allowed_hosts: list[str] | None = None
+    dependency_search_max_results: StrictInt | None = None
+    dependency_search_max_depth: StrictInt | None = None
+    model_tiers: ModelTiersPatch | None = None
     profile_defaults: SettingsDocument | None = None
 
     @model_validator(mode="before")
@@ -360,6 +386,8 @@ async def apply_settings(
             await feedback.refuse_tag_removal(conn, before.feedback_tags, wanted.feedback_tags)
         if PROFILE_DEFAULTS in changed:
             await effective.runnable_under(conn, wanted.profile_defaults, purposes=purposes)
+        if STRONGEST_SETTING in changed and wanted.model_tiers.strongest is not None:
+            await _require_listed_model(conn, wanted.model_tiers.strongest)
         revision = await bump_config_revision(conn, current)
         document = await raw_document(conn)
         await conn.execute(
@@ -394,6 +422,23 @@ async def apply_settings(
         return await lock_deployment(conn)
 
 
+async def _require_listed_model(conn: AsyncConnection, model: str) -> None:
+    """422 ``validation_error`` at ``body.model_tiers.strongest`` unless ``model`` is one
+    ``/admin/model-config`` lists (#227)."""
+    listed = await conn.scalar(select(func.count()).where(model_config.c.model == model))
+    if not listed:
+        field = f"body.{STRONGEST_SETTING}"
+        message = f"{model!r} is not a model /admin/model-config lists"
+        raise InvalidRequest(
+            message,
+            {
+                "field": field,
+                "reason": "unknown_model",
+                "errors": [{"field": field, "message": message, "type": "value_error"}],
+            },
+        )
+
+
 async def _move_recurring_intervals(
     conn: AsyncConnection, wanted: DeploymentSettings, changed: list[str]
 ) -> None:
@@ -404,7 +449,10 @@ async def _move_recurring_intervals(
     for setting, task in RECURRING_INTERVAL_SETTINGS.items():
         if setting not in changed:
             continue
-        interval = timedelta(seconds=int(getattr(wanted, setting)))
+        seconds = getattr(wanted, setting)
+        if seconds is None:  # #234: an off re-certification keeps its row at the default
+            seconds = DEFAULT_CANARY_INTERVAL_S
+        interval = timedelta(seconds=int(seconds))
         await conn.execute(
             update(recurring_tasks)
             .where(recurring_tasks.c.name == task)

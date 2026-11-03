@@ -42,6 +42,7 @@ from tests.event_support import rows
 from tests.feedback_support import (
     OTHER_RATER,
     RATER,
+    REMOVAL_MARK,
     SEEDED_TAGS,
     age_rating,
     aggregates,
@@ -154,7 +155,7 @@ async def test_c_26__feedback(pg_url: str) -> None:
             "rating": 2,
             "tags": ["repetitive", "too_long"],
             "text": "The ferryman repeats himself.",
-            "compacted_at": None,
+            REMOVAL_MARK: None,
             "created_at": first["created_at"],
             "updated_at": first["created_at"],
             "context": {

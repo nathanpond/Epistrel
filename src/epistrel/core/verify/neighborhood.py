@@ -83,7 +83,15 @@ class Edge(StrEnum):
     OBJECT = "object"
     PROJECTION = "projection"
     MEMORY = "memory"
+    CAUSES = "causes"
+    PRESUPPOSES = "presupposes"
+    DERIVES = "derives"
+    MENTIONS = "mentions"
+    ASSERTS = "asserts"
 
+
+TYPED_EDGES = frozenset({Edge.CAUSES, Edge.PRESUPPOSES, Edge.DERIVES, Edge.MENTIONS, Edge.ASSERTS})
+"""#220: a typed dependent's label (``core.edges``' edge type)."""
 
 PRIORITY: dict[Edge, int] = {
     Edge.SEED: 0,
@@ -94,10 +102,12 @@ PRIORITY: dict[Edge, int] = {
     Edge.OBJECT: 4,
     Edge.PROJECTION: 5,
     Edge.MEMORY: 6,
+    # #220: the typed dependents, after every untyped neighbour.
+    **dict.fromkeys(TYPED_EDGES, 7),
 }
 """The truncation order: a lower number is kept first."""
 
-ItemKind = Literal["fact", "closed_set", "projection", "memory"]
+ItemKind = Literal["fact", "closed_set", "projection", "memory", "dependent"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +151,8 @@ class NeighborhoodItem:
     projection: str | None = None
     entity_id: str | None = None
     source_fact_id: str | None = None
+    dependent_table: str | None = None
+    """#220: a typed dependent's record table (``events``, ``utterances``, ``beliefs``, …)."""
 
     def as_payload(self) -> dict[str, Any]:
         """Ids and labels only, no story text (invariant 3)."""
@@ -160,6 +172,8 @@ class NeighborhoodItem:
             found |= {"projection": self.projection, "entity_id": self.entity_id}
         if self.source_fact_id is not None:
             found["source_fact_id"] = self.source_fact_id
+        if self.dependent_table is not None:
+            found["dependent_table"] = self.dependent_table
         return found
 
 
@@ -417,6 +431,28 @@ async def fact_neighborhood(
         for memory in memories:
             if visible_to(memory.visibility, viewpoint):
                 out.add(NeighborhoodItem("memory", memory.id, Edge.MEMORY, 1, memory=memory))
+
+    if seed.fact_id is not None and viewpoint == OMNISCIENT:
+        # #220 (FR-DIRECT-7): the seed's typed dependents, after the untyped neighbours, deduped
+        # by record (a memory already reached takes its typed label).
+        from epistrel.core import edges
+        from epistrel.core.membership import Position
+
+        typed = await edges.dependents(
+            lookup.conn,
+            story_id,
+            edges.Targets(fact_ids=(seed.fact_id,)),
+            through=None
+            if through_position is None
+            else Position.end_of(through_position[0], through_position[1]),
+            max_results=max_facts,
+        )
+        for dependent in typed.items:
+            table, record = dependent.dependent
+            label = Edge(dependent.edge_type.value)
+            if table == "memories":
+                out.found.pop(f"memory:{record}", None)
+            out.add(NeighborhoodItem("dependent", record, label, 1, dependent_table=table))
 
     items = out.items()
     kept = await _decoded(items[:max_facts], rows)

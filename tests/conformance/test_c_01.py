@@ -48,7 +48,10 @@ read; a generated offboarding of a principal with one queued answers a documente
 principal lookup is generated against the fixture author. ``set_content_rating`` (#118) is
 excluded: a generated tightening would pause the fixture story for every later example (no
 worker runs its check); C-03 and its own tests cover it. A generated rating check read names
-the fixture offboarding's job, which is no check of the story: a documented 404.
+the fixture offboarding's job, which is no check of the story: a documented 404. The eval
+harness is installed (#233), so a generated certification run answers its estimate or is
+queued (no worker plays it), and a second one for the same configuration answers a documented
+409 ``certification_run_in_progress``.
 """
 
 from __future__ import annotations
@@ -94,11 +97,13 @@ from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.media.assets import MediaUpload
 from epistrel.core.media.uploads import UploadOpen
 from epistrel.core.offboarding import OffboardingQueued, OffboardingRequest
+from epistrel.core.profiles.certification import CertificationRecord, install_harness
 from epistrel.core.profiles.store import ProfileCreate
 from epistrel.core.seeds.ratings import EVERYONE_ID
 from epistrel.core.settings_schema import StorySettings
 from epistrel.core.stories import StorySpec
 from epistrel.engine import Engine
+from epistrel.evals.certify import install
 from epistrel.orchestrator.lite.schemas import RespondRequest
 from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.tools import openapi as openapi_tool
@@ -304,8 +309,12 @@ def live(pg_url: str) -> Iterator[Live]:
         try:
             settings = auth_settings(url, model_adapter="stub", config_key=config_key())
             ids = asyncio.run(_seed(settings))
-            yield Live(create_app(settings), url, *ids)
+            app = create_app(settings)
+            # #233: the certification runs' harness (no worker runs a queued run here).
+            install(app.state.epistrel)
+            yield Live(app, url, *ids)
         finally:
+            install_harness(None)
             schemathesis_asgi.shutdown_lifespans()
 
 
@@ -430,6 +439,7 @@ DOCUMENTED_MODELS: dict[str, Any] = {
     "StorySettingsPatch": StorySettingsPatch,
     "StorySpec": StorySpec,
     "StoryFromScenario": StoryFromScenario,
+    "CertificationRecord": CertificationRecord,
 }
 """The model behind each component ``DOCUMENTED_BODIES`` names: a handler that takes a raw JSON
 object has no body type to validate an example against, so the component's own model does

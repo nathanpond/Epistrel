@@ -24,6 +24,7 @@ from epistrel.api.idempotency import answered
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.clock import ClockBody
 from epistrel.core.states.api import (
+    DefinitionView,
     StateDeclared,
     StateDefineRequest,
     StateDefinitionWrite,
@@ -132,6 +133,35 @@ class StateViewBody(BaseModel):
         return cls(
             state=StateBody.of(view.state),
             as_of=view.as_of,
+            timeline_revision=view.timeline_revision,
+            output_viewpoint=view.output_viewpoint,
+        )
+
+
+class StateDefinitionBody(BaseModel):
+    """#680: a State's stored definition (`definition`: every member its declaration takes, as
+    the declaration or the last definition change left it), who created it (`created_by`),
+    the story configuration revision of its last change (`config_revision`; `null`: unchanged
+    since its declaration), the story's revision and the viewpoint the read was produced for."""
+
+    name: str
+    definition: dict[str, Any]
+    created_by: str
+    config_revision: int | None
+    timeline_revision: int
+    output_viewpoint: str
+
+    @classmethod
+    def of(cls, view: DefinitionView) -> StateDefinitionBody:
+        # The document the declaration and ``PATCH …/definition`` answer and record.
+        document = {
+            k: v for k, v in view.definition.document().items() if k not in ("created_by", "id")
+        }
+        return cls(
+            name=view.definition.name,
+            definition=document,
+            created_by=view.definition.created_by.value,
+            config_revision=view.config_revision,
             timeline_revision=view.timeline_revision,
             output_viewpoint=view.output_viewpoint,
         )
@@ -277,6 +307,34 @@ async def get_state(
         ctx, story_id, name, actor_character_id=actor_character_id, as_of=as_of
     )
     return StateViewBody.of(view)
+
+
+@router.get(
+    "/{story_id}/states/{name}/definition",
+    response_model=StateDefinitionBody,
+    operation_id="get_state_definition",
+    summary="Read a State's stored definition",
+    description=(
+        "A State's stored definition (FR-STATE-3; #680): every member a `POST "
+        "/stories/{id}/states` declaration takes (constraints, initial value, aliases, unit, "
+        "visibility, owner, `provider_id` and `external_value_name`, silent, "
+        "`reservation_expiry_minutes`, rules, authorization, transfer), as the declaration or "
+        "the last `PATCH …/definition` left it, with `created_by` and the `config_revision` of "
+        "its last change. A `hidden` State read for a character viewpoint is 404 exactly as an "
+        "unknown name (as is `world_clock`: `GET /stories/{id}/clock`). " + _VIEWPOINT
+    ),
+)
+async def get_state_definition(
+    story_id: StoryId,
+    name: StateName,
+    ctx: ContextDep,
+    engine: EngineDep,
+    actor_character_id: str | None = None,
+) -> StateDefinitionBody:
+    view = await engine.get_state_definition(
+        ctx, story_id, name, actor_character_id=actor_character_id
+    )
+    return StateDefinitionBody.of(view)
 
 
 @router.put(

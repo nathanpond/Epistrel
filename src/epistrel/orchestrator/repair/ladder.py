@@ -126,6 +126,7 @@ from epistrel.core.verify.neighborhood import Seed, fact_neighborhood
 from epistrel.core.verify.protected import viewpoint_of
 from epistrel.core.verify.rules import Rule, VerdictKind
 from epistrel.orchestrator.budget import REPAIR as BUDGET_REPAIR
+from epistrel.orchestrator.budget import STOP as BUDGET_STOP
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.lite.prompt import prompt_hash
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -175,6 +176,9 @@ attempt left for (``max_attempts``), so only the deterministic rungs and the fal
 REPAIR_UNEXTRACTED = "repair_unextracted"
 """Degradation: a regeneration's extraction could not run; its deterministic re-verification
 stood."""
+NARRATOR_FALLBACK = "A moment passes."
+"""#652: rung 4's line for a narrator beat (a narration, a staged turn's outcome step): the
+narrator's voice, never a character's stored line."""
 SAFE_FALLBACK = "safe_fallback"
 """Degradation: a beat became the stored safe fallback line (or, ``think``/``latent``, was
 dropped)."""
@@ -744,8 +748,13 @@ class RepairLadder:
                 break
             cost = self.regeneration_cost
             held = budget.held
-            # Optional work (#156): never a reserved call, and only while it could start.
-            if not budget.try_optional(BUDGET_REPAIR, cost):
+            stopping = any(f.tag == TIME_STOP for f in stating)
+            if stopping and budget.named.get(BUDGET_STOP, 0) >= cost:
+                # #636: a due-event stop's regeneration is planned work (its reserved slot).
+                budget.draw(BUDGET_STOP)
+                budget.hold(cost)
+            elif not budget.try_optional(BUDGET_REPAIR, cost):
+                # Optional work (#156): never a reserved call, and only while it could start.
                 degradation.append((REPAIR_DETERMINISTIC, "budget"))
                 break
             self.attempts_used += 1
@@ -781,7 +790,7 @@ class RepairLadder:
             settled = state_deterministic(beat, stating)
             if settled is not None:
                 return result(FALLBACK, settled)
-        line = await self._fallback_line()
+        line = await self._fallback_line(narrator=beat.narrator or beat.kind == NARRATION)
         return result(FALLBACK, replace(beat, text=line, claims=(), mentions=(), effects=()))
 
     # -- the rungs ------------------------------------------------------------------------
@@ -931,9 +940,12 @@ class RepairLadder:
         )
         return candidate, list(found.propositions), hash_
 
-    async def _fallback_line(self) -> str:
+    async def _fallback_line(self, *, narrator: bool = False) -> str:
         """The first stored fallback line that passes the output policies (the last resort
-        always stands)."""
+        always stands). #652: a narrator beat's is the narrator's own line
+        (``NARRATOR_FALLBACK``), never a character's."""
+        if narrator and await self.output_ok(NARRATOR_FALLBACK):
+            return NARRATOR_FALLBACK
         for source, text in self.fallback.candidates():
             if source == "last_resort" or await self.output_ok(text):
                 return text
@@ -1082,6 +1094,7 @@ async def _names(
 
 __all__ = [
     "DETERMINISTIC_KINDS",
+    "NARRATOR_FALLBACK",
     "REPAIR_DETERMINISTIC",
     "REPAIR_UNEXTRACTED",
     "SAFE_FALLBACK",

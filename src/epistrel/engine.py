@@ -20,15 +20,16 @@ import types
 import typing
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Protocol, overload
+from typing import Any, Literal, Protocol, overload
 
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy import func, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import ProcessMode, Settings
-from epistrel.core import config_changes as config_log
+from epistrel.core import backfill as core_backfill
 from epistrel.core import (
+    bundles,
     config_vocabulary,
     deployment,
     feedback,
@@ -46,14 +47,20 @@ from epistrel.core import (
     ratings,
     stories,
     story_texts,
+    summary_port,
     timeline,
     turn_gate,
     variants,
 )
+from epistrel.core import config_changes as config_log
 from epistrel.core import control as control_ops
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
+from epistrel.core import prune as core_prune
 from epistrel.core import story_settings as settings_store
+from epistrel.core.amendments import read as amendment_reads
+from epistrel.core.backfill import conflicts as backfill_conflicts
+from epistrel.core.bundles import importing as bundle_import
 from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -69,6 +76,7 @@ from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import (
+    BeliefKind,
     EntryStatus,
     ExposureState,
     MemoryKind,
@@ -87,9 +95,11 @@ from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
     EpistrelError,
     InvalidRequest,
+    InvalidView,
     LedgerUnavailable,
     ModuleOff,
     PrincipalRequired,
+    RewriteApplyFailed,
     StoryNotFound,
     SubjectNotFound,
     refuse_nul,
@@ -97,7 +107,7 @@ from epistrel.core.errors import (
 from epistrel.core.genesis import create as genesis
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.history import DEFAULT_LIMIT as DEFAULT_HISTORY_LIMIT
-from epistrel.core.history import History, read_history
+from epistrel.core.history import VIEWS, History, read_as_recorded, read_history
 from epistrel.core.idempotency import (
     DEPLOYMENT_SCOPE_ID,
     IdempotentCall,
@@ -120,7 +130,7 @@ from epistrel.core.memory import pins as memory_pins
 from epistrel.core.memory.consolidation import ConsolidateRequest
 from epistrel.core.policies.model import Policy, Scope, WithheldPolicy
 from epistrel.core.ports import Ports
-from epistrel.core.profiles import effective, guarantees, impact
+from epistrel.core.profiles import certification, effective, guarantees, impact
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles import story as story_profile
 from epistrel.core.profiles.fingerprint import RuntimeFacts
@@ -140,6 +150,7 @@ from epistrel.core.states import api as state_api
 from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
 from epistrel.core.tables import events
+from epistrel.core.tables import stories as stories_table
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
@@ -154,6 +165,7 @@ from epistrel.core.viewpoint import (
 from epistrel.core.world_clock import scheduled as scheduled_events
 from epistrel.core.world_clock import service as clock_service
 from epistrel.observability import instrument
+from epistrel.orchestrator import directives as author_directives
 from epistrel.orchestrator import queue_drainer
 from epistrel.orchestrator.budget import (
     DEFAULT_TURN_DEADLINE_S,
@@ -162,11 +174,14 @@ from epistrel.orchestrator.budget import (
     TurnBudget,
     effective_max_calls,
 )
+from epistrel.orchestrator.commit import directed
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
+from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
+from epistrel.orchestrator.jobs.handlers import certification_run
 from epistrel.orchestrator.jobs.handlers import consolidation as consolidation_job
 from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_reconcile_job
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
@@ -174,8 +189,10 @@ from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
+from epistrel.orchestrator.jobs.handlers import prune_policy as prune_policy_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
+from epistrel.orchestrator.jobs.handlers import story_export as story_export_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -185,6 +202,7 @@ from epistrel.orchestrator.jobs.handlers.rebuild import (
 from epistrel.orchestrator.jobs.handlers.rebuild import coalesce_key as rebuild_coalesce_key
 from epistrel.orchestrator.jobs.handlers.reembed import ReembedRetry
 from epistrel.orchestrator.jobs.worker import (
+    DRAIN_S,
     Worker,
     WorkerConfig,
     register_recovery_hook,
@@ -219,6 +237,9 @@ from epistrel.orchestrator.providers import in_process as provider_in_process
 from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
+from epistrel.orchestrator.rewrite import api as rewrite_api
+from epistrel.orchestrator.rewrite import session as rewrite_session
+from epistrel.orchestrator.rewrite import support_check  # registers its membership hook
 from epistrel.orchestrator.structured import pipeline as structured_turn
 from epistrel.orchestrator.structured import staged as staged_turns
 from epistrel.orchestrator.verify import extraction as extraction_job
@@ -289,7 +310,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
         fork.Forked | rating_change.RatingCheckStarted,
         status=lambda result: 202 if isinstance(result, rating_change.RatingCheckStarted) else 201,
     ),
-    "regenerate": ResultCodec.of(RegenerateResult),
+    # #241: a directed regeneration held on a ``directed_resolution`` session answers 202.
+    "regenerate": ResultCodec.of(
+        RegenerateResult | directed.DirectedPending,
+        status=lambda found: 202 if isinstance(found, directed.DirectedPending) else 200,
+    ),
     # #598 (FR-RESP-14): the latest turn replaced with new input.
     "correct": ResultCodec.of(RegenerateResult),
     "archive_story": ResultCodec.of(stories.StatusChange),
@@ -321,11 +346,52 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     # #192: an analysis requested, and a proposal approved or dismissed.
     "analyze_state_proposals": ResultCodec.of(state_proposals.AnalysisQueued, status=202),
+    # Backfill (#228): story-scoped.
+    "start_backfill": ResultCodec.of(
+        core_backfill.GapFill, status=lambda found: 202 if found.backfill is not None else 200
+    ),
+    "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
+    "prune_story": ResultCodec.of(core_prune.PruneOutcome),
+    "export_story": ResultCodec.of(bundles.ExportStarted, status=202),
+    "import_story": ResultCodec.of(bundle_import.Imported, status=201, revision_field=_CONFIG),
+    "resolve_backfill_conflict": ResultCodec.of(backfill_conflicts.Resolved),
+    # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
+    "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    "answer_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
+    "cancel_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
+    "apply_rewrite": ResultCodec.of(rewrite_api.RewriteWrite),
+    "merge_entities": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    # Undo and redo (#238): checked rewrite sessions of their kind.
+    "undo_amendment": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    "redo_amendment": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
+    # Directives (#226): story-scoped; one routed to a rewrite answers 202.
+    "apply_directive": ResultCodec.of(
+        author_directives.DirectiveResult,
+        status=lambda found: 202 if found.disposition == "routed_to_rewrite" else 200,
+    ),
+    # Certification runs and imported records (#233): deployment-scoped.
+    "request_certification_run_profile": ResultCodec.of(
+        certification_run.CertificationRunAnswer,
+        status=lambda found: 202 if found.run_id is not None else 200,
+        revision_field=_CONFIG,
+    ),
+    "request_certification_run_story": ResultCodec.of(
+        certification_run.CertificationRunAnswer,
+        status=lambda found: 202 if found.run_id is not None else 200,
+        revision_field=_CONFIG,
+    ),
+    "import_certification": ResultCodec.of(
+        certification.CertificationImported, revision_field=_CONFIG
+    ),
+    "invalidate_certification": ResultCodec.of(
+        certification.CertificationInvalidated, revision_field=_CONFIG
+    ),
     "approve_state_proposal": ResultCodec.of(state_proposals.ProposalApproved, status=201),
     "dismiss_state_proposal": ResultCodec.of(state_proposals.ProposalDismissed),
     # #218: the explicit reconciliation actions (settle-now, a compensating effect).
     "settle_now": ResultCodec.of(settlement_job.SettledNow),
     "compensate": ResultCodec.of(settlement_job.Compensated, status=201),
+    "resolve_listing": ResultCodec.of(settlement_job.Resolved),
     "model_entity": ResultCodec.of(stories.CharacterWeighted, status=201),
     "create_content_rating": ResultCodec.of(
         ratings.RatingWrite, status=201, revision_field=_CONFIG
@@ -433,14 +499,21 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     # Two-stage (#109): stored only once applied; a report alone releases its key.
     "update_profile": ResultCodec.of(TwoStageResult[profiles.ProfileWrite], revision_field=_CONFIG),
+    "upgrade_pinned_stories": ResultCodec.of(
+        TwoStageResult[profiles.ProfileWrite], revision_field=_CONFIG
+    ),
     "copy_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     "delete_profile": ResultCodec.of(profiles.DeletedProfile, revision_field=_CONFIG),
     # A story's profile and overrides (#113): story-scoped configuration writes, two-stage.
     "assign_engine_profile": ResultCodec.of(
-        TwoStageResult[effective.EffectiveConfig], revision_field=_CONFIG
+        TwoStageResult[effective.EffectiveConfig],
+        revision_field=_CONFIG,
+        status=lambda found: 202 if found.backfill is not None else 200,
     ),
     "set_profile_overrides": ResultCodec.of(
-        TwoStageResult[effective.EffectiveConfig], revision_field=_CONFIG
+        TwoStageResult[effective.EffectiveConfig],
+        revision_field=_CONFIG,
+        status=lambda found: 202 if found.backfill is not None else 200,
     ),
 }
 """How each mutating method's result is stored under its ``Idempotency-Key`` and replayed: the
@@ -498,6 +571,17 @@ class EffectiveBudget:
     turn_deadline: float
     reserved: dict[str, int]
     minimum_required: int
+
+
+def _with_checks(
+    story: stories.StoryView, checks: dict[str, Any] | None, *, omniscient: bool
+) -> stories.StoryView:
+    """#239: the open support-check questions on a story read (a character viewpoint, or none,
+    sees only the count)."""
+    if checks is None:
+        return story
+    shown = checks if omniscient else {"count": checks["count"]}
+    return dataclasses.replace(story, amendment_checks_pending=shown)
 
 
 def _body(model: Any) -> Any:
@@ -626,6 +710,17 @@ async def _end_rating_checks(conn: AsyncConnection) -> None:
     await rating_change.reconcile(conn, true())
 
 
+CERTIFICATIONS_HOOK = "certifications"
+"""The worker recovery hook that imports the committed certification records
+(``core.profiles.certification.SEEDS_DIR``, #233): idempotent, so a deployment on the reference
+model reports ``certified`` for the shipped presets. A malformed record is skipped and logged;
+it never stops the start."""
+
+
+async def _load_certifications(conn: AsyncConnection) -> None:
+    await certification.load_committed(conn)
+
+
 class Engine:
     """The async entry point to Epistrel.
 
@@ -723,6 +818,22 @@ class Engine:
         lite_summary_job.bind(self.models)
         importance_job.bind(self.models)
         consolidation_job.bind(self.models)
+        backfill_job.bind(self.models)
+        prune_policy_job.bind(core_prune.run_policy)  # #248
+        story_export_job.configure(  # #249
+            directory=self.settings.bundle_dir,
+            secrets=tuple(
+                s.get_secret_value()
+                for s in (
+                    *self.settings.service_credentials,
+                    *([self.settings.config_key] if self.settings.config_key else []),
+                )
+            ),
+        )
+        backfill_job.configure(
+            concurrency=self.settings.backfill_concurrency,
+            wait_s=self.settings.worker_poll_interval,
+        )
         extraction_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
@@ -735,6 +846,7 @@ class Engine:
             return
         register_recovery_hook(TURN_QUEUE_HOOK, self._recovery_hook)
         register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
+        register_recovery_hook(CERTIFICATIONS_HOOK, _load_certifications)
         self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
         self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
 
@@ -751,7 +863,10 @@ class Engine:
     async def stop_workers(self) -> None:
         """Stop the background work: the worker lets running jobs finish (up to its
         ``DRAIN_S``, within the lease), then the drainer stops; a queued turn stopped mid-run
-        goes back to its queue."""
+        goes back to its queue. #658: first, the background staged-turn resumes this process
+        started finish (up to the worker's ``DRAIN_S``; any left are cancelled at a stage
+        boundary and resumed by the next start's recovery)."""
+        await staged_turns.drain_kicked(DRAIN_S)
         recovery, self._recovery = self._recovery, None
         if recovery is not None and not recovery.done():
             recovery.cancel()
@@ -765,6 +880,7 @@ class Engine:
                 await task
             unregister_recovery_hook(TURN_QUEUE_HOOK)
             unregister_recovery_hook(RATING_CHECK_HOOK)
+            unregister_recovery_hook(CERTIFICATIONS_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
@@ -1540,13 +1656,14 @@ class Engine:
         *,
         viewpoint: str | None = None,
         actor_character_id: str | None = None,
-        as_of: int | None = None,
+        as_of: int | str | None = None,
         limit: int = DEFAULT_HISTORY_LIMIT,
         before_turn: int | None = None,
         include_audit: bool = False,
         variant: variants.ChainRef | None = None,
         include_summary: bool = False,
         player_view: PlayerView | None = None,
+        view: str = "corrected",
     ) -> History:
         """The story's corrected history through ``as_of`` (default the head), produced for one
         output viewpoint (FR-RESP-12): ``viewpoint`` (or ``ctx.viewpoint``) when named, else
@@ -1556,8 +1673,30 @@ class Engine:
         whole turns, newest first, up to ``limit`` items; ``before_turn`` pages backwards.
         ``variant`` reads along that chain instead of the active one (#66);
         ``include_summary`` adds the included rolling-summary segments (#72). ``player_view``
-        (#177): ``character`` or ``story`` over the story's setting (FR-RESP-13)."""
+        (#177): ``character`` or ``story`` over the story's setting (FR-RESP-13).
+
+        ``view="as_recorded"`` (#222, FR-STORE-23) answers the checkpoint ``as_of`` (``N`` or
+        ``N⁺k``) as originally recorded, to ``omniscient`` only (403 ``omniscient_required``,
+        checked first), with its ``boundary_tx`` and ``erasure_markers``; another ``view`` is 422
+        ``invalid_view``; a checkpoint that never committed is 404 ``checkpoint_not_found``."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        if view == "as_recorded":
+            return await read_as_recorded(
+                self.db, story_id, viewpoint=ctx.viewpoint, as_of=as_of, variant=variant
+            )
+        if view != "corrected":
+            if not is_omniscient(ctx.viewpoint or ""):
+                require_omniscient(ctx.viewpoint or "", field="query.viewpoint")
+            raise InvalidView(
+                "unknown history view", {"field": "query.view", "allowed": list(VIEWS)}
+            )
+        if isinstance(as_of, str):
+            if not as_of.isdigit():
+                raise InvalidRequest(
+                    "the corrected view's as_of is a turn",
+                    {"field": "query.as_of", "reason": "boundary"},
+                )
+            as_of = int(as_of)
         return await read_history(
             self.db,
             story_id,
@@ -1595,6 +1734,37 @@ class Engine:
             async with self.db.connect() as conn:
                 block.check_records(await catalog_block.operation_records(conn, operation_id))
         return view
+
+    @refuses_nul()
+    async def list_operations(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        label: operation_view.OperationLabel | None = None,
+        kind: str | None = None,
+        status: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        after_id: str | None = None,
+        limit: int = operation_view.LIST_LIMIT_DEFAULT,
+    ) -> operation_view.OperationPage:
+        """#681: a page of ``story_id``'s operations by id, filtered by ``label``, ``kind``,
+        ``status`` and ``started_at`` (``operation_view.list_operations``). 404 for an unknown
+        story; 503 ``erasure_pending`` while an erasure holds the story blocked."""
+        del ctx
+        await self._erasure_gate(story_id)
+        return await operation_view.list_operations(
+            self.db,
+            story_id,
+            label=label,
+            kind=kind,
+            status=status,
+            since=since,
+            until=until,
+            after_id=after_id,
+            limit=limit,
+        )
 
     # -- story lifecycle (FR-ADMIN-1, FR-STORE-14,16, FR-CAT-12) ----------------------------
 
@@ -2047,6 +2217,7 @@ class Engine:
         as_of: int | None = None,
         limit: int = partitions.INSPECT_LIMIT_DEFAULT,
         after: str | None = None,
+        kind: BeliefKind = BeliefKind.FIRST_ORDER,
     ) -> partitions.BeliefInspection:
         """``character``'s belief projection (FR-EPI-6, FR-ADMIN-5; docs/02 §9's
         ``inspect/beliefs``; #159, #178), an omniscient read (422 ``viewpoint_unresolved``
@@ -2055,7 +2226,9 @@ class Engine:
         id after ``after`` (only ``proposition_id`` when given), each with its current belief;
         ``as_of`` reads it as the corrected record stood through that turn. 404 for an unknown
         story; 409 ``module_off`` when the story keeps no partitions; 422 for a character
-        outside the cast; the player's character (no partition) answers an empty page."""
+        outside the cast; the player's character (no partition) answers an empty page. #606:
+        ``kind`` (``nested``, ``speech_act``) reads those belief records instead, by belief id,
+        at every level."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         inspection.omniscient_read(ctx.viewpoint)
         return await partitions.inspect(
@@ -2066,6 +2239,7 @@ class Engine:
             limit=limit,
             after=after,
             as_of=as_of,
+            kind=kind,
         )
 
     @refuses_nul()
@@ -2501,8 +2675,10 @@ class Engine:
         cast is 422 ``viewpoint_unresolved``. With none named the read is character-safe."""
         ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
         story = await stories.get_story(self.db, story_id, omniscient=False)
+        async with self.db.connect() as conn:
+            checks = await support_check.pending(conn, story_id)
         if ctx.viewpoint is None:
-            return story
+            return _with_checks(story, checks, omniscient=False)
         resolved = resolve_viewpoint(
             ctx.viewpoint,
             actor_character_id=None,
@@ -2511,8 +2687,9 @@ class Engine:
             field="query.viewpoint",
         )
         if not is_omniscient(resolved):
-            return story
-        return await stories.get_story(self.db, story_id, omniscient=True)
+            return _with_checks(story, checks, omniscient=False)
+        found = await stories.get_story(self.db, story_id, omniscient=True)
+        return _with_checks(found, checks, omniscient=True)
 
     @library_only("served as `undo_available`/`dormant_chains` in `GET /stories/{id}`")
     @refuses_nul()
@@ -2617,6 +2794,79 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
         )
 
+    async def prune_story(
+        self, ctx: RequestContext, story_id: str, request: core_prune.PruneRequest
+    ) -> core_prune.PruneOutcome:
+        """Manual pruning of the story's discarded tails and dormant continuations (FR-STORE-
+        19,32; #247): the report without ``ignore_warnings``, else the deletion in one control
+        operation that moves the revision (an in-flight turn rebases). 409 ``story_archived``,
+        ``story_paused``; 422 ``prune_target_unknown``, ``prune_target_ineligible``."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> core_prune.PruneOutcome:
+            return await core_prune.prune(self.db, story_id, request, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "prune_story",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+            keep=lambda found: found.applied,
+        )
+
+    async def export_story(self, ctx: RequestContext, story_id: str) -> bundles.ExportStarted:
+        """Export the story as a bundle (FR-STORE-7, FR-ADMIN-4; #249): a background job
+        (REST 202) reads it at one revision and writes the archive; poll ``export_status``.
+        404 for an unknown story."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> bundles.ExportStarted:
+            async with self.db.begin() as conn:
+                bundle_id = await bundles.start(conn, story_id, principal=principal)
+                await story_export_job.enqueue(conn, bundle_id)
+                revision = await conn.scalar(
+                    select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)
+                )
+            return bundles.ExportStarted(bundle_id, story_id, timeline_revision=int(revision or 0))
+
+        return await self._keyed(ctx, "export_story", run, material={"story_id": story_id})
+
+    async def import_story(
+        self, ctx: RequestContext, data: bytes, request: bundle_import.ImportRequest
+    ) -> bundle_import.Imported:
+        """Import a story bundle as a new story (FR-STORE-7, FR-ADMIN-4; #250; REST 201): the
+        archive is checked under limits, every id it owns remapped, its rows written in one
+        transaction and its projections rebuilt. 413 ``bundle_too_large``, 422
+        ``corrupt_bundle`` / ``unsupported_format_version``; a refusal leaves nothing."""
+        principal = self.require_principal(ctx)
+        digest = hashlib.sha256(data).hexdigest()
+
+        async def run(_: RequestContext) -> bundle_import.Imported:
+            return await bundle_import.import_story(self.db, data, request, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "import_story",
+            run,
+            material={"sha256": digest, **request.model_dump(mode="json")},
+        )
+
+    @refuses_nul()
+    async def export_status(self, ctx: RequestContext, job_id: str) -> bundles.ExportJob:
+        """An export's state (#249); 404 ``job_not_found``."""
+        return await bundles.status(self.db, job_id)
+
+    @refuses_nul()
+    async def open_export_bundle(self, ctx: RequestContext, job_id: str) -> bundles.Bundle:
+        """A ready export's archive (#249): 409 ``export_not_ready``, 410 ``export_expired``."""
+        return await bundles.bundle(self.db, job_id)
+
+    @refuses_nul()
+    async def list_prune_runs(self, ctx: RequestContext, story_id: str) -> core_prune.PruneRuns:
+        """Every pruning of the story, manual or by its policy, newest first (#248)."""
+        return await core_prune.list_prune_runs(self.db, story_id)
+
     async def swap(
         self, ctx: RequestContext, story_id: str, request: variants.SwapRequest
     ) -> timeline.Swapped | rating_change.RatingCheckStarted:
@@ -2695,16 +2945,49 @@ class Engine:
         request: RegenerateRequest | None = None,
         *,
         output_viewpoint: str | None = None,
-    ) -> RegenerateResult:
+    ) -> RegenerateResult | directed.DirectedPending:
         """Play the latest turn again as a new variant from its recorded input (FR-STORE-12,
         #66); the old variant goes dormant in the same commit and can be swapped back. The
         input is re-gated (#56); a busy story is 423 ``story_busy``; queued turns fail with
         ``timeline_changed``. Omitted overrides reuse the recorded render set, viewpoint and
         generation settings. A structured story's regenerate (#154) reverts what the replaced
-        variant committed and reopens the thunks it resolved."""
+        variant committed and reopens the thunks it resolved.
+
+        #241 (FR-COMMIT-12): ``request.directive`` directs the outcome. It is gated (422
+        ``guardrail_violation``; #244: on a Lite story it is a nudge for this regeneration
+        only, with no binding and no reconciliation), and parsed; a binding of an open question is
+        reconciled with recorded history before anything commits. No conflict: the regeneration
+        commits steered to the author's decision. A conflict proceeds as a
+        ``directed_resolution`` amendment under ``resolution_mode`` and ``preview``: the answer
+        is ``DirectedPending`` (REST 202) and nothing is committed until the session is applied
+        (``apply_rewrite`` then plays the directed regeneration); under ``best_effort`` +
+        ``apply_directly`` both commit in this call."""
         principal = self.require_principal(ctx)
         request = request or RegenerateRequest()
         ctx = with_requested(ctx, output_viewpoint, request.output_viewpoint)
+
+        async def run(ctx: RequestContext) -> RegenerateResult | directed.DirectedPending:
+            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
+            if request.directive is not None:
+                return await self._directed_regenerate(ctx, story_id, request, principal)
+            return await self._regenerate(ctx, story_id, request, principal)
+
+        return await self._keyed(
+            ctx,
+            "regenerate",
+            run,
+            story_id=story_id,
+            material={
+                "story_id": story_id,
+                "body": _body(request),
+                "viewpoint": ctx.viewpoint,
+            },
+        )
+
+    async def _regenerate(
+        self, ctx: RequestContext, story_id: str, request: RegenerateRequest, principal: str
+    ) -> RegenerateResult:
+        """The regeneration itself (see ``regenerate``)."""
 
         async def gate(budget: TurnBudget, text: str, actor: str, renders: list[str]) -> InputPass:
             return await self.gate_input(
@@ -2718,37 +3001,102 @@ class Engine:
                 reserve_output_for=renders,
             )
 
-        async def run(ctx: RequestContext) -> RegenerateResult:
-            await provider_binding.require_bound(self.db, story_id)  # as respond's (#204)
-            if await self._plays_structured(story_id):
-                # A structured story's regenerate (#154): the commit boundary reverts what the
-                # replaced variant committed.
-                return await structured_turn.regenerate(
-                    self.db,
-                    self.models,
-                    ctx,
-                    story_id,
-                    request,
-                    principal=principal,
-                    gate=gate,
-                    lexical=lexical_backend(self.settings.lexical_backend),
-                    providers=self.in_process_providers,
-                )
-            return await lite.regenerate(
-                self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
+        if await self._plays_structured(story_id):
+            # A structured story's regenerate (#154): the commit boundary reverts what the
+            # replaced variant committed.
+            return await structured_turn.regenerate(
+                self.db,
+                self.models,
+                ctx,
+                story_id,
+                request,
+                principal=principal,
+                gate=gate,
+                lexical=lexical_backend(self.settings.lexical_backend),
+                providers=self.in_process_providers,
             )
-
-        return await self._keyed(
-            ctx,
-            "regenerate",
-            run,
-            story_id=story_id,
-            material={
-                "story_id": story_id,
-                "body": _body(request),
-                "viewpoint": ctx.viewpoint,
-            },
+        return await lite.regenerate(
+            self.db, self.models, ctx, story_id, request, principal=principal, gate=gate
         )
+
+    async def _directed_regenerate(
+        self, ctx: RequestContext, story_id: str, request: RegenerateRequest, principal: str
+    ) -> RegenerateResult | directed.DirectedPending:
+        """#241: a directed regeneration (see ``regenerate``)."""
+        assert request.directive is not None  # noqa: S101 - the caller checked
+        await self.gate_input(
+            ctx,
+            story_id,
+            EntryPoint.DIRECTIVE,
+            [GateText("body.directive.text", request.directive.text)],
+        )
+        if not await self._plays_structured(story_id):
+            # #244 (FR-LITE-8): under Lite the directive is a nudge for this regeneration only.
+            await author_directives.record_directed(
+                self.db, story_id, request.directive.text, principal=principal
+            )
+            token = lite.LITE_NUDGE.set(request.directive.text)
+            try:
+                replay = request.model_copy(update={"directive": None})
+                return await self._regenerate(ctx, story_id, replay, principal)
+            finally:
+                lite.LITE_NUDGE.reset(token)
+        prepared = await directed.prepare(self.db, self.models, story_id, request.directive.text)
+        amendment_id: str | None = None
+        if prepared.conflicting:
+            overrides = request.model_dump(
+                mode="json", exclude={"directive", "resolution_mode", "preview"}, exclude_none=True
+            )
+            written = await rewrite_session.open_directed(
+                self.db,
+                self.models,
+                story_id,
+                directed.conflict_document(prepared, overrides),
+                resolution_mode=request.resolution_mode,
+                preview=request.preview,
+                principal=principal,
+            )
+            if written.apply is None:
+                async with self.db.connect() as conn:
+                    head = await directed.head_variant(conn, story_id)
+                return directed.DirectedPending(
+                    rewrite_session=written.session,
+                    previous_variant=head,
+                    timeline_revision=written.timeline_revision,
+                    warnings=list(prepared.warnings),
+                )
+            amendment_id = written.apply.amendment_id
+        return await self._play_directed(
+            ctx, story_id, request, principal, prepared, amendment_id=amendment_id
+        )
+
+    async def _play_directed(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: RegenerateRequest,
+        principal: str,
+        prepared: directed.Directed,
+        *,
+        amendment_id: str | None,
+    ) -> RegenerateResult:
+        """Play the directed regeneration; when its amendment already committed and the
+        regeneration fails, the amendment is reverted (``directed.compensate``) and the call
+        is 503 ``rewrite_apply_failed``: the two stand or fall together."""
+        replay = request.model_copy(update={"directive": None})
+        try:
+            with directed.directing(prepared):
+                result = await self._regenerate(ctx, story_id, replay, principal)
+        except Exception as failed:
+            if amendment_id is None:
+                raise
+            await directed.compensate(self.db, story_id, amendment_id, principal=principal)
+            raise RewriteApplyFailed(
+                "the directed regeneration failed; its amendment was reverted",
+                {"retryable": True, "amendment_id": amendment_id},
+            ) from failed
+        await directed.record(self.db, story_id, prepared, principal=principal)
+        return result
 
     async def correct(
         self,
@@ -3198,6 +3546,29 @@ class Engine:
             as_of=as_of,
         )
 
+    @refuses_nul()
+    async def get_state_definition(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        *,
+        viewpoint: str | None = None,
+        actor_character_id: str | None = None,
+    ) -> state_api.DefinitionView:
+        """#680: State ``name``'s stored definition for one output viewpoint (as ``get_state``:
+        a hidden State without ``omniscient``, and ``world_clock``, are 404 as an unknown name),
+        with the configuration revision of its last change. 409 ``module_off`` with
+        ``states.level`` off."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        return await state_api.read_definition(
+            self.db,
+            story_id,
+            name,
+            viewpoint=ctx.viewpoint,
+            actor_character_id=actor_character_id,
+        )
+
     async def set_state(
         self,
         ctx: RequestContext,
@@ -3349,6 +3720,28 @@ class Engine:
         story."""
         return await core_outbox.listings(self.db, story_id)
 
+    @refuses_nul()
+    async def list_outbox(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        status: str | None = None,
+        provider: str | None = None,
+        after_id: str | None = None,
+        limit: int = core_outbox.OUTBOX_LIMIT_DEFAULT,
+    ) -> core_outbox.OutboxPage:
+        """#679: the story's outbox rows, every status, a page by id (``core.outbox.outbox_page``),
+        an omniscient read (422 ``viewpoint_unresolved`` when none is named, 403
+        ``omniscient_required`` for a character). 404 for an unknown story."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        await self._erasure_gate(story_id)
+        return await core_outbox.outbox_page(
+            self.db, story_id, status=status, provider=provider, after_id=after_id, limit=limit
+        )
+
     async def settle_now(
         self, ctx: RequestContext, story_id: str, outbox_id: str
     ) -> settlement_job.SettledNow:
@@ -3416,6 +3809,41 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "outbox_id": outbox_id, "body": _body(request)},
+        )
+
+    async def resolve_listing(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request_id: str,
+        request: core_outbox.ResolveRequest,
+    ) -> settlement_job.Resolved:
+        """Resolve a listed consumer-applied effect (FR-EXT-22; #661): the resolve-only action
+        for an effect the consumer applied (``applied_elsewhere``) or will never apply
+        (``abandoned``). Nothing is dispatched and no outcome is recorded: the listing's open
+        marks are resolved and a ``reconciliation_resolved`` audit event is written, on a new
+        inter-turn slot operation. 404 ``not_found`` (``reason: no_listing``) for anything but
+        a listed consumer-applied effect (an outbox row takes settle-now or compensate); 409
+        ``module_off``, ``story_archived`` or ``story_paused``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> settlement_job.Resolved:
+            await self.check_expected_revision(ctx, story_id)
+            return await settlement_job.resolve_listing(
+                self.db,
+                story_id,
+                request_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "resolve_listing",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "listing": request_id, "body": _body(request)},
         )
 
     async def approve_state_proposal(
@@ -4874,8 +5302,10 @@ class Engine:
         catalog-scope one as one deployment operation that never touches a story. Certain
         mentions are erased; candidates (a common word of the name capitalised at the start of
         a sentence, ADR-154) only when ``confirm_candidates`` names them, by the ids a dry run
-        lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog, and
-        ``unknown_erasure_candidate`` for a confirmed id the erasure does not meet; 503
+        lists. 422 ``invalid_erasure_scope`` for a story character scoped to the catalog
+        without its ``story`` (#504: with it, its names are read from that story and erased
+        from the catalog's records), and ``unknown_erasure_candidate`` for a confirmed id the
+        erasure does not meet, or a story that does not hold that character; 503
         ``erasure_pending`` for a story the erasure reconciler holds blocked, dry run or not
         (#383), and for a catalog-scope request while a catalog-scope erasure is pending
         (#346); 404 for an unknown story or, on a real run, an unknown subject; 409
@@ -4894,11 +5324,16 @@ class Engine:
             # method has no ``story_id`` parameter, so ``gate_story_methods`` cannot see it.
             await self._erasure_gate(story_id)
             await check_expected_revision(self.db, story_id, ctx.expected_revision)
-        elif await self._catalog_block() is not None:
-            # A catalog-scope erasure, dry run or not, reads the whole catalog (its candidate
-            # snippets quote it): refused while another is pending there (#346, as #383).
-            async with self.db.connect() as conn:
-                await erasure_ledger.refuse_catalog_pending(conn)
+        else:
+            if request.subject.story is not None:
+                # #504: it reads the story's index for the subject's names.
+                await self._erasure_gate(request.subject.story)
+            if await self._catalog_block() is not None:
+                # A catalog-scope erasure, dry run or not, reads the whole catalog (its
+                # candidate snippets quote it): refused while another is pending there (#346,
+                # as #383).
+                async with self.db.connect() as conn:
+                    await erasure_ledger.refuse_catalog_pending(conn)
         compressor = self.ports.summary_compressor
         if request.dry_run:
             return await erasure.dry_run(
@@ -5022,9 +5457,15 @@ class Engine:
         scope: dict[str, Any] = (
             {"story": pending.story_id} if pending.story_id is not None else {"catalog": True}
         )
-        request = erasure.ErasureRequest.model_validate(
-            {"subject": {"kind": pending.subject_kind, "id": pending.subject_id}, "scope": scope}
-        )
+        subject: dict[str, Any] = {"kind": pending.subject_kind, "id": pending.subject_id}
+        if pending.story_id is None and pending.subject_kind == "character":
+            # #504: a story character erased from the catalog; the ledger names no story.
+            async with self.db.connect() as conn:
+                story = await erasure.character_story(conn, pending.subject_id)
+            if story is None:
+                return erasure_ledger.SUBJECT_MISSING
+            subject["story"] = story
+        request = erasure.ErasureRequest.model_validate({"subject": subject, "scope": scope})
         key = erasure.require_key(
             None
             if self.settings.config_key is None
@@ -5435,9 +5876,151 @@ class Engine:
     async def get_profile(
         self, ctx: RequestContext, profile_id: str, *, version: int | None = None
     ) -> profiles.EngineProfile:
-        """The profile at its latest version (``version``: that one), deleted or not; 404 for an
-        unknown profile or version."""
-        return await profiles.get_profile(self.db, profile_id, version=version)
+        """The profile at its latest version (``version``: that one), deleted or not, with its
+        quality under the deployment's models (#233); 404 for an unknown profile or version."""
+        return await profiles.get_profile(
+            self.db, profile_id, version=version, facts=await self._runtime_facts()
+        )
+
+    async def request_certification_run(
+        self,
+        ctx: RequestContext,
+        request: certification_run.CertificationRunRequest,
+        *,
+        profile_id: str | None = None,
+        story_id: str | None = None,
+    ) -> certification_run.CertificationRunAnswer:
+        """Estimate, or with ``confirm`` queue, a certification run (FR-PROF-17, #233) of the
+        profile ``profile_id`` (its latest version, or ``request.version``) or of the story
+        ``story_id``'s effective configuration: the estimate, fingerprint and suites, and with
+        ``confirm`` the run and its job (REST 202). The run records results and changes no
+        configuration. 404 for an unknown profile, version or story; 422 ``validation_error``
+        for a suite the configuration does not enable; 409 ``certification_run_in_progress``;
+        503 ``certification_unavailable`` without an installed eval harness."""
+        principal = self.require_principal(ctx)
+        operation = (
+            "request_certification_run_story"
+            if story_id is not None
+            else "request_certification_run_profile"
+        )
+
+        async def run(_: RequestContext) -> certification_run.CertificationRunAnswer:
+            return await certification_run.request_run(
+                self.db,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                profile_id=profile_id,
+                story_id=story_id,
+            )
+
+        return await self._keyed(
+            ctx,
+            operation,
+            run,
+            material={
+                "profile_id": profile_id,
+                "story_id": story_id,
+                "request": request.model_dump(mode="json"),
+            },
+        )
+
+    @refuses_nul()
+    async def get_certification_run(
+        self, ctx: RequestContext, run_id: str
+    ) -> certification_run.CertificationRun:
+        """A certification run: its status, estimate and report summary, and the certification
+        it recorded; 404 ``certification_run_not_found``."""
+        return await certification_run.get_run(self.db, run_id)
+
+    @refuses_nul()
+    async def list_certifications(
+        self,
+        ctx: RequestContext,
+        *,
+        fingerprint: str | None = None,
+        profile_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> certification.CertificationPage:
+        """Certifications, newest first (stale ones included), narrowed by ``fingerprint`` and
+        ``profile_id`` when given (#233)."""
+        async with self.db.connect() as conn:
+            return await certification.list_certifications(
+                conn,
+                fingerprint_value=fingerprint,
+                profile_id=profile_id,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    @refuses_nul()
+    async def get_certification(
+        self, ctx: RequestContext, certification_id: str
+    ) -> certification.Certification:
+        """One certification; 404 ``certification_not_found``."""
+        async with self.db.connect() as conn:
+            return await certification.get_certification(conn, certification_id)
+
+    @refuses_nul()
+    async def list_eval_runs(
+        self, ctx: RequestContext, *, limit: int = 50, cursor: str | None = None
+    ) -> certification.EvalRunPage:
+        """The eval runs (#532): the committed reports and the certification runs' reports, newest
+        first, with each run's verdicts, metrics, seeds and sample size."""
+        async with self.db.connect() as conn:
+            return await certification.page_eval_runs(conn, limit=limit, cursor=cursor)
+
+    @refuses_nul()
+    async def get_eval_run(self, ctx: RequestContext, run_id: str) -> certification.EvalRun:
+        """One eval run (#532); 404 ``eval_run_not_found``."""
+        async with self.db.connect() as conn:
+            return await certification.get_eval_run(conn, run_id)
+
+    async def import_certification(
+        self, ctx: RequestContext, document: Mapping[str, Any]
+    ) -> certification.CertificationImported:
+        """Import a hand run's certification record (#233, #235): validated against the schema
+        and its embedded report's hash, and stored by its id (the same record again stores
+        nothing). 422 ``invalid_certification_record``; 409 ``certification_record_conflict``
+        for other content under a stored id."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.CertificationImported:
+            async with self.db.begin() as conn:
+                found, stored = await certification.import_record(conn, document)
+                revision = await profiles.config_revision(conn)
+            return certification.CertificationImported(found, stored, revision)
+
+        return await self._keyed(
+            ctx, "import_certification", run, material={"record": dict(document)}
+        )
+
+    async def invalidate_certification(
+        self,
+        ctx: RequestContext,
+        certification_id: str,
+        request: certification.InvalidateRequest,
+    ) -> certification.CertificationInvalidated:
+        """Declare drift (#234): a ``valid`` certification becomes ``stale`` with
+        ``invalidated_reason`` ``drift`` (or ``manual``); its record is kept. 404
+        ``certification_not_found``; 409 ``certification_not_valid``. The note is not logged."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.CertificationInvalidated:
+            async with self.db.begin() as conn:
+                status, reason = await certification.invalidate(conn, certification_id, request)
+                revision = await profiles.config_revision(conn)
+            return certification.CertificationInvalidated(
+                certification_id, status, reason, revision
+            )
+
+        return await self._keyed(
+            ctx,
+            "invalidate_certification",
+            run,
+            material={"certification_id": certification_id, **request.model_dump()},
+        )
 
     @refuses_nul()
     async def get_profile_guarantees(
@@ -5459,10 +6042,12 @@ class Engine:
         include_deleted: bool = False,
         limit: int = profiles.DEFAULT_PAGE,
         cursor: str | None = None,
+        preset: bool | None = None,
     ) -> profiles.ProfilePage:
         """Profiles at their latest version, newest first, presets included; deleted ones only
         with ``include_deleted``. ``owner`` and ``relation`` (``name:principal``, or ``name:``
-        for any principal) narrow the list only when given (FR-AUTH-8)."""
+        for any principal) narrow the list only when given (FR-AUTH-8); ``preset`` (#227) to
+        the presets (``true``) or the others (``false``)."""
         return await profiles.list_profiles(
             self.db,
             owner=ownership.owner_filter(owner),
@@ -5470,6 +6055,7 @@ class Engine:
             include_deleted=include_deleted,
             limit=limit,
             cursor=cursor,
+            preset=preset,
         )
 
     async def update_profile(
@@ -5481,9 +6067,10 @@ class Engine:
         following the profile, and a change it warns of applies only with
         ``request.ignore_warnings``; otherwise the result is the report (``applied`` false),
         nothing is written and the ``Idempotency-Key`` is released. A data-producing increase
-        cannot apply to a following story with history: a confirmed edit keeps that story on its
-        version. 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and the
-        settings are refused as on creation, confirmed or not."""
+        queues each following story with history for its own backfill (#229, ``upgrade_mode``
+        ``backfill``: pinned to its version until its turn) or applies at its next turn with a
+        coverage gap (``forward_only``). 404 for an unknown profile, 422 ``profile_deleted``
+        for a deleted one, and the settings are refused as on creation, confirmed or not."""
         principal = self.require_principal(ctx)
 
         async def run(_: RequestContext) -> TwoStageResult[profiles.ProfileWrite]:
@@ -5495,11 +6082,42 @@ class Engine:
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
                 safety=await self._safety_facts(),
+                start_job=backfill_job.start_job,
             )
 
         return await self._keyed(
             ctx,
             "update_profile",
+            run,
+            material={"profile_id": profile_id, "body": _body(request)},
+            keep=TwoStageResult.kept,
+        )
+
+    async def upgrade_pinned_stories(
+        self, ctx: RequestContext, profile_id: str, request: profiles.UpgradePinned
+    ) -> TwoStageResult[profiles.ProfileWrite]:
+        """Bring every story pinned to an older version of the profile forward to its latest
+        version (FR-PROF-7,8; #229), in two stages: the report lists each pinned story; with
+        ``request.ignore_warnings`` (or a report without warnings) each pin is cleared, a
+        data-producing increase for a story with history queued as a backfill
+        (``upgrade_mode`` ``backfill``) or applied with a coverage gap (``forward_only``).
+        404 for an unknown profile."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> TwoStageResult[profiles.ProfileWrite]:
+            return await profiles.upgrade_pinned(
+                self.db,
+                profile_id,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                purposes=self.purposes,
+                start_job=backfill_job.start_job,
+            )
+
+        return await self._keyed(
+            ctx,
+            "upgrade_pinned_stories",
             run,
             material={"profile_id": profile_id, "body": _body(request)},
             keep=TwoStageResult.kept,
@@ -5670,9 +6288,10 @@ class Engine:
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
                 safety=await self._safety_facts(story_id),
+                start_job=backfill_job.start_job,
             )
 
-        return await self._keyed(
+        found = await self._keyed(
             ctx,
             "assign_engine_profile",
             run,
@@ -5680,6 +6299,10 @@ class Engine:
             material={"story_id": story_id, "body": _body(request)},
             keep=TwoStageResult.kept,
         )
+        if found.applied:
+            # #232: a downgrade to Lite rebuilds the summary; its job runs after the commit.
+            await summary_port.notify(self.db, story_id)
+        return found
 
     async def set_profile_overrides(
         self, ctx: RequestContext, story_id: str, request: story_profile.ProfileOverridesPatch
@@ -5690,8 +6313,8 @@ class Engine:
         ``invalid_profile``); ``request.expected_revision``, when given, must be the overrides'
         revision (409 ``revision_conflict``). Two-stage (#109), like an assignment. A
         story-scoped configuration change: the story's ``config_revision`` and the overrides'
-        revision move. A confirmed patch whose upgrade is unavailable (M3's interim rule) is
-        applied with the story's configuration as it was, and writes nothing. 404 for an unknown
+        revision move. A confirmed patch that adds data-producing capability to a story with
+        history upgrades it by ``upgrade_mode`` (#228, #229). 404 for an unknown
         story, 409 ``story_archived`` for an archived story when the call would change
         something (a patch that changes no setting answers 200 and writes nothing)."""
         principal = self.require_principal(ctx)
@@ -5706,15 +6329,508 @@ class Engine:
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
                 safety=await self._safety_facts(story_id),
+                start_job=backfill_job.start_job,
             )
 
-        return await self._keyed(
+        found = await self._keyed(
             ctx,
             "set_profile_overrides",
             run,
             story_id=story_id,
             material={"story_id": story_id, "body": _body(request)},
             keep=TwoStageResult.kept,
+        )
+        if found.applied:
+            # #232: a downgrade to Lite rebuilds the summary; its job runs after the commit.
+            await summary_port.notify(self.db, story_id)
+        return found
+
+    # -- backfill (FR-PROF-9; #228) ----------------------------------------------------------------
+
+    async def start_backfill(
+        self, ctx: RequestContext, story_id: str, request: core_backfill.BackfillRequest
+    ) -> core_backfill.GapFill:
+        """A gap fill of the story's history (#228): the capabilities its configuration has on
+        (or ``request.capabilities``), over the turns they do not cover. Without
+        ``ignore_warnings`` it answers the estimate and writes nothing; with it the story is
+        paused and a backfill job queued (REST 202). 409 ``nothing_to_backfill`` with no gap,
+        409 ``backfill_in_progress`` while one runs."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> core_backfill.GapFill:
+            return await core_backfill.gap_fill(
+                self.db,
+                story_id,
+                request,
+                principal=principal,
+                start_job=backfill_job.start_job,
+                complete_conflicts=backfill_job.complete_now,
+            )
+
+        return await self._keyed(
+            ctx,
+            "start_backfill",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def get_backfill(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        conflicts: Literal["open", "all"] = "open",
+        limit: int = 50,
+    ) -> core_backfill.Backfill:
+        """The story's latest backfill, any kind (#228), with its conflicts (#230: the open
+        ones, or ``all``); 404 ``backfill_not_found``."""
+        return await core_backfill.get(self.db, story_id, conflicts=conflicts, limit=limit)
+
+    async def resolve_backfill_conflict(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        conflict_id: str,
+        request: backfill_conflicts.ResolveRequest,
+    ) -> backfill_conflicts.Resolved:
+        """Settle one of a backfill's open conflicts (FR-PROF-10; #230): the chosen statement
+        is canon for the overlap and the others in-world claims; the last one completes the
+        backfill in the same call. 404 ``backfill_not_found`` / ``backfill_conflict_not_found``,
+        409 ``backfill_not_awaiting_conflicts`` / ``backfill_conflict_closed``, 422
+        ``invalid_resolution``."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> backfill_conflicts.Resolved:
+            found = await backfill_conflicts.resolve(
+                self.db,
+                story_id,
+                conflict_id,
+                request,
+                principal=principal,
+                complete=backfill_job.complete_now,
+            )
+            async with self.db.connect() as conn:
+                revision = await conn.scalar(
+                    select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)
+                )
+            return dataclasses.replace(found, timeline_revision=int(revision or 0))
+
+        return await self._keyed(
+            ctx,
+            "resolve_backfill_conflict",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "conflict_id": conflict_id, "body": _body(request)},
+        )
+
+    async def cancel_backfill(
+        self, ctx: RequestContext, story_id: str
+    ) -> core_backfill.BackfillCancelled:
+        """Cancel the story's running backfill (#228): its rows discarded, its chunks dropped, the
+        story resumed on its configuration. 404 ``backfill_not_found``, 409
+        ``backfill_not_cancellable`` once it has ended."""
+        self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> core_backfill.BackfillCancelled:
+            found = await core_backfill.cancel(self.db, story_id)
+            async with self.db.connect() as conn:
+                revision = await conn.scalar(
+                    select(stories_table.c.timeline_revision).where(stories_table.c.id == story_id)
+                )
+            return core_backfill.BackfillCancelled(found, int(revision or 0))
+
+        return await self._keyed(
+            ctx, "cancel_backfill", run, story_id=story_id, material={"story_id": story_id}
+        )
+
+    # -- history rewrite sessions (FR-REWRITE-1,2,4,7; #223) ---------------------------------------
+
+    async def open_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: rewrite_api.RewriteRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Open a rewrite session on the story (#223): the instruction is checked against the
+        input guardrails, parsed into changes (asking when it is ambiguous, always with a
+        recommended answer) and planned into a preview at the story's revision. Nothing about
+        the story changes (FR-REWRITE-7). An omniscient call (403 ``omniscient_required``);
+        404 story; 409 ``story_paused``; a stale expected revision 409 ``revision_conflict``;
+        409 ``rewrite_session_limit``; 422 ``guardrail_violation``; a Lite story 409
+        ``module_off``; 422 ``rewrite_unparseable`` or ``rewrite_noop``."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            await rewrite_session.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            await self.gate_input(
+                ctx,
+                story_id,
+                EntryPoint.REWRITE,
+                [GateText("body.instruction", request.instruction)],
+            )
+            await rewrite_session.require_planner(self.db, story_id)
+            return await rewrite_session.open_session(
+                self.db, self.models, story_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "open_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def get_rewrite(
+        self, ctx: RequestContext, story_id: str, session_id: str, *, viewpoint: str | None = None
+    ) -> rewrite_api.RewriteSession:
+        """A rewrite session with its preview and questions (#223); an omniscient read. 404
+        ``rewrite_session_not_found`` for an unknown id or another story's."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await rewrite_session.get(self.db, story_id, session_id)
+
+    @refuses_nul()
+    async def list_rewrites(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        states: str | Sequence[str] = (),
+        cursor: str | None = None,
+        limit: int = rewrite_session.LIST_LIMIT,
+    ) -> rewrite_api.RewriteList:
+        """The story's rewrite sessions, newest first, filtered by ``states`` (#223); an
+        omniscient read."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        return await rewrite_session.list_sessions(
+            self.db, story_id, states=states, cursor=cursor, limit=limit
+        )
+
+    async def answer_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        request: rewrite_api.AnswerRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Answer a rewrite session's questions (#223): validated all together (422
+        ``invalid_answer``, nothing stored); free text is gated like the instruction; the
+        session re-plans at the story's current revision. Allowed on a paused story (it
+        changes no story truth). 409 ``rewrite_session_closed`` once the session ended."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            texts = rewrite_session.free_texts(request)
+            if texts:
+                await self.gate_input(
+                    ctx,
+                    story_id,
+                    EntryPoint.REWRITE,
+                    [GateText(f"body.answers[{n}].text", text) for n, text in enumerate(texts)],
+                )
+            return await rewrite_session.answer(
+                self.db, self.models, story_id, session_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "answer_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "session_id": session_id, "body": _body(request)},
+        )
+
+    async def cancel_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Cancel a rewrite session (#223): ``cancelled``, nothing committed. 409
+        ``rewrite_session_closed`` once the session ended."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            return await rewrite_session.cancel(self.db, story_id, session_id, principal=principal)
+
+        return await self._keyed(
+            ctx,
+            "cancel_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "session_id": session_id},
+        )
+
+    async def apply_directive(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: author_directives.DirectiveRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> author_directives.DirectiveResult:
+        """An author's directive (#226, FR-DIRECT-1,2,6): ephemeral guidance for the next reply,
+        a durable change applied at the next inter-turn slot with the author's authority, or a
+        change to the past routed into a rewrite session (REST 202). An omniscient call; 404;
+        409 ``story_paused``; a stale expected revision 409 ``revision_conflict``; 422
+        ``guardrail_violation`` before anything else is written; on a Lite story (#244,
+        FR-LITE-8) a nudge or a lasting author fact, and one about the past a Lite rewrite
+        session (#245); 422 ``directive_unparseable`` or
+        ``directive_no_changes``; the State, clock and turn-slot refusals of the changes it
+        applies."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> author_directives.DirectiveResult:
+            await author_directives.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            await self.gate_input(
+                ctx, story_id, EntryPoint.DIRECTIVE, [GateText("body.text", request.text)]
+            )
+            await author_directives.require_pipeline(self.db, story_id)
+            return await author_directives.apply_directive(
+                self.db, self.models, story_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "apply_directive",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    async def merge_entities(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: rewrite_api.MergeRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Merge entities the author reveals to be one referent (#225, FR-PROP-7): a rewrite
+        session of kind ``entity_merge`` (each other entity ``same_as`` the first), planned and
+        cascaded like any rewrite under the request's modes. 422 ``merge_invalid``; otherwise
+        the statuses of ``open_rewrite`` (ids only, so no input gate)."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            await rewrite_session.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            return await rewrite_session.open_merge(
+                self.db, self.models, story_id, request, principal=principal
+            )
+
+        return await self._keyed(
+            ctx,
+            "merge_entities",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def list_amendments(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        viewpoint: str | None = None,
+        status: str | None = None,
+        cursor: str | None = None,
+        limit: int = amendment_reads.LIST_DEFAULT,
+    ) -> amendment_reads.AmendmentPage:
+        """The story's amendments, newest first, optionally by ``status`` (#238); an
+        omniscient read over the shared tables on any pipeline."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        async with self.db.connect() as conn:
+            return await amendment_reads.list_amendments(
+                conn, story_id, status=status, cursor=cursor, limit=limit
+            )
+
+    @refuses_nul()
+    async def get_amendment(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        *,
+        viewpoint: str | None = None,
+    ) -> amendment_reads.AmendmentDetail:
+        """One amendment with its parts, what it relies on and its dependents (#238); 404
+        ``amendment_not_found``; an omniscient read."""
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+        async with self.db.connect() as conn:
+            return await amendment_reads.get_amendment(conn, story_id, amendment_id)
+
+    async def undo_amendment(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        request: rewrite_api.AmendmentSessionRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Undo an amendment as a checked rewrite (#238, FR-REWRITE-10): a session of kind
+        ``undo`` planned against the restored canon. 404 ``amendment_not_found``; 409
+        ``amendment_already_reverted``, ``story_paused``, ``rewrite_session_limit``,
+        ``module_off`` (a Lite story); 422 ``use_redo``; otherwise as ``open_rewrite``."""
+        return await self._amendment_session(
+            ctx, story_id, amendment_id, request, kind="undo", viewpoint=viewpoint
+        )
+
+    async def redo_amendment(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        request: rewrite_api.AmendmentSessionRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Redo a reverted amendment as a checked rewrite (#238): a session of kind ``redo``
+        re-planning its original parts. 409 ``amendment_not_reverted``,
+        ``amendment_already_redone``; otherwise as ``undo_amendment``."""
+        return await self._amendment_session(
+            ctx, story_id, amendment_id, request, kind="redo", viewpoint=viewpoint
+        )
+
+    async def _amendment_session(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        amendment_id: str,
+        request: rewrite_api.AmendmentSessionRequest,
+        *,
+        kind: str,
+        viewpoint: str | None,
+    ) -> rewrite_api.RewriteWrite:
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(_: RequestContext) -> rewrite_api.RewriteWrite:
+            await rewrite_session.precheck(
+                self.db, story_id, expected_revision=ctx.expected_revision
+            )
+            return await rewrite_session.open_amendment_session(
+                self.db,
+                self.models,
+                story_id,
+                amendment_id,
+                request,
+                kind=kind,
+                principal=principal,
+            )
+
+        return await self._keyed(
+            ctx,
+            f"{kind}_amendment",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "amendment_id": amendment_id, "body": _body(request)},
+        )
+
+    async def _apply_directed(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        written: rewrite_api.RewriteWrite,
+        principal: str,
+    ) -> None:
+        """#241: after a ``directed_resolution`` session's amendment applied, play the directed
+        regeneration it held (reverting the amendment if the regeneration fails)."""
+        assert written.apply is not None  # noqa: S101 - the caller checked
+        async with self.db.connect() as conn:
+            stored = await rewrite_session.stored_plan(conn, story_id, session_id)
+        document = dict(stored.get("directed") or {})
+        prepared = directed.Directed.of(document)
+        replay = RegenerateRequest.model_validate(document.get("regenerate") or {})
+        await self._play_directed(
+            ctx,
+            story_id,
+            replay,
+            principal,
+            prepared,
+            amendment_id=written.apply.amendment_id,
+        )
+
+    async def apply_rewrite(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        session_id: str,
+        request: rewrite_api.ApplyRequest,
+        *,
+        viewpoint: str | None = None,
+    ) -> rewrite_api.RewriteWrite:
+        """Apply a rewrite session (#224): one atomic amendment with every part, repair and
+        resolution, its questions and answers recorded as audit events; the revision moves by
+        exactly one. 409 ``rewrite_session_closed``, ``rewrite_apply_in_progress``,
+        ``story_paused``, ``rewrite_stale`` (another base than the preview's, a plan the
+        final commit found stale and recomputed (#237), or a changed pipeline: the session is
+        abandoned), ``rewrite_questions_pending``, ``record_in_flight``,
+        ``erased_subject_referenced`` (the session abandoned); 422 ``base_revision_required``;
+        503 ``rewrite_apply_failed`` (retryable, nothing written)."""
+        principal = self.require_principal(ctx)
+        await self._erasure_gate(story_id)
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        inspection.omniscient_read(ctx.viewpoint)
+
+        async def run(ctx_: RequestContext) -> rewrite_api.RewriteWrite:
+            written = await rewrite_session.apply_session(
+                self.db, self.models, story_id, session_id, request, principal=principal
+            )
+            if written.session.kind == "directed_resolution" and written.apply is not None:
+                # #241: the amendment committed; the directed regeneration plays now.
+                await self._apply_directed(ctx_, story_id, session_id, written, principal)
+            return written
+
+        return await self._keyed(
+            ctx,
+            "apply_rewrite",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "session_id": session_id, "body": _body(request)},
         )
 
     # -- message feedback (FR-FB-1,2; #112) --------------------------------------------------------

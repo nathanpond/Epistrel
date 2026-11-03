@@ -109,7 +109,6 @@ import epistrel.evals.judging as judges
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
-from epistrel.core.profiles.effective import merged_settings
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.seeds import profiles as seeded_profiles
@@ -117,6 +116,14 @@ from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
+from epistrel.evals.presets import (
+    DEFAULT_PRESET,
+    PRESETS,
+    RUN_PRESET,
+    Preset,
+    PresetName,
+    needs,
+)
 from epistrel.evals.report import (
     Host,
     JudgeCalibrationRef,
@@ -159,13 +166,13 @@ DEFAULT_SEED_BASE = 20261008
 DEFAULT_SEEDS = 2
 DEFAULT_SETS_DIR = REPO_ROOT / "evals" / "sets"
 BUILD_DIR = REPO_ROOT / "build" / "evals"
-FINGERPRINT_PROFILE = seeded_profiles.STRUCTURED_NAME
-FINGERPRINT_VERSION = seeded_profiles.STRUCTURED_VERSION
-"""The fingerprint is the seeded ``Structured`` profile's, at its current version (the owner's
-decision of 2026-10-23: every eval follows it; the committed M4 baselines keep their
-``Structured (M4) v1`` label), with the
-run's model as every story purpose's (#109's ``fingerprint()``; the stub run's model is
-``stub``), and, for a run with a second judge model (#475), the judge as ``quality_judge``'s."""
+FINGERPRINT_PROFILE = seeded_profiles.FULL_NAME
+FINGERPRINT_VERSION = seeded_profiles.FULL_VERSION
+"""The fingerprint is the run's preset's (#227; by default Full, the seeded structured row at
+its current version: the owner's decision of 2026-10-23 that every eval follows it; the
+committed M4 baselines keep their ``Structured (M4) v1`` label), with the run's model as every
+story purpose's (#109's ``fingerprint()``; the stub run's model is ``stub``), and, for a run
+with a second judge model (#475), the judge as ``quality_judge``'s."""
 
 type AdapterName = Literal["stub", "openai"]
 
@@ -219,6 +226,8 @@ class AdapterConfig:
     real_purposes: tuple[str, ...] | None = None
     """The purposes a real-model run sends to the endpoint (#179); ``None``: every purpose.
     Every other purpose is answered by the run's stub (module docstring)."""
+    preset: PresetName = DEFAULT_PRESET
+    """The preset the run's scratch stories play under and its fingerprint names (#227)."""
 
     @property
     def model_name(self) -> str:
@@ -246,6 +255,7 @@ def run_fingerprint(
     *,
     judge: str | None = None,
     real_purposes: Collection[str] | None = None,
+    preset: PresetName = DEFAULT_PRESET,
 ) -> str:
     """The fingerprint the run reports (``FINGERPRINT_VERSION``'s docstring): the seeded
     profile over the deployment's seeded defaults, as a fresh deployment runs it; with
@@ -253,10 +263,11 @@ def run_fingerprint(
     With ``judge`` (#475: a second judge model) it also names the judge as ``quality_judge``'s
     model. FR-PROF-16 lists every model purpose's identifier, and ``quality_judge`` is one.
     Without a judge, the fingerprint is unchanged. With ``real_purposes`` (#179) every other
-    story purpose's model is the stub."""
-    settings = merged_settings(
-        seeded_profiles.profile_defaults(), seeded_profiles.STRUCTURED_SETTINGS, dials
-    )
+    story purpose's model is the stub. ``preset`` (#227) names the profile (default Full, the
+    seeded structured row's latest version): an ``"@strongest"`` route resolves to the run's
+    model for that purpose, as every purpose's is."""
+    chosen = PRESETS[preset]
+    settings = chosen.effective(dials)
     models = {
         purpose: ModelIdentity(
             id=model if real_purposes is None or purpose in real_purposes else STUB_MODEL
@@ -267,17 +278,19 @@ def run_fingerprint(
         models[QUALITY_JUDGE.name] = ModelIdentity(id=judge)
     facts = RuntimeFacts(models=models, templates=TEMPLATE_HASHES)
     return fingerprint(
-        profile_id=seeded_profiles.STRUCTURED_PROFILE_ID,
-        version=FINGERPRINT_VERSION,
+        profile_id=chosen.profile_id,
+        version=chosen.version,
         settings=settings,
         facts=facts,
     )
 
 
-def default_run_id(fingerprint_value: str, when: datetime) -> str:
-    """``<fingerprint[:12]>-<YYYY-MM-DD>`` (UTC); the report writer adds ``-2``… on a clash."""
+def default_run_id(fingerprint_value: str, when: datetime, preset: PresetName | None = None) -> str:
+    """``<preset>-<fingerprint[:12]>-<YYYY-MM-DD>`` (UTC; #227), or without the preset as
+    before M7; the report writer adds ``-2``… on a clash."""
     digest = fingerprint_value.split(":", 1)[-1]
-    return f"{digest[:12]}-{when.astimezone(UTC).strftime('%Y-%m-%d')}"
+    base = f"{digest[:12]}-{when.astimezone(UTC).strftime('%Y-%m-%d')}"
+    return base if preset is None else f"{preset}-{base}"
 
 
 # -- per-purpose routing (#179) ---------------------------------------------------------------
@@ -912,6 +925,35 @@ def suite_fingerprint(suite: Suite, config: AdapterConfig) -> str | None:
         suite.dials,
         judge=config.judge_model,
         real_purposes=routed_purposes(config),
+        preset=config.preset,
+    )
+
+
+def not_applicable(
+    suite: Suite, config: AdapterConfig, seeds: Sequence[int], preset: Preset | None = None
+) -> SuiteResult | None:
+    """``suite``'s ``not_applicable`` result when the run's preset (``preset``, else the
+    config's) lacks what it needs (``presets.needs``; #227), else ``None`` (it runs)."""
+    chosen = preset or PRESETS[config.preset]
+    missing = needs(
+        chosen,
+        requires=suite.requires,
+        guarantees=suite.guarantees,
+        dials=suite.dials,
+        structured=suite.structured,
+    )
+    if not missing:
+        return None
+    return SuiteResult(
+        name=suite.name,
+        title=suite.title,
+        ci_gate=suite.ci_gate,
+        guarantees=list(suite.guarantees),
+        cases=0,
+        seeds=list(seeds),
+        verdict=Verdict.not_applicable,
+        notes=[f"Not applicable under {chosen.label}: needs {', '.join(missing)}."],
+        needs=missing,
     )
 
 
@@ -972,6 +1014,8 @@ async def run_suites(
     calibrate: bool = False,
     calibration_file: Path | None = None,
     calibration_flip: Collection[str] = (),
+    profile: Preset | None = None,
+    fingerprint_value: str | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -980,7 +1024,12 @@ async def run_suites(
     same engine, and stored in ``calibration_file`` (default ``calibration_path``); otherwise a
     suite with pairwise judge rows reads the stored calibration of the run's judge model, and
     ``CalibrationMissing`` is raised before any case when there is none. ``calibration_flip``
-    (tests) names calibration pairs the stub answers wrongly."""
+    (tests) names calibration pairs the stub answers wrongly.
+
+    **A certification run** (#233) passes ``profile``: the scratch stories play that profile
+    version (``Preset``, a deployment's profile in place of a seeded preset), and the report
+    names ``fingerprint_value``, the configuration's fingerprint as the deployment computed it
+    when the run was requested."""
     started = now or datetime.now(UTC)
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
@@ -991,15 +1040,20 @@ async def run_suites(
                 f"no judge calibration for {config.judge_name!r} in {store}: run "
                 "`calibrate-judge` (or `run --all`) first"
             )
-    fingerprint_value = run_fingerprint(
-        config.model_name, judge=config.judge_model, real_purposes=routed_purposes(config)
+    chosen = profile or PRESETS[config.preset]
+    fingerprint_value = fingerprint_value or run_fingerprint(
+        config.model_name,
+        judge=config.judge_model,
+        real_purposes=routed_purposes(config),
+        preset=config.preset,
     )
     report = Report(
-        run_id=run_id or default_run_id(fingerprint_value, started),
+        run_id=run_id or default_run_id(fingerprint_value, started, config.preset),
         started_at=started.isoformat(timespec="seconds"),
         model=config.model_name,
         fingerprint=fingerprint_value,
-        fingerprint_profile=f"{FINGERPRINT_PROFILE} v{FINGERPRINT_VERSION}",
+        fingerprint_profile=chosen.described,
+        preset=config.preset,
         adapter=config.adapter,
         engine_sha=model_matrix.engine_sha(),
         host=host_of(config),
@@ -1052,14 +1106,17 @@ async def run_suites(
                 judge_layer=None if config.self_judged else judging,
                 judge_version=judge_version,
             )
+            preset_token = RUN_PRESET.set(chosen)
             try:
                 for suite in suites:
-                    report.merge(await run_suite(suite, job))
+                    skipped = not_applicable(suite, config, seeds, chosen)
+                    report.merge(skipped if skipped is not None else await run_suite(suite, job))
                     if on_suite is not None:
                         pending = on_suite(report)
                         if pending is not None:
                             await pending
             finally:
+                RUN_PRESET.reset(preset_token)
                 await sweep(live)
             problems = isolation_problems(before, await story_rows(live.db))
     report.errors.extend(f"isolation: {p}" for p in problems)
@@ -1158,6 +1215,7 @@ __all__ = [
     "isolation_problems",
     "judge_layer_for",
     "judge_preflight",
+    "not_applicable",
     "run",
     "run_calibration",
     "run_fingerprint",

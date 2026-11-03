@@ -258,46 +258,61 @@ def test_a_delta_names_levels_raised_and_lowered() -> None:
     assert down.guarantees_lost == ()
 
 
-def test_an_entry_keeps_the_configuration_it_cannot_leave() -> None:
-    """An increase for a story with history is unavailable: the re-derivation is needed with
-    its estimate and the story keeps its fingerprint and capabilities; without history, or
-    without an increase, nothing is needed and the entry states the new ones. A one-story report
-    lifts the entry's fingerprints, capabilities and status to its top and names its warnings in
+def test_an_entry_upgrades_with_its_backfill() -> None:
+    """#229 (M7: both upgrade modes exist): an increase for a story with history needs its
+    re-derivation, with its estimate and range, and the entry states the configuration it moves
+    to, never ``upgrade_unavailable``; ``upgrade_mode`` is ``backfill`` by default (with its
+    queue position) or ``forward_only`` (with the gap its earlier turns keep). Without history,
+    or without an increase, nothing is needed and no mode is echoed. A one-story report lifts the
+    entry's fingerprints, capabilities and status to its top and names its warnings in
     ``WARNING_KINDS`` order."""
     off = Configuration(LITE_PRESET_ID, 1, _settings(nest("repair.polish.enabled", False)))
     on = Configuration(LITE_PRESET_ID, 2, _settings())
     with data_producing("polish"):
         change = delta(off, on, FACTS)
-    stuck = affected("S1", change, history=True, transcript=(61, 4_003))
-    assert stuck.upgrade_unavailable
-    assert stuck.backfill.needed
-    assert stuck.backfill.estimate is not None
-    assert stuck.backfill.estimate.model_dump() == {
+    needs = affected(
+        "S1", change, history=True, transcript=(61, 4_003), span=(1, 9), queue_position=2
+    )
+    assert needs.upgrade_unavailable is False
+    assert (needs.upgrade_mode, needs.queue_position, needs.forward_only_gap) == (
+        "backfill",
+        2,
+        None,
+    )
+    assert needs.backfill.needed
+    assert needs.backfill.range is not None
+    assert needs.backfill.range.model_dump() == {"from_turn": 1, "to_turn": 9}
+    assert needs.backfill.estimate is not None
+    assert needs.backfill.estimate.model_dump() == {
         "model_calls": 3,
         "tokens": 1_000,
         "duration_s": 3 * CALL_LATENCY_MS / 1000,
     }
-    assert stuck.fingerprint_after == stuck.fingerprint_before
-    unpolished = [c for c in LITE_CAPABILITIES if c != "polish"]
-    assert stuck.capabilities_after == list(capabilities(off.settings)) == unpolished
-    assert stuck.quality_status_after == UNCERTIFIED
+    assert needs.fingerprint_after != needs.fingerprint_before
+    assert needs.capabilities_after == list(capabilities(on.settings)) == LITE_CAPABILITIES
+    assert needs.quality_status_after == UNCERTIFIED
+    forward = affected("S1", change, history=True, mode="forward_only", span=(1, 9))
+    assert (forward.upgrade_mode, forward.queue_position) == ("forward_only", None)
+    assert forward.forward_only_gap is not None
+    assert forward.forward_only_gap.model_dump() == {"capabilities": ["polish"], "through_turn": 9}
     free = affected("S2", change, history=False)
     assert (free.upgrade_unavailable, free.backfill.needed, free.backfill.estimate) == (
         False,
         False,
         None,
     )
+    assert (free.upgrade_mode, free.queue_position, free.forward_only_gap) == (None, None, None)
     assert free.fingerprint_after != free.fingerprint_before
     assert free.capabilities_after == list(capabilities(on.settings)) == LITE_CAPABILITIES
-    report = single_report(stuck, change)
-    assert report.warnings == ["capabilities_gained", "backfill_needed", "upgrade_unavailable"]
+    report = single_report(needs, change)
+    assert report.warnings == ["capabilities_gained", "backfill_needed"]
     assert set(report.warnings) <= set(WARNING_KINDS)
     assert (report.fingerprint_before, report.fingerprint_after) == (
-        stuck.fingerprint_before,
-        stuck.fingerprint_after,
+        needs.fingerprint_before,
+        needs.fingerprint_after,
     )
     assert (report.capabilities_after, report.quality_status_after) == (
-        stuck.capabilities_after,
+        needs.capabilities_after,
         UNCERTIFIED,
     )
 
@@ -468,3 +483,18 @@ def test_the_effective_values_are_the_delivered_ones() -> None:
 
     assert paths(values) == {path for path in schema.LEAF_PATHS if exposed(path)}
     assert values["pipeline"] == "lite"
+
+
+def test_a_regeneration_takes_the_current_interpretive_settings() -> None:
+    """#659: a rebase-triggered regeneration runs under the interpretive settings in force now and
+    the prospective ones the operation captured: an interpretive leaf moves, a prospective one
+    doesn't."""
+    captured = schema.ProfileSettings.model_validate(
+        {"verification": {"level": "off"}, "memory": {"episodic": {"k": 4}}}
+    )
+    current = schema.ProfileSettings.model_validate(
+        {"verification": {"level": "declared"}, "memory": {"episodic": {"k": 9}}}
+    )
+    merged = schema.merge_interpretive(captured, current)
+    assert merged.verification.level == "declared"
+    assert merged.memory.episodic.k == 4

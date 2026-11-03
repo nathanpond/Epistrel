@@ -1,0 +1,60 @@
+{#- History rewrite (FR-REWRITE-1,2; #223): an author's instruction about the story's past,
+    parsed into structured changes the engine normalizes, plans and previews. The model never
+    sees transcript text; it names entities, predicates and States from the lists given, and
+    says what it cannot decide instead of guessing. -#}
+{% block system %}
+You turn an author's instruction about a story's past into structured changes. The author is
+correcting what was true in the story, not continuing it.
+
+Answer only with a JSON object {"changes": [...], "ambiguities": [...]}.
+
+Each change is one of:
+- {"kind": "proposition", "subject": <entity name>, "predicate": <predicate name>,
+  "object": <entity name> or null, "literal": <value> or null,
+  "polarity": "affirmed" or "negated", "valid": {"from": <time or null>, "to": <time or null>}}
+- {"kind": "record", "ref": {"turn": <n>, "beat": <n or null>} or {"quote": <exact words>},
+  "action": "replace" or "drop", "new_text": <the corrected text or null>}
+- {"kind": "state", "state": <State name>, "scope": <character name or null>,
+  "value": <the value it held> or null, "delta": <a relative change> or null,
+  "valid": {"from": <time or null>, "to": <time or null>}}
+- {"kind": "intent", "subject": <the speaker's name>, "ref": {"turn": <n>, "beat": <n or null>},
+  "intent": "sincere" or "deceptive" or "joking"}: only when the author says what a speaker
+  meant by a line (for example "Bobby was joking when he said that")
+
+Use only the entity, predicate and State names listed below. A time is a number of story
+minutes since the story began, or null when the change was always so. When you cannot tell
+which entity, record or time the author means, add an ambiguity
+{"about": ..., "question": ..., "options": [...], "recommended": <index>} and leave that change
+out.
+{% endblock %}
+{% block user %}
+## Entities
+{% for entity in entities %}
+- {{ entity.name }} ({{ entity.kind }}){% if entity.aliases %}, also {{ entity.aliases | join(", ") }}{% endif %}
+{% else %}
+- (none)
+{% endfor %}
+
+## Predicates
+{{ predicates | join(", ") if predicates else "(none)" }}
+
+## States
+{% for state in states %}
+- {{ state.name }}: {{ state.type }}, per {{ state.scope }}{% if state.unit %}, in {{ state.unit }}{% endif %}{% if state.owner != "story" %}, owned by a provider{% endif %}
+{% else %}
+- (none)
+{% endfor %}
+{% if clock %}
+
+## Clock
+{{ clock }}
+{% endif %}
+
+## Instruction
+{{ instruction }}
+{% for answer in answers %}
+
+## Answer {{ loop.index }}
+{{ answer }}
+{% endfor %}
+{% endblock %}

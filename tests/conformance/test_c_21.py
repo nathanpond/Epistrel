@@ -238,7 +238,7 @@ def seed_element(full: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compact(element: dict[str, Any]) -> dict[str, Any]:
+def _brief(element: dict[str, Any]) -> dict[str, Any]:
     """An element as the model copies it from its prompt (unset location keys left out)."""
     location = {k: v for k, v in element["location"].items() if v is not None}
     return {"kind": element["kind"], "location": location}
@@ -310,12 +310,12 @@ async def test_c_21__affair_table(pg_url: str) -> None:
             "Everyone",
             {
                 "policy_id": w.sexual,
-                "element": _compact(reveal),
+                "element": _brief(reveal),
                 "explanation": "The reveal is about a sexual affair.",
             },
             {
                 "clause": EVERYONE_CLAUSE,
-                "element": _compact(memory),
+                "element": _brief(memory),
                 "explanation": "The seed describes sex.",
             },
         )
@@ -324,12 +324,12 @@ async def test_c_21__affair_table(pg_url: str) -> None:
             "Teen",
             {
                 "policy_id": w.sexual,
-                "element": _compact(reveal),
+                "element": _brief(reveal),
                 "explanation": "The reveal is about a sexual affair.",
             },
             {
                 "policy_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2ZZ",
-                "element": _compact(reveal),
+                "element": _brief(reveal),
                 "explanation": "A policy this rating does not have.",
             },
         )

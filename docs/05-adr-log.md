@@ -16,9 +16,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167 |
-| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169 |
+| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
+| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175 |
+| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169 |
 | FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
@@ -26,33 +26,33 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
 | FR-RET | §8 | 129, 167 |
 | FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
 | FR-MODEL | §13 | 129, 136, 144, 150, 170 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
 | FR-STATE | §15.1 | 055, 072, 144 |
-| FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144 |
+| FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
 | FR-MULTI | §16 | 043, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
-| FR-LITE | §18.4 | 085, 086, 087 |
+| FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
-| FR-FB | §18.8 | 111 |
+| FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137 |
+| NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
-| NFR-REL | §20 | 045, 127 |
+| NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169 |
+| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151 |
 | NFR-MAINT | §20 | 148 |
@@ -236,7 +236,11 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 171 | A character is modeled lazily by interaction or salience, at minor weight, and a minor's partition is sparse by rule | Current | — |
 | 172 | A non-salient witness's exposure is resolved lazily in its own frame, by the turn that needs it | Current | — |
 | 173 | Could-have-known is a replay of dated acquisitions; a thunk binding obliges its character's knowledge | Current | — |
-| 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Current | — |
+| 174 | Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction | Amended | 177 |
+| 175 | Compaction is renamed pruning | Current | — |
+| 176 | A story character is erased from the catalog with its story named | Current | — |
+| 177 | A character may state what an author_fiat acquisition made it know | Current | — |
+| 178 | A Lite turn handles narrated time skips | Current | — |
 
 ---
 
@@ -1818,6 +1822,7 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ### ADR-174 — Co-author narration is accepted on what its character could not know, with an optional notice and a one-time correction
 **Status:** Accepted. Amends ADR-032 (2).
+**Amended by:** ADR-177 — a character may state what its `author_fiat` acquisition made it know (the third bullet)
 **Context:** Under `player_authority = co_author` with partitions on, #561's viewpoint check rejected `could_not_know` every narration that creates the fact it states ("Jenni puts the key in the drawer", "Jenni slides the key to Bobby"). The claim is `novel`, so the narrated character never has a prior path to it, and plain actions could not be narrated at all (#565). The owner's direction (2026-10-30): how strictly co-authoring is held to knowledge depends on the story. A quick, ad-hoc role play should not restrict what the co-author states as fact. World building and story writing want knowledge kept pure, but as information the user acts on, not as a rejection.
 **Decision:**
 - A story setting `co_author_knowledge` ∈ {`confirm`, `free`}, default `confirm`, applies under `co_author` with partitions on (FR-RESP-14). It is interpretive (FR-CONC-15), versioned (FR-CONC-14), and may be defaulted by a scenario.
@@ -1832,6 +1837,44 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - S-PLAYER-AUTHORITY gains an M6 part. FR-RESP-14 is first gated at M6, beside M6's configuration-race scenario (S-CONFIG-RACE).
 - The Console shows notices with fix, clarify, and override actions.
 - A notice discloses nothing beyond the player's input, at the cost of noticing claims that canon happens to make true and false alike.
+
+---
+
+### ADR-175 — Compaction is renamed pruning
+**Status:** Accepted.
+**Context:** FR-STORE-32's operation permanently deletes chosen discarded tails and dormant in-story continuations from a story that opts into it. It was called "compaction", which readers confused with the Lite rolling summary (FR-LITE), which compresses old messages into the generation context and deletes nothing. The FR-FB-2 hook M3 shipped (#112) carried the old name too (`mark_compacted`, `message_feedback.compacted_at`).
+**Decision:** The operation is called **pruning** (the owner's decision, round two, 2026-10-10): "prune" as the verb, "a prune run" for one execution, `pruned` as the error code and feedback marker, "prune marker" and "prune policy", and the test ID S-PRUNE. "Purge" was considered and rejected, because the spec already uses it as an everyday verb (the media sweep purges unused bytes, idempotency results are purged, an unused profile is purged). The rename covers the specification (*01*–*04*), CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109) and the open issues. Rolling-summary wording ("compress") is a different concept and is unchanged.
+**Consequences:** #247 builds the operation under the new name. Earlier ADRs keep the word "compaction": they are history and are not rewritten. `tests/test_terminology.py::test_no_compaction_term` fails the build if the old term returns to the specification, CLAUDE.md, the README or the code (this log, and the erasure matcher's common-words list, where it is an ordinary English word, are exempt). Test: S-PRUNE (M7).
+
+---
+
+### ADR-176 — A story character is erased from the catalog with its story named
+**Status:** Accepted.
+**Context:** A promotion (FR-CAT-8) copies story text into catalog records: the character's free-text definition, and since #498 the seeded memories in its companion scenario draft. When that text names a **story-only** character (one added mid-story or introduced by narration, with no catalog or persona identity), no erasure could remove the mention. A story-scope erasure never reaches the catalog (FR-STORE-14), and a catalog-scope erasure took only `catalog_character` and `persona` subjects; `character` + `catalog` was 422 `invalid_erasure_scope` (docs/02). That left FR-ADMIN-2's "complete, verifiable erasure" short (#504).
+**Decision:** The owner's triage decision (2026-10-30): option 2 of #504, plus option 3's report line.
+- A catalog-scope erasure accepts a story character subject with its story: `{subject: {kind: character, id, story}, scope: {catalog: true}}`. The erasure reads the character's names and aliases from that story's subject index (with the name parts no other subject there uses, ADR-154), then runs the catalog pass with them. It redacts matching text in every catalog record FR-ADMIN-6 indexes: promoted drafts, companion scenario drafts and everything else. It deletes no catalog entry, and touches no story. `dry_run` reports the counts. The residue scan covers the catalog records, so the erasure stays verifiable. The ledger records a catalog-scope entry for the character; a reapply after a restore finds the story from the character row.
+- Without `story`, `character` + `catalog` stays 422 `invalid_erasure_scope`, as does `story` on any other pairing. An unknown story, or a story that does not hold the character, is 422 `unknown_erasure_candidate`.
+- A story-scope erasure stays story-scoped (FR-ADMIN-2 unchanged). Its report lists the catalog drafts promoted from the story's characters (`characters.promoted_to` and their companion scenarios), each with the catalog-scope request that erases the subject from them (`follow_up`).
+**Alternatives considered:** Letting a story-scope erasure also redact the drafts its story's promotions made would cross the FR-STORE-14 boundary in one direction, and would need FR-ADMIN-2 amended. Documenting the boundary alone would leave the mention erasable only by hand. Free-text terms in a catalog erasure were rejected: the names come from the subject index, so the matcher's rules (ADR-154) apply unchanged.
+**Consequences:** The catalog erasure must run **before** the story erasure: the story erasure removes the names the catalog erasure reads, and the ledger keeps only their keyed hashes. A catalog erasure sent after it is 422 `unknown_erasure_candidate`. The story erasure's dry run lists the drafts first, and docs/OPERATIONS.md states the order. docs/03 is unchanged, because FR-ADMIN-2 and FR-ADMIN-6 do not restrict subject kinds; docs/02's erasure paragraph and the route's OpenAPI description carry the new pairing (FR-ADMIN-2, FR-ADMIN-6, NFR-PRIV-2). Test: `tests/erasure/test_story_character_catalog.py`.
+
+---
+
+### ADR-177 — A character may state what an author_fiat acquisition made it know
+**Status:** Accepted. Amends ADR-174 (third bullet).
+**Context:** ADR-174 records a co-author narration's presupposition the narrated character had no path to as an `author_fiat` acquisition, so the character's later renders are verified as knowing it. The permission check (FR-VERIFY-11, #144) still decided from canon alone: with the fact hidden from the character, its own line stating it ("Bobby holds the key.") was `novel` from its viewpoint, denied `other_character_secret` and repaired, though the speech act was licensed by its belief (#649).
+**Decision:** The owner's decision on #649 (2026-11-01). A character's render (and the narrator side of a reactive render) that states a fact the character holds through an active `author_fiat` acquisition at the claim's position is **permitted** with basis `author_fiat`, as knowledge from perception or testimony may be stated. The permission matrix stays pure: the verifier reads the acquisition from the character's beliefs (the could-have-known replay's first path) and passes `fiat_known` in. The rule replaces only the `other_character_secret` denial. External values, locked canon, State changes, the player's character and the arrival policy deny as before, and a fact about a different proposition is still denied. The protected-content match on that very fact is not a leak to this character, which now knows it, so it does not deny; any other protected content still does. Canonization is unchanged: a permitted `say` about another character is not canonized.
+**Alternatives considered:** Making the fiat canon visible to the character was rejected: it would rewrite canon visibility from player input, which ADR-174 refused. Leaving the line repaired contradicted "its later turns are verified as knowing it".
+**Consequences:** docs/03 FR-RESP-14 adds "and may state it" (amended 2026-11-01). S-PLAYER-AUTHORITY gains an M7 part (FR-RESP-14). `tests/test_permission.py` checks the matrix row over every asserter kind (FR-RESP-14, FR-VERIFY-11).
+
+---
+
+### ADR-178 — A Lite turn handles narrated time skips
+**Status:** Accepted.
+**Context:** #203 gave the prompt-only clock of a Lite story one pacing advance per reply. A Lite reply that narrates elapsed time ("they watch the rest of the movie") moved the clock by its word count only: Lite never classified, estimated or bounded a narrated skip (FR-CLOCK-7,8), which only the structured pipeline did (#199, #201). FR-LITE-5 limited the prompt-only clock to pacing and FR-LITE-7 limited a Lite turn's calls.
+**Decision:** The owner's decision on #632 (2026-11-01). With the clock at `prompt_only` and `paced`, a Lite turn reads a narrated skip in its reply deterministically (a stated amount, or an activity of #199's lexicon with a word that has it elapse), classifies it with #199's rules (the player's input or the author's Lite notes invite it, else the model started it) and bounds it (`max_unprompted_skip_minutes`, an established activity from the verbatim window). A skip with no stated amount is estimated by at most one `time_estimation` call (#201), within the turn's budget, before the commit. An accepted skip replaces the turn's pacing advance; a refused or unestimated one is not applied, because Lite has no repair: the reply stands, the clock moves by pacing only, and the turn report lists why. A Lite skip that passes an open scheduled event is applied in full: due-event stops (FR-CLOCK-9) stay structured-only, since Lite cannot regenerate a reply to end at the interruption, and #196's lifecycle evaluates the events it passes as for any advance.
+**Alternatives considered:** Repairing a refused skip as the structured pipeline does was rejected: Lite has no repair loop, and adding one would break FR-LITE-7's one-generation-call contract. Estimating every activity mention was rejected: the lexicon names common words ("show", "watch"), so the detector also needs a word that has the activity elapse.
+**Consequences:** docs/03 FR-LITE-5 and FR-LITE-7 are amended (2026-11-01). docs/04 I-18 gains an M7 part (FR-CLOCK-7,8, FR-LITE-5,7). `core.world_clock.skips.narrates_elapsing` is the Lite detector (`DURATIVE`). Test: `tests/integration/test_i_18.py::test_i_18__m7_skips`.
 
 ---
 

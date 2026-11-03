@@ -168,6 +168,10 @@ class OperationView:
     naming the ``omniscient`` viewpoint."""
     staged: bool = False
     """#212: a staged turn (``operations.turn_stage`` set)."""
+    perception: dict[str, Any] | None = None
+    """#607: a structured turn's ``turn_report.perception`` (its level, the beats routed, the
+    qualifiers repaired and each beat's ``trace``), returned only to a read naming the
+    ``omniscient`` viewpoint."""
 
 
 INGESTED = "ingested"
@@ -236,7 +240,123 @@ async def read_operation(
         read_set=_read_set(row.read_set, viewpoint),
         eval_hooks=expanded_eval_hooks(row.turn_report) if _omniscient(viewpoint) else None,
         staged=row.turn_stage is not None,
+        perception=_perception(row.turn_report) if _omniscient(viewpoint) else None,
     )
+
+
+def _perception(report: Any) -> dict[str, Any] | None:
+    """#607: a turn report's ``perception`` section, when it has one."""
+    if not isinstance(report, dict):
+        return None
+    found = report.get("perception")
+    return dict(found) if isinstance(found, dict) else None
+
+
+@dataclass(frozen=True, slots=True)
+class OperationSummary:
+    """#681: one operation as a list shows it (``OperationView``'s summary fields)."""
+
+    id: str
+    story_id: str | None
+    kind: str
+    label: OperationLabel | None
+    status: str
+    staged: bool
+    narrative_turn: int | None
+    turn_variant: int | None
+    principal: str
+    started_at: datetime
+    committed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class OperationPage:
+    """#681: a page of a story's operations by id, and the id to continue after (``None`` on
+    the last page)."""
+
+    story_id: str
+    items: list[OperationSummary]
+    next_after: str | None
+
+
+LIST_LIMIT_MAX = 200
+LIST_LIMIT_DEFAULT = 50
+
+
+async def list_operations(
+    db: AsyncEngine,
+    story_id: str,
+    *,
+    label: OperationLabel | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    after_id: str | None = None,
+    limit: int = LIST_LIMIT_DEFAULT,
+) -> OperationPage:
+    """#681: ``story_id``'s operations by id after ``after_id``, of ``label`` (derived as the
+    by-id read derives it), ``kind`` and ``status``, started within ``[since, until)``: a page
+    of ``limit``. 404 for an unknown story."""
+    from epistrel.core.errors import StoryNotFound
+    from epistrel.core.tables import stories
+
+    limit = max(1, min(LIST_LIMIT_MAX, limit))
+    o = operations.c
+    where: list[Any] = [o.story_id == story_id]
+    if kind is not None:
+        where.append(o.kind == kind)
+    if status is not None:
+        where.append(o.status == status)
+    if since is not None:
+        where.append(o.started_at >= since)
+    if until is not None:
+        where.append(o.started_at < until)
+    if label is OperationLabel.STAGED_TURN:
+        where.append(o.turn_stage.is_not(None))
+    elif label is OperationLabel.GENESIS:
+        where.append(o.kind == OperationKind.GENESIS.value)
+    elif label is not None:
+        where.append(o.kind == OperationKind.CONTROL.value)
+    found: list[OperationSummary] = []
+    more = False
+    cursor = after_id
+    async with db.connect() as conn:
+        if await conn.scalar(select(stories.c.id).where(stories.c.id == story_id)) is None:
+            raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+        while not more:
+            query = select(operations).where(*where)
+            if cursor is not None:
+                query = query.where(o.operation_id > cursor)
+            batch = list(await conn.execute(query.order_by(o.operation_id).limit(LIST_LIMIT_MAX)))
+            if not batch:
+                break
+            for row in batch:
+                cursor = row.operation_id
+                labelled, _ = await _stages(conn, row)
+                if label is not None and labelled is not label:
+                    continue
+                if len(found) == limit:
+                    more = True
+                    break
+                found.append(
+                    OperationSummary(
+                        id=row.operation_id,
+                        story_id=row.story_id,
+                        kind=str(row.kind),
+                        label=labelled,
+                        status=str(row.status),
+                        staged=row.turn_stage is not None,
+                        narrative_turn=row.narrative_turn,
+                        turn_variant=row.turn_variant,
+                        principal=row.principal,
+                        started_at=row.started_at,
+                        committed_at=row.committed_at,
+                    )
+                )
+            if len(batch) < LIST_LIMIT_MAX:
+                break
+    return OperationPage(story_id, found, found[-1].id if more and found else None)
 
 
 def expanded_eval_hooks(report: Any) -> dict[str, Any] | None:
@@ -457,11 +577,16 @@ def _report_ms(report: Any, name: str) -> int | None:
 __all__ = [
     "ERASURE_STAGES",
     "GENESIS_STAGES",
+    "LIST_LIMIT_DEFAULT",
+    "LIST_LIMIT_MAX",
     "TURN_STAGES",
     "OperationLabel",
     "OperationNotFound",
+    "OperationPage",
+    "OperationSummary",
     "OperationView",
     "Stage",
     "StageStatus",
+    "list_operations",
     "read_operation",
 ]

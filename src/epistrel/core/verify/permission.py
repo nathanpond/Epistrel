@@ -73,7 +73,11 @@ sibling introduces Jenni's backstory too.
   character beyond an arrival or an identity (#171: a director's ``same_as`` linking one
   non-player modeled character to an unmodeled entity, "the stranger is Bobby", is permitted
   with basis ``identity``; #200: that one passes out, falls asleep or wakes, ``unconscious``,
-  is the world's to narrate, basis ``world``);
+  is the world's to narrate, basis ``world``). #649 (FR-RESP-14, ADR-177): a character's
+  render stating what it holds through an active ``author_fiat`` acquisition at the claim's
+  position (``PermissionFacts.fiat_known``, which the verifier reads from the character's
+  beliefs) is permitted with basis ``author_fiat`` instead, as perceived or told knowledge is;
+  every stronger denial above still applies, and a director pass gets no such basis;
 - ``player_authority``: player input about another character (``player_authority =
   own_character``, or anything but an observable action under ``co_author``): the player's text
   stands and is not repaired, but it is never canonized;
@@ -115,7 +119,7 @@ from __future__ import annotations
 import logging
 import weakref
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
@@ -184,6 +188,10 @@ class Basis(StrEnum):
     CO_AUTHOR = "co_author"
     """#180 (FR-RESP-11): another character's observable action the ``co_author`` player
     narrated."""
+    AUTHOR_FIAT = "author_fiat"
+    """#649 (FR-RESP-14, ADR-177): a fact about another character the asserting character holds
+    through an ``author_fiat`` acquisition (ADR-174): it may state it, as it could a fact it
+    perceived or was told."""
 
 
 REACTIVE_PREDICATES: frozenset[str] = frozenset({"spoke", "spoke_to"})
@@ -305,6 +313,10 @@ class PermissionFacts:
     """#187: the claim changes a tracked State's value with no validated effect."""
     external_state: bool = False
     """#207: the claim is a ``state_value`` of an externally owned State (FR-EXT-3)."""
+    fiat_known: bool = False
+    """#649: the asserting character holds the claim through an active ``author_fiat``
+    acquisition at the claim's position (the verifier reads it from the character's beliefs;
+    nothing here does)."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -401,7 +413,12 @@ def permission(
     elif any(e.is_player for e in others):
         return Denied(Reason.PLAYER_CHARACTER)
     elif others:
-        return Denied(Reason.OTHER_CHARACTER_SECRET)
+        if not (facts.fiat_known and asserter.kind == "character"):
+            return Denied(Reason.OTHER_CHARACTER_SECRET)
+        # #649: what the co-author made the character aware of, it may state.
+        if arrival and subject_owner.character_id != own and not facts.allow_new_arrivals:
+            return Denied(Reason.POLICY)
+        return _texture(facts, Basis.AUTHOR_FIAT)
     if arrival and subject_owner.character_id != own and not facts.allow_new_arrivals:
         return Denied(Reason.POLICY)
     return _texture(facts, Basis.OWN if subject_owner.character_id == own else Basis.TEXTURE)
@@ -612,6 +629,7 @@ class _Call:
     code: str
     resolves: str | None = None
     giver: str | None = None
+    fiat_known: bool = False
 
 
 _CALLS: dict[int, tuple[weakref.ref[StructuredReadSet], list[_Call]]] = {}
@@ -647,12 +665,15 @@ async def check(
     remember: bool = True,
     resolves: str | None = None,
     giver: str | None = None,
+    fiat_known: bool = False,
 ) -> Permission | None:
     """``claim``'s permission for ``asserter`` over the story's structured data, its canon
     reads keyed in ``read_set``; ``None`` (inert, nothing read) when verification is off. The
     answer is recorded for the turn's rebase re-check unless ``remember`` is off. ``resolves``
     names the open thunk the claim resolves (the resolution exemption); ``giver`` the entity a
-    detected transfer names as handing the item over (the hand-over exception)."""
+    detected transfer names as handing the item over (the hand-over exception); ``fiat_known``
+    (#649) that the asserting character holds the claim through an ``author_fiat``
+    acquisition, as the verifier read it from its beliefs."""
     if await options_for(conn, story_id) is None:
         return None
     facts = await facts_for(
@@ -666,6 +687,8 @@ async def check(
         resolves=resolves,
         giver=giver,
     )
+    if fiat_known:
+        facts = replace(facts, fiat_known=True)
     found = permission(claim, asserter, owner_of(claim, facts), facts)
     if remember:
         _remember(
@@ -680,6 +703,7 @@ async def check(
                 found.code(),
                 resolves,
                 giver,
+                fiat_known,
             ),
         )
     return found
@@ -706,6 +730,7 @@ async def recheck(conn: AsyncConnection, op: Operation) -> bool:
             remember=False,
             resolves=call.resolves,
             giver=call.giver,
+            fiat_known=call.fiat_known,
         )
         if again is None or again.code() != call.code:
             log.debug("rebase re-check: a permission changed (%d checked)", len(calls))

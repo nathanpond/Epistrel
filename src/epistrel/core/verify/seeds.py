@@ -17,13 +17,22 @@ and answers:
 - ``tolerated``: how many claims stayed ``uncertain`` for another reason (an unregistered
   relation in free text, an unparsed quantity), which a seed may hold.
 
+- ``closed_sets`` (#580): for a seed with a holder (a character's own field), each relation its
+  text rules out ("an only child", "never married"), from the exclusion table
+  ``detectors/closed_sets.json`` (``closed_sets_in``): an empty closed set over the holder, so
+  the fact merge lets a higher layer's "has a sister" win and reports the conflict.
+
 ``seed_facts`` turns a reading into #140's ``SeedFact`` inputs of ``merge_layers``.
 """
 
 from __future__ import annotations
 
+import json
+import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from functools import cache
+from importlib import resources
 
 from epistrel.core.propositions.model import Instant, Interval, Proposition
 from epistrel.core.propositions.registry import Registry
@@ -37,7 +46,7 @@ from epistrel.core.resolution.entities import (
 from epistrel.core.resolution.time import TimeBasis
 from epistrel.core.verify.detect import DetectionEnv, detect_seed
 from epistrel.core.verify.merge import SeedFact, SeedLayer
-from epistrel.core.verify.rules import VerdictReason
+from epistrel.core.verify.rules import ClosedSetRecord, VerdictReason
 from epistrel.core.world_clock import clock_off_basis
 
 CANON = "canon"
@@ -87,6 +96,95 @@ class SeedReading:
     propositions: tuple[Proposition, ...] = ()
     unresolved: tuple[str, ...] = ()
     tolerated: int = 0
+    closed_sets: tuple[ClosedSetRecord, ...] = ()
+    """#580: what the holder's own text rules out ("an only child"), each an empty closed set
+    over the holder (``closed_sets_in``)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Family:
+    predicate: str
+    pattern: re.Pattern[str]
+
+
+@dataclass(frozen=True, slots=True)
+class _Exclusions:
+    before: frozenset[str]
+    after: frozenset[str]
+    families: tuple[_Family, ...]
+
+
+_WORD_BEFORE = re.compile(r"([\w'\u2019-]+)\s+$")
+_WORD_AFTER = re.compile(r"^\s+([\w'\u2019-]+)")
+_INDEFINITE = frozenset({"a", "an"})
+
+
+def _phrase(words: str) -> str:
+    return r"\s+".join(re.escape(w) for w in words.split())
+
+
+@cache
+def _exclusions() -> _Exclusions:
+    """The exclusion table (``detectors/closed_sets.json``): one pattern per family (a phrase
+    not followed by a word of ``exclude_after``), and the words that may not precede one."""
+    source = resources.files("epistrel.core.verify").joinpath("detectors/closed_sets.json")
+    raw = json.loads(source.read_text("utf-8"))
+    found: list[_Family] = []
+    for family in raw["families"]:
+        phrases = sorted(family["phrases"], key=lambda p: (-len(p), p))
+        alternation = "|".join(_phrase(p) for p in phrases)
+        pattern = re.compile(
+            rf"(?<![\w'\u2019-])(?:{alternation})(?![\w'\u2019-])",
+            re.IGNORECASE,
+        )
+        found.append(_Family(str(family["predicate"]), pattern))
+    return _Exclusions(
+        frozenset(w.casefold() for w in raw["exclude_before"]),
+        frozenset(w.casefold() for w in raw["exclude_after"]),
+        tuple(found),
+    )
+
+
+def _states(text: str, family: _Family, table: _Exclusions) -> bool:
+    """Whether ``text`` says one of ``family``'s phrases of the character itself: not after a
+    determiner or possessive ("her only brother"), and not before a preposition or a relative
+    clause ("the only child at the party") unless an indefinite article makes it the
+    character's status ("an only child in Dayton")."""
+    for match in family.pattern.finditer(text):
+        before = _WORD_BEFORE.search(text[: match.start()])
+        word = None if before is None else before.group(1).casefold()
+        if word in table.before:
+            continue
+        after = _WORD_AFTER.search(text[match.end() :])
+        if (
+            word not in _INDEFINITE
+            and after is not None
+            and after.group(1).casefold() in table.after
+        ):
+            continue
+        return True
+    return False
+
+
+def closed_sets_in(text: str, holder: str, registry: Registry) -> tuple[ClosedSetRecord, ...]:
+    """#580: the relations ``text`` (a character's own background) rules out for ``holder``
+    (an entity id), each an empty closed set ("an only child": no ``sibling_of`` object), from
+    the exclusion table, no model; one per family, for a predicate ``registry`` holds."""
+    table = _exclusions()
+    found: list[ClosedSetRecord] = []
+    for family in table.families:
+        predicate = registry.named(family.predicate)
+        if predicate is None or not _states(text, family, table):
+            continue
+        found.append(
+            ClosedSetRecord(
+                id=f"closed:{holder}:{family.predicate}",
+                predicate_id=predicate.id,
+                subject_id=holder,
+                members=(),
+            )
+        )
+    return tuple(found)
 
 
 def _background(proposition: Proposition, timed: bool) -> Proposition:
@@ -116,7 +214,8 @@ def read_seed(text: str, world: SeedWorld, *, holder: str | None = None) -> Seed
                 unresolved.append(claim.unnormalized.detail or "unresolved_entity")
             else:
                 tolerated += 1
-    return SeedReading(tuple(found), tuple(unresolved), tolerated)
+    closed = () if holder is None else closed_sets_in(text, holder, world.registry)
+    return SeedReading(tuple(found), tuple(unresolved), tolerated, closed)
 
 
 def seed_facts(
@@ -138,6 +237,7 @@ __all__ = [
     "CANON",
     "SeedReading",
     "SeedWorld",
+    "closed_sets_in",
     "entry_of",
     "read_seed",
     "seed_facts",

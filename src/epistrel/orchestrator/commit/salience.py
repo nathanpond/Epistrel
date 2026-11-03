@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal, cast
 
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -80,6 +80,7 @@ from epistrel.orchestrator.verify.extraction import locate_quote
 log = logging.getLogger(__name__)
 
 SalienceMode = Literal["rules", "rules_and_model"]
+SalienceBias = Literal["balanced", "recall"]
 BeatKind = Literal["say", "do", "narration"]
 SALIENCE_KINDS: frozenset[str] = frozenset({"say", "do", "narration"})
 """The beats salience reads (observable ones; ``think``, ``latent`` and player input never)."""
@@ -96,6 +97,21 @@ def salience_mode(settings: ProfileSettings) -> SalienceMode | None:
     if not lifecycle.commitment_enabled(settings):
         return None
     return settings.commitment.salience
+
+
+def salience_bias(settings: ProfileSettings) -> SalienceBias:
+    """The profile's ``commitment.salience_bias`` (#227)."""
+    return settings.commitment.salience_bias
+
+
+def _promoted(result: SalienceResult) -> SalienceResult:
+    """``result`` with every texture quote promoted to salient (``recall``): a promoted span
+    keeps the model's sketch when it has one, else its own words are the sketch's relation."""
+    promoted = [
+        SalientQuote(beat=q.beat, span=q.span, proposition_sketch=SalienceSketch(relation=q.span))
+        for q in result.texture
+    ]
+    return result.model_copy(update={"salient": [*result.salient, *promoted], "texture": []})
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +141,8 @@ class SalienceVerdict:
     characters: tuple[str, ...] = ()
     """The figures the model singled out as characters to model (#163's salience trigger), as
     the words naming them; ``core.epistemic.modeling.candidates`` finds each in its beat."""
+    promoted: bool = False
+    """#227: the answer was uncertain and ``salience_bias = recall`` counted its spans salient."""
 
 
 def _inputs(beats: Sequence[Beat], scene_context: SceneContext) -> SalienceInputs:
@@ -204,8 +222,11 @@ async def detect_salience(
     models: ModelAccessLayer | None = None,
     budget: TurnBudget | None = None,
     routes: Mapping[str, Route] | None = None,
+    bias: SalienceBias = "balanced",
 ) -> SalienceVerdict:
-    """One render's salience (see the module docstring)."""
+    """One render's salience (see the module docstring). ``bias`` (#227): under ``recall`` an
+    answer whose ``confidence`` is below the deployment's ``uncertain_below`` counts every span
+    salient; under ``balanced`` it is no answer (``salience_failed``: every beat texture)."""
     inputs = _inputs(beats, scene_context)
     if mode == "rules" or not inputs.beats:
         return SalienceVerdict()
@@ -221,6 +242,7 @@ async def detect_salience(
                 params=route.params if route is not None else None,
                 deterministic_first=lambda: None,
                 budget=budget or TurnBudget(),
+                keep_low_confidence=bias == "recall",
             )
     except BudgetExhausted:
         return SalienceVerdict(degradation=(SALIENCE_SKIPPED,))
@@ -229,7 +251,14 @@ async def detect_salience(
     if isinstance(answer, Uncertain):
         reason = SALIENCE_SKIPPED if answer.reason == "budget_exhausted" else SALIENCE_FAILED
         return SalienceVerdict(called=answer.attempts > 0, degradation=(reason,))
+    promoted = False
+    if bias == "recall" and answer.confidence is not None:
+        threshold = (await models.structured_settings()).uncertain_below
+        if answer.confidence < threshold:
+            answer, promoted = _promoted(answer), True
     found = _located(answer, beats)
+    if promoted:
+        found = replace(found, promoted=True)
     log.debug(
         "salience: %d salient, %d texture, %d unlocated",
         len(found.salient),

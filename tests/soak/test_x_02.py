@@ -222,3 +222,110 @@ async def test_x_02(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> Non
 @pytest.mark.part("M5", "FR-BELIEF-10; FR-EPI-3")
 async def test_x_02__pr(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
     await _play(engine, PR_TURNS, monkeypatch)
+
+
+# -- M7 (#225): retcons in the script -------------------------------------------------------------
+
+RETCON_EVERY = 7
+M7_PR_TURNS = 50
+
+
+async def _play_m7(engine: AsyncEngine, turns: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The M5 script with an author retcon every ``RETCON_EVERY`` turns: an amendment moves one
+    person's true place. Checked: canon's current place of each person is the latest truth, no
+    belief became canon (no canon write inside a transition; every amendment-written fact is the
+    author's), and each of Ann's beliefs is the place of the last thing she was told or shown,
+    a divergence from canon exactly when that differs from the latest truth (a retcon never
+    rewrites what she was told: testimony and corrections are kept, #225)."""
+    from epistrel.core.amendments.store import PropositionPartDraft
+    from tests import amendment_support as am
+
+    w = await c.world(engine)
+    story = w.story_id
+    await use_structured(engine, story)
+    ann, bobby = w.characters["Ann"], w.characters["Bobby"]
+    places = list(w.places.values())
+    async with engine.begin() as conn:
+        people = [await store.add_entity(conn, story, "person", f"P{i}") for i in range(PEOPLE)]
+    rng = random.Random(SEED)  # noqa: S311 - a fixed script, not a secret
+    truth = {p: rng.choice(places) for p in people}
+    facts = {p: await c.commit(engine, story, c.at(p, truth[p], 0, None)) for p in people}
+    spies = Spies(monkeypatch)
+    oracle = StagedSay()
+    told: dict[str, str] = {}
+    lies: dict[str, str] = {}
+
+    def staged(op: Operation) -> Antecedent:
+        oracle.op = op
+        return Antecedent.staged_beat(op.operation_id, op.turn_variant or 0, 1)
+
+    def beat_two(op: Operation) -> Position:
+        assert op.narrative_turn is not None
+        return Position(op.narrative_turn, op.turn_variant or 0, 0, 2, 0)
+
+    for turn in range(1, turns + 1):
+        person = rng.choice(people)
+        if turn % RETCON_EVERY == 0:
+            moved = rng.choice([p for p in places if p != truth[person]])
+            _, made, _ = await am.amend(
+                engine, story, [PropositionPartDraft(c.at(person, moved, 0, None))]
+            )
+            truth[person] = moved
+            (fact_id,) = made.written_fact_ids
+            facts[person] = (await rows(engine, "SELECT id FROM facts WHERE id = :f", f=fact_id))[0]
+            lies.pop(person, None)  # a reveal now corrects toward the new truth
+        elif person in lies and rng.random() < 0.5:
+            result = await ps.transit(
+                engine,
+                story,
+                ann,
+                c.at(person, truth[person], 0, None),
+                cause=Kind.CORRECTION,
+                antecedent=Antecedent.record("facts", facts[person].id),
+            )
+            lies.pop(person)
+            told[person] = truth[person]
+            assert result.belief is not None
+        else:
+            place = rng.choice([p for p in places if p != truth[person]])
+            result = await ps.transit(
+                engine,
+                story,
+                ann,
+                c.at(person, place, 0, None),
+                cause=Kind.TESTIMONY,
+                antecedent=staged,
+                position=beat_two,
+                source=bobby,
+                oracle=oracle,
+            )
+            lies[person] = result.belief.id
+            told[person] = place
+        if turn % CHECK_EVERY == 0 or turn == turns:
+            current = await rows(
+                engine,
+                "SELECT p.subject_id, p.object_id, f.provenance FROM facts f "
+                "JOIN propositions p ON p.id = f.proposition_id WHERE f.story_id = :s "
+                "AND f.superseded_by IS NULL AND f.membership = 'active'",
+                s=story,
+            )
+            assert {(r.subject_id, r.object_id) for r in current} == set(truth.items())
+            assert spies.canon_in_transition == 0
+            async with engine.connect() as conn:
+                held = await partitions.partition(conn, story, ann)
+            believed = {b.proposition.subject_id: b.proposition.object_id for b in held}
+            for who, place in told.items():
+                assert believed.get(who) == place, who
+
+
+@pytest.mark.soak
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-REWRITE-9")
+async def test_x_02__m7(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _play_m7(engine, TURNS, monkeypatch)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-REWRITE-9")
+async def test_x_02__m7_pr(engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+    await _play_m7(engine, M7_PR_TURNS, monkeypatch)

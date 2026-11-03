@@ -384,6 +384,16 @@ class StoryPauseBody(BaseModel):
     progress: StoryPauseProgressBody
 
 
+class AmendmentChecksBody(BaseModel):
+    """``amendment_checks_pending``: how many support-check questions are open, and (for an
+    omniscient read) the system session holding them (#239)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int
+    session_id: str | None = None
+
+
 class StoryBody(StorySummaryBody):
     """One story: the summary, its cast (true ages only for an omniscient read), its settings,
     its engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``
@@ -404,6 +414,11 @@ class StoryBody(StorySummaryBody):
     """While ``status`` is ``paused`` (#118): the check that paused it; ``null`` otherwise."""
     scenario: ScenarioOriginBody | None = None
     """The scenario version the story was created from (#119); ``null`` for a blank story."""
+    amendment_checks_pending: AmendmentChecksBody | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    """#239: the open support-check questions about the story's amendments, after a
+    truncation, swap or fork (``session_id`` for an omniscient read only); omitted when none."""
 
     @classmethod
     def of(cls, story: StoryView, undo: UndoState, chains: list[Chain]) -> StoryBody:
@@ -423,6 +438,9 @@ class StoryBody(StorySummaryBody):
                 for c in undo.dormant_chains
             ],
             variant_chains=[VariantChainBody.of(c) for c in chains],
+            amendment_checks_pending=None
+            if story.amendment_checks_pending is None
+            else AmendmentChecksBody.model_validate(story.amendment_checks_pending),
             pause=StoryPauseBody.model_validate(story.pause) if story.pause else None,
             scenario=None
             if story.scenario is None
@@ -645,7 +663,16 @@ SETTINGS_PATCH_DESCRIPTION = (
     "instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with "
     "per-character partitions, narration presupposing what its character could not know is "
     "accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect "
-    "otherwise). An "
+    "otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a "
+    "history rewrite places a correction whose absolute time the clock's anchor cannot decide, "
+    "included and flagged `timing_uncertain` by default or asked of the author; read when a "
+    "rewrite is planned), and `backfill_conflict_policy` (`last_mention` | `first_mention` | "
+    "`ask`: how a backfill settles old text that contradicts itself, the latest or earliest "
+    "statement canon, or the conflicts listed for the author while the story stays paused; "
+    "read when a backfill starts), and `prune_policy` (`null`, the default, or "
+    "`{older_than_days}` from 1 to 3650: the daily pruning run deletes the story's dormant "
+    "continuations and discarded tails older than that; setting it deletes nothing by itself). "
+    "An "
     "unknown key is 422. The engine's dials are the story's engine profile's, overridden per "
     "story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there "
     "(`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, "

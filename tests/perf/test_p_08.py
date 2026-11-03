@@ -234,7 +234,7 @@ async def test_p_08__three_character(
         assert row.p50_ms is not None
         assert row.p95_ms is not None
         assert row.p50_ms <= row.p95_ms
-        assert str(row.profile).startswith("Structured v"), row.profile
+        assert str(row.profile).startswith("Full v"), row.profile
         assert row.perception == "full"
         assert row.faulted_turns == [], row.failed_calls
         assert row.planning == {}, row.planning
@@ -266,7 +266,7 @@ async def test_p_08__three_character(
     assert "| stub: stub-model (three-character, director order turns) | minors policy on |" in text
     assert "**Three-character turns (P-08 M5, #182).**" in text
     assert "**Pending.**" in text
-    assert "profile Structured v" in text
+    assert "profile Full v" in text
     loaded = mm.load_rows(raw)
     assert {r["turn_kind"] for r in loaded} == set(mm.THREE_CHARACTER_KINDS)
     lite = mm.Row(**{**asdict(rows[0]), "turn_kind": "lite", "profile": None, "planning": None})

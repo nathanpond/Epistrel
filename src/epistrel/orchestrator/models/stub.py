@@ -277,6 +277,8 @@ class StubAdapter:
         """Claims a structured render's default answer declares (``with_render_claims``)."""
         self.nondeterministic = False
         self.calls: list[StubCall] = []
+        self.reported_version: str | None = None
+        """#234: the version each answer reports (none unless a test sets one)."""
         self._scripts: defaultdict[str, deque[str]] = defaultdict(deque)
         self._faults: defaultdict[str, deque[FaultKind]] = defaultdict(deque)
         self._when: list[tuple[tuple[str, ...], str, str | None]] = []
@@ -363,6 +365,7 @@ class StubAdapter:
         self._parrots.clear()
         self.fault_hook = None
         self.nondeterministic = False
+        self.reported_version = None
 
     # -- the adapter ----------------------------------------------------------------------
 
@@ -491,6 +494,7 @@ class StubAdapter:
             tokens_out=len(text) // 4,
             cost=0.0,
             request_id=f"stub-{digest[:24]}",
+            reported_version=self.reported_version,
         )
 
     async def probe(self, purpose: str) -> ProbeResult:

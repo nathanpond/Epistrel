@@ -88,6 +88,8 @@ class ModelResult(BaseModel):
     refused: bool = False
     """The provider set the message's ``refusal`` instead of answering (structured calls treat
     it as unparseable)."""
+    reported_version: str | None = None
+    """#234: the version the provider reported for the model (``system_fingerprint``)."""
 
 
 class UnknownPurpose(InvalidRequest):

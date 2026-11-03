@@ -62,6 +62,7 @@ from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
 from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
+from epistrel.core.profiles.certification import CertificationRecord
 from epistrel.core.stories import StorySpec
 
 SCHEMA_VERSION = "m6"
@@ -215,10 +216,50 @@ ERROR_STATUS: dict[str, int] = {
     "feedback_export_disabled": 403,
     "not_found": 404,
     "fact_not_found": 404,
+    "certification_not_found": 404,
+    "certification_not_valid": 409,
+    "backfill_not_found": 404,
+    "rewrite_session_not_found": 404,
+    "rewrite_session_closed": 409,
+    "rewrite_session_limit": 409,
+    "rewrite_stale": 409,
+    "rewrite_question_superseded": 409,
+    "rewrite_questions_pending": 409,
+    "rewrite_apply_in_progress": 409,
+    "record_in_flight": 409,
+    "checkpoint_not_found": 404,
+    "eval_run_not_found": 404,
+    "certification_run_not_found": 404,
     "client_event_conflict": 409,
     "idempotency_conflict": 409,
     "nothing_to_undo": 409,
     "not_latest_turn": 409,
+    "record_inactive": 409,
+    "amendment_already_reverted": 409,
+    "amendment_not_found": 404,
+    "external_value_not_overridable": 422,
+    "amendment_not_reverted": 409,
+    "amendment_already_redone": 409,
+    "use_redo": 422,
+    "certification_record_conflict": 409,
+    "backfill_not_cancellable": 409,
+    "backfill_in_progress": 409,
+    "checkpoint_incomplete": 409,
+    "nothing_to_backfill": 409,
+    "pruned": 409,
+    "job_not_found": 404,
+    "export_not_ready": 409,
+    "export_expired": 410,
+    "bundle_too_large": 413,
+    "corrupt_bundle": 422,
+    "unsupported_format_version": 422,
+    "prune_target_unknown": 422,
+    "prune_target_ineligible": 422,
+    "backfill_conflict_not_found": 404,
+    "backfill_conflict_closed": 409,
+    "backfill_not_awaiting_conflicts": 409,
+    "invalid_resolution": 422,
+    "certification_run_in_progress": 409,
     "already_corrected": 409,
     "revision_conflict": 409,
     "story_archived": 409,
@@ -270,6 +311,19 @@ ERROR_STATUS: dict[str, int] = {
     "nesting_too_deep": 422,
     "inheritance_cycle": 422,
     "invalid_erasure_scope": 422,
+    "invalid_amendment_part": 422,
+    "invalid_certification_record": 422,
+    "invalid_view": 422,
+    "schedule_not_amendable": 422,
+    "state_not_amendable": 422,
+    "rewrite_unparseable": 422,
+    "rewrite_noop": 422,
+    "invalid_answer": 422,
+    "base_revision_required": 422,
+    "merge_invalid": 422,
+    "directive_unparseable": 422,
+    "directive_no_changes": 422,
+    "directive_ambiguous": 422,
     "unknown_erasure_candidate": 422,
     "invalid_listing_status": 422,
     "invalid_profile": 422,
@@ -320,6 +374,8 @@ ERROR_STATUS: dict[str, int] = {
     "provider_unregistered": 422,
     "story_busy": 423,
     "budget_exhausted": 503,
+    "certification_unavailable": 503,
+    "rewrite_apply_failed": 503,
     "config_key_missing": 503,
     "config_missing": 503,
     "database_unavailable": 503,
@@ -420,6 +476,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         # The scenario's required providers, and the request's provider bindings (#204).
         "provider_unregistered",
         "binding_incomplete",
+        # #682: a provider binding naming an unregistered provider (``ProviderNotFound``).
+        "not_found",
     ),
     # External-data providers (#204).
     "register_external_provider": (*_ADMIN_CONFIG, "invalid_manifest", "provider_exists"),
@@ -438,6 +496,9 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "story_paused",
         "story_busy",
         "viewpoint_unresolved",
+        # #608: a multi-primary override (``interaction_mode``, ``sequence_order``,
+        # ``simultaneous_tie_break``) on a ``combined`` or Lite story (``multi.refuse_override``).
+        "module_off",
     ),
     "regenerate": (
         *_GATED,
@@ -519,6 +580,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # (as a turn, they wait for or are refused by one in flight), and definition updates.
     "get_states": ("module_off", "viewpoint_unresolved"),
     "get_state": ("module_off", "viewpoint_unresolved"),
+    "get_state_definition": ("module_off", "viewpoint_unresolved"),
     "set_state": (
         "story_archived",
         "story_paused",
@@ -548,6 +610,40 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # Engine-proposed States (#192): an analysis request, the list, and the review (an approval
     # declares the State at an inter-turn slot, as define_state does).
     "analyze_state_proposals": ("story_archived", "story_paused", "module_off"),
+    # Backfill (#228): a gap fill, its read and its cancel.
+    "start_backfill": ("backfill_in_progress", "nothing_to_backfill", "story_archived"),
+    "get_backfill": ("backfill_not_found",),
+    # #247: manual pruning.
+    "prune_story": (
+        "story_archived",
+        "story_paused",
+        "prune_target_unknown",
+        "prune_target_ineligible",
+    ),
+    # #230: a conflict's resolution.
+    "resolve_backfill_conflict": (
+        "backfill_not_found",
+        "backfill_conflict_not_found",
+        "backfill_not_awaiting_conflicts",
+        "backfill_conflict_closed",
+        "invalid_resolution",
+    ),
+    "cancel_backfill": ("backfill_not_found", "backfill_not_cancellable"),
+    # Certifications (#233): runs need the eval harness; one run per fingerprint at a time.
+    "request_certification_run_profile": (
+        "certification_run_in_progress",
+        "certification_unavailable",
+        "profile_deleted",
+    ),
+    "request_certification_run_story": (
+        "certification_run_in_progress",
+        "certification_unavailable",
+    ),
+    "get_certification_run": ("certification_run_not_found",),
+    "get_certification": ("certification_not_found",),
+    "invalidate_certification": ("certification_not_found", "certification_not_valid"),
+    "get_eval_run": ("eval_run_not_found",),
+    "import_certification": ("invalid_certification_record", "certification_record_conflict"),
     "list_state_proposals": ("module_off",),
     "approve_state_proposal": (
         "story_archived",
@@ -570,6 +666,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "provider_read_only",
         "erased_subject_referenced",
     ),
+    # #661: the resolve-only action for a listed consumer-applied effect.
+    "resolve_listing": ("story_archived", "story_paused", "module_off"),
     # A predicate proposal's decision (#131): an archived story's registry is read-only.
     "approve_predicate": ("story_archived",),
     "reject_predicate": ("story_archived",),
@@ -655,12 +753,139 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "inspect_divergences": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_exposures": ("module_off", "omniscient_required", "viewpoint_unresolved"),
     "inspect_external_facts": ("omniscient_required", "viewpoint_unresolved"),
-    "history": ("omniscient_required", "viewpoint_unresolved", "unknown_chain"),
+    "history": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "unknown_chain",
+        # #222: the as-recorded view's
+        "invalid_view",
+        "checkpoint_not_found",
+        "checkpoint_incomplete",
+    ),
     "retrieve": ("omniscient_required", "viewpoint_unresolved"),
     "get_story": ("viewpoint_unresolved",),
     # The structured state reads (#137): no viewpoint resolves (#536).
     "scene": ("viewpoint_unresolved",),
     "entity_profile": ("viewpoint_unresolved",),
+    # #679: a story's outbox rows, an omniscient read.
+    "list_outbox": ("omniscient_required", "viewpoint_unresolved", "erasure_pending"),
+    # #223-#225: the history side-channel, omniscient calls.
+    "open_rewrite": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "story_paused",
+        "rewrite_session_limit",
+        "guardrail_violation",
+        "budget_below_safety_minimum",
+        "module_off",
+        "rewrite_unparseable",
+        "rewrite_noop",
+        "erased_subject_referenced",
+        "model_unavailable",
+        "rewrite_apply_failed",
+        "external_value_not_overridable",
+    ),
+    "list_rewrites": ("omniscient_required", "viewpoint_unresolved"),
+    "get_rewrite": ("omniscient_required", "viewpoint_unresolved", "rewrite_session_not_found"),
+    "answer_rewrite": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "rewrite_session_not_found",
+        "rewrite_session_closed",
+        "invalid_answer",
+        "guardrail_violation",
+        "budget_below_safety_minimum",
+        "erased_subject_referenced",
+        "model_unavailable",
+        "rewrite_apply_failed",
+        "rewrite_question_superseded",
+    ),
+    "cancel_rewrite": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "rewrite_session_not_found",
+        "rewrite_session_closed",
+        "rewrite_apply_in_progress",
+    ),
+    "apply_rewrite": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "rewrite_session_not_found",
+        "rewrite_session_closed",
+        "rewrite_apply_in_progress",
+        "story_paused",
+        "rewrite_stale",
+        "rewrite_questions_pending",
+        "base_revision_required",
+        "record_in_flight",
+        "module_off",
+        "invalid_amendment_part",
+        "rewrite_apply_failed",
+        "model_unavailable",
+        "erased_subject_referenced",
+    ),
+    "apply_directive": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "story_paused",
+        "guardrail_violation",
+        "budget_below_safety_minimum",
+        "module_off",
+        "directive_unparseable",
+        "directive_no_changes",
+        "erased_subject_referenced",
+        "model_unavailable",
+        "state_constraint_violation",
+        "state_unpermitted",
+        "state_derived",
+        "clock_backward",
+        "clock_unanchored",
+        "clock_external",
+        "story_busy",
+        "rewrite_session_limit",
+        "rewrite_unparseable",
+        "rewrite_noop",
+        "external_value_not_overridable",
+    ),
+    "merge_entities": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "story_paused",
+        "rewrite_session_limit",
+        "merge_invalid",
+        "module_off",
+        "rewrite_apply_failed",
+    ),
+    "undo_amendment": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "amendment_not_found",
+        "amendment_already_reverted",
+        "use_redo",
+        "story_paused",
+        "rewrite_session_limit",
+        "revision_conflict",
+        "module_off",
+        "erased_subject_referenced",
+        "rewrite_stale",
+    ),
+    "redo_amendment": (
+        "omniscient_required",
+        "viewpoint_unresolved",
+        "amendment_not_found",
+        "amendment_not_reverted",
+        "amendment_already_redone",
+        "story_paused",
+        "rewrite_session_limit",
+        "revision_conflict",
+        "module_off",
+        "erased_subject_referenced",
+        "rewrite_stale",
+    ),
+    "list_amendments": ("omniscient_required", "viewpoint_unresolved"),
+    "get_amendment": ("omniscient_required", "viewpoint_unresolved", "amendment_not_found"),
+    # #681: a story's operations, listed (a read of the story, gated like every other).
+    "list_operations": ("erasure_pending",),
     "get_operation": (
         "idempotency_conflict",
         "viewpoint_unresolved",
@@ -776,8 +1001,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # A story's configuration (#109): a preview refuses what the change itself would; the
     # assignment and the overrides (#113) are story configuration writes.
     "impact_preview": ("invalid_profile", "profile_deleted"),
-    "assign_engine_profile": ("invalid_profile", "profile_deleted", "story_archived"),
-    "set_profile_overrides": ("invalid_profile", "story_archived"),
+    "assign_engine_profile": (
+        "invalid_profile",
+        "profile_deleted",
+        "story_archived",
+        "backfill_in_progress",
+    ),
+    "set_profile_overrides": ("invalid_profile", "story_archived", "backfill_in_progress"),
     # Principal lookup and offboarding (#117): a page's cursor another page gave; a request
     # that cannot run, or a principal already being offboarded.
     "lookup_principal": ("cursor_invalid", "ledger_unavailable"),
@@ -828,7 +1058,19 @@ QUEUEING_OPERATIONS = frozenset({"respond", "ingest"})
 """Operations a ``queue`` story answers with 202 ``QueuedTurn`` (and ``Prefer: respond-async``)."""
 
 VIEWPOINT_OPERATIONS = frozenset(
-    {"respond", "regenerate", "correct", "history", "get_story", "get_operation"}
+    {
+        "respond",
+        "regenerate",
+        "correct",
+        "history",
+        "get_story",
+        "get_operation",
+        # #682: the State and scheduled-event reads take it too (FR-STATE-9, FR-CLOCK-9).
+        "get_states",
+        "get_state",
+        "get_state_definition",
+        "list_scheduled_events",
+    }
 )
 """Operations that read the output viewpoint from ``?viewpoint=`` (FR-RESP-12)."""
 
@@ -851,6 +1093,8 @@ OFFBOARDING_OPERATIONS = frozenset({"offboard_principal"})
 DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
     "update_story_settings": "StorySettingsPatch",
     "create_story": ("StorySpec", "StoryFromScenario"),
+    # #233: the Engine validates a record itself (422 invalid_certification_record).
+    "import_certification": "CertificationRecord",
 }
 """Operations whose handler takes a raw JSON object (validated by the Engine or the handler) and
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
@@ -1081,6 +1325,7 @@ def _extra_components() -> dict[str, Any]:
             (StorySpec, "validation"),
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
+            (CertificationRecord, "validation"),
         ],
         ref_template=REF,
     )

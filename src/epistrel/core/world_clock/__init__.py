@@ -554,8 +554,45 @@ def anchor_epoch(anchor: Anchor, minute_zero: int = 0) -> datetime | None:
 
 
 async def story_time_at(conn: AsyncConnection, story_id: str, position: AnyPosition) -> int:
-    """The story-minute of ``position`` (see the module docstring)."""
-    return (await time_basis(conn, story_id)).at(position)
+    """The story-minute of ``position`` (see the module docstring). #631: a beat of a
+    committed turn (outside its commit's ``turn_scope``) takes its step's start as the turn
+    stamped it on that beat's events (``events.valid_time_minutes``), so a memory, an
+    utterance or an exposure written for a step reads the time its events carry; the fold of
+    positioned advances cannot say it (a simultaneous turn's renders each start at the turn's
+    start)."""
+    basis = await time_basis(conn, story_id)
+    found = as_position(position)
+    if basis.advances is not None and found.beat and found.variant:
+        times = basis.in_turn
+        if times is None or times.turn != found.turn:
+            stamped = await _stamped_at(conn, story_id, found)
+            if stamped is not None:
+                return stamped
+    return basis.at(position)
+
+
+async def _stamped_at(conn: AsyncConnection, story_id: str, at: Position) -> int | None:
+    """The story-minute the turn stamped on an event at exactly ``at`` (its turn, variant,
+    slot, beat and step; a pre-0082 ``NULL`` step is 0), if any."""
+    from sqlalchemy import func
+
+    from epistrel.core.tables.events import events
+
+    e = events.c
+    return await conn.scalar(
+        select(e.valid_time_minutes)
+        .where(
+            e.story_id == story_id,
+            e.narrative_turn == at.turn,
+            e.turn_variant == at.variant,
+            func.coalesce(e.slot_k, 0) == at.slot_k,
+            e.beat == at.beat,
+            func.coalesce(e.step, 0) == at.step,
+            e.valid_time_minutes.is_not(None),
+        )
+        .order_by(e.seq)
+        .limit(1)
+    )
 
 
 async def elapsed_since(conn: AsyncConnection, story_id: str) -> Callable[[Position], int]:

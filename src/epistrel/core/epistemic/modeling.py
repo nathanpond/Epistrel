@@ -72,6 +72,7 @@ from typing import Any, Literal
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import turn_memo
 from epistrel.core.enums import Authority, CharacterWeight, Provenance
 from epistrel.core.erasure import guard
 from epistrel.core.erasure.index import index_records, reindex_story
@@ -165,6 +166,9 @@ class Lexicon:
     """Head nouns that make the phrase after a direct object a time or frequency phrase (#573)."""
     time_adverbs: frozenset[str] = frozenset()
     """Adverbs that end that phrase's noun ("an hour later", "a note again"; #583)."""
+    address_terms: frozenset[str] = frozenset()
+    """#624: forms of address that name nobody in particular ("friend", "mate", "sir"): a
+    vocative of one addresses whoever is spoken to, so it models nobody."""
 
 
 @cache
@@ -194,6 +198,7 @@ def lexicon() -> Lexicon:
         persons=frozenset(str(p).casefold() for p in table.get("person_nouns", ())),
         times=frozenset(str(t).casefold() for t in table.get("time_words", ())),
         time_adverbs=frozenset(str(t).casefold() for t in table.get("time_adverbs", ())),
+        address_terms=frozenset(str(t).casefold() for t in table.get("address_terms", ())),
     )
 
 
@@ -371,7 +376,8 @@ def _followed_by(text: str, target: Party, verb: Verb, lex: Lexicon) -> bool:
     a second time" / "an hour later" / "the next morning" is motion past. The phrase's head noun
     decides (#583): the last of the words after the determiner before a time adverb, a ``then``
     word or article, punctuation, or the third word. "a note again", "the morning paper" and "a
-    note that morning" hand something over; a head in ``times`` is a time phrase."""
+    note that morning" hand something over; a head in ``times`` is a time phrase, and ``or`` and
+    the word after it never become the head ("an hour or so later", #585)."""
     word = _WORD.match(text, _skip_space(text, target.span[1]))
     if word is None or word.group().casefold() not in verb.then:
         return False
@@ -379,15 +385,22 @@ def _followed_by(text: str, target: Party, verb: Verb, lex: Lexicon) -> bool:
         return True  # "calls the waiter over": a particle, not a determiner
     pos = word.end()
     head: str | None = None
-    for _ in range(3):
+    skip = 0
+    for _ in range(4):
         nxt = _WORD.match(text, _skip_space(text, pos))
         if nxt is None or text[pos : nxt.start()].strip():
             break  # the end, or punctuation between the words
         folded = nxt.group().casefold()
         if folded in lex.time_adverbs or folded in verb.then or folded in lex.articles:
             break
-        head = folded
         pos = nxt.end()
+        if skip:
+            skip -= 1
+            continue
+        if folded == "or" and head is not None:
+            skip = 1  # #585: "an hour or so later": the head is the word before "or"
+            continue
+        head = folded
     return head not in lex.times
 
 
@@ -470,10 +483,20 @@ def _vocatives(
             continue
         if party.entity_id is not None and party.entity_id == speaker:
             continue
+        if party.entity_id is None and _address_term(party.phrase, lex):
+            continue  # #624: "…, friend." addresses the one spoken to, not a new person
         seen.add(party.span)
         speaker_party = Party(speaker, "") if speaker is not None else None
         found.append(Interaction("vocative", speaker_party, party))
     return found
+
+
+def _address_term(phrase: str, lex: Lexicon) -> bool:
+    """Whether ``phrase`` (a vocative's words, an article allowed) is a form of address."""
+    words = [w.casefold() for w in _WORD.findall(phrase)]
+    if words and words[0] in lex.articles:
+        words = words[1:]
+    return len(words) == 1 and words[0] in lex.address_terms
 
 
 def interactions(
@@ -567,6 +590,29 @@ def _modeled(party: Party | None, entities: Mapping[str, EntityInfo]) -> bool:
     return info is not None and info.modeled
 
 
+def _described_modeled(party: Party, entities: Mapping[str, EntityInfo]) -> str | None:
+    """#481 (#613): the one modeled person a shorter description names ("the driver" after "the
+    delivery driver": its words a subset of the modeled one's name), as mention resolution
+    reads a description; ``None`` when none or several do."""
+    words = set(descriptors_of(party.phrase))
+    if not words:
+        return None
+    found = [
+        entity_id
+        for entity_id, info in entities.items()
+        if info.modeled and info.kind == "person" and words <= set(descriptors_of(info.name))
+    ]
+    return found[0] if len(found) == 1 else None
+
+
+def _resolved(party: Party | None, entities: Mapping[str, EntityInfo]) -> Party | None:
+    """``party`` with its entity filled when a description names one modeled person."""
+    if party is None or party.entity_id is not None:
+        return party
+    found = _described_modeled(party, entities)
+    return party if found is None else replace(party, entity_id=found)
+
+
 def _name_of(party: Party, entities: Mapping[str, EntityInfo]) -> str:
     if party.entity_id is not None and party.entity_id in entities:
         return entities[party.entity_id].name
@@ -594,7 +640,7 @@ def candidates(
         for hit in interactions(
             beat.kind, beat.text, beat.mentions, actor=beat.actor, entities=entities
         ):
-            sides = (hit.subject, hit.object)
+            sides = (_resolved(hit.subject, entities), _resolved(hit.object, entities))
             for one, other in (sides, sides[::-1]):
                 if _modeled(one, entities) and _unmodeled_person(other, entities):
                     assert other is not None  # noqa: S101 - checked above
@@ -852,6 +898,7 @@ async def maybe_model(
         **position.columns("modeled"),
     }
     await conn.execute(insert(characters).values(row))
+    turn_memo.forget("story_subjects")  # #619: the new name is a subject from now on
     if adopted is not None:
         await conn.execute(
             update(entities).where(entities.c.id == character_id).values(character_id=character_id)

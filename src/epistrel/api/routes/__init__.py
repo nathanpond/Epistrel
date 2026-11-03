@@ -12,10 +12,15 @@ from fastapi import APIRouter
 
 from epistrel.api.routes import (
     admin,
+    amendments,
+    backfill,
     catalog_characters,
     catalog_scenarios,
+    certifications,
     clock,
+    directives,
     engine_profiles,
+    entities,
     feedback,
     feedback_reports,
     health,
@@ -30,6 +35,7 @@ from epistrel.api.routes import (
     reconciliation,
     respond,
     retrieval,
+    rewrites,
     scene,
     scheduled_events,
     state_proposals,
@@ -59,13 +65,20 @@ router.include_router(inspect.router)
 router.include_router(retrieval.router)
 router.include_router(timeline.router)
 router.include_router(operations.router)
+router.include_router(operations.story_router)
 router.include_router(catalog_characters.router)
 router.include_router(catalog_scenarios.router)
 router.include_router(media.router)
 router.include_router(engine_profiles.router)
+router.include_router(certifications.router)
 router.include_router(personas.router)
 router.include_router(principals.router)
 router.include_router(story_profile.router)
+router.include_router(backfill.router)
+router.include_router(rewrites.router)
+router.include_router(entities.router)
+router.include_router(directives.router)
+router.include_router(amendments.router)
 router.include_router(story_rating.router)
 router.include_router(clock.router)
 router.include_router(scheduled_events.router)

@@ -79,13 +79,16 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstr
 from sqlalchemy import and_, delete, exists, func, insert, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import backfill as core_backfill
 from epistrel.core import clock, control, ownership
+from epistrel.core.backfill import coverage
 from epistrel.core.config_changes import bump_config_revision, lock_deployment, record_config_change
 from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import ConfigConflict, InvalidRequest, ProfileDeleted, ProfileNotFound
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.ownership import Owner, RelationFilter
-from epistrel.core.profiles import effective, guarantees, impact, schema
+from epistrel.core.profiles import certification, effective, guarantees, impact, schema, tiers
+from epistrel.core.profiles.certification import FloorsMet
 from epistrel.core.profiles.effective import Configuration
 from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import Delta, ImpactReport, TwoStageRequest, TwoStageResult
@@ -161,6 +164,17 @@ class ProfileCreate(BaseModel):
     owner: Owner | None = None
 
 
+class UpgradePinned(TwoStageRequest):
+    """``POST /engine-profiles/{id}/upgrade-pinned`` (#229): ``ignore_warnings`` confirms the
+    report's warnings, ``upgrade_mode`` how a story with history gains data-producing
+    capability."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"examples": [{"ignore_warnings": True, "upgrade_mode": "backfill"}]},
+    )
+
+
 class ProfileUpdate(TwoStageRequest):
     """``PUT /engine-profiles/{id}``: the profile's name and settings, replaced in full. A new
     version is made only when the settings differ from the latest version's. ``ignore_warnings``
@@ -181,8 +195,12 @@ class ProfileCopy(BaseModel):
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{"name": "My Lite"}]})
 
-    name: Name
+    name: Name | None = None
+    """The copy's name; ``null`` (or left out, #227): ``"<source name> (copy)"``."""
     owner: Owner | None = None
+
+
+COPY_SUFFIX = " (copy)"
 
 
 class ProfileValidate(BaseModel):
@@ -216,6 +234,14 @@ class EngineProfile(BaseModel):
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None
+    quality: FloorsMet | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="The version's quality under the deployment's models and no story "
+        "overrides (FR-PROF-16, #233): its `fingerprint`, its `status` and the floors its "
+        "newest valid certification passed (`floors_met`, empty without one: a floor is never "
+        "labelled met without a matching certification).",
+    )
 
 
 class ProfileVersion(BaseModel):
@@ -248,6 +274,9 @@ class ProfileWrite:
     warnings: tuple[ProfileValidationWarning, ...] = ()
     """The validator's warnings for the profile's latest version over the deployment's
     ``profile_defaults`` (#456: ``below_safety_minimum``, as ``validate`` answers it)."""
+    backfills: tuple[core_backfill.Queued, ...] = ()
+    """#229: the backfills a confirmed data-producing edit queued (``upgrade_mode = backfill``),
+    one per following story with history, in queue order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +541,7 @@ async def update_profile(
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
     safety: SafetyFacts | None = None,
+    start_job: core_backfill.StartJob | None = None,
 ) -> TwoStageResult[ProfileWrite]:
     """Replace the profile's name and settings, in two stages (see the module docstring): a new
     version when the settings differ. The impact report covers every story following the
@@ -549,7 +579,13 @@ async def update_profile(
         )
         warned = tuple(safety_warnings(after, safety))
         following = await impact.following_report(
-            conn, profile_id, change, overridden, budget_warnings=warned
+            conn,
+            profile_id,
+            change,
+            overridden,
+            budget_warnings=warned,
+            mode=request.upgrade_mode,
+            levels=coverage.capabilities_of(after),
         )
 
         async def report() -> ImpactReport:
@@ -565,13 +601,28 @@ async def update_profile(
                 )
             now = clock.now()
             values: dict[str, Any] = {"name": request.name, "updated_at": now}
+            queued: tuple[core_backfill.Queued, ...] = ()
+            forward = request.upgrade_mode == "forward_only"
             if new_version:
                 await _insert_version(conn, profile_id, version, settings, principal, now)
                 values["current_version"] = version
-                await _pin(conn, profile_id, current, following.keep)
+                if not forward:
+                    await _pin(conn, profile_id, current, following.keep)
             await conn.execute(
                 update(engine_profiles).where(engine_profiles.c.id == profile_id).values(**values)
             )
+            if new_version:  # #231: decreases close coverage, increases queue or gap
+                queued = await _upgrade_following(
+                    conn,
+                    profile_id,
+                    current,
+                    following,
+                    {s: overridden.get(s, change) for s in following.keep},
+                    forward=forward,
+                    principal=principal,
+                    start_job=start_job,
+                    previous_settings=before,
+                )
             if new_version:
                 await _record_version(
                     conn,
@@ -584,7 +635,212 @@ async def update_profile(
             else:
                 await control.record_control_operation(conn, actor=principal)
             return ProfileWrite(
-                await _read(conn, profile_id), await config_revision(conn), warnings=warned
+                await _read(conn, profile_id),
+                await config_revision(conn),
+                warnings=warned,
+                backfills=queued,
+            )
+
+        outcome = await impact.two_stage(report, apply, ignore_warnings=request.ignore_warnings)
+        return dataclasses.replace(outcome, config_revision=await config_revision(conn))
+
+
+async def _upgrade_following(
+    conn: AsyncConnection,
+    profile_id: str,
+    previous: int,
+    following: impact.Following,
+    changes: Mapping[str, Delta],
+    *,
+    forward: bool,
+    principal: str,
+    start_job: core_backfill.StartJob | None,
+    previous_settings: Any = None,
+) -> tuple[core_backfill.Queued, ...]:
+    """#229: after a new version that adds data-producing capability, every story now
+    following it records its ``live`` coverage from its next turn; under ``forward_only`` the
+    stories with history keep their gap (a queued backfill of theirs not yet claimed is
+    superseded); under ``backfill`` each one, pinned to ``previous``, gets its queued backfill
+    (``core.backfill.enqueue``), in queue order. A story whose own backfill is running is left
+    pinned (``upgrade-pinned`` brings it forward later)."""
+    for story in sorted(following.keep) if forward else ():
+        await core_backfill.supersede_queued(conn, story)
+    now_following = list(
+        await conn.scalars(
+            select(stories.c.id)
+            .where(
+                stories.c.engine_profile_id == profile_id,
+                stories.c.engine_profile_version_pin.is_(None),
+            )
+            .order_by(stories.c.id)
+        )
+    )
+    from epistrel.core import summary_rebuild
+    from epistrel.core.genesis import deferred
+
+    for story in now_following:
+        await coverage.extend_live(conn, str(story))
+        await deferred.on_configuration(conn, str(story), principal)  # #231
+        before = changes.get(str(story))
+        await summary_rebuild.on_configuration(  # #232
+            conn,
+            str(story),
+            previous_settings if before is None else before.settings_before,
+            principal,
+        )
+    if forward or start_job is None:
+        return ()
+    return await queue_upgrades(
+        conn,
+        profile_id,
+        previous,
+        sorted(following.keep, key=lambda s: following.positions.get(s, 0)),
+        following.spans,
+        changes,
+        principal=principal,
+        start_job=start_job,
+    )
+
+
+async def queue_upgrades(
+    conn: AsyncConnection,
+    profile_id: str,
+    previous: Mapping[str, int] | int,
+    story_ids: Sequence[str],
+    spans: Mapping[str, tuple[int, int]],
+    changes: Mapping[str, Delta],
+    *,
+    principal: str,
+    start_job: core_backfill.StartJob,
+) -> tuple[core_backfill.Queued, ...]:
+    """#229: queue each story's backfill toward ``profile_id``'s latest version (the pin
+    cleared on completion), skipping one whose own backfill is running."""
+    queued: list[core_backfill.Queued] = []
+    for story in story_ids:
+        if story not in spans:
+            continue
+        existing = await core_backfill.running(conn, story)
+        if existing is not None and not await core_backfill.waiting(conn, existing):
+            continue
+        version = previous if isinstance(previous, int) else previous[story]
+        started = await core_backfill.enqueue(
+            conn,
+            story,
+            capabilities=sorted(changes[story].increases),
+            span=spans[story],
+            source={"profile_id": profile_id, "profile_version": version},
+            target={"profile_id": profile_id, "pin": None},
+            principal=principal,
+            start_job=start_job,
+        )
+        row = await core_backfill.latest_row(conn, story)
+        queued.append(
+            core_backfill.Queued(
+                story_id=story,
+                id=started.id,
+                job_id=started.job_id,
+                status=started.status,
+                queue_position=await core_backfill.queue_position(conn, row),
+            )
+        )
+    return tuple(queued)
+
+
+async def upgrade_pinned(
+    db: AsyncEngine,
+    profile_id: str,
+    request: UpgradePinned,
+    *,
+    principal: str,
+    facts: RuntimeFacts,
+    purposes: Purposes | None = None,
+    start_job: core_backfill.StartJob | None = None,
+) -> TwoStageResult[ProfileWrite]:
+    """``POST /engine-profiles/{id}/upgrade-pinned`` (FR-PROF-7,8; #229): bring every story
+    pinned to an older version of the profile (#109's interim, #181/#203's seed pins) forward to
+    its latest version, in two stages. The report has one entry per pinned story (the change it
+    sees through its own overrides); confirmed, each pin is cleared the way a profile edit moves
+    a following story: a behavioral change at its next turn, a data-producing increase for a
+    story with history by ``upgrade_mode`` (``backfill``: queued, the pin cleared on
+    completion; ``forward_only``: cleared now, with a coverage gap). A story whose own backfill
+    is running is left as it is. 404 for an unknown profile; no pinned story answers an empty
+    report, applied."""
+    from epistrel.core.profiles.story import _write_assignment
+
+    async with db.begin() as conn:
+        deployment = await lock_deployment(conn)
+        head = await _head(conn, profile_id, lock="no_key_update")
+        latest_version = int(head.current_version)
+        latest = await _version(conn, profile_id, latest_version)
+        pin = stories.c.engine_profile_version_pin
+        pinned = {
+            str(r.id): int(r.pin)
+            for r in await conn.execute(
+                select(stories.c.id, pin.label("pin"))
+                .where(
+                    stories.c.engine_profile_id == profile_id,
+                    pin.is_not(None),
+                    pin < latest_version,
+                )
+                .order_by(stories.c.id)
+                .with_for_update(key_share=True)
+            )
+        }
+        changes: dict[str, Delta] = {}
+        levels: dict[str, dict[str, str | None]] = {}
+        held: dict[str, effective.StoryProfile] = {}
+        for story, version in pinned.items():
+            current = await effective.effective_configuration(conn, story, validate=False)
+            after = effective.resolve_layers(
+                deployment.profile_defaults,
+                latest.settings,
+                current.overrides,
+                purposes=purposes,
+                field=("body", "profile_id"),
+            )
+            held[story] = current
+            levels[story] = coverage.capabilities_of(after)
+            changes[story] = impact.delta(
+                Configuration(profile_id, version, current.settings),
+                Configuration(profile_id, latest_version, after),
+                facts,
+            )
+        found = await impact.stories_report(conn, changes, mode=request.upgrade_mode, levels=levels)
+        forward = request.upgrade_mode == "forward_only"
+
+        async def report() -> ImpactReport:
+            return found.report
+
+        async def apply(_: ImpactReport) -> ProfileWrite:
+            queue = not forward and start_job is not None
+            for story in sorted(pinned):
+                existing = await core_backfill.running(conn, story)
+                if existing is not None and not await core_backfill.waiting(conn, existing):
+                    continue
+                if story in found.keep and queue:
+                    continue
+                await core_backfill.supersede_queued(conn, story)
+                await _write_assignment(
+                    conn, story, held[story], profile_id, None, principal=principal
+                )
+            queued: tuple[core_backfill.Queued, ...] = ()
+            if queue and start_job is not None:
+                queued = await queue_upgrades(
+                    conn,
+                    profile_id,
+                    pinned,
+                    sorted(found.keep, key=lambda s: found.positions.get(s, 0)),
+                    found.spans,
+                    changes,
+                    principal=principal,
+                    start_job=start_job,
+                )
+            await control.record_control_operation(conn, actor=principal)
+            return ProfileWrite(
+                await _read(conn, profile_id),
+                await config_revision(conn),
+                changed=bool(pinned),
+                backfills=queued,
             )
 
         outcome = await impact.two_stage(report, apply, ignore_warnings=request.ignore_warnings)
@@ -719,7 +975,7 @@ async def copy_profile(
         source = await _version(conn, profile_id, version or int(head.current_version))
         copied = await _insert_profile(
             conn,
-            name=request.name,
+            name=request.name or f"{head.name}{COPY_SUFFIX}"[:NAME_MAX],
             owner=request.owner or principal,
             settings=source.settings,
             principal=principal,
@@ -856,13 +1112,38 @@ async def purge_deleted(db: AsyncEngine) -> int:
 # -- reads ----------------------------------------------------------------------------------------
 
 
+async def read_profile(
+    conn: AsyncConnection, profile_id: str, version: int | None = None
+) -> EngineProfile:
+    """The profile at ``version`` (the latest by default) in ``conn``'s transaction; 404 for an
+    unknown profile or version."""
+    return await _read(conn, profile_id, version)
+
+
 async def get_profile(
-    db: AsyncEngine, profile_id: str, *, version: int | None = None
+    db: AsyncEngine,
+    profile_id: str,
+    *,
+    version: int | None = None,
+    facts: RuntimeFacts | None = None,
 ) -> EngineProfile:
     """The profile at its latest version (or ``version``), deleted or not; 404 for an unknown
-    profile or version."""
+    profile or version. With ``facts`` (the deployment's models and certified fingerprints) it
+    carries its ``quality`` (#233)."""
     async with db.connect() as conn:
-        return await _read(conn, profile_id, version)
+        found = await _read(conn, profile_id, version)
+        if facts is None:
+            return found
+        defaults = await effective.profile_defaults(conn)
+        deployment = await conn.scalar(
+            select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+        )
+    settings = tiers.resolved(
+        effective.merged_settings(defaults, found.settings), tiers.strongest_of(deployment)
+    )
+    stamped = Configuration(found.id, found.version, settings).stamp(facts)
+    quality = certification.floors_met(stamped.fingerprint, stamped.quality_status)
+    return found.model_copy(update={"quality": quality})
 
 
 async def profile_guarantees(
@@ -924,10 +1205,11 @@ async def list_profiles(
     include_deleted: bool = False,
     limit: int = DEFAULT_PAGE,
     cursor: str | None = None,
+    preset: bool | None = None,
 ) -> ProfilePage:
     """A page of profiles at their latest version, newest first, presets included; deleted ones
     only with ``include_deleted``. ``owner`` and ``relations`` narrow the list only when given
-    (FR-AUTH-8)."""
+    (FR-AUTH-8); ``preset`` (#227) to the presets or the others."""
     if not 1 <= limit <= MAX_PAGE:
         raise InvalidRequest(f"limit must be 1 to {MAX_PAGE}", {"field": "query.limit"})
     where = ownership.list_filters(
@@ -939,6 +1221,8 @@ async def list_profiles(
     )
     if not include_deleted:
         where.append(engine_profiles.c.deleted_at.is_(None))
+    if preset is not None:
+        where.append(engine_profiles.c.preset.is_(preset))
     if cursor is not None:
         moment, after = _decode_cursor(cursor)
         where.append(
@@ -1029,6 +1313,7 @@ __all__ = [
     "ProfileVersion",
     "ProfileWarning",
     "ProfileWrite",
+    "UpgradePinned",
     "config_revision",
     "copy_profile",
     "create",
@@ -1041,8 +1326,10 @@ __all__ = [
     "profile_schema",
     "profile_setting",
     "purge_deleted",
+    "queue_upgrades",
     "require_assignable",
     "update_profile",
+    "upgrade_pinned",
     "validate_stored",
     "validated",
 ]

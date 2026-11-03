@@ -376,6 +376,8 @@ class DeclaredClaim:
     attribution: ClaimAttribution | None = None
     """#167: the declared claim reports someone's belief or speech act (not the speaker's own
     assertion)."""
+    time_text: str | None = None
+    """#645: the time as the beat declared it ("4 pm"), which a schedule's create is held at."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -430,6 +432,8 @@ class DetectedClaim:
     """#167: whom the claim attributes its proposition to (declared, or the attribution
     lexicon's cue before its span): checked against the speaker's nested beliefs, never as the
     speaker's own assertion."""
+    time_text: str | None = field(default=None, compare=False, repr=False)
+    """#645: a declared claim's time as the beat said it (a detector claim's is its sketch's)."""
     recalled: str | None = field(default=None, compare=False, repr=False)
     """#172: a ``recall`` claim's recalled content (never in a payload)."""
     giver: str | None = None
@@ -786,6 +790,8 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
             continue
         if at > 0 and beat.tokens[at - 1].word in _DETERMINERS:
             continue
+        if _remaining(beat, table, lemma, at):
+            continue  # #633: "500 gold left" is what remains, not a departure
         if lemma.options.get("bare") and _continues(beat, end, at):
             continue  # #200: "came to the diner" is movement, "came to" alone a waking
         taken.append((start, end))
@@ -800,6 +806,27 @@ def _verb_hits(beat: _Beat, registry: Registry, env: DetectionEnv) -> None:
         if not made:
             beat.noise += 1
             beat.risky.add(table.category)
+
+
+def _remaining(beat: _Beat, table: VerbTable, lemma: Lemma, at: int) -> bool:
+    """#633: a ``remaining_forms`` word ("left") right after a number or a quantifier (or one
+    word after it: "500 gold left"), in a clause that holds or has something before it ("Cal
+    has 500 gold left", "there's nothing left"), means remaining: no verb of the table."""
+    rule = table.options.get("remaining")
+    token = beat.tokens[at]
+    if not rule or token.word not in lemma.options.get("remaining_forms", ()):
+        return False
+    before = [t.word for t in beat.tokens[:at] if t.clause == token.clause]
+    numbers = _number_words()
+    quantifiers = frozenset(rule.get("quantifiers", ()))
+
+    def counted(word: str) -> bool:
+        return word.isdigit() or word in numbers or word in quantifiers
+
+    if not any(counted(w) for w in before[-2:]):
+        return False
+    holders = frozenset(rule.get("holders", ()))
+    return any(w in holders for w in before)
 
 
 def _continues(beat: _Beat, end: int, at: int) -> bool:
@@ -1092,6 +1119,9 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
         if at is not None and _suppressed(beat.text, beat.tokens, at):
             beat.noise += 1
             continue
+        if at is not None and _unreliable_reading(beat.tokens, at):
+            beat.noise += 1  # #643: what a stopped watch reads, not the time
+            continue
         said = " ".join(match.group().split())
         found.append(
             (
@@ -1106,6 +1136,25 @@ def _times(beat: _Beat, scene_entity: str | None) -> list[tuple[str, ClaimSketch
             )
         )
     return found
+
+
+def _unreliable_reading(tokens: Sequence[_Token], at: int) -> bool:
+    """#643: the clock time at ``tokens[at]`` sits in a sentence naming an unreliable
+    instrument (``time.json``'s ``unreliable_instruments``: a modifier within two words before
+    the instrument, "the stopped watch", or after it in the sentence, "the clock was
+    broken")."""
+    rule = tables().time.get("unreliable_instruments") or {}
+    instruments = frozenset(rule.get("instruments", ()))
+    modifiers = frozenset(rule.get("modifiers", ()))
+    sentence = tokens[at].sentence
+    words = [t.word for t in tokens if t.sentence == sentence]
+    for i, word in enumerate(words):
+        if word in instruments and (
+            any(w in modifiers for w in words[max(0, i - 2) : i])
+            or any(w in modifiers for w in words[i + 1 : i + 4])
+        ):
+            return True
+    return False
 
 
 _AMOUNT: Final = (
@@ -1353,6 +1402,7 @@ def _detect_beat(
                 unnormalized=d.unnormalized if d.proposition is None else None,
                 matched_declared_id=d.id,
                 attribution=d.attribution,
+                time_text=d.time_text,
             )
         )
     _verb_hits(work, env.registry, env)

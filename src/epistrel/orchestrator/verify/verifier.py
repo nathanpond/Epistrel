@@ -150,6 +150,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.canon.canonize import CanonRequest, anchor_for, visibility_of
 from epistrel.core.config_changes import read_section
+from epistrel.core.enums import BeliefTransitionKind
 from epistrel.core.epistemic import perception, resurface
 from epistrel.core.membership import Position as NarrativePosition
 from epistrel.core.membership import step_of
@@ -167,6 +168,7 @@ from epistrel.core.propositions.model import (
 from epistrel.core.propositions.registry import Registry, conditional_owner, load, owner_lookup
 from epistrel.core.propositions.vocabulary import (
     CLOCK_CHECKS,
+    CORE_BY_NAME,
     SCHEDULED,
     STATE_VALUE,
     TIME_IS,
@@ -191,6 +193,7 @@ from epistrel.core.verify.permission import (
     Permission,
     PermissionFacts,
     Permitted,
+    Reason,
 )
 from epistrel.core.verify.rules import (
     CANON,
@@ -259,6 +262,8 @@ repair reads or substitutes the hidden value."""
 NEVER_CANONIZES = frozenset({"think"})
 ANCHORING = frozenset({TIME_IS, TIME_OF_DAY_BAND})
 """#195: the clock checks whose objective statement anchors the clock."""
+LOCATED_AT = CORE_BY_NAME["located_at"].id
+"""#635: the placement fluent narration may change for an unmodeled person."""
 ANCHORS = frozenset({"director", "author"})
 """#195 (#144): the asserters whose statement anchors the clock (objective narration)."""
 ENGINE = Visibility(scope="engine")
@@ -398,7 +403,8 @@ class VerifyConfig:
             safe_disposition=v.safe_disposition,
             entailment_max_records=d.entailment_max_records,
             neighborhood_max_facts=d.neighborhood_max_facts,
-            clock=clocked,
+            # #663: the prompt-only clock checks nothing and anchors nothing.
+            clock=clocked and clock == ON_LEVEL,
             # #203: the prompt-only clock verifies no time claim.
             time_claims=clocked
             and clock == ON_LEVEL
@@ -713,6 +719,7 @@ class ClaimSource(Protocol):
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        fiat_known: bool = False,
     ) -> Permission | None: ...
 
     async def anchor(
@@ -784,6 +791,7 @@ class RecordsSource:
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        fiat_known: bool = False,
     ) -> Permission | None:
         del position
         facts = PermissionFacts(
@@ -795,6 +803,7 @@ class RecordsSource:
             protected=protected,
             resolves=resolves,
             giver=giver,
+            fiat_known=fiat_known,
         )
         return permissions.permission(claim, asserter, permissions.owner_of(claim, facts), facts)
 
@@ -885,6 +894,7 @@ class CanonSource:
         protected: bool,
         resolves: str | None = None,
         giver: str | None = None,
+        fiat_known: bool = False,
     ) -> Permission | None:
         return await permissions.check(
             self.conn,
@@ -898,6 +908,7 @@ class CanonSource:
             remember=self.remember,
             resolves=resolves,
             giver=giver,
+            fiat_known=fiat_known,
         )
 
     async def anchor(
@@ -1290,6 +1301,30 @@ class BeliefSource:
             at,
             mode=found.mode,
             registry=await self.registry(),
+        )
+
+    async def fiat_known(
+        self, claim: Proposition, believer: str, at: NarrativePosition | None
+    ) -> bool:
+        """#649: whether ``believer``'s first path to ``claim`` by ``at`` is an ``author_fiat``
+        acquisition (ADR-174), so the claim it states is knowledge the co-author gave it."""
+        from epistrel.core.epistemic import replay
+
+        if at is None:
+            return False
+        answer = await replay.could_have_known(
+            self.conn,
+            self.story_id,
+            believer,
+            claim,
+            at,
+            settings=self.settings,
+            registry=await self.registry(),
+            read_set=self.read_set,
+        )
+        return (
+            isinstance(answer, replay.Known)
+            and answer.path.transition_kind == BeliefTransitionKind.AUTHOR_FIAT.value
         )
 
     async def licence(
@@ -1691,6 +1726,17 @@ class Verifier:
             # #200: narration that someone passes out or wakes changes that subject's
             # ``unconscious`` fluent from the beat (#518's ``fluent_change``).
             mover = claim.subject_id
+        elif (
+            mover is None
+            and change
+            and asserter is not None
+            and asserter.kind in ANCHORS
+            and claim.predicate_id == LOCATED_AT
+            and await self._unmodeled(claim.subject_id)
+        ):
+            # #635 (owner decision): narration may move an unmodeled person ("The stranger
+            # leaves the inn."): a change of their placement, not a contradiction of it.
+            mover = claim.subject_id
         found = await self.source.deterministic(
             claim, holder=holder, viewpoint=viewpoint, position=position, mover=mover
         )
@@ -1750,6 +1796,24 @@ class Verifier:
             result.disposition,
         )
         return result
+
+    async def _unmodeled(self, entity_id: str) -> bool:
+        """#635: whether ``entity_id`` is a person of the story no ``characters`` row models
+        (read through the canon source's connection; ``False`` without one)."""
+        source: Any = self.source
+        conn = getattr(source, "conn", None) or getattr(
+            getattr(source, "inner", None), "conn", None
+        )
+        if conn is None:
+            return False
+        from epistrel.core.tables.propositions import entities
+
+        row = (
+            await conn.execute(
+                select(entities.c.kind, entities.c.character_id).where(entities.c.id == entity_id)
+            )
+        ).one_or_none()
+        return row is not None and row.kind == "person" and row.character_id is None
 
     async def _statement(
         self, claim: Proposition, asserter: Asserter | None, explicit: bool
@@ -2105,6 +2169,29 @@ class Verifier:
             resolves=resolves,
             giver=giver,
         )
+        if (
+            isinstance(found, Denied)
+            and found.reason is Reason.OTHER_CHARACTER_SECRET
+            and asserter.kind in ("character", "reactive")
+            and asserter.character_id is not None
+            and self.beliefs is not None
+            and await self.beliefs.fiat_known(
+                claim, asserter.character_id, self.beliefs.position(at.position)
+            )
+        ):
+            # #649 (FR-RESP-14, ADR-177): what the co-author made the character aware of, it may
+            # state; every stronger denial still holds (the permission is decided again). The
+            # protected content this claim's text matched is that very fact, hidden from the
+            # character's viewpoint in canon but known to it now: no leak, so not protected.
+            found = await self.source.permission(
+                claim,
+                asserter,
+                position=at.position,
+                protected=False,
+                resolves=resolves,
+                giver=giver,
+                fiat_known=True,
+            )
         anchor = None
         if isinstance(found, Permitted):
             anchor = await self.source.anchor(claim, viewpoint=at.viewpoint, position=at.position)
@@ -2528,9 +2615,10 @@ async def story_verifier(
 
     settings = (await effective_configuration(conn, story_id)).settings
     config = VerifyConfig.of(settings, await read_section(conn, VerifySettings))
-    if gate is None and config.escalation_on:
+    if gate is None and config.escalation_on and settings.verification.shape_tightening == "on":
         # #155: the shapes an operator tightened (a promotion, or a ``live`` write), read
         # per verifier: one small read per turn, so a change applies to the next turn.
+        # #227: ``shape_tightening = off`` ignores them (the profile's own gate decides).
         tightened = await yield_queries.live_thresholds(conn)
         gate = Gate(config.entailment_gate, FixedThresholds(tightened)) if tightened else None
     beliefs = (

@@ -1402,3 +1402,453 @@ class ProviderReadOnly(EpistrelError):
 
     code = "provider_read_only"
     http_status = 422
+
+
+# -- amendments (#221) ---------------------------------------------------------------------------
+
+
+class AmendmentInvalidPart(EpistrelError):
+    """An amendment part cannot apply (FR-REWRITE-12; #221): ``details`` name its ``ordinal``
+    and ``reason`` (``record_not_found``, ``wrong_story``, ``table_not_correctable``,
+    ``column_not_allowed``, ``action_not_allowed``, ``unresolved_time``, ``state_constraint``,
+    ``contingent_change``, ``external_effect``, ``derived_state``, ``clock_advance``). Nothing is
+    written."""
+
+    code = "invalid_amendment_part"
+    http_status = 422
+
+
+class AmendmentTargetInactive(EpistrelError):
+    """A record part names a record outside the active timeline (discarded or dormant; #221):
+    ``details``: ``record_table``, ``record_id``, ``membership``. Nothing is written."""
+
+    code = "record_inactive"
+    http_status = 409
+
+
+class ScheduleNotAmendable(EpistrelError):
+    """A proposition part on ``scheduled`` (an event's planned time, place or participants;
+    #221, the owner's decision 4): a superseded ``scheduled`` fact does not move its event, so
+    the event is moved with ``PATCH /stories/{id}/scheduled-events/{event_id}`` (``details``:
+    ``event_id``, ``route``). Nothing is written."""
+
+    code = "schedule_not_amendable"
+    http_status = 422
+
+
+class RewriteUnparseable(EpistrelError):
+    """A rewrite instruction (or a free-text answer to a new session) could not be parsed into
+    changes after #53's retries (#223): 422; no session is written."""
+
+    code = "rewrite_unparseable"
+    http_status = 422
+
+
+class RewriteNoop(EpistrelError):
+    """A rewrite instruction parsed into no change, or only changes already true in canon
+    (#223): 422; no session is written."""
+
+    code = "rewrite_noop"
+    http_status = 422
+
+
+class RewriteSessionNotFound(EpistrelError):
+    """No rewrite session has this id in this story (#223): 404."""
+
+    code = "rewrite_session_not_found"
+    http_status = 404
+
+
+class RewriteSessionClosed(EpistrelError):
+    """An action on a session that has ended (applied, cancelled, expired or abandoned; #223):
+    409. ``details``: ``session_id`` and ``state``."""
+
+    code = "rewrite_session_closed"
+    http_status = 409
+
+
+class RewriteSessionLimit(EpistrelError):
+    """The story already has ``rewrite_max_open_sessions`` open sessions (#223): 409.
+    ``details``: ``limit`` and ``open``."""
+
+    code = "rewrite_session_limit"
+    http_status = 409
+
+
+class InvalidAnswer(EpistrelError):
+    """An answer names a question the session does not ask, an option the question does not
+    have, or free text that parses to nothing (#223): 422; nothing is stored."""
+
+    code = "invalid_answer"
+    http_status = 422
+
+
+class BaseRevisionRequired(EpistrelError):
+    """An apply names no ``base_revision`` (#224): 422; nothing is written."""
+
+    code = "base_revision_required"
+    http_status = 422
+
+
+class RewriteStale(EpistrelError):
+    """The plan no longer holds (#224, #237): 409, nothing written. An apply naming another
+    ``base_revision`` than the session's preview has ``reason: base_mismatch`` and the current
+    preview; a plan the final commit's revalidation found stale was recomputed:
+    ``base_revision`` (the new one), ``preview``, ``carried_answers``, ``new_questions``,
+    ``reasons`` (``{kind, refs}``) and ``stale_count``; a changed pipeline is
+    ``reason: pipeline_changed`` (the session abandoned)."""
+
+    code = "rewrite_stale"
+    http_status = 409
+
+
+class RewriteQuestionSuperseded(EpistrelError):
+    """An answer to a question a re-plan superseded (#237): 409. ``details``:
+    ``question_id``, ``new_question_id`` (the question now asked under the same key, or
+    ``None``)."""
+
+    code = "rewrite_question_superseded"
+    http_status = 409
+
+
+class RewriteQuestionsPending(EpistrelError):
+    """An apply while required questions are unanswered (#224): 409. ``details``:
+    ``question_ids``."""
+
+    code = "rewrite_questions_pending"
+    http_status = 409
+
+
+class RewriteApplyInProgress(EpistrelError):
+    """An action on a session whose apply is running (#224): 409."""
+
+    code = "rewrite_apply_in_progress"
+    http_status = 409
+
+
+class RewriteApplyFailed(EpistrelError):
+    """A rewrite's apply failed transiently and wrote nothing (#224): 503, ``retryable``. The
+    session is back in ``awaiting_approval`` with ``last_error``."""
+
+    code = "rewrite_apply_failed"
+    http_status = 503
+
+
+class RecordInFlight(EpistrelError):
+    """An apply would correct a record of a staged turn that has not completed (#224, #212):
+    409. ``details``: ``record_table`` and ``record_id``."""
+
+    code = "record_in_flight"
+    http_status = 409
+
+
+class IntentNotRetconnable(EpistrelError):
+    """A part other than an explicit intent change touched an utterance's intent (#225,
+    FR-DIRECT-8): a bug guard, never expected (500)."""
+
+    code = "intent_not_retconnable"
+    http_status = 500
+
+
+class MergeInvalid(EpistrelError):
+    """An identity merge that cannot be (#225): fewer than two entities, one not of the story,
+    entities of different kinds, or entities already one referent. ``details``: ``reason``
+    (``too_few``, ``not_in_story``, ``type_mismatch``, ``already_same``) and ``entity_ids``."""
+
+    code = "merge_invalid"
+    http_status = 422
+
+
+class DirectiveUnparseable(EpistrelError):
+    """A directive's text could not be parsed (#226): 422; nothing is written."""
+
+    code = "directive_unparseable"
+    http_status = 422
+
+
+class DirectiveNoChanges(EpistrelError):
+    """A durable directive parsed into no change (#226): 422; nothing is written."""
+
+    code = "directive_no_changes"
+    http_status = 422
+
+
+class DirectiveAmbiguous(EpistrelError):
+    """A directive names something the engine cannot pin down (#226, #241, #242): 422.
+    ``details``: ``candidates``."""
+
+    code = "directive_ambiguous"
+    http_status = 422
+
+
+class AuthorityConflict(EpistrelError):
+    """A write of a lower authority tier would supersede a fact a higher tier holds (#226,
+    FR-DIRECT-6): narrative canon never supersedes the author's locked canon. Internal: the
+    verifier reads the claim as contradicted (409 if it ever surfaces)."""
+
+    code = "authority_conflict"
+    http_status = 409
+
+
+class StateNotAmendable(EpistrelError):
+    """A State proposition part on a State an amendment may not correct (#236): the
+    ``world_clock`` (clock advances are corrected with forward directives, the owner's decision
+    3), a derived State, a transfer-conserved State, an externally owned State or a discarded
+    definition. ``details``: ``ordinal``, ``state`` and ``reason`` (``clock``, ``derived``,
+    ``transfer_conserved``, ``external``, ``discarded``). Nothing is written."""
+
+    code = "state_not_amendable"
+    http_status = 422
+
+
+class AmendmentAlreadyReverted(EpistrelError):
+    """The amendment was reverted already (#221, #238): ``details``: ``amendment_id``,
+    ``reverted_by``."""
+
+    code = "amendment_already_reverted"
+    http_status = 409
+
+
+class ExternalValueNotOverridable(EpistrelError):
+    """An author's change to a value a game's provider owns (#242, FR-EXT-8): 422.
+    ``details``: ``changes`` (``[{provider, value_name, scope_key}]``) and ``explanation``."""
+
+    code = "external_value_not_overridable"
+    http_status = 422
+
+
+class AmendmentNotFound(EpistrelError):
+    """No such amendment in the story (#238): 404. ``details``: ``amendment_id``."""
+
+    code = "amendment_not_found"
+    http_status = 404
+
+
+class AmendmentNotReverted(EpistrelError):
+    """A redo of an amendment that is still active (#238): 409. ``details``:
+    ``amendment_id``."""
+
+    code = "amendment_not_reverted"
+    http_status = 409
+
+
+class AmendmentAlreadyRedone(EpistrelError):
+    """A redo while an active amendment already redoes it (#238): 409. ``details``:
+    ``amendment_id``, ``redo_id``."""
+
+    code = "amendment_already_redone"
+    http_status = 409
+
+
+class UseRedo(EpistrelError):
+    """An undo of an ``undo`` amendment (#238): 422; redo the amendment it undid instead.
+    ``details``: ``amendment_id``, ``undoes``."""
+
+    code = "use_redo"
+    http_status = 422
+
+
+class CertificationNotFound(EpistrelError):
+    """No certification record has this id (#233)."""
+
+    code = "certification_not_found"
+    http_status = 404
+
+
+class CertificationNotValid(EpistrelError):
+    """Only a ``valid`` certification can be invalidated (#234)."""
+
+    code = "certification_not_valid"
+    http_status = 409
+
+
+class CertificationRunNotFound(EpistrelError):
+    """No certification run has this id (#233)."""
+
+    code = "certification_run_not_found"
+    http_status = 404
+
+
+class InvalidCertificationRecord(EpistrelError):
+    """A certification record does not validate (#233): ``details``: ``reason``
+    (``schema``, ``report_hash``, ``report_missing``) and, for ``schema``, the ``errors``."""
+
+    code = "invalid_certification_record"
+    http_status = 422
+
+
+class CertificationRecordConflict(EpistrelError):
+    """A certification record with this id is stored with different content (#233):
+    ``details``: ``certification_id``."""
+
+    code = "certification_record_conflict"
+    http_status = 409
+
+
+class CertificationRunInProgress(EpistrelError):
+    """A certification run for this fingerprint is queued or running (#233): ``details``:
+    ``run_id``, ``fingerprint``."""
+
+    code = "certification_run_in_progress"
+    http_status = 409
+
+
+class CertificationUnavailable(EpistrelError):
+    """This process has no eval harness installed, so it cannot estimate or run a
+    certification (#233)."""
+
+    code = "certification_unavailable"
+    http_status = 503
+
+
+class BackfillNotFound(EpistrelError):
+    """The story has no backfill (or none running, for a cancel) (#228)."""
+
+    code = "backfill_not_found"
+    http_status = 404
+
+
+class BackfillNotCancellable(EpistrelError):
+    """The story's latest backfill has ended, so it cannot be cancelled (#228): ``details``:
+    ``backfill_id``, ``status``."""
+
+    code = "backfill_not_cancellable"
+    http_status = 409
+
+
+class BackfillInProgress(EpistrelError):
+    """A backfill of the story is running (#228): ``details``: ``backfill_id``, ``status``."""
+
+    code = "backfill_in_progress"
+    http_status = 409
+
+
+class NothingToBackfill(EpistrelError):
+    """Every capability the story has on already covers its turns (#228)."""
+
+    code = "nothing_to_backfill"
+    http_status = 409
+
+
+class BackfillConflictNotFound(EpistrelError):
+    """No conflict of that id belongs to the story's backfill (#230)."""
+
+    code = "backfill_conflict_not_found"
+    http_status = 404
+
+
+class BackfillConflictClosed(EpistrelError):
+    """The conflict is not open: resolved, or left uncertain (#230): ``details``:
+    ``conflict_id``, ``status``."""
+
+    code = "backfill_conflict_closed"
+    http_status = 409
+
+
+class BackfillNotAwaitingConflicts(EpistrelError):
+    """The story's backfill is not paused for conflicts (#230): ``details``: ``backfill_id``,
+    ``status``."""
+
+    code = "backfill_not_awaiting_conflicts"
+    http_status = 409
+
+
+class InvalidResolution(EpistrelError):
+    """A conflict resolution names no statement of the conflict, or a value that does not
+    normalize for its predicate (#230)."""
+
+    code = "invalid_resolution"
+    http_status = 422
+
+
+class Pruned(EpistrelError):
+    """The records the call needs were pruned (#247, FR-STORE-18,28): ``details``:
+    ``operation_id``. Nothing changes."""
+
+    code = "pruned"
+    http_status = 409
+
+
+class PruneTargetUnknown(EpistrelError):
+    """A pruning names a target the story does not have (#247)."""
+
+    code = "prune_target_unknown"
+    http_status = 422
+
+
+class PruneTargetIneligible(EpistrelError):
+    """A pruning names a target that cannot be pruned (#247): ``details.reason``."""
+
+    code = "prune_target_ineligible"
+    http_status = 422
+
+
+class ExportNotFound(EpistrelError):
+    """No story export of that id (#249)."""
+
+    code = "job_not_found"
+    http_status = 404
+
+
+class ExportNotReady(EpistrelError):
+    """The export's archive is not written yet (#249): ``details.status``."""
+
+    code = "export_not_ready"
+    http_status = 409
+
+
+class ExportExpired(EpistrelError):
+    """The export's archive has expired and is gone (#249)."""
+
+    code = "export_expired"
+    http_status = 410
+
+
+class BundleTooLarge(EpistrelError):
+    """An imported bundle exceeds a limit while it decompresses (#250): ``details.limit``."""
+
+    code = "bundle_too_large"
+    http_status = 413
+
+
+class CorruptBundle(EpistrelError):
+    """An imported bundle is not a valid story bundle (#250): ``details.reason``."""
+
+    code = "corrupt_bundle"
+    http_status = 422
+
+
+class UnsupportedFormatVersion(EpistrelError):
+    """An imported bundle's format is newer than this deployment reads (#250)."""
+
+    code = "unsupported_format_version"
+    http_status = 422
+
+
+class CheckpointNotFound(EpistrelError):
+    """No committed checkpoint is at that turn, slot or variant (#222)."""
+
+    code = "checkpoint_not_found"
+    http_status = 404
+
+
+class CheckpointIncomplete(EpistrelError):
+    """The checkpoint is a staged turn still under way (#222): ``details``: ``turn``,
+    ``turn_stage``."""
+
+    code = "checkpoint_incomplete"
+    http_status = 409
+
+
+class InvalidView(EpistrelError):
+    """An unknown history view (#222): ``details``: ``allowed``."""
+
+    code = "invalid_view"
+    http_status = 422
+
+
+class EvalRunNotFound(EpistrelError):
+    """No eval run has that id (#532)."""
+
+    code = "eval_run_not_found"
+    http_status = 404

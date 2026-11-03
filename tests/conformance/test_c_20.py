@@ -567,3 +567,160 @@ async def test_c_20__structured(
             assert str(await scalar(engine, PROFILE_OF, s=created)) == structured_m4()
         finally:
             await _retire(client, made["id"])
+
+
+@pytest.mark.part("M7", "FR-GUARD-10")
+async def test_c_20__m7_rewrite(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A rewrite instruction that breaks a global policy is refused 422
+    ``guardrail_violation`` naming the policy (#223), before anything else: no
+    ``rewrite_sessions`` row, no ``rewrite_parse`` call, and the audit row (entry point
+    ``rewrite``) holds the policy id only, never the text. A free-text answer that breaks it is
+    refused the same way and stores nothing. Complement: clean text opens a session."""
+    from tests.structured_turn_support import structured_story
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    word = f"zarquon{new_ulid().lower()}"
+    asks = (
+        '{"changes": [], "ambiguities": [{"about": "x", "question": "Which?", '
+        '"options": ["a", "b"], "recommended": 0}]}'
+    )
+    async with respond_client(settings, engine) as (client, epistrel):
+        made = await _global_wordlist(client, word)
+        try:
+            story, _ = await structured_story(client, "Wren", "Ada")
+            stub = epistrel.models.stub
+            stub.calls.clear()
+            refused = await client.post(
+                f"/stories/{story}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": f"Ada always carried a {word}."},
+                headers=WRITE,
+            )
+            assert refused.status_code == 422, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "guardrail_violation"
+            [violation] = error["details"]["violations"]
+            assert violation["policy_id"] == made["id"]
+            assert [c for c in stub.calls if c.purpose == "rewrite_parse"] == []
+            sessions = "SELECT count(*) FROM rewrite_sessions WHERE story_id = :s"
+            assert await scalar(engine, sessions, s=story) == 0
+            last = (await audit_rows(engine, story_id=story))[-1]
+            assert (last.kind, list(last.policy_ids), last.details["entry_point"]) == (
+                "guardrail_input_rejected",
+                [made["id"]],
+                "rewrite",
+            )
+            assert word not in str(dict(last._mapping))
+
+            stub.when("", asks, purpose="rewrite_parse")
+            opened = await client.post(
+                f"/stories/{story}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": "Ada always carried a lantern."},
+                headers=WRITE,
+            )
+            assert opened.status_code == 201, opened.text
+            session = opened.json()
+            question = session["questions"][0]["id"]
+            answer = await client.post(
+                f"/stories/{story}/rewrites/{session['id']}/answers",
+                params={"viewpoint": "omniscient"},
+                json={"answers": [{"question_id": question, "text": f"the {word}"}]},
+                headers=WRITE,
+            )
+            assert answer.status_code == 422, answer.text
+            assert answer.json()["error"]["code"] == "guardrail_violation"
+            stored = await scalar(
+                engine, "SELECT answer_text FROM rewrite_questions WHERE id = :q", q=question
+            )
+            assert stored is None
+
+            # A model-written replacement text that breaks the policy never enters the plan:
+            # the change is refused with the policy id (#56's output gate), the text kept out.
+            stub.reset()
+            stub.script(
+                "rewrite_parse",
+                [
+                    json.dumps(
+                        {
+                            "changes": [
+                                {
+                                    "kind": "record",
+                                    "ref": {"turn": 1},
+                                    "action": "replace",
+                                    "new_text": f"Ada lifts the {word}.",
+                                }
+                            ]
+                        }
+                    )
+                ],
+            )
+            gated = await client.post(
+                f"/stories/{story}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": "Ada's first line was different."},
+                headers=WRITE,
+            )
+            assert gated.status_code == 201, gated.text
+            refused_changes = gated.json()["preview"]["refused_changes"]
+            assert refused_changes == [
+                {"index": 0, "reason": "guardrail", "policy_ids": [made["id"]]}
+            ]
+            assert word not in gated.text
+        finally:
+            await _retire(client, made["id"])
+
+
+@pytest.mark.part("M7", "FR-GUARD-10")
+async def test_c_20__m7_directive(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A directive that breaks a global policy is refused 422 ``guardrail_violation`` naming
+    the policy (#226) before anything else: no ``directives`` row, no ``directive_parse`` call,
+    and the audit row (entry point ``directive``) holds the policy id only, never the text.
+    Complement: a clean directive is queued."""
+    from tests.structured_turn_support import structured_story
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    word = f"zarquon{new_ulid().lower()}"
+    async with respond_client(settings, engine) as (client, epistrel):
+        made = await _global_wordlist(client, word)
+        try:
+            story, _ = await structured_story(client, "Wren", "Ada")
+            stub = epistrel.models.stub
+            stub.calls.clear()
+            refused = await client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": f"Ada now carries a {word}."},
+                headers=WRITE,
+            )
+            assert refused.status_code == 422, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "guardrail_violation"
+            [violation] = error["details"]["violations"]
+            assert violation["policy_id"] == made["id"]
+            assert [c for c in stub.calls if c.purpose == "directive_parse"] == []
+            rows_ = "SELECT count(*) FROM directives WHERE story_id = :s"
+            assert await scalar(engine, rows_, s=story) == 0
+            last = (await audit_rows(engine, story_id=story))[-1]
+            assert (last.kind, list(last.policy_ids), last.details["entry_point"]) == (
+                "guardrail_input_rejected",
+                [made["id"]],
+                "directive",
+            )
+            assert word not in str(dict(last._mapping))
+
+            queued = await client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": "Make this scene tense.", "kind": "ephemeral"},
+                headers=WRITE,
+            )
+            assert queued.status_code == 200, queued.text
+            assert queued.json()["disposition"] == "steer_queued"
+            assert await scalar(engine, rows_, s=story) == 1
+        finally:
+            await _retire(client, made["id"])

@@ -27,7 +27,8 @@ declaration's shape, typed values, constraints and the fold) are ``core.states.m
   ``prospective``; the State's identity and its fold's base are immutable (422
   ``validation_error``, ``reason: immutable_field``). New constraints the current value (or the
   initial value) already breaks are 422 ``state_constraint_violation``; an archived story is 409
-  ``story_archived``.
+  ``story_archived``. A paused story takes it, as it takes its other configuration writes
+  (``core.pause``; #626).
 - ``apply_change(conn, op, change)`` writes one change in ``op``'s commit transaction, or answers
   the ``Violation`` it is refused with and writes nothing (FR-STATE-6's bounds half; the
   in-character repair is #187's): a turn change asserted by a reactive character
@@ -149,7 +150,14 @@ from epistrel.core.states.model import (
     validate_definition,
     violation,
 )
-from epistrel.core.tables import characters, entities, events, operations, stories
+from epistrel.core.tables import (
+    amendment_parts,
+    characters,
+    entities,
+    events,
+    operations,
+    stories,
+)
 from epistrel.core.tables.states import (
     STORY_SCOPE_KEY,
     state_changes,
@@ -340,6 +348,7 @@ async def definition(
 
 
 def _change_of(kind_of: StateType, row: Any) -> ChangeRow:
+    positioned = row.narrative_turn is not None
     return ChangeRow(
         id=str(row.id),
         kind=StateChangeKind(row.kind),
@@ -352,15 +361,56 @@ def _change_of(kind_of: StateType, row: Any) -> ChangeRow:
             int(row.slot_k),
             int(row.beat),
             int(row.step),
-        ),
+        )
+        if positioned
+        else None,
+        valid_time=None if row.valid_time_minutes is None else int(row.valid_time_minutes),
+        valid_to=None if positioned else getattr(row, "amended_valid_to", None),
     )
 
 
 def _through(position: Position) -> Any:
+    """Positioned changes at or before ``position``, and every amendment's position-less one
+    (``_eligible`` keeps those in the corrected history there, #236)."""
     c = state_changes.c
-    return tuple_(c.narrative_turn, c.slot_k, c.beat, c.step) <= tuple_(
-        *(literal(v) for v in position.key())
+    return (
+        tuple_(c.narrative_turn, c.slot_k, c.beat, c.step)
+        <= tuple_(*(literal(v) for v in position.key()))
+    ) | c.amendment_part_id.is_not(None)
+
+
+def _select_changes(*where: ColumnElement[bool]) -> Any:
+    """``state_changes`` rows with, for an amendment's (#236), its part's window end; a row of
+    a reverted amendment is left out (its part's status: the revert deletes nothing)."""
+    p = amendment_parts.c
+    return (
+        select(state_changes, p.valid_to_minutes.label("amended_valid_to"))
+        .select_from(
+            state_changes.outerjoin(
+                amendment_parts, amendment_parts.c.id == state_changes.c.amendment_part_id
+            )
+        )
+        .where(*where, (state_changes.c.amendment_part_id.is_(None)) | (p.status == "active"))
     )
+
+
+async def _eligible(
+    conn: AsyncConnection, story_id: str, changes: list[ChangeRow], through: Position | None
+) -> list[ChangeRow]:
+    """``changes`` without the amendment changes not in the corrected history at ``through``
+    (#221's per-part ``eligible``: the part's valid start at or before the checkpoint's
+    story-time; ``Undecidable`` folds); ``None``: every one is in."""
+    if through is None or all(c.position is not None for c in changes):
+        return changes
+    from epistrel.core.amendments.eligibility import PartTiming, eligible
+
+    story_time = await valid_time_at(conn, story_id, through)
+    return [
+        c
+        for c in changes
+        if c.position is not None
+        or eligible(PartTiming(valid_from_minutes=c.valid_time), story_time=story_time).folds
+    ]
 
 
 async def _changes(
@@ -379,8 +429,9 @@ async def _changes(
         where.append(active_only(state_changes))
     if through is not None:
         where.append(_through(through))
-    found = await conn.execute(select(state_changes).where(*where))
-    return sorted((_change_of(state.type, r) for r in found), key=ChangeRow.order)
+    found = await conn.execute(_select_changes(*where))
+    changes = await _eligible(conn, story_id, [_change_of(state.type, r) for r in found], through)
+    return sorted(changes, key=ChangeRow.order)
 
 
 def _scope_ok(state: StateDefinition, scope_key: str | None) -> None:
@@ -531,16 +582,22 @@ Key = tuple[str, str | None]
 """A State's value within a story: ``(state id, scope key)``."""
 
 
+STORY_START = Position(0, 0, 0, 0, 0)
+"""``state_values.since_*`` of a value only amendments set (``since_*`` is NOT NULL)."""
+
+
 def _projected(
     story_id: str, state_id: str, scope_key: str | None, folded: Folded
 ) -> dict[str, Any]:
-    assert folded.since is not None  # noqa: S101 - a row exists only for a counted change
+    # A row exists only for a counted change; when every counted change is an amendment's
+    # position-less one (#236), the value has held since the story began.
+    since = folded.since if folded.since is not None else STORY_START
     return {
         "story_id": story_id,
         "state_id": state_id,
         "scope_key": STORY_SCOPE_KEY if scope_key is None else scope_key,
         "value": None if isinstance(folded.value, UndefinedType) else to_json(folded.value),
-        **folded.since.columns("since"),
+        **since.columns("since"),
         "change_count": folded.count,
     }
 
@@ -582,7 +639,7 @@ async def _active_rows(
         where.append(c.state_id.in_(sorted({k[0] for k in keys})))
     wanted = None if keys is None else set(keys)
     found: list[tuple[str, str | None, ChangeRow]] = []
-    for row in await conn.execute(select(state_changes).where(*where)):
+    for row in await conn.execute(_select_changes(*where)):
         key = (str(row.state_id), None if row.scope_key is None else str(row.scope_key))
         if key[0] not in types or (wanted is not None and key not in wanted):
             continue
@@ -644,9 +701,11 @@ async def folded_at(
     if through is not None:
         where.append(_through(through))
     grouped: dict[Key, list[ChangeRow]] = {}
-    for row in await conn.execute(select(state_changes).where(*where)):
+    for row in await conn.execute(_select_changes(*where)):
         key = (str(row.state_id), None if row.scope_key is None else str(row.scope_key))
         grouped.setdefault(key, []).append(_change_of(by_id[key[0]].type, row))
+    for key in grouped:
+        grouped[key] = await _eligible(conn, story_id, grouped[key], through)
     found = {key: fold(by_id[key[0]].initial_value, rows) for key, rows in grouped.items()}
     for state_id, state in by_id.items():
         if derived_rule(state) is not None:
@@ -1214,8 +1273,10 @@ async def apply_change(
     position = _position(op, change)
     existing = await _changes(conn, story_id, state, change.scope_key)
     new_id = new_ulid()
-    earlier = [r for r in existing if r.position.key() <= position.key()]
-    later = [r for r in existing if r.position.key() > position.key()]
+    # An amendment's position-less change folds by its valid time (``model.ordered``), so it
+    # is among the earlier changes; only positioned ones can follow this change.
+    earlier = [r for r in existing if r.position is None or r.position.key() <= position.key()]
+    later = [r for r in existing if r.position is not None and r.position.key() > position.key()]
     current = fold(state.initial_value, earlier).value
     counted = change.status in COUNTED
     attempted = step(current, change.kind, value, delta) if counted else current

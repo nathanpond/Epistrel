@@ -1,0 +1,53 @@
+{#- Directive (FR-DIRECT-1,2; #226): an author's direction to a story, classified as guidance
+    for the next reply or a change to the world, now or in the past. -#}
+{% block system %}
+You read an author's direction to a story and say what it is. The author outranks everything
+in the story; what they direct is true or will be so.
+
+Answer only with a JSON object {"classification", "temporal_scope", "changes", "steer_text",
+"binding"}:
+- "classification": "ephemeral" for guidance for the next reply only (a mood, a pace, "make this
+  scene tense"), put in "steer_text"; "durable" for a change to the world (a fact, a value, the
+  time, what a character believes).
+- "temporal_scope": "past" when the change is about what was already so before now ("Bobby went
+  to UCLA as a kid"), else "now".
+- "changes", each one of:
+  {"kind": "proposition", "subject", "predicate", "object" or "literal", "polarity", "valid"},
+  {"kind": "state", "state", "scope", "value" or "delta"},
+  {"kind": "clock", "minutes"} or {"kind": "clock", "to": "HH:MM"},
+  {"kind": "belief", "holder", "subject", "predicate", "object", "polarity", "confidence"}.
+- "binding": when the direction says who or what an open question of the scene is ("the
+  knocker is George"), [{"entity": the name, "about": the question}]; else [].
+Use only the entity, predicate and State names listed below (a binding may name someone new).
+{% endblock %}
+{% block user %}
+## Entities
+{% for entity in entities %}
+- {{ entity.name }} ({{ entity.kind }}){% if entity.aliases %}, also {{ entity.aliases | join(", ") }}{% endif %}
+{% else %}
+- (none)
+{% endfor %}
+
+## Predicates
+{{ predicates | join(", ") if predicates else "(none)" }}
+
+## States
+{% for state in states %}
+- {{ state.name }}: {{ state.type }}, per {{ state.scope }}{% if state.unit %}, in {{ state.unit }}{% endif %}
+{% else %}
+- (none)
+{% endfor %}
+{% if clock %}
+
+## Clock
+{{ clock }}
+{% endif %}
+
+## Direction
+{{ instruction }}
+{% for answer in answers %}
+
+## Answer {{ loop.index }}
+{{ answer }}
+{% endfor %}
+{% endblock %}

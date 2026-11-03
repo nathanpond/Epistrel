@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from epistrel.core.enums import EventCategory
 from epistrel.core.events.registry import EventPayload, register
@@ -290,6 +290,21 @@ class Truncate(EventPayload):
     to_turn: int = Field(ge=0)
     prior_head: Head
     operation_ids: list[str]
+
+
+@register("pruning", category=EventCategory.CONTROL)
+class Pruning(EventPayload):
+    """A pruning's marker (FR-STORE-32; #247): its id, what started it (``manual``, or #248's
+    ``policy``), and per target its kind, range, the pruned operations, the deleted events'
+    sequence ranges and counts. Identifiers, positions, ranges and counts only: never text."""
+
+    prune_id: str
+    trigger: Literal["manual", "policy"] = "manual"
+    policy: dict[str, Any] | None = None
+    targets: list[dict[str, Any]] = Field(default_factory=list)
+    retained: dict[str, int] = Field(default_factory=dict)
+    impact: dict[str, Any] | None = None
+    """#248: the run's impact report (identifiers, ranges and counts only)."""
 
 
 @register("untruncate", category=EventCategory.CONTROL)
@@ -723,6 +738,22 @@ class OutcomeRecorded(EventPayload):
     received_via: Literal["dispatcher", "ingest"]
 
 
+RECONCILIATION_RESOLVED = "reconciliation_resolved"
+"""The event type of #661's resolve-only reconciliation action."""
+
+
+@register(RECONCILIATION_RESOLVED, category=EventCategory.AUDIT)
+class ReconciliationResolved(EventPayload):
+    """The author resolved a listed consumer-applied effect (#661, FR-EXT-22): the request it
+    names (``request_id``), how it was resolved (``applied_elsewhere``: the consumer applied it
+    outside Epistrel; ``abandoned``: it will not be applied) and the reasons it was listed
+    under. Nothing is dispatched and no outcome is recorded. Identifiers and codes only."""
+
+    request_id: str
+    resolution: Literal["applied_elsewhere", "abandoned"]
+    reasons: list[str]
+
+
 REQUESTED_EFFECT = "requested_effect"
 """The event type of a change a turn asks an external value's owner to apply (#209)."""
 REQUESTED_KINDS: tuple[str, ...] = ("change", "transfer", "time_advance")
@@ -1044,3 +1075,92 @@ BEAT_TYPES: dict[str, type[StructuredBeat]] = {
 """Each structured beat kind's event model (its event type is ``beat_<kind>``)."""
 
 BEAT_EVENT_PREFIX = "beat_"
+
+
+# -- amendments (#221) ----------------------------------------------------------------------------
+
+
+class TranscriptPatch(BaseModel):
+    """One transcript row an amendment changes (#221): ``text`` the corrected text (``""`` for a
+    dropped beat: no placeholder, the row stays empty), or ``row`` a whole row to put back (a
+    revert of a drop)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    message_id: str
+    text: str | None = None
+    row: dict[str, Any] | None = None
+
+
+@register("amendment_recorded", category=EventCategory.AMENDMENT)
+class AmendmentRecorded(EventPayload):
+    """An amendment was recorded (FR-REWRITE-9; #221): its id and parts (``amendment_parts``),
+    and the transcript rows its overlays correct, which the transcript projection applies."""
+
+    amendment_id: str
+    part_ids: tuple[str, ...] = ()
+    transcript: tuple[TranscriptPatch, ...] = ()
+    timing: tuple[dict[str, Any], ...] = ()
+    """#240: ``{part_id, timing_uncertain, position_bound}`` of each part placed by an absolute
+    time the clock could not decide (the audit view's flag)."""
+
+
+@register("directive_applied", category=EventCategory.CONTROL)
+class DirectiveAppliedEvent(EventPayload):
+    """A durable directive applied at an inter-turn slot (FR-DIRECT-1; #226): its id, the
+    author's text and the changes parsed from it; the changes themselves are the slot's facts,
+    State changes, clock advance and beliefs."""
+
+    directive_id: str
+    text: str
+    changes: tuple[dict[str, Any], ...] = ()
+
+
+@register("rewrite_question", category=EventCategory.AUDIT)
+class RewriteQuestionAsked(EventPayload):
+    """A question a rewrite session asked the author (FR-REWRITE-8; #224), recorded when the
+    session ends: its kind, prompt, options, recommendation and severity, and whether a re-plan
+    superseded it. Audit only: no corrected view, retrieval or prompt reads it."""
+
+    session_id: str
+    question_id: str
+    kind: str
+    prompt: str
+    options: tuple[dict[str, Any], ...] = ()
+    recommended_option_id: str
+    recommendation_reason: str
+    severity: str | None = None
+    superseded: bool = False
+
+
+@register("rewrite_answer", category=EventCategory.AUDIT)
+class RewriteAnswered(EventPayload):
+    """The answer a rewrite question got (FR-REWRITE-8; #224): the option or the text, whether
+    it was the recommendation, and who answered (``engine`` for an auto-resolution)."""
+
+    session_id: str
+    question_id: str
+    option_id: str | None = None
+    text: str | None = None
+    accepted_recommendation: bool | None = None
+    principal: str
+
+
+@register("rewrite_closed", category=EventCategory.AUDIT)
+class RewriteClosed(EventPayload):
+    """A rewrite session ended (FR-REWRITE-8; #224): ``applied``, ``cancelled``, ``expired`` or
+    ``abandoned``, with the amendment an apply recorded."""
+
+    session_id: str
+    state: str
+    amendment_id: str | None = None
+
+
+@register("amendment_reverted", category=EventCategory.AMENDMENT)
+class AmendmentReverted(EventPayload):
+    """An amendment was reverted by amendment ``by`` (#221's revert primitive), and the
+    transcript rows that revert restores."""
+
+    amendment_id: str
+    by: str
+    transcript: tuple[TranscriptPatch, ...] = ()

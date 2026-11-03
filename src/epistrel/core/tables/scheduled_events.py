@@ -32,6 +32,7 @@ from sqlalchemy import (
     BigInteger,
     CheckConstraint,
     Column,
+    ForeignKey,
     Index,
     Integer,
     SmallInteger,
@@ -74,7 +75,22 @@ scheduled_events = Table(
     Column("slot_k", SmallInteger, nullable=False, server_default=text("0")),
     Column("beat", SmallInteger, nullable=False, server_default=text("0")),
     Column("step", SmallInteger, nullable=False, server_default=text("0")),
-    CheckConstraint("narrative_turn IS NOT NULL AND turn_variant IS NOT NULL", name="positioned"),
+    Column(
+        "amendment_part_id",
+        ulid_type(),
+        ForeignKey(
+            "amendment_parts.id",
+            name="fk_scheduled_events_amendment_part",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        nullable=True,
+    ),
+    CheckConstraint(
+        "(narrative_turn IS NOT NULL AND turn_variant IS NOT NULL) "
+        "OR amendment_part_id IS NOT NULL",
+        name="positioned",
+    ),
     CheckConstraint("grace_minutes >= 0", name="grace"),
     CheckConstraint("planned_offset_minutes >= 0", name="planned"),
     CheckConstraint("char_length(owner) BETWEEN 1 AND 26", name="owner"),

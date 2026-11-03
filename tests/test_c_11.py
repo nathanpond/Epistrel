@@ -197,6 +197,7 @@ def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
         "evals-zero-leak",
         "coverage",
         "docker",
+        "module-combinations",  # #243: C-17 over every module combination
     }
     summary = gate["steps"][-1]
     assert '[ "$r" = "success" ] ||' in summary["run"]

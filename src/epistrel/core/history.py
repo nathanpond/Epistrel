@@ -78,6 +78,7 @@ import json
 from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import and_, bindparam, case, func, literal_column, or_, select
@@ -93,6 +94,7 @@ from epistrel.core.enums import (
 from epistrel.core.epistemic import audience as audience_rules
 from epistrel.core.epistemic import perception
 from epistrel.core.errors import InvalidRequest, StoryNotFound
+from epistrel.core.membership import active_operation
 from epistrel.core.settings_schema import PlayerView, StorySettings
 from epistrel.core.summary import read_included_segments
 from epistrel.core.tables import characters, events, operations, stories, transcript_messages
@@ -206,6 +208,12 @@ class History:
     summary: list[SummaryItem] | None = None
     player_view: PlayerView = "character"
     """The player view the read was produced under (#177): the request's, else the story's."""
+    view: str = "corrected"
+    """#222: ``corrected`` (the default), or ``as_recorded`` (``read_as_recorded``)."""
+    boundary_tx: datetime | None = None
+    """#222: an as-recorded read's boundary (when its checkpoint committed)."""
+    erasure_markers: list[dict[str, Any]] | None = None
+    """#222: an as-recorded read's erasures, each ``{erasure_id, at}``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +222,102 @@ class _Story:
     head: int
     settings: StorySettings
     ages: dict[str, int]
+
+
+VIEWS = ("corrected", "as_recorded")
+"""The history views (#222)."""
+
+
+async def read_as_recorded(
+    db: AsyncEngine | AsyncConnection,
+    story_id: str,
+    *,
+    viewpoint: str | None,
+    as_of: int | str | None,
+    variant: ChainRef | None = None,
+) -> History:
+    """The story's history at ``as_of`` (``N`` or ``N⁺k``; default the latest committed
+    checkpoint) as originally recorded (FR-STORE-23; ``core.views.as_originally_recorded``):
+    omniscient only (403 ``omniscient_required``, checked first), every category, the overlays
+    in effect at the boundary, and the erasure markers. ``variant`` picks the chain whose turn N
+    sets the boundary."""
+    from epistrel.core.timeline import parse_as_of
+    from epistrel.core.views import Checkpoint, as_originally_recorded
+
+    async with _connection(db) as conn:
+        story = await _story(conn, story_id)
+        resolved = resolve_viewpoint(
+            viewpoint,
+            actor_character_id=None,
+            story_default=story.settings.default_output_viewpoint,
+            cast_ids=story.ages,
+            field="query.viewpoint",
+        )
+        require_omniscient(resolved, field="query.viewpoint")
+        if as_of is None:
+            checkpoint = Checkpoint(story.head, await _last_slot(conn, story_id, story.head))
+        else:
+            position = parse_as_of(as_of)
+            checkpoint = Checkpoint(position.turn, position.slot_k)
+        found = await as_originally_recorded(
+            conn,
+            story_id,
+            checkpoint,
+            variant=None if variant is None else variant.variant,
+        )
+        meta = {
+            str(r.message_id): r
+            for r in await conn.execute(
+                select(transcript_messages).where(
+                    transcript_messages.c.story_id == story_id,
+                    transcript_messages.c.message_id.in_([e.id for e in found.events]),
+                )
+            )
+        }
+    items: list[HistoryItem] = []
+    for event in found.events:
+        row = meta.get(event.id)
+        if row is None:
+            continue
+        text = getattr(event.payload, "text", None)
+        items.append(
+            HistoryItem(
+                turn=event.narrative_turn,
+                variant=event.turn_variant,
+                beat=row.beat,
+                kind=row.kind,
+                actor_character_id=row.actor_character_id,
+                render_character_ids=row.render_character_ids,
+                channel=row.channel,
+                text=text if isinstance(text, str) else row.text,
+                operation_id=event.operation_id,
+                message_id=event.id,
+                origin=row.origin if hasattr(row, "origin") else "generated",
+                redacted=bool(row.redacted),
+            )
+        )
+    return History(
+        items=items,
+        timeline_revision=story.timeline_revision,
+        output_viewpoint=resolved,
+        as_of=checkpoint.turn,
+        turns=_turns(items, {}, {}, frozenset()),
+        view="as_recorded",
+        boundary_tx=found.boundary_tx,
+        erasure_markers=found.erasure_markers,
+    )
+
+
+async def _last_slot(conn: AsyncConnection, story_id: str, turn: int) -> int:
+    found = await conn.scalar(
+        select(func.max(operations.c.slot_k)).where(
+            operations.c.story_id == story_id,
+            operations.c.narrative_turn == turn,
+            operations.c.status == "committed",
+            active_operation(operations),
+        )
+    )
+    return int(found or 0)
 
 
 async def read_history(
@@ -824,11 +928,20 @@ def _assemblies(
 async def _state_effects(
     conn: AsyncConnection, story_id: str, rows: Sequence[Any], viewpoint: str
 ) -> dict[str, list[dict[str, Any]]]:
-    """#187: the State changes each structured turn among ``rows`` committed, by operation."""
+    """#187: the State changes each structured turn among ``rows`` committed, by operation;
+    #656: then the changes it requested of a provider or the consumer, with their current
+    status (``core.outbox.request_effects``), as the response lists them."""
+    from epistrel.core.outbox import request_effects
     from epistrel.core.states import turn_effects
 
     ops = sorted({str(r.operation_id) for r in rows if str(r.kind).startswith(STRUCTURED_PREFIX)})
-    return await turn_effects(conn, story_id, ops, omniscient=is_omniscient(viewpoint))
+    omniscient = is_omniscient(viewpoint)
+    found = await turn_effects(conn, story_id, ops, omniscient=omniscient)
+    for operation_id, asked in (
+        await request_effects(conn, story_id, ops, omniscient=omniscient)
+    ).items():
+        found.setdefault(operation_id, []).extend({**r, "beat": -1} for r in asked)
+    return found
 
 
 def _turn_effects(found: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

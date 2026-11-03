@@ -88,7 +88,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Annotated, Any, ClassVar, Literal, Self
 
@@ -482,6 +482,7 @@ def effect_errors(
     cast_ids: frozenset[str],
     clock: str | None = None,
     clock_fixed: bool = False,
+    items: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """The structural errors of one beat's ``effects`` (see the module docstring): codes and
     indices, never a State's name or a value (``details.structural_errors``). A
@@ -545,6 +546,14 @@ def effect_errors(
             if effect.scope_key is not None and effect.scope_key not in cast_ids:
                 errors.append(f"{at}.scope_key: not one of the story's characters")
         errors += _transfer_errors(at, effect, target, states=states, cast_ids=cast_ids)
+        if (
+            effect.consideration is not None
+            and items is not None
+            and not items(effect.consideration)
+        ):
+            # #630: an item the story has no entity for is a cheap structural retry, not a
+            # refusal at the dry-run (``effect_unresolved``) that costs a repair.
+            errors.append(f"{at}.consideration: names no item of the story")
         for n, cited in enumerate(effect.prerequisites or ()):
             found = states.get(cited.strip())
             if found is None or not found.external:
@@ -721,7 +730,8 @@ _OWNING = frozenset({"act", "time"})
 
 _NO_STEPS_REMEDY = " (leave `step` out, or declare the `steps` it names)"
 """#612: every step refusal names its remedy in parentheses, so the correction a retry is sent
-(at ``temperature=0``) can be acted on instead of repeated."""
+(a ``schema_error`` retry, at the call's own params since #685) can be acted on instead of
+repeated."""
 
 
 def _steps_structure(steps: Sequence[StepDecl], beats: Sequence[BeatDecl]) -> None:
@@ -887,6 +897,9 @@ class RenderedBeats(_Strict):
     """#194: the story's ``clock.level`` (``None``: off); a time advance needs the clock."""
     clock_fixed: ClassVar[bool] = False
     """#194: whether the clock's anchor fixes the time of day (a ``to`` advance needs it)."""
+    items: ClassVar[Callable[[str], bool] | None] = None
+    """#630: whether an effect's ``consideration`` names an entity of the story (``None``: not
+    checked here)."""
 
     @model_validator(mode="after")
     def _structure(self) -> Self:
@@ -947,6 +960,7 @@ class RenderedBeats(_Strict):
                 cast_ids=cls.cast_ids,
                 clock=cls.clock_level,
                 clock_fixed=cls.clock_fixed,
+                items=cls.items,
             )
             if found:
                 raise ValueError("; ".join(found))
@@ -999,11 +1013,13 @@ def render_schema(
     states_level: str | None = None,
     clock_level: str | None = None,
     clock_fixed: bool = False,
+    items: Callable[[str], bool] | None = None,
 ) -> type[RenderedBeats]:
     """The beat schema of one render: a character's (``actor_id``) or the narrator's
     (``None``), with ``render.max_beats`` as the beats' ``max_items``; #187: the story's States
     and its ``states.level``, which its effects are validated against; #194: the clock's level
-    and whether its anchor fixes the time of day, which its time advances are."""
+    and whether its anchor fixes the time of day, which its time advances are; #630: ``items``,
+    whether an effect's ``consideration`` names an entity of the story."""
     name = "NarratorRender" if actor_id is None else "CharacterRender"
     model = create_model(
         name,
@@ -1020,6 +1036,7 @@ def render_schema(
     model.states_level = states_level
     model.clock_level = clock_level
     model.clock_fixed = clock_fixed
+    model.items = items
     return model
 
 

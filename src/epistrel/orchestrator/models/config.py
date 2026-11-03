@@ -65,6 +65,7 @@ from epistrel.core.config_changes import (
 )
 from epistrel.core.errors import ConfigConflict, InvalidRequest
 from epistrel.core.profiles.schema import ProfileSettings
+from epistrel.core.profiles.tiers import STRONGEST
 from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -652,6 +653,21 @@ async def write_config(
     """
     if base_url is not UNSET:
         base_url = _check_base_url(base_url)
+    if model == STRONGEST:
+        # #227: the sentinel is a profile route's, never a configured model.
+        raise InvalidRequest(
+            f"{STRONGEST!r} is valid only as a profile route's model",
+            {
+                "field": "body.model",
+                "errors": [
+                    {
+                        "field": "body.model",
+                        "message": "a sentinel, not a model",
+                        "type": "value_error",
+                    }
+                ],
+            },
+        )
     if params is not UNSET and params is not None:
         check_port_params(purpose, params)
     if api_key is not UNSET and api_key is not None and not keybox.available:

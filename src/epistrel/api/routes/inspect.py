@@ -40,7 +40,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.core.canon.facts import Fact
@@ -51,7 +51,7 @@ from epistrel.core.commit.lifecycle import (
     LedgerPage,
     Thunk,
 )
-from epistrel.core.enums import BeliefTransitionKind, ExposureState, ThunkState
+from epistrel.core.enums import BeliefKind, BeliefTransitionKind, ExposureState, ThunkState
 from epistrel.core.epistemic.exposure import Exposure
 from epistrel.core.epistemic.inspection import (
     INSPECT_LIMIT_DEFAULT as KNOWLEDGE_LIMIT_DEFAULT,
@@ -326,6 +326,27 @@ class BeliefItemBody(BaseModel):
     valid_from: int | None
     valid_to: int | None
     tx_from: str
+    attributed_holder_id: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#606: a `nested` belief's attributed holder (who the character believes "
+        "holds the proposition).",
+    )
+    attributed_level: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#606: how sure the character thinks the attributed holder is.",
+    )
+    depth: int | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#606: a `nested` or `speech_act` belief's depth (first-order 1, absent).",
+    )
+    speaker_character_id: str | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="#606: a `speech_act` belief's speaker (the character heard saying it).",
+    )
 
     @classmethod
     def of(
@@ -350,6 +371,12 @@ class BeliefItemBody(BaseModel):
             valid_from=belief.valid_from,
             valid_to=belief.valid_to,
             tx_from=belief.tx_from.isoformat(),
+            attributed_holder_id=belief.attributed_holder_id,
+            attributed_level=None
+            if belief.attributed_confidence_level is None
+            else belief.attributed_confidence_level.value,
+            depth=None if belief.kind is BeliefKind.FIRST_ORDER else belief.depth,
+            speaker_character_id=belief.speaker_character_id,
         )
 
 
@@ -410,7 +437,11 @@ class BeliefsBody(BaseModel):
         "beliefs. `as_of` reads the projection as the corrected record stood through that "
         "turn. 422 `viewpoint_unresolved` when no viewpoint is named; 409 `module_off` when "
         "the story keeps no character partitions; 422 for a character outside the story's "
-        "cast; the player's character has no partition (an empty page)."
+        "cast; the player's character has no partition (an empty page). `kind` (#606): "
+        "`first_order` (the default, the projection above), or `nested` (what the character "
+        "believes another believes) or `speech_act` (what it heard someone say): those belief "
+        "records, at every level, paged by belief id, each with `attributed_holder_id`, "
+        "`attributed_level`, `depth` or `speaker_character_id`."
     ),
 )
 async def inspect_beliefs(
@@ -423,6 +454,7 @@ async def inspect_beliefs(
     as_of: Annotated[int | None, Query(ge=0, le=2_147_483_647)] = None,
     limit: Annotated[int, Query(ge=1, le=BELIEFS_LIMIT_MAX)] = BELIEFS_LIMIT_DEFAULT,
     after: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
+    kind: Literal["first_order", "nested", "speech_act"] = "first_order",
 ) -> BeliefsBody:
     return BeliefsBody.of(
         await engine.inspect_beliefs(
@@ -434,6 +466,7 @@ async def inspect_beliefs(
             as_of=as_of,
             limit=limit,
             after=after,
+            kind=BeliefKind(kind),
         )
     )
 

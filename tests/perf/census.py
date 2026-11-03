@@ -18,6 +18,9 @@ from epistrel.orchestrator.lite import pipeline
 from epistrel.orchestrator.lite.schemas import RespondResult
 
 SCENARIO_PREFIX = "tests/scenario/"
+LITE_SENTINEL = "tests/scenario/test_s_double_submit.py"
+"""An S-test that always plays clean Lite turns: when it passed in the session, P-05 requires
+its turns in the census (#653: the requirement follows what ran, not what was collected)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +54,12 @@ class CensusTurn:
 @dataclass
 class Census:
     turns: list[CensusTurn] = field(default_factory=list)
-    s_tests_collected: bool = False
-    """Whether the session collected any scenario test (P-05 then requires their turns)."""
+    passed: set[str] = field(default_factory=set)
+    """Node ids of the session's tests whose call phase passed (``tests/conftest.py``)."""
+
+    def sentinel_passed(self) -> bool:
+        """Whether the Lite sentinel S-test ran and passed in this session."""
+        return any(nodeid.startswith(LITE_SENTINEL) for nodeid in self.passed)
 
     def record(self, result: RespondResult) -> None:
         budget = result.budget

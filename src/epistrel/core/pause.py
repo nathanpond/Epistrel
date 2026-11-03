@@ -9,8 +9,11 @@ unarchive, the story's own policies, and another rating change. ``Operation.begi
 every revision-bumping operation of a paused story, and each entry point checks before its
 gate or its operation, right after ``story_archived`` (#44's order). Reads are served, and so
 are ``PATCH /stories/{id}/settings`` without ``policies`` (prospective), the story's engine
-profile and overrides (prospective), owner and relation changes, feedback and deletion (which
-ends the check: its job finds the row gone). Work that started before the pause finishes: a
+profile and overrides (prospective), the story's other configuration writes (a State
+definition's ``PATCH``, ``PATCH /clock`` and a character's participation: they move the
+configuration revision, never the timeline's, and in-flight work rebases on an interpretive one,
+FR-CONC-16; #626), owner and relation changes, feedback and deletion (which ends the check: its
+job finds the row gone). Work that started before the pause finishes: a
 turn in flight commits, and the check waits for it.
 
 A reactivation check (#120: an untruncate, swap or fork of a dormant continuation whose turns
@@ -30,18 +33,28 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import StoryPaused
-from epistrel.core.tables import rating_check_jobs, stories
+from epistrel.core.tables import (
+    backfill_conflicts,
+    rating_check_jobs,
+    stories,
+    story_backfills,
+)
 
 RATING_CHECK = "rating_check"
 """The ``cause`` of a pause by a rating tightening's history check."""
 REACTIVATION_CHECK = "reactivation_check"
 """The ``cause`` of a pause by a reactivation check (#120)."""
 REACTIVATION_KIND = "reactivation"
+BACKFILL = "backfill"
+"""The ``cause`` of a pause by a backfill (#228)."""
+BACKFILL_CONFLICTS = "backfill_conflicts"
+"""The ``cause`` while a backfill waits for its conflicts to be resolved (#230)."""
+BACKFILL_CONFLICTS_STATUS = "paused_for_conflicts"
 """``rating_check_jobs.kind`` of a reactivation check."""
 
 _holding: ContextVar[str | None] = ContextVar("epistrel_pause_holding", default=None)
@@ -62,7 +75,8 @@ def is_paused(status: str | StoryStatus | None) -> bool:
 
 
 async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
-    """What paused ``story_id``: the check's job id, its cause and its progress."""
+    """What paused ``story_id``: the check's (or backfill's, #228) job id, its cause and its
+    progress."""
     row = (
         await conn.execute(
             select(stories.c.paused_by, rating_check_jobs.c.progress, rating_check_jobs.c.kind)
@@ -70,6 +84,33 @@ async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
             .where(stories.c.id == story_id)
         )
     ).one_or_none()
+    if row is not None and row.paused_by is not None and row.kind is None:
+        backfill = (
+            await conn.execute(select(story_backfills).where(story_backfills.c.id == row.paused_by))
+        ).one_or_none()
+        if backfill is not None:
+            found: dict[str, Any] = {
+                "story_id": story_id,
+                "job_id": backfill.job_id or backfill.id,
+                "cause": BACKFILL,
+                "progress": backfill_progress(backfill),
+            }
+            if str(backfill.status) == BACKFILL_CONFLICTS_STATUS:
+                # #230: the backfill finished its pass and waits for the author.
+                found["cause"] = BACKFILL_CONFLICTS
+                found["backfill_id"] = str(backfill.id)
+                found["conflicts_open"] = int(
+                    await conn.scalar(
+                        select(func.count())
+                        .select_from(backfill_conflicts)
+                        .where(
+                            backfill_conflicts.c.backfill_id == backfill.id,
+                            backfill_conflicts.c.status == "open",
+                        )
+                    )
+                    or 0
+                )
+            return found
     progress = dict(row.progress or {}) if row is not None else {}
     return {
         "story_id": story_id,
@@ -86,13 +127,26 @@ async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
     }
 
 
+def backfill_progress(row: Any) -> dict[str, Any]:
+    """A backfill's progress (#228): its phase, chunks extracted of its total, the last turn its
+    reconciliation committed and the range's last turn."""
+    return {
+        "phase": str(row.status),
+        "chunks_done": int(row.chunks_done or 0),
+        "chunks_total": int(row.chunks_total or 0),
+        "reconciled_through_turn": row.reconcile_cursor,
+        "last_turn": int(row.range_to_turn),
+    }
+
+
 async def paused_error(conn: AsyncConnection, story_id: str) -> StoryPaused:
     found = await details(conn, story_id)
-    what = (
-        "its rating is checked"
-        if found["cause"] == RATING_CHECK
-        else "the turns an edit would reactivate are checked"
-    )
+    what = {
+        RATING_CHECK: "its rating is checked",
+        REACTIVATION_CHECK: "the turns an edit would reactivate are checked",
+        BACKFILL: "its structured data is backfilled",
+        BACKFILL_CONFLICTS: "its backfill's conflicts wait to be resolved",
+    }[found["cause"]]
     return StoryPaused(f"story {story_id} is paused while {what}; try again when it resumes", found)
 
 
@@ -119,9 +173,11 @@ async def _refuse_in(conn: AsyncConnection, story_id: str) -> None:
 
 
 __all__ = [
+    "BACKFILL",
     "RATING_CHECK",
     "REACTIVATION_CHECK",
     "REACTIVATION_KIND",
+    "backfill_progress",
     "details",
     "holding",
     "is_paused",

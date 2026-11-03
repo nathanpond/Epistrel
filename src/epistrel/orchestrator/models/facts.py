@@ -25,7 +25,9 @@ from importlib import resources
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core.profiles import certification
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts
+from epistrel.orchestrator.models import reported_version
 from epistrel.orchestrator.models.config import ConfigRow, parent_of, read_rows
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, STORY_PURPOSES
 
@@ -48,7 +50,9 @@ TEMPLATE_HASHES: Mapping[str, str] = types.MappingProxyType(_template_hashes())
 deployment-level purpose such as ``rating_suggestion`` is no part of a story's runtime)."""
 
 
-def identities(rows: Mapping[str, ConfigRow]) -> dict[str, ModelIdentity]:
+def identities(
+    rows: Mapping[str, ConfigRow], versions: Mapping[str, str] | None = None
+) -> dict[str, ModelIdentity]:
     """The model each story purpose resolves to under ``rows`` (``model_config``): its own
     row's, else its parent purpose's (``config.parent_of``: ``lite_summary`` → consolidation's,
     ``regeneration`` → generation's, #151), else the ``default`` row's. A purpose that runs
@@ -64,14 +68,22 @@ def identities(rows: Mapping[str, ConfigRow]) -> dict[str, ModelIdentity]:
             current = parent_of(current)
         if model is None and default is not None:
             model = default.model
-        found[name] = ModelIdentity(id=model)
+        found[name] = ModelIdentity(
+            id=model, reported_version=(versions or {}).get(model) if model else None
+        )
     return found
 
 
 async def runtime_facts(conn: AsyncConnection) -> RuntimeFacts:
-    """The model each delivered purpose resolves to, read in ``conn``'s transaction, and the
-    template hashes."""
-    return RuntimeFacts(models=identities(await read_rows(conn)), templates=TEMPLATE_HASHES)
+    """The model each delivered purpose resolves to, read in ``conn``'s transaction, the
+    template hashes, and the certified fingerprints (#233: one indexed query)."""
+    versions = await reported_version.latest(conn)
+    return RuntimeFacts(
+        models=identities(await read_rows(conn), versions),
+        templates=TEMPLATE_HASHES,
+        quality=await certification.certified(conn),
+        versions=versions,
+    )
 
 
 __all__ = ["TEMPLATE_HASHES", "identities", "runtime_facts"]

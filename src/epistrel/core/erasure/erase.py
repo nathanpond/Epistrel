@@ -175,11 +175,14 @@ from epistrel.core.memory import retirement
 from epistrel.core.ports import SummaryCompressor
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, ErasureSettings
 from epistrel.core.tables import (
+    amendment_parts,
+    amendments,
     character_catalog,
     character_snapshots,
     character_versions,
     characters,
     config_changes,
+    dependency_edges,
     erasure_ledger,
     events,
     genesis_deferred,
@@ -189,6 +192,8 @@ from epistrel.core.tables import (
     operations,
     personas,
     policies,
+    rewrite_questions,
+    rewrite_sessions,
     scenario_catalog,
     scenario_versions,
     stories,
@@ -281,12 +286,20 @@ CandidateId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 
 
 class SubjectRef(BaseModel):
-    """Who is erased: a story ``character``, a ``catalog_character`` or a ``persona``, by id."""
+    """Who is erased: a story ``character``, a ``catalog_character`` or a ``persona``, by id;
+    for a story ``character`` erased from the catalog (#504, ADR-176), the ``story`` whose
+    subject index gives its names."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: SubjectKind
     id: str = Field(min_length=1, max_length=64)
+    story: Ulid | None = Field(
+        default=None,
+        description="With `kind: character` and `scope: {catalog: true}` only: the story the "
+        "character belongs to, whose names for it are redacted from the catalog's records "
+        "(#504). Anywhere else it is 422 `invalid_erasure_scope`.",
+    )
 
 
 class StoryScope(BaseModel):
@@ -349,13 +362,32 @@ class ErasureRequest(BaseModel):
 
 
 def check_request(request: ErasureRequest) -> None:
-    """422 ``invalid_erasure_scope`` for ``character`` + ``catalog``: a story character exists
-    only in its story."""
-    if request.subject.kind is SubjectKind.CHARACTER and request.story_id is None:
+    """422 ``invalid_erasure_scope`` for ``character`` + ``catalog`` without the subject's
+    ``story`` (a story character's names live in its story; #504, ADR-176), and for a
+    ``story`` on any other pairing."""
+    subject = request.subject
+    if subject.story is not None and (
+        subject.kind is not SubjectKind.CHARACTER or request.story_id is not None
+    ):
         raise InvalidErasureScope(
-            "a story character is erased in its story: scope it to `{story: <id>}`",
-            {"field": "body.scope", "subject_kind": request.subject.kind.value, "scope": CATALOG},
+            "`subject.story` names a story character's story for a catalog-scope erasure only",
+            {
+                "field": "body.subject.story",
+                "subject_kind": subject.kind.value,
+                "scope": request.scope_name,
+            },
         )
+    if subject.kind is SubjectKind.CHARACTER and request.story_id is None and subject.story is None:
+        raise InvalidErasureScope(
+            "a story character is erased in its story (`scope: {story: <id>}`), or from the "
+            "catalog with its story named (`subject.story`)",
+            {"field": "body.subject.story", "subject_kind": subject.kind.value, "scope": CATALOG},
+        )
+
+
+def story_character(request: ErasureRequest) -> bool:
+    """Whether ``request`` erases a story character from the catalog (#504)."""
+    return request.subject.kind is SubjectKind.CHARACTER and request.story_id is None
 
 
 def check_confirmed(redactor: Redactor) -> None:
@@ -408,6 +440,19 @@ class ReferencingStory:
 
 
 @dataclass(frozen=True, slots=True)
+class PromotedDraft:
+    """A catalog character promoted from one of the story's characters (FR-CAT-8:
+    ``characters.promoted_to``), with its companion scenarios: catalog records that may hold
+    the story's text, which a story-scope erasure never touches (#504). Erase the subject from
+    them with ``follow_up`` (a catalog-scope erasure of the story character), before the story
+    erasure removes the names it reads."""
+
+    catalog_id: str
+    character_id: str
+    companion_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class LedgerEntry:
     """The ledger row an erasure wrote, as the response shows it: identifiers and counts."""
 
@@ -446,6 +491,10 @@ class ErasureResult:
     """A dry run's candidates, each with its id, location, rule and snippet (never stored)."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+    promoted_drafts: tuple[PromotedDraft, ...] = ()
+    """Story scope (#504): the catalog drafts promoted from the story's characters, untouched."""
+    subject_story: str | None = None
+    """A story character erased from the catalog (#504): its story."""
 
 
 # -- other stores (ERASURE_TARGETS) --------------------------------------------------------------
@@ -605,6 +654,8 @@ class _Subject:
     known: bool
     parts: tuple[str, ...] = ()
     """The parts of its names the matcher also finds (``index.with_name_parts``)."""
+    source_story: str | None = None
+    """A story character erased from the catalog (#504): its story."""
 
     def redactor(self, confirmed: Iterable[str] = ()) -> Redactor:
         return Redactor(self.terms, self.parts, confirmed=confirmed)
@@ -655,9 +706,51 @@ async def _erased_before(conn: AsyncConnection, subject: SubjectRef, story_id: s
     return await conn.scalar(select(erasure_ledger.c.id).where(*where).limit(1)) is not None
 
 
+async def _story_character(conn: AsyncConnection, request: ErasureRequest) -> _Subject:
+    """A story character erased from the catalog (#504, ADR-176): its names and name parts from
+    its story's subject index, read before anything changes. 422 ``unknown_erasure_candidate``
+    for an unknown story, or a character it does not hold (one already erased there has no
+    names left to find)."""
+    subject = request.subject
+    story_id = subject.story
+    found = (
+        await conn.scalar(
+            select(characters.c.id).where(
+                characters.c.id == subject.id, characters.c.story_id == story_id
+            )
+        )
+        if story_id is not None
+        else None
+    )
+    if found is None:
+        raise UnknownErasureCandidate(
+            f"story {story_id} holds no character {subject.id} whose names could be erased "
+            "from the catalog (erase it from the catalog before erasing it in its story)",
+            {"field": "body.subject", "subject_id": subject.id, "story_id": story_id},
+        )
+    terms: list[str] = []
+    parts: list[str] = []
+    for candidate in await story_subjects(conn, str(story_id)):
+        if candidate.id == subject.id:
+            terms += candidate.terms
+            parts += candidate.parts
+    return _Subject(
+        subject.kind,
+        subject.id,
+        None,
+        (),
+        tuple(dict.fromkeys(terms)),
+        True,
+        tuple(dict.fromkeys(parts)),
+        source_story=str(story_id),
+    )
+
+
 async def _subject(conn: AsyncConnection, request: ErasureRequest) -> _Subject:
     """Who the request erases, in its scope, with its terms (read before anything changes)."""
     subject, story_id = request.subject, request.story_id
+    if story_character(request):
+        return await _story_character(conn, request)
     catalog_terms, in_catalog = await _catalog_terms(conn, subject)
     if story_id is None:
         known = in_catalog or await _erased_before(conn, subject, None)
@@ -861,6 +954,68 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
         tally,
         write=write,
     )
+    # #221: an amendment's payload and its parts' patches and time expressions, in place
+    # (#222's as-recorded view reverses a redacted patch).
+    await _redact_json_rows(
+        conn,
+        amendments,
+        amendments.c.id,
+        refs.get(amendments.name, ()),
+        ("payload",),
+        redactor,
+        tally,
+        write=write,
+    )
+    await _redact_json_rows(
+        conn,
+        amendment_parts,
+        amendment_parts.c.id,
+        refs.get(amendment_parts.name, ()),
+        ("patch_before", "patch_after", "valid_spec"),
+        redactor,
+        tally,
+        write=write,
+    )
+    # #223: a rewrite session's instruction, plan, held render and error, and its questions'
+    # prompts, options, recommendations and answers, in place.
+    from epistrel.core.erasure.records import (
+        DIRECTIVE_TEXTS,
+        REWRITE_QUESTION_TEXTS,
+        REWRITE_SESSION_TEXTS,
+    )
+    from epistrel.core.tables import directives
+
+    await _redact_json_rows(
+        conn,
+        directives,
+        directives.c.id,
+        refs.get(directives.name, ()),
+        DIRECTIVE_TEXTS,
+        redactor,
+        tally,
+        write=write,
+    )
+
+    await _redact_json_rows(
+        conn,
+        rewrite_sessions,
+        rewrite_sessions.c.id,
+        refs.get(rewrite_sessions.name, ()),
+        REWRITE_SESSION_TEXTS,
+        redactor,
+        tally,
+        write=write,
+    )
+    await _redact_json_rows(
+        conn,
+        rewrite_questions,
+        rewrite_questions.c.id,
+        refs.get(rewrite_questions.name, ()),
+        REWRITE_QUESTION_TEXTS,
+        redactor,
+        tally,
+        write=write,
+    )
     await _redact_structured(conn, story_id, refs, removed, redactor, tally, run)
     await _purge_story_results(conn, story_id, refs, redactor, tally, write=write)
     await _redact_transient(conn, story_id, redactor, tally, write=write)
@@ -889,6 +1044,17 @@ async def _delete(
     run.markers.append((table, record_id))
     if run.write:
         await conn.execute(statement)
+        # #220: the dependency edges naming the row (as their dependent or their target) go
+        # with it (ids only; the edges' trigger lets an erasure delete them).
+        e = dependency_edges.c
+        await conn.execute(
+            delete(dependency_edges).where(
+                or_(
+                    and_(e.dependent_table == table, e.dependent_id == record_id),
+                    e.target_id == record_id,
+                )
+            )
+        )
 
 
 async def _redact_story_row(
@@ -2166,6 +2332,13 @@ def _cast_from(catalog_id: str) -> Any:
     )
 
 
+async def character_story(conn: AsyncConnection, character_id: str) -> str | None:
+    """The story a character belongs to (a catalog-scope erasure of a story character, #504,
+    reapplied from the ledger, which records no story for the catalog scope)."""
+    found = await conn.scalar(select(characters.c.story_id).where(characters.c.id == character_id))
+    return None if found is None else str(found)
+
+
 async def catalog_reach(
     conn: AsyncConnection, subject_kind: str, subject_id: str, confirmed: Sequence[str] = ()
 ) -> dict[str, set[str]]:
@@ -2176,9 +2349,13 @@ async def catalog_reach(
     scenarios (deleted with it), and the genesis operations whose creation report carries its
     public card (``operations``). Reads only, and reads the subject's terms as the erasure
     does, so a subject already gone reaches only what the index still names."""
-    request = ErasureRequest.model_validate(
-        {"subject": {"kind": subject_kind, "id": subject_id}, "scope": {"catalog": True}}
-    )
+    ref: dict[str, Any] = {"kind": subject_kind, "id": subject_id}
+    if subject_kind == SubjectKind.CHARACTER.value:
+        story = await character_story(conn, subject_id)
+        if story is None:  # nothing left that names it (#504)
+            return {}
+        ref["story"] = story
+    request = ErasureRequest.model_validate({"subject": ref, "scope": {"catalog": True}})
     subject = await _subject(conn, request)
     found = await _catalog_records(conn, subject, subject.redactor(confirmed))
     if subject.kind is SubjectKind.PERSONA:
@@ -2622,7 +2799,9 @@ async def _reindex_media(conn: AsyncConnection, media_id: str) -> None:
 
 async def _referencing_stories(conn: AsyncConnection, subject: _Subject) -> list[ReferencingStory]:
     """The stories that reference a catalog subject: those with characters made from it, and
-    those whose index names it."""
+    those whose index names it; for a story character (#504), its own story."""
+    if subject.source_story is not None:
+        return [ReferencingStory(subject.source_story, (subject.id,))]
     found: dict[str, set[str]] = {}
     linked = (
         characters.c.source_catalog_id
@@ -2645,6 +2824,43 @@ async def _referencing_stories(conn: AsyncConnection, subject: _Subject) -> list
     ):
         found.setdefault(str(story_id), set())
     return [ReferencingStory(s, tuple(sorted(c))) for s, c in sorted(found.items())]
+
+
+async def _promoted_drafts(conn: AsyncConnection, story_id: str) -> list[PromotedDraft]:
+    """The catalog characters promoted from ``story_id``'s characters that still exist, with
+    their companion scenarios (#504), in promotion order per character."""
+    rows = await conn.execute(
+        select(characters.c.id, characters.c.promoted_to)
+        .where(characters.c.story_id == story_id)
+        .order_by(characters.c.ordinal)
+    )
+    pairs = [
+        (str(row.id), str(catalog_id))
+        for row in rows
+        for catalog_id in (row.promoted_to or [])
+        if isinstance(catalog_id, str)
+    ]
+    if not pairs:
+        return []
+    ids = [catalog_id for _, catalog_id in pairs]
+    existing = {
+        str(i)
+        for i in await conn.scalars(
+            select(character_catalog.c.id).where(character_catalog.c.id.in_(ids))
+        )
+    }
+    companions: dict[str, list[str]] = {}
+    for row in await conn.execute(
+        select(scenario_catalog.c.id, scenario_catalog.c.companion_of)
+        .where(scenario_catalog.c.companion_of.in_(ids))
+        .order_by(scenario_catalog.c.id)
+    ):
+        companions.setdefault(str(row.companion_of), []).append(str(row.id))
+    return [
+        PromotedDraft(catalog_id, character_id, tuple(companions.get(catalog_id, ())))
+        for character_id, catalog_id in pairs
+        if catalog_id in existing
+    ]
 
 
 # -- running it ----------------------------------------------------------------------------------
@@ -2684,6 +2900,9 @@ async def dry_run(
         timeline_revision: int | None = None
         windows = 0
         referencing: list[ReferencingStory] = []
+        promoted: list[PromotedDraft] = []
+        if subject.story_id is not None:
+            promoted = await _promoted_drafts(conn, subject.story_id)
         if not subject.known:
             tally = _Tally()
         elif subject.story_id is not None:
@@ -2724,6 +2943,8 @@ async def dry_run(
                 key=lambda c: (c.record_table, c.record_id, c.field, c.candidate_id),
             )
         ),
+        promoted_drafts=tuple(promoted),
+        subject_story=request.subject.story,
     )
     _log("erasure dry run", result)
     return result
@@ -2959,6 +3180,8 @@ async def _erase_story(
         )
 
         async def step(conn: AsyncConnection) -> None:
+            # #504: the drafts promoted from the story, read before the subject's rows go.
+            found["promoted"] = await _promoted_drafts(conn, story_id)
             # The index is rebuilt first, so a stale one (rows written before a matcher
             # change, or lost) cannot hide a mention from the redaction (#386).
             await reindex_story(conn, story_id)
@@ -3038,6 +3261,7 @@ async def _erase_story(
         else None,
         residue=residue.count,
         candidates_remaining=redactor.remaining,
+        promoted_drafts=tuple(found.get("promoted", ())),
     )
 
 
@@ -3149,6 +3373,7 @@ async def _erase_catalog(
         ledger_entry=LedgerEntry(erasure_id, at, CATALOG, None, counts) if write_ledger else None,
         residue=residue.count,
         candidates_remaining=redactor.remaining,
+        subject_story=subject.source_story,
     )
 
 
@@ -3159,15 +3384,18 @@ __all__ = [
     "ErasureResult",
     "ErasureTarget",
     "LedgerEntry",
+    "PromotedDraft",
     "ReferencingStory",
     "StoryScope",
     "SubjectRef",
     "append_stage",
     "catalog_reach",
+    "character_story",
     "check_request",
     "dry_run",
     "erase",
     "register_target",
     "require_key",
+    "story_character",
     "term_hashes",
 ]

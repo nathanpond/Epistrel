@@ -41,7 +41,6 @@ ALLOWED: dict[str, str] = {
     "src/epistrel/core/events/operation.py": "operations (chain, retire, shelve)",
     "src/epistrel/core/fork.py": "operations (selection, flattening)",
     "src/epistrel/core/history.py": "operations (corrected history)",
-    "src/epistrel/core/input_versions.py": "operations",
     "src/epistrel/core/profiles/impact.py": "operations",
     "src/epistrel/core/projections/fold.py": "operations (projection fold)",
     "src/epistrel/core/projections/lite_summary.py": "lite_summary_segments",

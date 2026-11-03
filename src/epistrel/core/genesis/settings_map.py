@@ -19,9 +19,11 @@ output viewpoint, the audit retention, the story-scoped policies, which Lite use
 policy, a story setting only the structured permission check reads, #144, kept in place so a
 later upgrade finds it, the player view, #177, always active: a no-op wherever perception is
 ``none``, Lite included, so never ``inactive``, the player authority, #180, prompt-only under
-Lite, and the co-author knowledge, #598, a no-op under Lite and without partitions). A
-capability no #106 module covers is named by the setting's own area (``history_rewrite``,
-``providers``). The build-time check ``unmapped_settings`` keeps the dict complete.
+Lite, the co-author knowledge, #598, a no-op under Lite and without partitions, and the
+ambiguous-retcon timing, #240, read only by a structured rewrite, and the backfill conflict
+policy, #230, read when a backfill starts). A capability no #106 module covers is named by the
+setting's own area (``providers``). The build-time check ``unmapped_settings`` keeps the dict
+complete.
 """
 
 from __future__ import annotations
@@ -44,8 +46,8 @@ SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "player_authority": None,
     "co_author_knowledge": None,
     "default_output_viewpoint": None,
-    "ambiguous_retcon_timing": "history_rewrite",
-    "backfill_conflict_policy": "history_rewrite",
+    "ambiguous_retcon_timing": None,
+    "backfill_conflict_policy": None,
     "audit_retention_days": None,
     "allow_new_arrivals": None,
     "player_view": None,

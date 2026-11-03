@@ -97,6 +97,14 @@ class Education:
     never_there: Fact | None = None
     """Canon's "Bobby has never been to Florida"."""
     uf_on_peninsula: Fact | None = None
+    marcus: str | None = None
+    """#220's witnesses: Marcus, in the room with Bobby."""
+    sarah: str | None = None
+    """#220's witnesses: Sarah, in the kitchen until she comes in."""
+    ucla: str | None = None
+    """#220: UCLA (Bobby's lie names it)."""
+    parlor: str | None = None
+    kitchen: str | None = None
 
 
 async def _author(engine: AsyncEngine, story_id: str, proposition: Proposition) -> Fact:
@@ -125,11 +133,15 @@ async def bobby_education(
     closed_degrees: bool = False,
     never_in_florida: bool = False,
     presence_rule: bool = False,
+    witnesses: bool = False,
 ) -> Education:
     """The fixture (see the module docstring); ``joint_degree``: ``bobby_ba`` was awarded by
     {OSU, the University of Florida} jointly; ``closed_degrees``: the closed degree set;
-    ``never_in_florida``: variant 4's world; ``presence_rule``: its declared rule."""
-    story, ids = await structured_story(client, "Cal", "Bobby")
+    ``never_in_florida``: variant 4's world; ``presence_rule``: its declared rule;
+    ``witnesses`` (#220's S-EDGE-TYPES): Marcus and Sarah join the cast, UCLA is an entity, and
+    Cal, Bobby and Marcus are in the parlor, Sarah in the kitchen."""
+    names = ("Cal", "Bobby", "Marcus", "Sarah") if witnesses else ("Cal", "Bobby")
+    story, ids = await structured_story(client, *names)
     bobby = ids["Bobby"]
     async with engine.begin() as conn:
         osu = await store.add_entity(conn, story, "organization", "OSU", aliases=("Ohio State",))
@@ -150,6 +162,7 @@ async def bobby_education(
             if never_in_florida
             else None
         )
+        ucla = await store.add_entity(conn, story, "organization", "UCLA") if witnesses else None
         rules = registry.ScenarioRules.parse(
             {
                 "predicates": [
@@ -203,6 +216,15 @@ async def bobby_education(
     osu_in_ohio = await _author(engine, story, _p(osu, LOCATED_IN, ohio))
     winters = await _author(engine, story, _p(ohio, climate.id, cold))
     team_school = await _author(engine, story, _p(team, team_of.id, florida))
+    parlor = kitchen = None
+    if witnesses:
+        from tests import perception_support as ps
+
+        parlor = await ps.place_entity(engine, story, "the parlor")
+        kitchen = await ps.place_entity(engine, story, "the kitchen")
+        for name in ("Cal", "Bobby", "Marcus"):
+            await ps.put(engine, story, ids[name], parlor)
+        await ps.put(engine, story, ids["Sarah"], kitchen)
     never_there = uf_on_peninsula = None
     if peninsula is not None:
         uf_on_peninsula = await _author(engine, story, _p(florida, LOCATED_IN, peninsula))
@@ -226,6 +248,11 @@ async def bobby_education(
         peninsula=peninsula,
         never_there=never_there,
         uf_on_peninsula=uf_on_peninsula,
+        marcus=ids.get("Marcus"),
+        sarah=ids.get("Sarah"),
+        ucla=ucla,
+        parlor=parlor,
+        kitchen=kitchen,
     )
 
 

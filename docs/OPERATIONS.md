@@ -51,6 +51,16 @@ The subject-reference index records where each mention is (field, offsets and ru
 
 **After upgrading past v0.1.1, run the catalog re-index once:** `python -m epistrel.tools.reindex_subjects --catalog --write`. Scenario drafts and versions saved before then were not indexed for the strings inside their starting-state objects, their roles' starting values or their own policies (#323, #422), so a catalog-scope erasure would not find a name written only there until they are re-indexed. Without `--write` the tool lists the rows it would add. A catalog-scope erasure does not re-index the catalog first; its `residue` count still reports any mention left behind.
 
+### A story character named in promoted catalog drafts: erase in two steps
+
+Promoting a story character into the catalog (`POST /stories/{id}/characters/{cid}/promote`) copies story text into catalog records: the character's definition and the seeded memories of its companion scenario. That text may name **another** character of the story, one who exists only there. A story-scope erasure never touches the catalog, so erase such a character in two steps (#504, ADR-176), **catalog first**:
+
+1. Run the story-scope erasure as a dry run: `{subject: {kind: character, id}, scope: {story: <id>}, dry_run: true}`. Its `promoted_drafts` lists the catalog characters promoted from the story's characters, with their companion scenarios. Each comes with `follow_up`, the catalog-scope request to send.
+2. Send that request: `{subject: {kind: character, id, story: <id>}, scope: {catalog: true}}`, after its own dry run if you want the counts and candidates. It reads the character's names from the story and redacts them from every catalog record. It touches no story.
+3. Send the story-scope erasure.
+
+The order matters. The story erasure removes the names the catalog erasure reads, and the ledger keeps only their keyed hashes. A catalog request sent after the story erasure is 422 `unknown_erasure_candidate`, and any mention left in the catalog has to be edited by hand.
+
 ## Verify
 
 `epistrel backup verify <dump>` checks a dump without restoring it. It reads the dump's `erasure_ledger` and `events` data through `pg_restore` (`--pg-restore` names the executable) and reports:

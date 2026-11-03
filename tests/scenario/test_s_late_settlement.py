@@ -702,3 +702,95 @@ async def test_s_late_settlement__ingest_outcome(
         assert len(await ls.settle_jobs(engine, story)) == 1
         await ls.drop_jobs(engine, story)
         await ss.set_level(engine, story, None)
+
+
+@pytest.mark.part("M6", "FR-EXT-21")
+async def test_s_late_settlement__consumer_listing(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    states_delivered: None,
+    drained_embedding_jobs: None,
+) -> None:
+    """#661 (owner decision): a consumer-applied purchase (#209) whose confirmation cannot
+    settle (Cal already holds the one sword the State allows) is listed
+    ``settlement_conflict`` by its ``request_id`` (no outbox row). Its resolve-only action
+    (``applied_elsewhere``) closes the listing at an inter-turn slot with a
+    ``reconciliation_resolved`` audit event, writes no outcome record and calls no provider.
+    Complement asserted: settle-now on it is 404 ``no_listing`` (no outbox row), as are a
+    second resolve, an unknown id and a body outside the two resolutions (422)."""
+    name = ps.unique_name("ledger")
+    await ps.register(engine, ps.in_process_spec(name))
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        fake = ps.ScriptedProvider(name, default=1000).attach(epistrel)
+        story, ids = await structured_story(client, "Cal", "Mira")
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, "on")
+        await ps.external_gold(engine, story, name, authorization=es.ANY_CHARACTER)
+        await ls.swords(engine, story, constraints={"non_negative": True, "max": 1})
+        played = await ls.buy(client, stub, story, cal)
+        (asked,) = [e for e in played["state_effects"] if e["state"] == "gold"]
+        request_id = asked["effect_id"]
+        # Meanwhile Cal comes by a sword: the grant would break the State's bound.
+        await ss.change(engine, story, ss.set_to("sword", 1, scope_key=cal, reason="a gift"))
+        recorded = await _ingest(
+            client, story, _outcome_event("o-1", outcome="confirmed", effect_id=request_id)
+        )
+        assert recorded.status_code == 201, recorded.text
+        (record,) = await ps.outbox_outcomes(engine, story)
+        assert (await ls.settle(engine, epistrel, record.id)).result == settlement.CONFLICTED
+        (listing,) = [
+            e
+            for e in (await core_outbox.listings(engine, story)).listings
+            if e.request_id == request_id
+        ]
+        assert listing.outbox_id is None
+        assert (listing.reason, listing.status, listing.provider) == (
+            "settlement_conflict",
+            "confirmed",
+            name,
+        )
+        assert listing.effect is not None
+        assert listing.effect["state"] == "gold"
+        seen = await client.get(f"/stories/{story}/reconciliation", headers=WRITE)
+        assert seen.status_code == 200, seen.text
+        assert request_id in {e.get("request_id") for e in seen.json()["listings"]}
+
+        base = f"/stories/{story}/reconciliation"
+        settle_now = await client.post(f"{base}/{request_id}/settle-now", headers=WRITE)
+        assert settle_now.status_code == 404, settle_now.text
+        assert settle_now.json()["error"]["details"]["reason"] == "no_listing"
+        bad = await client.post(
+            f"{base}/{request_id}/resolve", json={"resolution": "settled"}, headers=WRITE
+        )
+        assert bad.status_code == 422, bad.text
+
+        calls, outcomes = fake.calls, len(await ps.outbox_outcomes(engine, story))
+        resolved = await client.post(
+            f"{base}/{request_id}/resolve", json={"resolution": "applied_elsewhere"}, headers=WRITE
+        )
+        assert resolved.status_code == 200, resolved.text
+        done = resolved.json()
+        assert (done["request_id"], done["resolution"], done["reasons"]) == (
+            request_id,
+            "applied_elsewhere",
+            ["settlement_conflict"],
+        )
+        assert done["slot"]["slot_k"] >= 1
+        assert (fake.calls, len(await ps.outbox_outcomes(engine, story))) == (calls, outcomes)
+        audit = await rows(
+            engine,
+            "SELECT payload FROM events WHERE story_id = :s AND type = 'reconciliation_resolved'",
+            s=story,
+        )
+        assert [r.payload["request_id"] for r in audit] == [request_id]
+        listed = (await core_outbox.listings(engine, story)).listings
+        assert request_id not in {e.request_id for e in listed}
+        for again in (request_id, new_ulid()):
+            refused = await client.post(
+                f"{base}/{again}/resolve", json={"resolution": "abandoned"}, headers=WRITE
+            )
+            assert refused.status_code == 404, refused.text
+            assert refused.json()["error"]["details"]["reason"] == "no_listing"
+        await ls.drop_jobs(engine, story)
+        await ss.set_level(engine, story, None)

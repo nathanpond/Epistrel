@@ -87,16 +87,26 @@ from epistrel.core.world_clock.anchor import (
 )
 
 REF_PREFIX = "state:"
+ON_LEVEL = "on"
+"""#663: the clock level at which claims are checked against it."""
 KIND = "clock"
 REFINES: frozenset[str] = frozenset({TIME_IS, TIME_OF_DAY_BAND})
 """The checks whose statement, undecided, may narrow the anchor (anchoring statements)."""
 
 
 async def clock_on(conn: AsyncConnection, story_id: str) -> bool:
-    """The story runs the clock (``time_is``'s ``active`` test)."""
+    """The story runs the clock, ``on`` or ``prompt_only`` (what its prompts show of it)."""
     from epistrel.core.world_clock import clock_level
 
     return await clock_level(conn, story_id) is not None
+
+
+async def checks_on(conn: AsyncConnection, story_id: str) -> bool:
+    """#663: the story checks claims against the clock (``time_is``'s ``active`` test): only at
+    ``clock.level = on``; at ``prompt_only`` the clock is prompt text alone."""
+    from epistrel.core.world_clock import clock_level
+
+    return await clock_level(conn, story_id) == ON_LEVEL
 
 
 async def read(
@@ -110,7 +120,7 @@ async def read(
     the story does not run the clock."""
     from epistrel.core import world_clock
 
-    if not await clock_on(conn, story_id):
+    if not await checks_on(conn, story_id):
         return []
     found = await world_clock.settings(conn, story_id)
     clock = await world_clock.clock_definition(conn, story_id)
@@ -128,8 +138,50 @@ async def read(
             tolerance=found.time_statement_tolerance_minutes,
             factor=float(found.elapsed_tolerance_factor),
             at_claim=basis.in_turn is not None,
+            events=await _events(conn, story_id, subjects, through),
         )
     ]
+
+
+async def _events(
+    conn: AsyncConnection, story_id: str, subjects: Sequence[str] | None, through: Any
+) -> dict[str, dict[str, Any]]:
+    """#644: the story's scheduled events among ``subjects`` as of ``through``, keyed by event
+    id and by the event's entity (its ``scheduled`` proposition's object, what a
+    ``scheduled_status`` claim names): planned offset, frame minute (``planned_anchor``'s
+    ``at``; ``None``: an exact offset) and grace."""
+    if not subjects:
+        return {}
+    from sqlalchemy import select
+
+    from epistrel.core.tables.propositions import propositions
+    from epistrel.core.world_clock import stops
+
+    wanted = set(subjects)
+    found = await stops.events_at(conn, story_id, through)
+    if not found:
+        return {}
+    objects = dict(
+        (
+            await conn.execute(
+                select(propositions.c.id, propositions.c.object_id).where(
+                    propositions.c.id.in_([e.event_id for e in found])
+                )
+            )
+        ).all()
+    )
+    events: dict[str, dict[str, Any]] = {}
+    for event in found:
+        planned_at = (event.planned_anchor or {}).get("at")
+        entry = {
+            "planned": event.planned,
+            "at": None if planned_at is None else int(planned_at),
+            "grace": event.grace,
+        }
+        for key in (event.event_id, objects.get(event.event_id)):
+            if key is not None and key in wanted:
+                events[str(key)] = entry
+    return events
 
 
 def owned_value(
@@ -141,6 +193,7 @@ def owned_value(
     tolerance: int = 15,
     factor: float = 2.0,
     at_claim: bool = False,
+    events: dict[str, dict[str, Any]] | None = None,
 ) -> OwnedValue:
     """The clock as the lookup hands it to ``verdict``: ``anchor`` at clock offset ``offset``
     with the tolerances (see the module docstring); ``at_claim`` (#194): checked at the claim's
@@ -157,6 +210,8 @@ def owned_value(
     }
     if at_claim:
         payload["at_claim"] = True
+    if events:
+        payload["events"] = events
     return OwnedValue(
         proposition=Proposition(
             subject_id=clock_id,
@@ -232,8 +287,27 @@ def check_of(claim: Proposition, anchor: Anchor, payload: dict[str, Any]) -> Che
         )
     if claim.predicate_id == SCHEDULED_STATUS:
         status = literal.value if literal is not None else ""
-        return Scheduled(claim.subject_id, str(status))
+        event = (payload.get("events") or {}).get(claim.subject_id) or {}
+        at = event.get("at")
+        return Scheduled(claim.subject_id, str(status), None if at is None else int(at))
     return None
+
+
+def _exact_scheduled(
+    check: Scheduled, event: dict[str, Any], offset: int, tolerance: int
+) -> Outcome:
+    """#644: an event planned at an exact offset, at clock offset ``offset``: its status as a
+    time belief reads one (``time_belief``'s rule: ``due`` from ``tolerance`` minutes before it
+    until its grace or the tolerance has passed, ``past`` after, ``not_due`` before);
+    ``possibly_due`` never holds of an exact time."""
+    left = int(event["planned"]) - offset
+    grace = int(event.get("grace", 0))
+    status = "not_due" if left > tolerance else "past" if left < -max(grace, tolerance) else "due"
+    if check.status == "possibly_due":
+        return Outcome.CONTRADICTED
+    if check.status not in ("due", "not_due", "past"):
+        return Outcome.UNCERTAIN
+    return Outcome.SUPPORTED if check.status == status else Outcome.CONTRADICTED
 
 
 def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
@@ -255,7 +329,15 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     widened = check
     if isinstance(check, Statement) and claim.predicate_id == TIME_IS:
         widened = check.widened(tolerance, anchor.clockwork.day_minutes)
-    outcome = anchor.evaluate(widened, offset)
+    event = (
+        (payload.get("events") or {}).get(claim.subject_id)
+        if isinstance(check, Scheduled)
+        else None
+    )
+    if isinstance(check, Scheduled) and event is not None and check.at is None:
+        outcome = _exact_scheduled(check, event, offset, tolerance)
+    else:
+        outcome = anchor.evaluate(widened, offset)
     affirmed = claim.polarity is Polarity.AFFIRMED
     if outcome is Outcome.SUPPORTED:
         if affirmed:
@@ -281,6 +363,42 @@ def verdict(claim: Proposition, owned: Sequence[OwnedValue]) -> Verdict:
     if isinstance(check, Scheduled | Elapsed):
         return uncertain(VerdictReason.UNRESOLVED_TIME)
     return uncertain(VerdictReason.APPROXIMATE_BOUNDS)
+
+
+def staged_anchor(owned: OwnedValue, staged: Sequence[Proposition]) -> OwnedValue:
+    """#627: the clock ``owned`` with the turn's earlier anchoring statements (``staged``, the
+    same-turn overlay's ``time_is`` and ``time_of_day_band`` commitments, in beat order) laid
+    over its anchor, each at its own time as ``commit_anchor`` would commit it; a statement
+    the anchor as narrowed so far contradicts is skipped (the commit drops it too). Pure."""
+    found = _clock([owned])
+    if found is None:
+        return owned
+    _, payload = found
+    anchor = _anchor(payload)
+    zero = int(payload.get("minute_zero", 0))
+    tolerance = int(payload.get("tolerance", 0))
+    changed = False
+    for claim in staged:
+        statement = statement_for(claim, anchor.clockwork, tolerance)
+        if statement is None or claim.polarity is not Polarity.AFFIRMED:
+            continue
+        own = _claim_minute(claim)
+        offset = int(payload.get("offset", 0)) if own is None else own - zero
+        refined = anchor.refine(statement, offset)
+        if isinstance(refined, Anchor):
+            anchor, changed = refined, True
+    if not changed:
+        return owned
+    return owned_value(
+        owned.proposition.subject_id,
+        anchor,
+        offset=int(payload.get("offset", 0)),
+        minute_zero=zero,
+        tolerance=tolerance,
+        factor=float(payload.get("factor", 2.0)),
+        at_claim=bool(payload.get("at_claim")),
+        events=payload.get("events"),
+    )
 
 
 def _claim_minute(claim: Proposition) -> int | None:
@@ -353,7 +471,7 @@ async def believed(
 
 
 CLOCK_LOOKUP = _ClockLookup()
-register_owner_lookup(TIME_IS, CLOCK_LOOKUP, active=clock_on, belief=believed)
+register_owner_lookup(TIME_IS, CLOCK_LOOKUP, active=checks_on, belief=believed)
 for _predicate in (TIME_OF_DAY_BAND, ELAPSED_SINCE, SCHEDULED_STATUS):
     register_owner_lookup(_predicate, CLOCK_LOOKUP, belief=believed)
 
@@ -362,10 +480,12 @@ __all__ = [
     "REFINES",
     "believed",
     "check_of",
+    "checks_on",
     "clock_on",
     "owned_value",
     "read",
     "refinement",
+    "staged_anchor",
     "statement_for",
     "verdict",
 ]

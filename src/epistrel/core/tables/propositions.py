@@ -206,6 +206,20 @@ Index(
     propositions.c.predicate_id,
 )
 Index("ix_propositions_valid_span", propositions.c.valid_span, postgresql_using="gist")
+# #617 (migration 0107): the object side of canon link reads.
+Index(
+    "ix_propositions_story_object",
+    propositions.c.story_id,
+    propositions.c.object_id,
+    postgresql_where=text("object_id IS NOT NULL"),
+)
+Index(
+    "ix_propositions_object_set",
+    propositions.c.object_set,
+    postgresql_using="gin",
+    postgresql_ops={"object_set": "jsonb_path_ops"},
+    postgresql_where=text("object_set IS NOT NULL"),
+)
 
 closed_sets = Table(
     "closed_sets",

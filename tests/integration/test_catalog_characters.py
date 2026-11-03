@@ -39,6 +39,7 @@ from tests.catalog_support import (
     version_rows,
 )
 from tests.event_support import execute_in_tx, rows, scalar, sqlstate
+from tests.idempotency_support import waits_on_original
 from tests.story_support import rest
 
 REPLAY = "Idempotent-Replay"
@@ -397,10 +398,13 @@ async def test_two_saves_from_one_revision(client: httpx.AsyncClient, engine: As
     )
 
 
-async def test_two_publishes_of_one_draft(client: httpx.AsyncClient, engine: AsyncEngine) -> None:
+async def test_two_publishes_of_one_draft(
+    client: httpx.AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two publishes of the same draft revision: the second waits on the entry's row lock
     while the first holds it, then finds the revision moved: one version and one 409
-    ``draft_stale``. Under the same ``Idempotency-Key`` the second gets the first's result."""
+    ``draft_stale``. Under the same ``Idempotency-Key`` the second waits on the key's original
+    (proven by the claim's hook, #609) and gets the first's result."""
     cid = (await create(client))["id"]
     with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
         first = asyncio.ensure_future(publish(client, cid, 1))
@@ -415,11 +419,14 @@ async def test_two_publishes_of_one_draft(client: httpx.AsyncClient, engine: Asy
 
     cid = (await create(client))["id"]
     key = f"publish-{cid}"
-    with pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold:
+    with (
+        pauses.held(pauses.CATALOG_PUBLISH_LOCKED) as hold,
+        waits_on_original(monkeypatch) as waits,
+    ):
         first = asyncio.ensure_future(publish(client, cid, 1, key=key))
         await hold.arrived(1)
         second = asyncio.ensure_future(publish(client, cid, 1, key=key))
-        await asyncio.sleep(0.2)  # the duplicate is waiting on the key's original
+        await waits.arrived(key)  # the duplicate is waiting on the key's original
         hold.release()
         original, duplicate = await asyncio.gather(first, second)
     assert original.status_code == duplicate.status_code == 201

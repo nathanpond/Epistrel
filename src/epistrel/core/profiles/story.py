@@ -41,9 +41,10 @@ story's configuration is read-only (409 ``story_archived``), as its settings are
 call would change something: a call that changes nothing (the story's own profile, a patch that
 changes no setting) answers 200 and writes nothing.
 
-**M3's interim rule.** A change that adds data-producing capability to a story with history is
-``upgrade_unavailable`` (``impact``): confirmed, the story keeps its previous configuration, and
-nothing is written for it.
+**Upgrades with history (#228, #229).** A confirmed change that adds data-producing capability
+to a story with history starts its backfill (``upgrade_mode: backfill``, the default; the change
+applies on completion) or applies now with a coverage gap (``forward_only``). Either supersedes a
+profile edit's backfill of the story still queued.
 
 **Locks.** A write reads the deployment row ``FOR SHARE`` (the defaults cannot change under it),
 then holds the profiles it validates against ``FOR SHARE`` (a profile edit, which holds its
@@ -62,9 +63,13 @@ from pydantic import ConfigDict, Field, StrictInt
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import backfill as core_backfill
+from epistrel.core import summary_rebuild
+from epistrel.core.backfill import coverage
 from epistrel.core.config_changes import ConfigScope, record_config_change
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidProfile, RevisionConflict, StoryArchived, StoryNotFound
+from epistrel.core.genesis import deferred
 from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, impact, schema
 from epistrel.core.profiles.effective import Configuration, EffectiveConfig, StoryProfile
@@ -208,17 +213,32 @@ async def _report(
     after: Configuration,
     facts: RuntimeFacts,
     safety: SafetyFacts | None = None,
-) -> tuple[ImpactReport, bool]:
-    """The one-story report of the change, and whether its upgrade is unavailable; ``safety``:
-    what its ``budget_warnings`` count (#456)."""
+    *,
+    mode: impact.UpgradeMode | None = None,
+) -> tuple[ImpactReport, bool, impact.Delta]:
+    """The one-story report of the change, whether its upgrade needs the story's history
+    re-derived (a gained capability has a coverage gap, #229), and the change; ``safety``: what
+    its ``budget_warnings`` count (#456); ``mode``: the request's ``upgrade_mode``."""
     change = impact.delta(before, after, facts)
     history = await impact.with_history(conn, [story_id]) if change.increases else set()
     sizes = await impact.transcripts(conn, history)
+    levels = coverage.capabilities_of(after.settings)
+    span = await impact.gap_span(conn, story_id, change, levels) if history else None
     entry = impact.affected(
-        story_id, change, history=story_id in history, transcript=sizes.get(story_id, (0, 0))
+        story_id,
+        change,
+        history=span is not None,
+        transcript=sizes.get(story_id, (0, 0)),
+        mode=mode,
+        span=span,
+        queue_position=None if span is None else await impact.queued_count(conn) + 1,
+        deferred=await impact.deferred_counts(conn, story_id, change),
+        summary=await impact.summary_counts(conn, story_id, change),
     )
+    needed = entry.backfill.needed
     warned = safety_warnings(after.settings, safety)
-    return impact.single_report(entry, change, budget_warnings=warned), entry.upgrade_unavailable
+    report = impact.single_report(entry, change, budget_warnings=warned)
+    return report, needed, change
 
 
 async def _bump(conn: AsyncConnection, story_id: str, revision: int, **values: Any) -> None:
@@ -238,6 +258,10 @@ async def _staged(
     kept: StoryProfile,
     write: Callable[[], Awaitable[EffectiveConfig]] | None = None,
     safety: SafetyFacts | None = None,
+    hold: Mapping[str, Any] | None = None,
+    start_job: core_backfill.StartJob | None = None,
+    principal: str | None = None,
+    upgrade_mode: impact.UpgradeMode | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
     """The write through #109's two stages (``impact.two_stage``, which logs the report): the
     one-story report of ``change`` (the configuration now, and the one the story would run
@@ -248,24 +272,171 @@ async def _staged(
     result carries the story's revisions after the call."""
     before, after = change
     unavailable = False
+    delta: impact.Delta | None = None
+    started: core_backfill.Started | None = None
+    backfills = start_job is not None and hold is not None and principal is not None
 
     async def report() -> ImpactReport:
-        nonlocal unavailable
-        found, unavailable = await _report(conn, story_id, before, after, facts, safety)
+        nonlocal unavailable, delta
+        found, unavailable, delta = await _report(
+            conn, story_id, before, after, facts, safety, mode=upgrade_mode
+        )
         return found
 
     async def apply(_: ImpactReport) -> EffectiveConfig:
-        if write is None or unavailable:
+        nonlocal started
+        if write is None:
             return effective.view(kept, facts)
-        return await write()
+        # #229: the story's own change supersedes a profile edit's backfill still queued.
+        await core_backfill.supersede_queued(conn, story_id)
+        if not unavailable or upgrade_mode == "forward_only":
+            # #229: forward_only applies at the next turn boundary; the earlier turns keep a
+            # coverage gap (``write`` extends the live coverage from the next turn).
+            return await write()
+        if start_job is None or hold is None or principal is None or delta is None:
+            return effective.view(kept, facts)
+        levels = coverage.capabilities_of(after.settings)
+        gained = {m: levels.get(m) for m in delta.increases}
+        missing = await coverage.gaps_of(conn, story_id, gained)
+        span = core_backfill.span_of(missing)
+        if span is None:  # every gained capability already covers the story's turns
+            return await write()
+        started = await core_backfill.start(
+            conn,
+            story_id,
+            kind="upgrade",
+            capabilities=sorted(missing),
+            span=span,
+            source={
+                "profile_id": before.profile_id,
+                "profile_version": before.version,
+                "overrides_revision": kept.overrides_revision,
+            },
+            target=hold,
+            principal=principal,
+            start_job=start_job,
+        )
+        return effective.view(kept, facts)
 
+    if backfills:
+        await core_backfill.refuse_running(conn, story_id, queued_ok=True)
     outcome = await impact.two_stage(report, apply, ignore_warnings=ignore_warnings)
+    if started is not None:
+        outcome = dataclasses.replace(outcome, applied=False, result=None, backfill=started)
     revision = await conn.scalar(select(stories.c.config_revision).where(stories.c.id == story_id))
     return dataclasses.replace(
         outcome,
         config_revision=int(revision if revision is not None else row.config_revision),
         timeline_revision=int(row.timeline_revision),
     )
+
+
+# -- the writes ----------------------------------------------------------------------------------
+
+
+async def _revision(conn: AsyncConnection, story_id: str) -> int:
+    found = await conn.scalar(select(stories.c.config_revision).where(stories.c.id == story_id))
+    return int(found or 0) + 1
+
+
+async def _write_assignment(
+    conn: AsyncConnection,
+    story_id: str,
+    current: StoryProfile,
+    profile_id: str,
+    pin: int | None,
+    *,
+    principal: str,
+) -> None:
+    """Assign ``profile_id`` (pinned to ``pin``) to the story, recorded as a configuration
+    change (#109's write; a backfill's completion applies a held one the same way, #228)."""
+    revision = await _revision(conn, story_id)
+    await _bump(
+        conn, story_id, revision, engine_profile_id=profile_id, engine_profile_version_pin=pin
+    )
+    if current.profile_id != profile_id:
+        await record_config_change(
+            conn,
+            config_revision=revision,
+            setting=ASSIGNMENT_SETTING,
+            old=current.profile_id,
+            new=profile_id,
+            actor=principal,
+            change_class=ConfigClass.prospective,
+            scope=ConfigScope.STORY,
+            scope_id=story_id,
+        )
+    if pin is not None or current.profile_id == profile_id:
+        await record_config_change(
+            conn,
+            config_revision=revision,
+            setting=VERSION_SETTING,
+            old=current.version if current.pinned else None,
+            new=pin,
+            actor=principal,
+            change_class=ConfigClass.prospective,
+            scope=ConfigScope.STORY,
+            scope_id=story_id,
+        )
+    await coverage.extend_live(conn, story_id)
+    await deferred.on_configuration(conn, story_id, principal)  # #231
+    await summary_rebuild.on_configuration(conn, story_id, current.settings, principal)  # #232
+    await deferred.on_configuration(conn, story_id, principal)  # #231
+    await summary_rebuild.on_configuration(conn, story_id, current.settings, principal)  # #232
+
+
+async def _write_overrides(
+    conn: AsyncConnection,
+    story_id: str,
+    current: StoryProfile,
+    wanted: Mapping[str, Any],
+    *,
+    principal: str,
+) -> None:
+    """Store ``wanted`` as the story's overrides, each changed setting recorded (#113's write;
+    a backfill's completion applies held ones the same way, #228)."""
+    changed = changed_settings(current.overrides, wanted)
+    if not changed:
+        return
+    revision = await _revision(conn, story_id)
+    await effective.store_overrides(conn, story_id, wanted, current.overrides_revision + 1)
+    await _bump(conn, story_id, revision)
+    old, new = leaf_values(current.overrides), leaf_values(wanted)
+    for path in changed:
+        await record_config_change(
+            conn,
+            config_revision=revision,
+            setting=f"{OVERRIDES_SETTING}.{path}",
+            old=old.get(path),
+            new=new.get(path),
+            actor=principal,
+            change_class=_change_class(path),
+            scope=ConfigScope.STORY,
+            scope_id=story_id,
+        )
+    await coverage.extend_live(conn, story_id)
+
+
+async def apply_held(
+    conn: AsyncConnection, story_id: str, target: Mapping[str, Any], principal: str
+) -> None:
+    """Apply the configuration a backfill held (#228, ``core.backfill.complete``): its
+    ``profile_id`` (pinned to ``pin``) and/or its ``overrides``."""
+    current = await effective.effective_configuration(conn, story_id, validate=False)
+    if target.get("profile_id"):
+        await _write_assignment(
+            conn,
+            story_id,
+            current,
+            str(target["profile_id"]),
+            target.get("pin"),
+            principal=principal,
+        )
+        current = await effective.effective_configuration(conn, story_id, validate=False)
+    if target.get("overrides") is not None:
+        await _write_overrides(
+            conn, story_id, current, dict(target["overrides"]), principal=principal
+        )
 
 
 # -- assign ---------------------------------------------------------------------------------------
@@ -280,9 +451,11 @@ async def assign_profile(
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
     safety: SafetyFacts | None = None,
+    start_job: core_backfill.StartJob | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
     """Assign ``request.profile_id`` to the story (see the module docstring); ``safety``: what
-    the report's ``budget_warnings`` count (#456)."""
+    the report's ``budget_warnings`` count (#456). ``start_job`` enqueues a backfill's job: a
+    confirmed data-producing upgrade of a story with history starts one (#228)."""
     async with db.begin() as conn:
         row = await _lock(conn, story_id, also=request.profile_id)
         current = await effective.effective_configuration(conn, story_id, validate=False)
@@ -300,6 +473,7 @@ async def assign_profile(
                 (current.configuration(), current.configuration()),
                 facts=facts,
                 ignore_warnings=request.ignore_warnings,
+                upgrade_mode=request.upgrade_mode,
                 kept=current,
                 safety=safety,
             )
@@ -320,38 +494,9 @@ async def assign_profile(
         moved = dataclasses.replace(moved, pinned=pin is not None)
 
         async def write() -> EffectiveConfig:
-            revision = int(row.config_revision) + 1
-            await _bump(
-                conn,
-                story_id,
-                revision,
-                engine_profile_id=target.profile_id,
-                engine_profile_version_pin=pin,
+            await _write_assignment(
+                conn, story_id, current, target.profile_id, pin, principal=principal
             )
-            if current.profile_id != target.profile_id:
-                await record_config_change(
-                    conn,
-                    config_revision=revision,
-                    setting=ASSIGNMENT_SETTING,
-                    old=current.profile_id,
-                    new=target.profile_id,
-                    actor=principal,
-                    change_class=ConfigClass.prospective,
-                    scope=ConfigScope.STORY,
-                    scope_id=story_id,
-                )
-            if pin is not None or current.profile_id == target.profile_id:
-                await record_config_change(
-                    conn,
-                    config_revision=revision,
-                    setting=VERSION_SETTING,
-                    old=current.version if current.pinned else None,
-                    new=pin,
-                    actor=principal,
-                    change_class=ConfigClass.prospective,
-                    scope=ConfigScope.STORY,
-                    scope_id=story_id,
-                )
             return effective.view(await effective.effective_configuration(conn, story_id), facts)
 
         return await _staged(
@@ -361,9 +506,13 @@ async def assign_profile(
             (current.configuration(), moved.configuration()),
             facts=facts,
             ignore_warnings=request.ignore_warnings,
+            upgrade_mode=request.upgrade_mode,
             kept=current,
             write=write,
             safety=safety,
+            hold={"profile_id": target.profile_id, "pin": pin},
+            start_job=start_job if request.upgrade_mode != "forward_only" else None,
+            principal=principal,
         )
 
 
@@ -397,9 +546,11 @@ async def set_overrides(
     facts: RuntimeFacts,
     purposes: Purposes | None = None,
     safety: SafetyFacts | None = None,
+    start_job: core_backfill.StartJob | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
     """Apply ``request.settings`` to the story's overrides (see the module docstring);
-    ``safety``: what the report's ``budget_warnings`` count (#456)."""
+    ``safety``: what the report's ``budget_warnings`` count (#456); ``start_job``: as
+    ``assign_profile`` takes it (#228)."""
     field = ("body", "settings")
     async with db.begin() as conn:
         row = await _lock(conn, story_id)
@@ -432,28 +583,14 @@ async def set_overrides(
                 (before, before),
                 facts=facts,
                 ignore_warnings=request.ignore_warnings,
+                upgrade_mode=request.upgrade_mode,
                 kept=current,
                 safety=safety,
             )
         _refuse_archived(row, story_id)
 
         async def write() -> EffectiveConfig:
-            revision = int(row.config_revision) + 1
-            await effective.store_overrides(conn, story_id, wanted, current.overrides_revision + 1)
-            await _bump(conn, story_id, revision)
-            old, new = leaf_values(current.overrides), leaf_values(wanted)
-            for path in changed:
-                await record_config_change(
-                    conn,
-                    config_revision=revision,
-                    setting=f"{OVERRIDES_SETTING}.{path}",
-                    old=old.get(path),
-                    new=new.get(path),
-                    actor=principal,
-                    change_class=_change_class(path),
-                    scope=ConfigScope.STORY,
-                    scope_id=story_id,
-                )
+            await _write_overrides(conn, story_id, current, wanted, principal=principal)
             return effective.view(await effective.effective_configuration(conn, story_id), facts)
 
         return await _staged(
@@ -463,9 +600,13 @@ async def set_overrides(
             (before, Configuration(current.profile_id, current.version, settings)),
             facts=facts,
             ignore_warnings=request.ignore_warnings,
+            upgrade_mode=request.upgrade_mode,
             kept=current,
             write=write,
             safety=safety,
+            hold={"overrides": dict(wanted)},
+            start_job=start_job if request.upgrade_mode != "forward_only" else None,
+            principal=principal,
         )
 
 
@@ -478,6 +619,7 @@ __all__ = [
     "OverridesPatchDocument",
     "ProfileAssignment",
     "ProfileOverridesPatch",
+    "apply_held",
     "assign_profile",
     "changed_settings",
     "leaf_values",

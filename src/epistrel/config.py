@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(default=5, ge=1, le=100)
     worker_listen_enabled: bool = True
     worker_concurrency: int = Field(default=2, ge=1, le=64)
+    # Backfills (FR-PROF-8, #229): at most ``backfill_concurrency`` run at once across the
+    # deployment; a profile edit's queued backfills wait their turn.
+    backfill_concurrency: int = Field(default=1, ge=1, le=8)
     # Process mode (NFR-OPS-1, #71): ``all`` serves the API and runs ``worker_concurrency``
     # worker loops in one process (the image's default); ``api`` serves the API only; ``worker``
     # runs the worker loops and serves only ``/health``. ``epistrel serve --mode`` overrides it.
@@ -165,6 +168,8 @@ class Settings(BaseSettings):
     # (exit 78). The image sets /var/lib/epistrel/erasure-ledger (compose: the
     # ``erasure-ledger`` volume, separate from ``pgdata`` and ``media``).
     erasure_ledger_dir: Path = Path("var/erasure-ledger")
+    # Story bundles (FR-STORE-7; #249): where export archives are written (staged, then renamed).
+    bundle_dir: Path = Path("var/bundles")
 
     @property
     def embedding_adapter_kind(self) -> Literal["openai", "stub"]:

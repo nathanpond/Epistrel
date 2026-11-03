@@ -463,6 +463,9 @@ def _canonical(value: Any) -> str:
 DURATIONS = frozenset({"timings"})
 
 
+FINGERPRINT_TEXT = re.compile(r"sha256:[0-9a-f]{64}")
+
+
 def _blanked(body: Any) -> Any:
     """``body`` without what differs between two fresh entities in the same state: every id
     and time blanked, in keys too (a mapping whose keys become alike, such as true ages by
@@ -477,6 +480,9 @@ def _blanked(body: Any) -> Any:
     if isinstance(body, list):
         return sorted((_blanked(item) for item in body), key=_canonical)
     if isinstance(body, str):
+        # #233: a profile read's fingerprint hashes the profile's id, so two fresh profiles
+        # differ there too.
+        body = FINGERPRINT_TEXT.sub("<fingerprint>", body)
         return TIME_TEXT.sub("<time>", SIGNED_TEXT.sub(r"\1<signed>", ULID_TEXT.sub("<id>", body)))
     return body
 

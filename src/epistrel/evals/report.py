@@ -18,14 +18,15 @@ records the judge that ran in ``judge``, with ``self_judged`` true when that was
 A report written before #475 has neither field. It still parses, and its judged suites were
 self-judged.
 
-**Markdown** (``docs/evals/<fingerprint[:12]>-<YYYY-MM-DD>.md`` for a real model, committed
-whatever its verdict as the honest record; ``build/evals/stub-report.md`` for a stub run):
+**Markdown** (``docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md`` for a real model,
+since #227; ``<fingerprint[:12]>-<YYYY-MM-DD>.md`` before; committed
+whatever its verdict as the honest record; ``build/evals/stub-report-<preset>.md`` for a stub run):
 columns metric / floor / rule / mean ± sd / n / seeds / verdict / bound, percentages to two
 decimals. A clean zero-tolerance row reads "0 observed in n cases, one-sided 95 % upper bound
 ≈ x %" — never a claim that the rate is zero. Each report embeds its summary as one HTML
 comment (``<!-- epistrel-eval-report {...} -->``), which ``render_index`` reads to regenerate
-``docs/evals/INDEX.md``: date (UTC), model, fingerprint, host, and the verdict per NFR-QUAL
-requirement the run measured, newest first.
+``docs/evals/INDEX.md``: date (UTC), model, preset (#227; ``structured`` before it),
+fingerprint, host, and the verdict per NFR-QUAL requirement the run measured, newest first.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ VERDICT_TEXT: Mapping[Verdict, str] = {
     Verdict.insufficient_evidence: "insufficient evidence",
     Verdict.report_only: "report only",
     Verdict.error: "**error**",
+    Verdict.not_applicable: "not applicable",
 }
 
 
@@ -181,6 +183,8 @@ class SuiteResult(BaseModel):
     """The configuration the suite's stories ran under, when it is not the run's (#179)."""
     fingerprint: str | None = None
     """That configuration's fingerprint (#179); ``None``: the run's."""
+    needs: list[str] = Field(default_factory=list)
+    """For a ``not_applicable`` suite (#227): what the run's preset lacks."""
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -206,6 +210,9 @@ class Report(BaseModel):
     model_version: str | None = None
     fingerprint: str
     fingerprint_profile: str
+    preset: str | None = None
+    """The preset the run's stories played under (#227); ``None`` in a report written before it,
+    which ran the seeded ``Structured`` profile (``preset_of``)."""
     adapter: str
     engine_sha: str
     host: Host
@@ -378,6 +385,7 @@ def summary(report: Report) -> dict[str, Any]:
         "model": report.model,
         "model_version": report.model_version,
         "fingerprint": report.fingerprint,
+        "preset": preset_of(report),
         "host": report.host.kind,
         "verdict": report.verdict.value,
         "suites": {s.name: s.verdict.value for s in report.suites},
@@ -387,7 +395,32 @@ def summary(report: Report) -> dict[str, Any]:
         "judges": {
             s.name: s.judge.model_dump(mode="json") for s in report.suites if s.judge is not None
         },
+        # #532: what GET /admin/evals/runs serves of a run beyond its verdicts.
+        "seeds": list(report.seeds),
+        "sample_size": max((m.sample_size for s in report.suites for m in s.metrics), default=0),
+        "metrics": [
+            {
+                "id": m.id,
+                "requirement": m.requirement,
+                "value": m.mean,
+                "floor": m.floor,
+                "sample_size": m.sample_size,
+                "verdict": m.verdict.value,
+            }
+            for s in report.suites
+            for m in s.metrics
+        ],
     }
+
+
+LEGACY_PRESET = "structured"
+"""The INDEX ``preset`` of a report written before #227: it ran the seeded ``Structured``
+profile."""
+
+
+def preset_of(report: Report) -> str:
+    """The preset a report's run played under (#227), ``structured`` before presets existed."""
+    return report.preset or LEGACY_PRESET
 
 
 def judged_means(report: Report) -> list[dict[str, Any]]:
@@ -481,6 +514,7 @@ def render_markdown(report: Report) -> str:
         f"{f'`{report.model_version}`' if report.model_version else EM_DASH})",
         f"- **Adapter:** {endpoint}",
         judge_line,
+        f"- **Preset:** `{preset_of(report)}`",
         f"- **Fingerprint:** `{report.fingerprint}` ({report.fingerprint_profile}, with the model "
         "as every story purpose's"
         + (" and the judge as `quality_judge`'s" if report.judge is not None else "")
@@ -581,7 +615,16 @@ def render_index(summaries: Iterable[tuple[str, Mapping[str, Any]]]) -> str:
         {req for _, s in rows for req in s.get("requirements", {})},
         key=lambda req: int(req.rsplit("-", 1)[1]),
     )
-    header = ["Date (UTC)", "Model", "Fingerprint", "Host", "Suites", *requirements, "Run"]
+    header = [
+        "Date (UTC)",
+        "Model",
+        "Preset",
+        "Fingerprint",
+        "Host",
+        "Suites",
+        *requirements,
+        "Run",
+    ]
     lines = [INDEX_INTRO, "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     if not rows:
         lines.append("| " + " | ".join([EM_DASH] * len(header)) + " |")
@@ -591,6 +634,7 @@ def render_index(summaries: Iterable[tuple[str, Mapping[str, Any]]]) -> str:
         cells = [
             s["date"],
             f"`{s['model']}`",
+            str(s.get("preset") or LEGACY_PRESET),
             f"`{digest}`",
             s["host"],
             suites or EM_DASH,
@@ -644,6 +688,7 @@ def unique_run_id(base: str, taken: Sequence[Path]) -> str:
 
 __all__ = [
     "INDEX_NAME",
+    "LEGACY_PRESET",
     "REPORT_VERSION",
     "Host",
     "JudgeCalibrationRef",
@@ -656,6 +701,7 @@ __all__ = [
     "index_text",
     "judge_text",
     "percent",
+    "preset_of",
     "read_summary",
     "render_index",
     "render_markdown",

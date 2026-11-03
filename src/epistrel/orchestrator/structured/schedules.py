@@ -31,6 +31,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import world_clock
+from epistrel.core.canon import canonize
 from epistrel.core.canon.facts import Fact
 from epistrel.core.enums import BeliefConfidenceLevel, ScheduledStatus
 from epistrel.core.epistemic import transitions
@@ -46,6 +47,7 @@ from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import Registry
 from epistrel.core.propositions.vocabulary import SCHEDULED
+from epistrel.core.verify import speech_acts
 from epistrel.core.world_clock import schedule_statements as schedules
 from epistrel.core.world_clock import stops
 from epistrel.orchestrator.verify.extraction import CheckedClaim
@@ -95,8 +97,10 @@ async def committed(
     *,
     settings: Any,
     registry: Registry,
+    introductions: Any = None,
 ) -> Written:
-    """Write what the turn's schedule statements call for (see the module docstring)."""
+    """Write what the turn's schedule statements call for (see the module docstring);
+    ``introductions``: the turn's minted entities (#641: a belief-only plan creates its own)."""
     found = Written()
     story_id = str(op.story_id)
     turn, variant = int(op.narrative_turn or 0), int(op.turn_variant or 0)
@@ -113,6 +117,8 @@ async def committed(
         after = replace(at, step=min(POSITION_MAX, at.step + 1))
         if isinstance(statement, schedules.Create):
             fact = _fact_of(claim, canonized)
+            if fact is not None:
+                await _hold_time_of_day(conn, op, story_id, c, fact, at, after)
             if fact is None or speaker is None:
                 continue
             found.created += 1
@@ -129,6 +135,44 @@ async def committed(
                     settings=settings,
                     registry=registry,
                 )
+        elif isinstance(statement, schedules.Report) and statement.event is None:
+            # #641: a belief-only plan said sincerely: the speaker holds it (never canon, never
+            # an event, so it stops no clock); its hearers hold it through #162's testimony.
+            speech = result.speech
+            if (
+                not partitioned
+                or speaker is None
+                or speech is None
+                or speech.classification != speech_acts.SINCERE
+            ):
+                continue
+            said = await _say_event(conn, op, beat)
+            if said is None:
+                continue
+            if introductions is not None:
+                # The plan's minted event (never canonized) exists, so a later mention of it
+                # resolves to it and the belief names a real entity.
+                await canonize.introduce(
+                    conn,
+                    story_id,
+                    claim,
+                    introductions.introduces(claim),
+                    operation=op,
+                    registry=registry,
+                    skip_existing=True,
+                )
+            await _believe(
+                conn,
+                op,
+                found,
+                holder=speaker,
+                kind=transitions.Kind.OBSERVATION,
+                proposition=claim,
+                antecedent=transitions.Antecedent.record("events", said),
+                position=after,
+                settings=settings,
+                registry=registry,
+            )
         elif isinstance(statement, schedules.Change):
             event = await stops.event_at(conn, story_id, statement.event.event_id)
             if event is None or event.status is ScheduledStatus.CANCELLED:
@@ -166,6 +210,58 @@ async def committed(
         found.refused,
     )
     return found
+
+
+async def _say_event(conn: AsyncConnection, op: Any, beat: int) -> str | None:
+    """The ``say`` beat's event the turn wrote at ``beat`` (#641's belief cites it)."""
+    from sqlalchemy import select
+
+    from epistrel.core.tables.events import events
+
+    found = await conn.scalar(
+        select(events.c.id).where(
+            events.c.operation_id == str(op.operation_id),
+            events.c.beat == beat,
+            events.c.type == "beat_say",
+        )
+    )
+    return None if found is None else str(found)
+
+
+async def _hold_time_of_day(
+    conn: AsyncConnection,
+    op: Any,
+    story_id: str,
+    c: CheckedClaim,
+    fact: Fact,
+    at: Position,
+    after: Position,
+) -> None:
+    """#645: a create whose time of day the clock's anchor holds only as a range is held at its
+    frame minute (``stops.place_event``, as ``POST …/scheduled-events`` holds one), so #197's
+    pause applies to it; ``possibly_due`` at once when the range already holds it."""
+    sketch = c.claim.sketch
+    said = c.claim.time_text or (None if sketch is None else sketch.time_text)
+    if not said:
+        return
+    basis = await world_clock.time_basis(conn, story_id)
+    placed = schedules.range_placement(said, basis, at)
+    if placed is None or basis.anchor is None or schedules.place_time_exact(said, basis, at):
+        return
+    event = await stops.event_at(conn, story_id, fact.proposition_id)
+    if event is None or event.planned_anchor is not None:
+        return
+    current = basis.at(at) - basis.minute_zero
+    await stops.place_event(
+        conn,
+        op,
+        story_id,
+        event,
+        at=placed[1],
+        anchor=basis.anchor,
+        offset=current,
+        position=after,
+    )
 
 
 async def _believe(

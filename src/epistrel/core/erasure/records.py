@@ -455,6 +455,105 @@ def outbox_record(row: Any) -> Record:
     )
 
 
+def amendment_record(row: Any) -> Record:
+    """An amendment (#221): every text of its ``payload``, indexed positionally (ADR-154)."""
+    return Record(
+        "amendments", str(row.id), _str(row.story_id), text_fields(row.payload, "payload")
+    )
+
+
+def amendment_part_record(row: Any) -> Record:
+    """An amendment part (#221): every text of its patches and its time expression, indexed
+    positionally; a character it names as a key's subject is declared."""
+    fields: dict[str, str | None] = {}
+    for name in ("patch_before", "patch_after", "valid_spec"):
+        fields.update(text_fields(getattr(row, name, None), name))
+    subject = _str(getattr(row, "subject_id", None))
+    declared: tuple[Declared, ...] = (
+        ((SubjectKind.CHARACTER, subject, "subject_id"),) if subject else ()
+    )
+    return Record("amendment_parts", str(row.id), _str(row.story_id), fields, declared)
+
+
+REWRITE_SESSION_TEXTS = ("instruction", "plan", "held_render", "last_error", "report")
+REWRITE_QUESTION_TEXTS = ("prompt", "options", "recommendation_reason", "answer_text")
+
+
+def _texts_of(row: Any, columns: tuple[str, ...]) -> dict[str, str | None]:
+    fields: dict[str, str | None] = {}
+    for name in columns:
+        value = getattr(row, name, None)
+        if isinstance(value, str):
+            fields[name] = value
+        elif value is not None:
+            fields.update(text_fields(value, name))
+    return fields
+
+
+def rewrite_session_record(row: Any) -> Record:
+    """A rewrite session (#223): its instruction, and every text of its plan, held render and
+    last error, indexed positionally (ADR-154)."""
+    return Record(
+        "rewrite_sessions",
+        str(row.id),
+        _str(row.story_id),
+        _texts_of(row, REWRITE_SESSION_TEXTS),
+    )
+
+
+def rewrite_question_record(row: Any) -> Record:
+    """A rewrite question (#223): its prompt, options, recommendation and free-text answer."""
+    return Record(
+        "rewrite_questions",
+        str(row.id),
+        _str(row.story_id),
+        _texts_of(row, REWRITE_QUESTION_TEXTS),
+    )
+
+
+DIRECTIVE_TEXTS = ("text", "changes")
+
+
+def directive_record(row: Any) -> Record:
+    """A directive (#226): its text and every text of the changes parsed from it."""
+    return Record("directives", str(row.id), _str(row.story_id), _texts_of(row, DIRECTIVE_TEXTS))
+
+
+async def read_directives(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's directives (#226), as ``directive_record`` indexes them."""
+    from epistrel.core.tables import directives
+
+    return await _story_rows(conn, directives, story_id, directive_record)
+
+
+async def read_rewrite_sessions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's rewrite sessions (#223), as ``rewrite_session_record`` indexes them."""
+    from epistrel.core.tables import rewrite_sessions
+
+    return await _story_rows(conn, rewrite_sessions, story_id, rewrite_session_record)
+
+
+async def read_rewrite_questions(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's rewrite questions (#223), as ``rewrite_question_record`` indexes them."""
+    from epistrel.core.tables import rewrite_questions
+
+    return await _story_rows(conn, rewrite_questions, story_id, rewrite_question_record)
+
+
+async def read_amendments(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's amendments (#221), as ``amendment_record`` indexes them."""
+    from epistrel.core.tables import amendments
+
+    return await _story_rows(conn, amendments, story_id, amendment_record)
+
+
+async def read_amendment_parts(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's amendment parts (#221), as ``amendment_part_record`` indexes them."""
+    from epistrel.core.tables import amendment_parts
+
+    return await _story_rows(conn, amendment_parts, story_id, amendment_part_record)
+
+
 def exposure_record(row: Any) -> Record:
     """An exposure (#164): no text of its own (its proposition is indexed); its witness, its
     source and the characters its proposition's subject and object are

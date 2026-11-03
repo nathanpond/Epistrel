@@ -80,6 +80,7 @@ from tests.event_support import rows, scalar
 from tests.profile_support import (
     M5_MODULES,
     PROFILES,
+    REDERIVATION,
     STRUCTURED_DOCUMENT,
     delivered_rules,
     merged,
@@ -375,16 +376,17 @@ async def test_c_16__m5_capabilities(
     assert GUARANTEE["audience_filtering"].provided(v2, {"player_view": "story"}) is False
     assert GUARANTEE["audience_filtering"].provided(v2, {"player_view": "character"}) is True
     (published_structured,) = [p for p in guarantee_tool.SEEDED if p.profile_id == structured()]
+    # The row's latest version is published (2 in M5; #203 adds 3; #227 renames the row and
+    # adds 4).
     assert (published_structured.name, published_structured.version) == (
-        seeds.STRUCTURED_NAME,
-        seeds.STRUCTURED_VERSION,  # the latest: 2 in M5 (#203 adds 3)
+        seeds.FULL_NAME,
+        seeds.FULL_VERSION,
     )
     table = guarantee_tool.render()
     assert table == (guarantee_tool.TABLE_PATH).read_text(encoding="utf-8")
-    latest = seeds.STRUCTURED_VERSION
+    latest = seeds.FULL_VERSION
     assert (
-        f"### {seeds.STRUCTURED_NAME}\n\nProfile `{structured()}`, version {latest} as seeded."
-        in table
+        f"### {seeds.FULL_NAME}\n\nProfile `{structured()}`, version {latest} as seeded." in table
     )
     assert "`player_authority`" in table.split("### Lite", 1)[1].split("### ", 1)[0]
 
@@ -444,7 +446,7 @@ async def test_c_16__m5_capabilities(
 
         # The seeded profile.
         head = (await client.get(f"{PROFILES}/{structured()}", headers=READ)).json()
-        assert head["name"] == seeds.STRUCTURED_NAME
+        assert head["name"] == seeds.FULL_NAME  # #227 renamed the row
         second = (
             await client.get(
                 f"{PROFILES}/{structured()}",
@@ -495,7 +497,7 @@ async def test_c_16__m5_capabilities(
         after = (await client.get(f"/stories/{story}/effective-config", headers=READ)).json()
         assert after["profile"] == {
             "id": structured(),
-            "version": seeds.STRUCTURED_VERSION,  # the latest: 2 in M5 (#203 adds 3)
+            "version": seeds.FULL_VERSION,  # the latest: 2 in M5 (#203 adds 3, #227 4)
             "pinned": False,
             "deleted": False,
         }
@@ -539,11 +541,14 @@ async def test_c_16__m5_capabilities(
             json={**move, "ignore_warnings": True},
             headers=WRITE,
         )
-        assert kept.status_code == 200, kept.text
+        # #228: the upgrade re-derives the story's history first; until then it keeps its version.
+        assert kept.status_code == 202, kept.text
         (entry,) = kept.json()["impact"]["affected_stories"]
-        assert entry["upgrade_unavailable"] is True
+        assert (entry["upgrade_unavailable"], entry[REDERIVATION]["needed"]) == (False, True)
         effective = (await client.get(f"/stories/{played}/effective-config", headers=READ)).json()
         assert effective["profile"]["version"] == 1
+        cancelled = await client.delete(f"/stories/{played}/{REDERIVATION}", headers=WRITE)
+        assert cancelled.status_code == 200, cancelled.text
 
 
 async def _story_row(db: AsyncEngine) -> str:

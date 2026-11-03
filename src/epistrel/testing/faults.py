@@ -52,7 +52,9 @@ reconcile would load an earlier session's erasures into the test database as pen
 
 In-process faults (#136): ``readset_intersection_disabled()`` turns off the structured read set's
 key-against-change-index intersection (``core.readset.INTERSECTION_ENABLED``) for the block, so a
-test can run a build without the FR-CONC-12 check and watch the scenario that relies on it fail.
+test can run a build without the FR-CONC-12 check and watch the scenario that relies on it fail;
+``amendment_proposition_changes_skipped()`` (#236) records amendments' proposition parts without
+their ``proposition_changes`` rows (``core.amendments.store.PROPOSITION_CHANGES``).
 
 Nothing in ``create_app`` or the Engine imports this module.
 """
@@ -458,6 +460,32 @@ def readset_intersection_disabled() -> Iterator[None]:
         readset.INTERSECTION_ENABLED = True
 
 
+@contextlib.contextmanager
+def amendment_proposition_changes_skipped() -> Iterator[None]:
+    """Record amendments' proposition parts without #136's ``proposition_changes`` rows (the
+    fault point ``amend.skip_proposition_changes``, #236)."""
+    from epistrel.core.amendments import store
+
+    store.PROPOSITION_CHANGES = False
+    try:
+        yield
+    finally:
+        store.PROPOSITION_CHANGES = True
+
+
+@contextlib.contextmanager
+def rewrite_apply_failing() -> Iterator[None]:
+    """Fail every rewrite apply after its parts are written (the fault point
+    ``rewrite.apply.after_part``, #224): the apply's transaction rolls back whole."""
+    from epistrel.orchestrator.rewrite import apply
+
+    apply.FAIL_AFTER_PARTS = True
+    try:
+        yield
+    finally:
+        apply.FAIL_AFTER_PARTS = False
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] != "serve":
@@ -468,6 +496,20 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":  # pragma: no cover - the child process entry point
     sys.exit(main())
+
+
+@contextlib.contextmanager
+def rewrite_research_skipped() -> Iterator[None]:
+    """Skip the apply revalidation's dependency re-search (the fault point
+    ``rewrite.revalidate.skip_research``, #237): a dependent formed since the preview is not
+    seen, so a test can watch S-PREVIEW-NEW-DEPENDENT fail without it."""
+    from epistrel.orchestrator.rewrite import revalidate
+
+    revalidate.RESEARCH = False
+    try:
+        yield
+    finally:
+        revalidate.RESEARCH = True
 
 
 __all__ = [

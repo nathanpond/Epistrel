@@ -42,8 +42,12 @@ genesis_deferred = Table(
         server_default=text("transaction_timestamp()"),
     ),
     Column("materialized_at", TIMESTAMP(timezone=True), nullable=True),
+    # #231 (migration 0123): the operation that materialized the item (a backfill's, or a
+    # configuration change's); a cancelled backfill resets both columns.
+    Column("materialized_operation_id", ulid_type(), nullable=True),
 )
 
 Index("ix_genesis_deferred_story_id", genesis_deferred.c.story_id)
+Index("ix_genesis_deferred_materialized_operation", genesis_deferred.c.materialized_operation_id)
 
 __all__ = ["genesis_deferred"]

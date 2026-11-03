@@ -91,6 +91,7 @@ from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Polarity, Proposition
 from epistrel.core.propositions.registry import Registry, load
+from epistrel.core.propositions.vocabulary import STATE_VALUE
 from epistrel.core.readset import KeyedLookup, StructuredReadSet
 from epistrel.core.resolution.context import (
     SharedContext,
@@ -684,6 +685,18 @@ class ClaimDetector:
             merge(detection, extracted), states, called=True, shadow=sampled, speakers=speakers
         )
 
+    async def input_acts(self, beat: DetectBeat, position: Position) -> list[DetectedClaim]:
+        """#523: the claims an extraction call reads in the player's ``do`` (layer (c) alone,
+        never verified or canonized): what the act shows the characters who see it. Empty when
+        the call fails or the budget cannot afford it (optional work, never reserved)."""
+        inputs, by_index = extraction_inputs([beat], self.env, self.scene_context)
+        answer = await call_extraction(self.models, inputs, budget=self.budget, routes=self.routes)
+        if answer is None:
+            return []
+        return await to_claims(
+            answer, {beat.index: beat}, position, normalize_one=self._normalize, by_index=by_index
+        )
+
     async def render(
         self,
         beats: Sequence[DetectBeat],
@@ -790,6 +803,7 @@ async def verify_detected(
     *,
     operation_id: str | None = None,
     player_id: str | None = None,
+    narration_viewpoint: str = OMNISCIENT,
     asserter_of: Callable[[DetectedClaim], Asserter] | None = None,
     scope_of: Callable[[DetectedClaim], tuple[str, ...] | None] | None = None,
     start: int = 0,
@@ -801,7 +815,9 @@ async def verify_detected(
     ``<operation>:<n>`` from ``start``. A character's ``say`` claim (never the player's own,
     FR-EPI-12) is first-person: it names its speaker as the believer (#166), with its beat's
     declared intent (``intent_of``) and its render's ``think`` citations (``cites_of``).
-    ``change_of`` (#198): whether the claim's beat states an explicit schedule change."""
+    ``change_of`` (#198): whether the claim's beat states an explicit schedule change.
+    ``narration_viewpoint`` (#623): the viewpoint narration is verified at (the turn's delivery
+    viewpoint; ``omniscient`` by default)."""
     checked: list[CheckedClaim] = []
     on = verifier is not None and verifier.config.on
     for n, claim in enumerate(outcome.claims, start):
@@ -851,10 +867,17 @@ async def verify_detected(
             continue
         asserter = (asserter_of or (lambda c: asserter_for(c, player_id)))(claim)
         # Narration is checked against the whole of canon (the director knows it); a character's
-        # claim against what that character may read.
-        viewpoint = (
-            OMNISCIENT if claim.speaker == NARRATOR else viewpoint_of(claim.speaker, player_id)
-        )
+        # claim against what that character may read. #623 (the owner's decision): a hidden
+        # State's value narrated in a turn delivered to a character viewpoint is checked as that
+        # viewpoint reads it (``narration_viewpoint``), so a value it holds no belief about is
+        # repaired, never shown. Hidden canon a perceived narration states stays a reveal
+        # (#566's widening: the narration is the viewpoint's path to it).
+        if claim.speaker != NARRATOR:
+            viewpoint = viewpoint_of(claim.speaker, player_id)
+        elif claim.proposition.predicate_id == STATE_VALUE:
+            viewpoint = narration_viewpoint
+        else:
+            viewpoint = OMNISCIENT
         believer = (
             claim.speaker
             if claim.channel == SAY_CHANNEL and claim.speaker not in (PLAYER, NARRATOR)
@@ -951,10 +974,12 @@ async def apply_dependences(
     read_set: StructuredReadSet,
     registry: Registry | None = None,
     visibility_of: Callable[[CheckedClaim], Visibility | None] | None = None,
+    paired: list[tuple[CheckedClaim, lifecycle.Dependence]] | None = None,
 ) -> list[lifecycle.Dependence]:
     """Hand each dependence (``dependences``) to ``core.commit.lifecycle.depend`` in the turn's
     commit step, after re-finding its thunk through the keyed lookup (#146's read-set key).
-    ``visibility_of`` scopes a claim's resolution (#169; ``None``: ``objective``)."""
+    ``visibility_of`` scopes a claim's resolution (#169; ``None``: ``objective``); ``paired``
+    (#220) collects each claim with its dependence."""
     found: list[lifecycle.Dependence] = []
     story_id = str(operation.story_id)
     lookup = KeyedLookup(conn, read_set)
@@ -966,18 +991,19 @@ async def apply_dependences(
         if target is None:
             continue
         scope = None if visibility_of is None else visibility_of(c)
-        found.append(
-            await lifecycle.depend(
-                conn,
-                operation,
-                target.id,
-                proposition,
-                beat=c.claim.beat,
-                channel=cast(lifecycle.Channel, c.claim.channel),
-                registry=registry,
-                visibility=OBJECTIVE if scope is None else scope,
-            )
+        done = await lifecycle.depend(
+            conn,
+            operation,
+            target.id,
+            proposition,
+            beat=c.claim.beat,
+            channel=cast(lifecycle.Channel, c.claim.channel),
+            registry=registry,
+            visibility=OBJECTIVE if scope is None else scope,
         )
+        found.append(done)
+        if paired is not None:
+            paired.append((c, done))
     return found
 
 

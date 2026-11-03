@@ -59,6 +59,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
@@ -236,7 +237,22 @@ state_changes = Table(
     Column("stopped_by_event_id", ulid_type(), nullable=True),
     Column("paused_for_event_id", ulid_type(), nullable=True),
     Column("settles_change_id", ulid_type(), nullable=True),
-    CheckConstraint("narrative_turn IS NOT NULL AND turn_variant IS NOT NULL", name="positioned"),
+    Column(
+        "amendment_part_id",
+        ulid_type(),
+        ForeignKey(
+            "amendment_parts.id",
+            name="fk_state_changes_amendment_part",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        nullable=True,
+    ),
+    CheckConstraint(
+        "(narrative_turn IS NOT NULL AND turn_variant IS NOT NULL) "
+        "OR amendment_part_id IS NOT NULL",
+        name="positioned",
+    ),
     CheckConstraint(
         "(kind = 'set') = (value IS NOT NULL) AND (kind = 'set') = (delta IS NULL)",
         name="kind_shape",

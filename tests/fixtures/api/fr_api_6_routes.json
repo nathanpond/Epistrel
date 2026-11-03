@@ -347,29 +347,29 @@
     {
       "item": "per story — backfill start",
       "method": "POST",
-      "path": "/stories/{id}/backfill",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill",
+      "status": "present",
       "milestone": "M7"
     },
     {
       "item": "per story — backfill progress",
       "method": "GET",
-      "path": "/stories/{id}/backfill",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill",
+      "status": "present",
       "milestone": "M7"
     },
     {
       "item": "per story — backfill cancel",
       "method": "DELETE",
-      "path": "/stories/{id}/backfill",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill",
+      "status": "present",
       "milestone": "M7"
     },
     {
       "item": "per story — conflict resolution",
       "method": "POST",
-      "path": "/stories/{id}/backfill/conflicts/{cid}",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/backfill/conflicts/{cid}",
+      "status": "present",
       "milestone": "M7"
     },
     {
@@ -796,6 +796,16 @@
   ],
   "extras": [
     {
+      "method": "GET",
+      "path": "/stories/{story_id}/outbox",
+      "why": "#679: every outbox row of the story, any status (the reconciliation read lists only the unconfirmed)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/operations",
+      "why": "#681: the operations read's list, filterable by label (staged_turn, genesis, \u2026)"
+    },
+    {
       "method": "POST",
       "path": "/catalog/characters/{character_id}/unarchive",
       "why": "FR-CAT-3: archiving's undo"
@@ -904,6 +914,146 @@
       "method": "DELETE",
       "path": "/admin/verify/gate/{shape}",
       "why": "FR-OBS-4: remove a gate tightening, the undo of its write (#155)"
+    },
+    {
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/certification-runs",
+      "why": "#233: estimate or queue a certification run of a profile version (FR-PROF-17)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/certification-runs",
+      "why": "#233: estimate or queue a certification run of a story's effective configuration (FR-PROF-17)"
+    },
+    {
+      "method": "GET",
+      "path": "/certification-runs/{run_id}",
+      "why": "#233: a certification run's status and report summary"
+    },
+    {
+      "method": "GET",
+      "path": "/certifications",
+      "why": "#233: the certification records (FR-PROF-15)"
+    },
+    {
+      "method": "GET",
+      "path": "/certifications/{certification_id}",
+      "why": "#233: one certification record"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/certifications/import",
+      "why": "#233: import a hand run's certification record (#235)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/certifications/{certification_id}/invalidate",
+      "why": "#234: declare a certification stale (drift)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/evals/runs",
+      "why": "#532: the eval runs (committed reports and certification runs)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/evals/runs/{run_id}",
+      "why": "#532: one eval run"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites",
+      "why": "FR-REWRITE-1: open a history rewrite session (#223)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/rewrites",
+      "why": "FR-REWRITE-1: list a story's rewrite sessions (#223)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/rewrites/{session_id}",
+      "why": "FR-REWRITE-4: a rewrite session and its preview (#223)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites/{session_id}/answers",
+      "why": "FR-REWRITE-2: answer a rewrite session's questions (#223)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites/{session_id}/cancel",
+      "why": "FR-REWRITE-4: cancel a rewrite session (#223)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/rewrites/{session_id}/apply",
+      "why": "FR-REWRITE-6: apply a rewrite session as one amendment (#224)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/entities/merge",
+      "why": "FR-PROP-7: identity merge"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/amendments",
+      "why": "FR-REWRITE-9,10: a story's amendments (#238)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/amendments/{amendment_id}",
+      "why": "FR-REWRITE-9,10: one amendment, its parts and edges (#238)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/amendments/{amendment_id}/undo",
+      "why": "FR-REWRITE-9,10: undo an amendment as a checked rewrite (#238)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/amendments/{amendment_id}/redo",
+      "why": "FR-REWRITE-9,10: redo a reverted amendment as a checked rewrite (#238)"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/directives",
+      "why": "FR-DIRECT-1: an author's directive (#226)"
+    },
+    {
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/upgrade-pinned",
+      "why": "FR-PROF-7: bring pinned stories forward"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/prune",
+      "why": "FR-STORE-32: manual pruning (#247)"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/prune-runs",
+      "why": "FR-STORE-32: prune history (#248)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/{story_id}/export",
+      "why": "FR-STORE-7/FR-ADMIN-4: story export (#249)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/exports/{job_id}",
+      "why": "FR-STORE-7/FR-ADMIN-4: story export (#249)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/exports/{job_id}/bundle",
+      "why": "FR-STORE-7/FR-ADMIN-4: story export (#249)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/stories/import",
+      "why": "FR-STORE-7/FR-ADMIN-4: story import (#250)"
     }
   ],
   "outside": [
@@ -1303,6 +1453,11 @@
       "requirement": "FR-STATE-3"
     },
     {
+      "method": "GET",
+      "path": "/stories/{story_id}/states/{name}/definition",
+      "requirement": "FR-STATE-3"
+    },
+    {
       "method": "PATCH",
       "path": "/stories/{story_id}/states/{name}/definition",
       "requirement": "FR-STATE-3"
@@ -1330,6 +1485,11 @@
     {
       "method": "POST",
       "path": "/stories/{story_id}/reconciliation/{outbox_id}/compensate",
+      "requirement": "FR-EXT-22"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/reconciliation/{listing}/resolve",
       "requirement": "FR-EXT-22"
     },
     {

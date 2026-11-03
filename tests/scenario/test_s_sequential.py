@@ -334,3 +334,49 @@ async def test_s_sequential__modes(
         )
         assert refused.status_code == 409, refused.text
         assert refused.json()["error"]["code"] == "module_off"
+
+
+STILL = "Jenni nods at Bobby, still sitting in the study."
+
+
+@pytest.mark.part("M5", "FR-MULTI-5,6,11")
+async def test_s_sequential__same_turn_exit(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#642: Bobby's render leaves the study (a change, #518) and Jenni's, after it in the same
+    turn, shows him still sitting there: checked against the turn's staged exit, not the
+    pre-turn placement canon still holds, the later claim is contradicted and the beat repaired.
+    Complement asserted: with no exit earlier in the turn, the same beat stands."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        for exits in (True, False):
+            room = await key_room(client, engine)
+            stub.reset()
+            bobby = (
+                beat("do", "Bobby leaves the study.")
+                if exits
+                else beat("do", "Bobby taps the desk.")
+            )
+            ms.renders_for(stub, "Bobby", ms.render(bobby))
+            still = beat(
+                "do",
+                STILL,
+                propositions=[claim("Bobby", "located_at", "the study")],
+            )
+            ms.renders_for(stub, "Jenni", ms.render(still))
+            stub.script("regeneration", [json.dumps({"text": "Jenni looks at the door."})])
+            answer = await respond(
+                client,
+                room.story_id,
+                body(
+                    room.cal,
+                    "Where is everyone?",
+                    render_character_ids=[room.bobby, room.jenni],
+                    interaction_mode="sequential",
+                ),
+            )
+            assert answer.status_code == 200, answer.text
+            texts = [b["text"] for b in answer.json()["beats"] if b["kind"] == "beat_do"]
+            # Contradicted by the staged exit: repaired before the turn commits.
+            assert (STILL in texts) is not exits, texts
+            assert ("Jenni looks at the door." in texts) is exits, texts

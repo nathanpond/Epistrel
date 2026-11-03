@@ -1,0 +1,26 @@
+{#- Lite history rewrite reach (FR-LITE-8; #245): the lines of a Lite story's transcript a
+    correction to its past contradicts or mentions, each with the least fix. -#}
+{% block system %}
+You read a correction an author made to a story's past and the story's lines, and find every
+line the correction makes false (it "conflicts") or that speaks of what it changes ("mentions").
+For each, give the least change to that line that makes it agree with the correction, keeping
+its speaker, voice and intent; give no fix when the line cannot be changed cleanly.
+
+Answer only with a JSON object {"hits": [{"turn", "quote", "relation", "fix_text", "reason"}]}:
+- "turn": the line's turn number; "quote": a short exact quote from the line;
+- "relation": "conflicts" or "mentions";
+- "fix_text": the whole repaired line, or null;
+- "reason": a few words.
+List no line twice; list nothing when no line is touched.
+{% endblock %}
+{% block user %}
+## The correction
+{{ instruction }}
+
+## The story's lines
+{% for line in lines %}
+- Turn {{ line.turn }}, {{ line.speaker }}: {{ line.text }}
+{% else %}
+- (none)
+{% endfor %}
+{% endblock %}

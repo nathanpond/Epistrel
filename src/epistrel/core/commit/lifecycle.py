@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Literal, cast
@@ -90,6 +91,7 @@ from epistrel.core.enums import (
     Authority,
     DischargeMode,
     EventCategory,
+    FactAuthority,
     FactCommitState,
     LedgerKind,
     OpenSlot,
@@ -811,6 +813,14 @@ class Dependence:
 
 BeforeResolve = Callable[[AsyncConnection, Thunk, Proposition], Awaitable[None]]
 BEFORE_RESOLVE: list[BeforeResolve] = []
+
+AUTHOR_DIRECTED: ContextVar[frozenset[str]] = ContextVar(
+    "epistrel_author_directed_thunks", default=frozenset()
+)
+"""#241 (FR-COMMIT-12): the thunks whose binding the author directed for the turn being played
+(a directed regeneration). Their resolution commits with ``authority = author``; when the
+author's choice conflicts with recorded history it still commits (the conflict was settled as
+an amendment before the turn ran), never ``rejected``."""
 """Run before a dependence commits a thunk's resolution, in its transaction (after #154's
 reconciliation, which ``depend`` asks itself); an exception aborts the commit."""
 
@@ -887,7 +897,8 @@ async def depend(
     reconciled = await reconciling.reconcile(
         conn, story_id, thunk, binding, registry=registry, now=now
     )
-    if isinstance(reconciled, reconciling.Conflict):
+    directed = thunk.id in AUTHOR_DIRECTED.get()
+    if isinstance(reconciled, reconciling.Conflict) and not directed:
         THUNKS.labels(event="rejected").inc()
         return Dependence("rejected", thunk_id, reconciliation=reconciled)
     for hook in list(BEFORE_RESOLVE):
@@ -899,6 +910,7 @@ async def depend(
         story_id,
         claim,
         provenance=provenance,
+        authority=FactAuthority.AUTHOR if directed else None,
         operation=operation,
         valid_time=resolved_at,
         source_event_ids=source_event_ids,
@@ -910,7 +922,9 @@ async def depend(
         visibility=visibility,
     )
     obligations: list[str] = []
-    for implied in reconciled.to_commit:
+    # A directed binding against a conflict: its obligations are the amendment's parts.
+    to_commit = () if isinstance(reconciled, reconciling.Conflict) else reconciled.to_commit
+    for implied in to_commit:
         written = await canon.commit_fact(
             conn,
             story_id,
@@ -944,7 +958,11 @@ async def depend(
         beat,
     )
     THUNKS.labels(event="resolved").inc()
-    knowledge, memories = await _commit_knowledge(conn, operation, thunk, reconciled, now)
+    knowledge, memories = (
+        ((), ())
+        if isinstance(reconciled, reconciling.Conflict)
+        else await _commit_knowledge(conn, operation, thunk, reconciled, now)
+    )
     discharged = []
     for entry in owed:
         await discharge(conn, operation, entry.id, DischargeMode.DEPENDENCE, beat=beat)

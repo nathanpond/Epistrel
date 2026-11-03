@@ -21,6 +21,13 @@ The same table is served per profile by `GET /engine-profiles/{id}/guarantees` a
 for a story's effective configuration, by `GET /stories/{id}/guarantees`. The impact
 report's `guarantees_lost` names the deterministic rows a change would lose, by id.
 
+<!-- boundary -->
+A metric named here is what measures a step, not a claim that its floor is met.
+A configuration is certified only by an eval run against its exact fingerprint
+(FR-PROF-15,16): `GET /certifications` lists the records, every respond response
+states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's runs.
+<!-- /boundary -->
+
 ## Steps
 
 | Step | Id | Kind | Metric | Needs | Model purposes |
@@ -52,6 +59,10 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 | embedding | `embedding` | model-dependent | NFR-QUAL-6 | `episodic` | `embedding` |
 | guardrail check | `guardrail_check` | model-dependent | unmeasured | none (every profile) | `guardrail_check` |
 | rating suggestion | `rating_suggestion` | model-dependent | unmeasured | none (outside stories) | `rating_suggestion` |
+| history rewrite parse | `rewrite_parse` | model-dependent | unmeasured | none (outside stories) | `rewrite_parse` |
+| history rewrite repair | `rewrite_record` | model-dependent | unmeasured | none (outside stories) | `rewrite_record` |
+| Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | unmeasured | none (outside stories) | `lite_rewrite_reach` |
+| directive parse | `directive_parse` | model-dependent | unmeasured | none (outside stories) | `directive_parse` |
 | quality judge | `quality_judge` | model-dependent | NFR-QUAL-14 | none (outside stories) | `quality_judge` |
 
 ## Notes
@@ -76,6 +87,10 @@ report's `guarantees_lost` names the deterministic rows a change would lose, by 
 - `embedding`: The embedding port (FR-EMBED), measured by resolution retrieval.
 - `guardrail_check`: Only for an output policy that declares a model-assisted check (FR-GUARD-9); every other policy is evaluated by rules.
 - `rating_suggestion`: Advisory, outside stories (it reviews catalog entries), never a verdict.
+- `rewrite_parse`: The author's side-channel, never in a turn: its changes are previewed and every ambiguity is asked, with a recommendation, before anything is applied.
+- `rewrite_record`: The author's side-channel, never in a turn: a repaired text passes the output policies before it can be applied, and a failed repair is dropped or asked about.
+- `lite_rewrite_reach`: The author's side-channel, never in a turn: a Lite rewrite's reach is model-searched, not structurally complete; every fix is previewed and a line the player wrote is never rewritten silently.
+- `directive_parse`: The author's side-channel, never in a turn: a request's explicit kind overrides its classification, and a change to the past is previewed as a rewrite.
 - `quality_judge`: Eval only, never in a turn.
 
 ## Outside the guarantee: voice and plot
@@ -125,6 +140,10 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | embedding | `embedding` | model-dependent | not provided |
 | guardrail check | `guardrail_check` | model-dependent | provided |
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
 **Not provided under Lite:** structural knowledge separation, verification, audience filtering, commitment.
@@ -137,9 +156,54 @@ Under `lite`, the world clock and States run only in their prompt-only forms (FR
 
 Perception is `none` under this profile, so **no audience filtering applies**: a character viewpoint still never receives any character's `think` or `latent` content, and every other beat is returned in full (FR-RESP-12).
 
-### Structured
+### Standard
 
-Profile `00000000000000000000PRF002`, version 3 as seeded.
+Profile `00000000000000000000PRF003`, version 1 as seeded.
+
+| Step | Id | Kind | Under this profile |
+|---|---|---|---|
+| context assembly | `context_assembly` | deterministic | provided |
+| viewpoint filtering | `viewpoint_filtering` | deterministic | provided |
+| structural knowledge separation (per-character partitions) | `structural_knowledge_separation` | deterministic | provided |
+| proposition normalization of declared structure | `proposition_normalization` | deterministic | provided |
+| verification of the claims detected in an output against the record | `verification` | deterministic | provided |
+| contradiction rules on normalized propositions | `contradiction_rules` | deterministic | provided |
+| State effect validation and permission checks | `state_effect_validation` | deterministic | not provided |
+| perception routing and audience filtering | `audience_filtering` | deterministic | provided |
+| per-character render isolation | `multi_character_isolation` | deterministic | provided |
+| commitment and ledger mechanics | `commitment_mechanics` | deterministic | provided |
+| clock pacing and stops | `clock_pacing` | deterministic | provided |
+| timeline and concurrency operations | `timeline_concurrency` | deterministic | provided |
+| deterministic claim detectors | `claim_detectors` | deterministic | provided |
+| generation | `generation` | model-dependent | provided |
+| model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
+| salience | `salience` | model-dependent | not provided |
+| time estimation | `time_estimation` | model-dependent | provided |
+| entailment fallback | `entailment_fallback` | model-dependent | not provided |
+| testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | not provided |
+| repair rendering | `repair_rendering` | model-dependent | provided |
+| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | provided |
+| the rolling summary | `rolling_summary` | model-dependent | not provided |
+| consolidation (summaries and reflections) | `consolidation` | model-dependent | provided |
+| importance scoring | `importance_scoring` | model-dependent | provided |
+| embedding | `embedding` | model-dependent | provided |
+| guardrail check | `guardrail_check` | model-dependent | provided |
+| rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
+| quality judge | `quality_judge` | model-dependent | outside stories |
+
+**Provided under Standard:** structural knowledge separation, verification, audience filtering, commitment.
+
+Audience filtering is provided under the default `player_view = character`; a story set to `player_view = story` gets **no audience filtering** (every beat in full, never a `think` or `latent`).
+
+Audience filtering at `co_location` routes each beat to the characters present: the whisper, aside and eavesdrop qualifiers (FR-TURN-10) are not applied, so a whispered or aside line reaches everyone in the place.
+
+### Full
+
+Profile `00000000000000000000PRF002`, version 4 as seeded.
 
 | Step | Id | Kind | Under this profile |
 |---|---|---|---|
@@ -170,8 +234,55 @@ Profile `00000000000000000000PRF002`, version 3 as seeded.
 | embedding | `embedding` | model-dependent | provided |
 | guardrail check | `guardrail_check` | model-dependent | provided |
 | rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
 
-**Provided under Structured:** structural knowledge separation, verification, audience filtering, commitment.
+**Provided under Full:** structural knowledge separation, verification, audience filtering, commitment.
+
+Audience filtering is provided under the default `player_view = character`; a story set to `player_view = story` gets **no audience filtering** (every beat in full, never a `think` or `latent`).
+
+### Max
+
+Profile `00000000000000000000PRF004`, version 1 as seeded.
+
+| Step | Id | Kind | Under this profile |
+|---|---|---|---|
+| context assembly | `context_assembly` | deterministic | provided |
+| viewpoint filtering | `viewpoint_filtering` | deterministic | provided |
+| structural knowledge separation (per-character partitions) | `structural_knowledge_separation` | deterministic | provided |
+| proposition normalization of declared structure | `proposition_normalization` | deterministic | provided |
+| verification of the claims detected in an output against the record | `verification` | deterministic | provided |
+| contradiction rules on normalized propositions | `contradiction_rules` | deterministic | provided |
+| State effect validation and permission checks | `state_effect_validation` | deterministic | provided |
+| perception routing and audience filtering | `audience_filtering` | deterministic | provided |
+| per-character render isolation | `multi_character_isolation` | deterministic | provided |
+| commitment and ledger mechanics | `commitment_mechanics` | deterministic | provided |
+| clock pacing and stops | `clock_pacing` | deterministic | provided |
+| timeline and concurrency operations | `timeline_concurrency` | deterministic | provided |
+| deterministic claim detectors | `claim_detectors` | deterministic | provided |
+| generation | `generation` | model-dependent | provided |
+| model extraction of undeclared claims | `claim_extraction` | model-dependent | provided |
+| salience | `salience` | model-dependent | provided |
+| time estimation | `time_estimation` | model-dependent | provided |
+| entailment fallback | `entailment_fallback` | model-dependent | provided |
+| testimony acceptance and other belief adjudication | `belief_adjudication` | model-dependent | provided |
+| repair rendering | `repair_rendering` | model-dependent | provided |
+| paraphrase/indirect-disclosure detection | `paraphrase_detection` | model-dependent | provided |
+| the rolling summary | `rolling_summary` | model-dependent | not provided |
+| consolidation (summaries and reflections) | `consolidation` | model-dependent | provided |
+| importance scoring | `importance_scoring` | model-dependent | provided |
+| embedding | `embedding` | model-dependent | provided |
+| guardrail check | `guardrail_check` | model-dependent | provided |
+| rating suggestion | `rating_suggestion` | model-dependent | outside stories |
+| history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
+| history rewrite repair | `rewrite_record` | model-dependent | outside stories |
+| Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| directive parse | `directive_parse` | model-dependent | outside stories |
+| quality judge | `quality_judge` | model-dependent | outside stories |
+
+**Provided under Max:** structural knowledge separation, verification, audience filtering, commitment.
 
 Audience filtering is provided under the default `player_view = character`; a story set to `player_view = story` gets **no audience filtering** (every beat in full, never a `think` or `latent`).

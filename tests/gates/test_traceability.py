@@ -243,7 +243,7 @@ def test_real_docs_agree_with_section_22_and_pass_today(tmp_path: Path) -> None:
         plan_path, spec, code_parts([p.to_json() for p in parts]), 0, write=False
     )
     assert findings == []
-    assert summary.startswith("439 §15 rows")
+    assert summary.startswith("440 §15 rows")
     assert summary.endswith("§15 and §22 agree on every milestone")
 
     # --write on a copy of the real plan at current_milestone = 0 is a byte-for-byte no-op.
@@ -380,3 +380,36 @@ def test_cli_malformed_interim_entry_exits_two_and_leaves_the_plan(
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert proc.stdout == "error: docs/04:9: malformed Tests entry 'I-01 (M1, Interim until M3)'\n"
     assert plan_path.read_text() == plan
+
+
+def test_a_retired_interim_part_is_kept_as_history(tmp_path: Path) -> None:
+    """#306 (option 2): an interim entry whose part is gone becomes ``retired at Mn`` under
+    ``--write``; a retired entry is history, never ``planned but absent``; a part that comes back
+    under a retired entry is reported. Complement: a non-interim entry whose part is gone is
+    still ``planned but absent``, and ``--write`` leaves it alone."""
+    plan_path = tmp_path / "04.md"
+    plan_path.write_text(PLAN.replace("I-01 (M1)", "I-01 (M1, interim until M2)"))
+    i_10 = _part("test_i_10", "M2", ["FR-B-1"])
+    later = _part("test_s_later", "M3", ["FR-B-1"])
+    # The issue's reproduction: the I-01 part deleted at current 2.
+    assert _check(plan_path.read_text(), [i_10, later], current=2) == [
+        "planned but absent: FR-A-1 I-01 (M1, interim until M2)"
+    ]
+    findings, _ = run(plan_path, SPEC_M1, code_parts([i_10, later]), 2, write=True)
+    assert findings == []
+    text = plan_path.read_text()
+    assert "| FR-A-1 | M | M1 | I-01 (M1, retired at M2) |" in text
+    # While the milestone that retires it is still executing (current 1): history too.
+    assert run(plan_path, SPEC_M1, code_parts([]), 1, write=False)[0] == []
+    assert parse_plan(text).rows["FR-A-1"].entries == [Entry("I-01", 1, None, 2)]
+    # The part comes back: reported.
+    back = _part("test_i_01", "M1", ["FR-A-1"])
+    assert _check(text, [back, i_10, later], current=2) == [
+        "retired part still present: FR-A-1 I-01 (M1, retired at M2)"
+    ]
+    # Complement: a plain entry with no part is still absent, and --write keeps it.
+    plain = tmp_path / "plain.md"
+    plain.write_text(PLAN)
+    findings, _ = run(plain, SPEC_M1, code_parts([i_10, later]), 2, write=True)
+    assert findings == ["planned but absent: FR-A-1 I-01 (M1)"]
+    assert "| FR-A-1 | M | M1 | I-01 (M1) |" in plain.read_text()

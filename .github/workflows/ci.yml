@@ -244,8 +244,15 @@ jobs:
           retention-days: 1
 
   evals:
+    # #227 (NFR-QUAL-11): once per preset, so each preset has its own stub report; a suite a
+    # preset does not enable is reported not_applicable. A matrix, not a loop: three serial runs
+    # would triple the job's wall time.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [standard, full, max]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -269,14 +276,14 @@ jobs:
       # #179's zero-leak suites (q04, priv_think_leak) need their full sets (NFR-QUAL-8's 300 cases a
       # metric) and run as the `evals-zero-leak` job below.
       - name: evals (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate
+        run: uv run python -m epistrel.evals run --adapter stub --all --skip q04 --skip priv_think_leak --seeds 2 --sample 100 --full e10 --fail-on-gate --preset ${{ matrix.preset }}
       - name: upload the stub eval report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-stub-report
+          name: evals-stub-report-${{ matrix.preset }}
           path: |
-            build/evals/stub-report.md
+            build/evals/stub-report-${{ matrix.preset }}.md
             build/evals/*.json
             build/evals/*.jsonl
           if-no-files-found: warn
@@ -330,8 +337,13 @@ jobs:
     # answers every case with its authored clean render, so this proves the plumbing; the
     # local-model run is the exit evidence (docs/evals/README.md).
     # 60 min: #575 tripled think_leak's controls (32 -> 96); the 2026-10-25 run took 35 of 40.
+    # #227: once per preset, as the `evals` job.
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [standard, full, max]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -344,16 +356,48 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - name: evals zero-leak (stub)
-        run: uv run python -m epistrel.evals run --adapter stub --suite q04 --suite priv_think_leak --new-run --seeds 2 --concurrency 4 --fail-on-gate --markdown build/evals/stub-zero-leak.md
+        run: uv run python -m epistrel.evals run --adapter stub --suite q04 --suite priv_think_leak --new-run --seeds 2 --concurrency 4 --fail-on-gate --preset ${{ matrix.preset }} --markdown build/evals/stub-zero-leak-${{ matrix.preset }}.md
       - name: upload the zero-leak stub report
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: evals-zero-leak-stub-report
+          name: evals-zero-leak-stub-report-${{ matrix.preset }}
           path: |
-            build/evals/stub-zero-leak.md
+            build/evals/stub-zero-leak-${{ matrix.preset }}.md
             build/evals/*.json
             build/evals/*.jsonl
+          if-no-files-found: warn
+          retention-days: 14
+
+  module-combinations:
+    # C-17 (FR-PROF-2,4; #243): the schema-driven pairwise covering array of module settings,
+    # each valid configuration played through the scenario smoke on the stub adapters (no real
+    # model is called: EPISTREL_MODEL_ADAPTER is stub, and the test builds its app on the stub).
+    # PostgreSQL comes from testcontainers, as in the test shards. `build/c17/` (the run summary
+    # and any failing configuration's settings and step) is uploaded as `c17-report`.
+    name: module-combinations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: pytest (C-17)
+        env:
+          EPISTREL_MODEL_ADAPTER: stub
+        run: uv run pytest tests/test_covering.py "tests/integration/test_engine_profiles.py::test_c_17__profiles"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: c17-report
+          path: build/c17/
           if-no-files-found: warn
           retention-days: 14
 
@@ -364,7 +408,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     if: always()
-    needs: [lint, types, test, evals, evals-zero-leak, coverage, docker]
+    needs: [lint, types, test, evals, evals-zero-leak, coverage, docker, module-combinations]
     steps:
       - name: Summarise
         env:
@@ -375,12 +419,13 @@ jobs:
           ZERO_LEAK: ${{ needs.evals-zero-leak.result }}
           COVERAGE: ${{ needs.coverage.result }}
           DOCKER: ${{ needs.docker.result }}
+          COMBINATIONS: ${{ needs.module-combinations.result }}
         run: |
           printf '%s\n' '| job | result |' '|---|---|' \
             "| lint | $LINT |" "| types | $TYPES |" "| test | $TEST |" "| evals | $EVALS |" \
             "| evals-zero-leak | $ZERO_LEAK |" "| coverage | $COVERAGE |" \
-            "| docker | $DOCKER |" >> "$GITHUB_STEP_SUMMARY"
-          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$ZERO_LEAK" "$COVERAGE" "$DOCKER"; do
-            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$ZERO_LEAK/$COVERAGE/$DOCKER)"; exit 1; }
+            "| docker | $DOCKER |" "| module-combinations | $COMBINATIONS |" >> "$GITHUB_STEP_SUMMARY"
+          for r in "$LINT" "$TYPES" "$TEST" "$EVALS" "$ZERO_LEAK" "$COVERAGE" "$DOCKER" "$COMBINATIONS"; do
+            [ "$r" = "success" ] || { echo "gate: a job did not succeed ($LINT/$TYPES/$TEST/$EVALS/$ZERO_LEAK/$COVERAGE/$DOCKER/$COMBINATIONS)"; exit 1; }
           done
           echo "gate: all jobs succeeded"

@@ -36,9 +36,10 @@ the mention; a cancelled event is no match), and ``classify`` decides what the s
 
 **The planned time.** A schedule names a time of day ("at three", "15:10", "five o'clock"):
 ``place_time`` places it at its next occurrence at or after the beat's moment, through the
-clock's anchor (#195), which must fix the minute of the day there (else the time is unresolved
-and the claim ``uncertain``); a time with two readings ("five o'clock": 05:00 or 17:00) takes the
-sooner one.
+clock's anchor (#195); under an anchor that holds the time only as a range it is placed as
+``POST …/scheduled-events`` places one (#645: where the range's lower end reaches it, held at
+its frame minute, ``range_placement``), and unanchored the time is unresolved and the claim
+``uncertain``; a time with two readings ("five o'clock": 05:00 or 17:00) takes the sooner one.
 
 Pure apart from ``resolve`` (one read of the story's events). Log lines carry identifiers only
 (invariant 3); this module logs nothing.
@@ -164,7 +165,43 @@ def same_time(event: stops.ScheduledEvent, claim: Proposition, minute_zero: int)
 def place_time(text: str, basis: TimeBasis, position: Position) -> int | None:
     """``text`` (a time of day: "3 pm", "15:10", "five o'clock") as the story-minute of its next
     occurrence at or after ``position`` (see the module docstring); ``None`` when it is no time
-    of day, or the clock's anchor does not fix the minute of the day there."""
+    of day, or the clock is unanchored there. #645: an anchor that holds the time only as a
+    range places it as ``POST …/scheduled-events`` does (``range_placement``)."""
+    exact = place_time_exact(text, basis, position)
+    if exact is not None:
+        return exact
+    found = range_placement(text, basis, position)
+    return None if found is None else found[0]
+
+
+def range_placement(text: str, basis: TimeBasis, position: Position) -> tuple[int, int] | None:
+    """#645 (#197's rule for a range anchor): ``text``, a plain time of day, as ``(story-minute,
+    frame minute)``: held at its next occurrence the anchor's earliest admissible value reaches
+    (``Anchor.place``), planned where the range's lower end reaches it (``due_window``); a time
+    with two readings takes the sooner. ``None`` when the clock is unanchored there, or ``text``
+    is no plain time of day."""
+    from epistrel.core.world_clock.anchor import statement_of
+
+    anchor = basis.anchor
+    if anchor is None or anchor.is_unanchored:
+        return None
+    statement = statement_of(text, anchor.clockwork)
+    if statement is None or statement.time is None or statement.approximate:
+        return None
+    if any(v is not None for v in (statement.weekday, statement.year, statement.month)):
+        return None
+    if statement.day is not None:
+        return None
+    readings = [lo for lo, hi in statement.time if hi - lo == 1]
+    if not readings or len(readings) != len(statement.time):
+        return None
+    current = basis.at(position) - basis.minute_zero
+    at = min(anchor.place(minute, current) for minute in readings)
+    return basis.minute_zero + anchor.due_window(at)[1], at
+
+
+def place_time_exact(text: str, basis: TimeBasis, position: Position) -> int | None:
+    """``place_time`` where the anchor fixes the minute of the day at ``position``."""
     from epistrel.core.world_clock.anchor import statement_of
 
     anchor = basis.anchor
@@ -276,7 +313,9 @@ __all__ = [
     "object_ids",
     "participants_of",
     "place_time",
+    "place_time_exact",
     "planned_minute",
+    "range_placement",
     "resolve",
     "same_time",
 ]

@@ -6,7 +6,8 @@ Every U-27 part lives in this file (traceability counts a test ID per milestone 
 own definition in the prompt (FR-CAT-2); the renderer's details are in
 ``tests/test_genesis_render.py``. #140's ``test_u_27__world_facts`` (M4) is the fact merge by
 seed layer under the contradiction rules (FR-SCN-7, FR-PROP-10), over fixture seeds; #149 calls
-the same ``merge_layers`` at structured genesis.
+the same ``merge_layers`` at structured genesis. #580's ``test_u_27__m7_from_prose`` (M7) reads
+the background flavor's "only child" from prose as the closed set the M4 part builds by hand.
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.resolution.entities import EntitySpec
 from epistrel.core.verify.merge import SeedFact, SeedLayer, merge_layers
 from epistrel.core.verify.rules import ClosedSetRecord
+from epistrel.core.verify.seeds import SeedWorld, read_seed
 from tests import genesis_support as g
 from tests import lite_genesis_support as lg
 from tests import scenario_support as scenarios
@@ -242,3 +245,47 @@ def test_u_27__world_facts() -> None:
         "seed-role-elsewhere",
         "merge_uncertain",
     )
+
+
+@pytest.mark.part("M7", "FR-SCN-7")
+def test_u_27__m7_from_prose() -> None:
+    """#580: the M4 world-facts case read from prose, no hand-built closed set. Linda's
+    background flavor "Linda grew up an only child." is read (``read_seed`` with her as the
+    holder) as a character-layer closed set of no ``sibling_of``; the role's "has a sister"
+    beats it in the fact merge (rule ``closed_set``), reported with winner and loser.
+    Complement: a background that rules nothing out ("Linda's only brother lives in town.")
+    yields no closed set, and the role's seed is kept with nothing dropped."""
+    world = SeedWorld.of(
+        vs.REGISTRY,
+        [
+            (LINDA, EntitySpec("person", "Linda", gender="feminine", character_id=LINDA)),
+            (SISTER, EntitySpec("person", "Ruth", gender="feminine", character_id=SISTER)),
+        ],
+    )
+    role_sister = SeedFact(
+        "seed-role-sister", SeedLayer.ROLE, vs.prop(LINDA, vs.SIBLING_OF, SISTER)
+    )
+
+    def merged(background: str) -> Any:
+        reading = read_seed(background, world, holder=LINDA)
+        closed = [
+            SeedFact(f"linda:background_flavor#closed{n}", SeedLayer.CHARACTER, closed_set=c)
+            for n, c in enumerate(reading.closed_sets)
+        ]
+        return reading, merge_layers(
+            {SeedLayer.ROLE: [role_sister], SeedLayer.CHARACTER: closed}, registry=vs.REGISTRY
+        )
+
+    reading, result = merged(ONLY_CHILD)
+    ((closed),) = reading.closed_sets
+    assert (closed.predicate_id, closed.subject_id, closed.members) == (vs.SIBLING_OF, LINDA, ())
+    assert [s.seed_id for s in result.kept] == ["seed-role-sister"]
+    ((lost),) = result.dropped
+    assert (lost.loser.seed_id, lost.winner.seed_id, lost.rule) == (
+        "linda:background_flavor#closed0",
+        "seed-role-sister",
+        "closed_set",
+    )
+    calm_reading, calm = merged("Linda's only brother lives in town.")
+    assert calm_reading.closed_sets == ()
+    assert (calm.dropped, [s.seed_id for s in calm.kept]) == ((), ["seed-role-sister"])

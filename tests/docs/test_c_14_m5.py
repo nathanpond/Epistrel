@@ -159,8 +159,12 @@ def test_c_14__guarantee_rows() -> None:
     for row_id in ("structural_knowledge_separation", "audience_filtering"):
         assert GUARANTEE[row_id].kind is Kind.deterministic, row_id
         assert GUARANTEE[row_id].delivered_in is None, row_id
-    lite, structured = guarantee_tool.SEEDED
-    assert structured.version == seeds.STRUCTURED_VERSION
+    lite = guarantee_tool.SEEDED[0]
+    # The seeded structured row at its latest version (#227: Full, version 4).
+    (structured,) = [
+        p for p in guarantee_tool.SEEDED if p.profile_id == seeds.STRUCTURED_PROFILE_ID
+    ]
+    assert structured.version == seeds.FULL_VERSION
     for row_id in ("structural_knowledge_separation", "audience_filtering", "paraphrase_detection"):
         assert GUARANTEE[row_id].provided(structured.effective()), row_id
         assert not GUARANTEE[row_id].provided(lite.effective()), row_id

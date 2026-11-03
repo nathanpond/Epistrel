@@ -87,6 +87,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import (
     Authority,
+    DependencyEdgeType,
+    DependencyTarget,
     EventCategory,
     Provenance,
     RecordProvenance,
@@ -774,12 +776,14 @@ async def record(
     planned: int | None = None,
     refinement_pause_anchor_rev: int | None = None,
     shared_owners: Sequence[str] | None = None,
+    planned_anchor: Mapping[str, Any] | None = None,
 ) -> Recorded:
     """Write one lifecycle step of ``event`` in ``op``'s commit (see the module docstring): its
     ``scheduled_event`` event at ``position`` and the version row it leaves (the plan carried
     over; ``planned`` a reschedule's new time; ``stopped_clock_at`` a stop's offset, kept by
     every later version until a reschedule clears it; ``refinement_pause_anchor_rev`` #197's
-    pause, kept the same way; ``shared_owners`` a new sharing, #198)."""
+    pause, kept the same way; ``shared_owners`` a new sharing, #198; ``planned_anchor`` the time
+    of day a reschedule holds it at, #645)."""
     if cause not in CAUSES:
         raise ValueError(f"{cause!r} is not a scheduled event cause")
     status = ScheduledStatus(status)
@@ -801,10 +805,12 @@ async def record(
     planned_at = event.planned if planned is None else int(planned)
     if shared_owners is not None:
         event = replace(event, shared_owners=tuple(dict.fromkeys(shared_owners)))
-    # #197: a reschedule gives an exact offset, so the time of day it was held at goes.
-    planned_anchor = (
-        None if rescheduled or event.planned_anchor is None else dict(event.planned_anchor)
-    )
+    # #197: a reschedule gives an exact offset, so the time of day it was held at goes, unless
+    # it names the time of day it is now held at (#645: ``planned_anchor``).
+    if planned_anchor is not None:
+        planned_anchor = dict(planned_anchor)
+    elif not rescheduled and event.planned_anchor is not None:
+        planned_anchor = dict(event.planned_anchor)
     await guard.check_content(
         conn,
         story_id,
@@ -982,7 +988,7 @@ async def on_canon_fact(
         from epistrel.core.membership import step_of
 
         position = replace(position, step=step_of(beat, operation.operation_id))
-    return await create(
+    created = await create(
         conn,
         operation,
         story_id,
@@ -994,6 +1000,28 @@ async def on_canon_fact(
         position=position,
         shared_owners=_SHARING.get(),
     )
+    if created is not None and created.event.version_id is not None:
+        # #220 (FR-DIRECT-7): the event exists because of its ``scheduled`` fact.
+        from epistrel.core import edges
+
+        await edges.record_edges(
+            conn,
+            operation,
+            [
+                edges.EdgeSpec(
+                    DependencyEdgeType.CAUSES,
+                    "scheduled_events",
+                    created.event.version_id,
+                    DependencyTarget.FACT,
+                    fact.id,
+                    target_subject_id=str(fact.subject_id),
+                    target_predicate_id=str(fact.predicate_id),
+                    position=position,
+                    source_event_ids=(created.record_id,),
+                )
+            ],
+        )
+    return created
 
 
 # -- a partially anchored clock (#197) -------------------------------------------------------------

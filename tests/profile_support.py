@@ -16,7 +16,7 @@ import re
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
-from itertools import combinations, product
+from itertools import combinations
 from typing import Any
 from unittest import mock
 
@@ -27,15 +27,21 @@ from tools.gates.spec import expand_ids
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.capabilities import CAPABILITY_MAP
 from epistrel.core.profiles.schema import DependencyRule, Module, Requirement
-from epistrel.core.seeds.profiles import LITE_PRESET_ID, STRUCTURED_M4_PROFILE_ID
+from epistrel.core.seeds.profiles import (
+    LITE_PRESET_ID,
+    MAX_PRESET_ID,
+    STANDARD_PRESET_ID,
+    STRUCTURED_M4_PROFILE_ID,
+)
+from epistrel.testing import covering
 from tests.conftest import REPO_ROOT
 from tests.event_support import execute_in_tx, rows, scalar
 
 PROFILES = "/engine-profiles"
-SEEDED_PROFILES = [STRUCTURED_M4_PROFILE_ID, LITE_PRESET_ID]
+SEEDED_PROFILES = [MAX_PRESET_ID, STANDARD_PRESET_ID, STRUCTURED_M4_PROFILE_ID, LITE_PRESET_ID]
 """The profiles every database at head holds, as a listing orders them (newest first: equal
-creation times, so by id descending): the system-owned ``Structured (M4)`` and the Lite
-preset."""
+creation times, so by id descending): the presets Max, Standard, Full (the row seeded as
+``Structured (M4)``, #227) and Lite."""
 SETTINGS: dict[str, Any] = {
     "memory": {"rolling_summary": {"window_messages": 24, "compress_threshold_tokens": 3_000}},
     "pins": {"max_pinned": 20},
@@ -317,29 +323,16 @@ def delivered_rules(among: frozenset[str] | None = None) -> list[DependencyRule]
     ]
 
 
-def covering_array(factors: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """A small set of assignments (one value per factor) in which every pair of values of two
-    factors appears together at least once (greedy over the full product)."""
-    names = list(factors)
-    wanted = {
-        (a, va, b, vb) for a, b in combinations(names, 2) for va in factors[a] for vb in factors[b]
-    }
-    chosen: list[dict[str, Any]] = []
-    candidates = [dict(zip(names, values, strict=True)) for values in product(*factors.values())]
-    while wanted:
-        best = max(candidates, key=lambda c: len(_pairs(c, names) & wanted))
-        chosen.append(best)
-        wanted -= _pairs(best, names)
-    return chosen
-
-
-def _pairs(assignment: dict[str, Any], names: list[str]) -> set[tuple[str, Any, str, Any]]:
-    return {(a, assignment[a], b, assignment[b]) for a, b in combinations(names, 2)}
+def covering_array(factors: dict[str, list[Any]], seed: int = 0) -> list[dict[str, Any]]:
+    """A pairwise covering array over ``factors`` (#243: ``epistrel.testing.covering``)."""
+    return covering.pairwise(factors, seed)
 
 
 def covered_pairs(rows: list[dict[str, Any]]) -> Iterator[tuple[str, Any, str, Any]]:
     for row in rows:
-        yield from _pairs(row, list(row))
+        names = list(row)
+        for a, b in combinations(names, 2):
+            yield (a, row[a], b, row[b])
 
 
 # -- impact reports and fingerprints (#109) ------------------------------------------------------
@@ -352,8 +345,14 @@ QUALITY_STATUSES = ("certified", "uncertified", "stale")
 STATUS_COMPONENT = "QualityStatusValue"
 """The OpenAPI component of the status enum (its name holds a later milestone's term)."""
 UNCERTIFIED = {"status": "uncertified"}
-UNAVAILABLE_WARNINGS = ["capabilities_gained", "backfill_needed", "upgrade_unavailable"]
-"""A report's warnings when a story cannot gain a data-producing capability."""
+BACKFILL_WARNINGS = ["capabilities_gained", "backfill_needed"]
+"""A report's warnings when a story with history gains a data-producing capability (#229: it
+upgrades by backfill or ``forward_only``; M3's ``upgrade_unavailable`` is retired)."""
+DEFAULT_UPGRADE_MODE = "backfill"
+"""#229: the ``upgrade_mode`` a request without one gets (an M7 term, named through this
+constant)."""
+NO_BACKFILL = {"needed": False, "estimate": None, "range": None}
+"""An entry's ``backfill`` when it needs none (#229 adds ``range``)."""
 LITE_CAPABILITIES = ["budgets", "lite", "models", "pins", "polish", "rolling_summary"]
 """What the Lite preset enables: its pipeline by level, and every delivered module it turns on."""
 POLISH = "repair.polish.enabled"

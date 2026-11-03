@@ -32,12 +32,13 @@ from tests.escalation_support import (
     yield_report,
 )
 from tests.fixtures.bobby_education import bobby_education
-from tests.perf.census import CENSUS, CensusTurn
+from tests.perf.census import CENSUS, LITE_SENTINEL, CensusTurn
 from tests.policy_support import AUTHOR, story_item, words
 from tests.respond_support import FIRST, PLAYER, SECOND, body, new_story, played, respond_client
 from tests.structured_turn_support import turn_report
 
 TURNS = 5
+P05_TEST = "tests/perf/test_p_05.py::test_p_05"
 ASSISTED = {"type": "model_assisted", "prompt": "Is this text about OWLS?", "on_uncertain": "pass"}
 
 
@@ -59,8 +60,9 @@ def _gated(turn: CensusTurn) -> None:
 
 @pytest.mark.part("M2", "NFR-COST-1")
 async def test_p_05(stub_settings: Settings, engine: AsyncEngine) -> None:
-    """Every turn of the session's census passes the per-turn gate; the turns of the S-tests
-    are in it whenever they ran; and this test's own turns, with deterministic input and
+    """Every turn of the session's census passes the per-turn gate; the Lite sentinel S-test's
+    turns are in it whenever it passed in the session (#653: never on collection alone); and
+    this test's own turns, attributed to it, with deterministic input and
     output policies over two render characters, are each exactly one ``generation`` call.
 
     Complement asserted: one model-assisted output policy makes each clean turn exactly two
@@ -92,10 +94,14 @@ async def test_p_05(stub_settings: Settings, engine: AsyncEngine) -> None:
     for recorded in CENSUS.turns:
         _gated(recorded)
 
-    s_turns = [t for t in CENSUS.turns if t.s_test]
-    if CENSUS.s_tests_collected:
-        assert s_turns, "the S-tests ran but no Lite turn was recorded"
-        assert any(t.clean and t.reserved == 0 for t in s_turns)
+    # The census attributes each turn to the test that played it: proven on this test's own
+    # turns in every session, whatever else ran (#653).
+    assert all(t.test.startswith(P05_TEST) for t in own), own
+    sentinel = [t for t in CENSUS.turns if t.test.startswith(LITE_SENTINEL)]
+    if CENSUS.sentinel_passed():
+        assert sentinel, "the Lite sentinel S-test passed but no turn of it was recorded"
+        assert all(t.s_test for t in sentinel)
+        assert any(t.clean and t.reserved == 0 for t in sentinel)
 
 
 @pytest.mark.part("M4", "NFR-PERF-5")

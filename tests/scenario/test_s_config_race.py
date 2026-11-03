@@ -983,3 +983,130 @@ async def test_s_config_race__m6_cascade(
     assert setting_class(_Untagged, "forgotten") is ConfigClass.interpretive
     assert setting_class(StorySettings, "no_such_setting") is ConfigClass.interpretive
     assert setting_class(StorySettings, "interaction_mode") is ConfigClass.prospective
+
+
+# -- a regenerated attempt runs under the configuration as it is now (#659, #660) ---------------
+
+
+@pytest.mark.part("M6", "FR-CONC-16")
+async def test_s_config_race__regenerated_under_current(
+    stub_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#659: ``states.level`` turned ``on`` while the turn is held, with a policy the held output
+    breaks: the re-check fails and the regenerated attempt runs under the new level (its State
+    effect applied), not the captured ``off`` (nothing applied). #660: ``player_authority``
+    switched to ``own_character`` mid-turn; the regenerated turn renders the character the input
+    now asks something of, who was not a primary when the turn began."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+
+        story, ids = await es.shop(client, engine, es.gold(), gold_of_player=1000)
+        cal = ids["Cal"]
+        await ss.set_level(engine, story, None)  # States off when the turn starts
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                es.render(beat("say", "An amber lamp hums.")),
+                *[
+                    es.render(
+                        beat(
+                            "do",
+                            "Mira takes Cal's coins for the sword.",
+                            effects=[es.effect("gold", scope_key=cal, delta=-500, reason="sword")],
+                        )
+                    )
+                ]
+                * 3,
+            ],
+        )
+
+        async def states_on() -> None:
+            # The re-check fails on the policy; the States level rides along with it.
+            await ss.set_level(engine, story, "on")
+            await lib.policies_set_story(
+                AUTHOR, story, [story_item(words("amber"), applies_to=["text_output"])]
+            )
+
+        answer = await _held(client, stub, story, body(cal, "Mira, I'll buy the sword."), states_on)
+        assert answer.status_code == 200, answer.text
+        row = await _turn(engine, story)
+        assert _outcomes(row) == [("recheck", "failed"), ("commit", None)]
+        assert "amber" not in answer.json()["message"]["text"].lower()
+        assert await es.gold_of(engine, story, cal) == 500  # the effect ran under ``on``
+        await ss.set_level(engine, story, None)
+
+        story, ids = await structured_story(client, "Cal", "Ada", "Jenni")
+        patched = await client.patch(
+            f"/stories/{story}/settings", json={"player_authority": "co_author"}, headers=WRITE
+        )
+        assert patched.status_code == 200, patched.text
+        stub.reset()
+        ms.renders_for(stub, "Ada", render(beat("say", "Ada here.")))
+        ms.renders_for(stub, "Jenni", render(beat("say", "Jenni here.")))
+
+        async def own_character() -> None:
+            switched = await client.patch(
+                f"/stories/{story}/settings",
+                json={"player_authority": "own_character"},
+                headers=WRITE,
+            )
+            assert switched.status_code == 200, switched.text
+
+        answer = await _held(
+            client,
+            stub,
+            story,
+            body(ids["Cal"], "Thanks.", do="Jenni smiles and hands me the key."),
+            own_character,
+        )
+        assert answer.status_code == 200, answer.text
+        row = await _turn(engine, story)
+        assert _outcomes(row) == [("recheck", "failed"), ("commit", None)]
+        said = " ".join(b["text"] for b in answer.json()["beats"])
+        assert "Jenni here." in said, said
+        assert "Ada here." not in said, said
+
+
+@pytest.mark.integration
+@pytest.mark.part("M7", "FR-CONC-7,16")
+async def test_s_config_race__m7(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A rewrite's plan and the configuration (#237): an interpretive change after the preview
+    (the author switches ``player_authority``) makes the apply 409 ``rewrite_stale`` with reason
+    ``config_changed`` naming the change, and the session re-previews; complement: a
+    prospective change (``turn_concurrency``) leaves the plan fresh and the apply lands."""
+    from tests import rewrite_support as rs
+
+    settings = auth_settings(pg_url, model_adapter="stub")
+    async with respond_client(settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        stub.when("", rs.UCLA, purpose="rewrite_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        for setting, value, stale in (
+            ("turn_concurrency", "reject", False),
+            ("player_authority", "co_author", True),
+        ):
+            assert setting_class(StorySettings, setting) is (
+                ConfigClass.interpretive if stale else ConfigClass.prospective
+            )
+            deps = await rs.story(client, engine)
+            story = deps.story_id
+            opened = await rs.open_session(client, story)
+            session = (await rs.answer_all(client, story, opened.json())).json()
+            patched = await client.patch(
+                f"/stories/{story}/settings", json={setting: value}, headers=WRITE
+            )
+            assert patched.status_code == 200, patched.text
+            applied = await rs.apply(client, story, session["id"], session["base_revision"])
+            if not stale:
+                assert applied.status_code == 200, applied.text
+                continue
+            assert applied.status_code == 409, applied.text
+            details = applied.json()["error"]["details"]
+            reasons = {r["kind"]: r["refs"] for r in details["reasons"]}
+            assert "config_changed" in reasons
+            assert {r["table"] for r in reasons["config_changed"]} == {"config_changes"}
+            assert await rs.count(engine, "amendments", story) == 0
+            assert details["stale_count"] == 1

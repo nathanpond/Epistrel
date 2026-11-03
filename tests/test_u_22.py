@@ -11,6 +11,7 @@ in), so nothing a detector found is left unchecked."""
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any, cast
 
 import pytest
@@ -390,6 +391,40 @@ async def test_u_22__negated_departure_from_a_place() -> None:
     assert _movement("Tom Harrow did not leave the orchard.") == []
 
 
+def _placed_movement(text: str) -> list[tuple[str, str | None, Polarity]]:
+    """``_movement`` with Tom placed in the orchard, so a placeless departure is a claim."""
+    placed = replace(_orchard_env(), placement={TOM: ORCHARD})
+    detection = detect_seed(text, placed)
+    return [
+        (c.proposition.subject_id, c.proposition.object_id, c.proposition.polarity)
+        for c in detection.claims
+        if c.category == "movement" and c.proposition is not None
+    ]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tom Harrow has 500 gold left.",
+        "Tom Harrow had two coins left.",
+        "There's nothing left, Tom Harrow said.",
+    ],
+)
+async def test_u_22__left_as_remaining(text: str) -> None:
+    """#633: "left" after a number or a quantifier, in a clause that holds or has something,
+    means remaining: no movement claim, so a placed character is not read as leaving."""
+    assert _placed_movement(text) == []
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+@pytest.mark.parametrize("text", ["Tom Harrow left.", "Tom Harrow left at noon."])
+async def test_u_22__left_as_departure(text: str) -> None:
+    """The complement of #633: a placeless "left" with no quantity before it is still a
+    departure from the subject's placement."""
+    assert _placed_movement(text) == [(TOM, ORCHARD, Polarity.NEGATED)]
+
+
 LINDA_AT_TAVERN = Proposition(
     subject_id=LINDA,
     predicate_id=vs.LOCATED_AT,
@@ -620,3 +655,35 @@ async def test_u_22__hidden_states(engine: AsyncEngine, states_delivered: None) 
     assert result.denied is not None
     assert result.denied.reason.value == "protected_content"
     assert result.permitted is None  # never a canon request
+
+
+def _times(text: str) -> list[str]:
+    detection = detect_seed(text, _orchard_env())
+    return [
+        str(c.proposition.literal.value)
+        for c in detection.claims
+        if c.proposition is not None
+        and c.proposition.predicate_id == TIME_IS
+        and c.proposition.literal is not None
+    ]
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tom Harrow glances at the stopped watch: a quarter past three.",
+        "The broken clock on the wall says 3:15.",
+        "Tom Harrow's watch was slow; it read 3:15.",
+    ],
+)
+async def test_u_22__unreliable_instrument_reading(text: str) -> None:
+    """#643: what a stopped, broken or wrong instrument reads is texture, not the time: no
+    ``time_is`` claim, so it can never contradict the story's time."""
+    assert _times(text) == []
+
+
+@pytest.mark.part("M4", "FR-VERIFY-13")
+async def test_u_22__working_instrument_reading() -> None:
+    """The complement of #643: a working watch's reading states the time."""
+    assert _times("Tom Harrow checks his watch: a quarter past three.") != []

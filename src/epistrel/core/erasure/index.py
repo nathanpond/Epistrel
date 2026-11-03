@@ -85,6 +85,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, insert, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import turn_memo
 from epistrel.core.erasure.matcher import (
     DASHES,
     MIN_TERM_CHARS,
@@ -463,11 +464,17 @@ class Terms:
 
     async def of(self, story_id: str | None) -> list[Subject]:
         if story_id not in self._read:
-            self._read[story_id] = (
-                await catalog_subjects(self.conn)
-                if story_id is None
-                else await story_subjects(self.conn, story_id)
-            )
+            if story_id is None:
+                self._read[story_id] = await catalog_subjects(self.conn)
+            else:
+                # #619: once per turn (``core.turn_memo``), not per ``index_records`` call; a
+                # turn that adds a character forgets it.
+                key = ("story_subjects", story_id)
+                found = turn_memo.get(key)
+                if found is turn_memo.MISSING:
+                    found = await story_subjects(self.conn, story_id)
+                    turn_memo.put(key, found)
+                self._read[story_id] = found
         return self._read[story_id]
 
 
@@ -540,16 +547,20 @@ def recording() -> Iterator[list[str]]:
         _SPY.reset(token)
 
 
-async def index_records(conn: AsyncConnection, records: Sequence[Record]) -> int:
+async def index_records(
+    conn: AsyncConnection, records: Sequence[Record], *, fresh: bool = False
+) -> int:
     """(Re)write the rows of every one of ``records`` in ``conn``'s transaction (see the module
-    docstring); returns how many rows they have now."""
+    docstring); returns how many rows they have now. ``fresh`` (#620): the caller has just
+    inserted every one of ``records`` in this transaction, so none has rows to delete."""
     if not records:
         return 0
     spy = _SPY.get()
     if spy is not None:
         spy.extend(r.table for r in records)
     rows = await compute(conn, records)
-    await _delete_records(conn, list(dict.fromkeys((r.table, r.record_id) for r in records)))
+    if not fresh:
+        await _delete_records(conn, list(dict.fromkeys((r.table, r.record_id) for r in records)))
     await _write(conn, rows)
     stories_named = {r.story_id for r in records}
     log.debug(
@@ -808,11 +819,33 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
     # value declares its character. Its writer is the outbox module (intent, dispatcher and
     # intake writes alike).
     SubjectWriter("external_effect_outbox", ("epistrel.core.outbox",), f"{_RECORDS}:read_outbox"),
+    # #221: an amendment's payload and its parts' patches and time expressions.
+    SubjectWriter("amendments", ("epistrel.core.amendments.store",), f"{_RECORDS}:read_amendments"),
+    SubjectWriter(
+        "amendment_parts", ("epistrel.core.amendments.store",), f"{_RECORDS}:read_amendment_parts"
+    ),
+    # #223: a rewrite session's instruction, plan and held render, and its questions' prompts,
+    # options and answers.
+    SubjectWriter(
+        "rewrite_sessions",
+        ("epistrel.orchestrator.rewrite.session",),
+        f"{_RECORDS}:read_rewrite_sessions",
+    ),
+    # #226: a directive's text and the changes parsed from it.
+    SubjectWriter(
+        "directives", ("epistrel.orchestrator.directives",), f"{_RECORDS}:read_directives"
+    ),
+    SubjectWriter(
+        "rewrite_questions",
+        ("epistrel.orchestrator.rewrite.session",),
+        f"{_RECORDS}:read_rewrite_questions",
+    ),
 )
 """Every indexed table (see the module docstring); the coverage test's source of truth."""
 
 EXEMPT_TABLES: Mapping[str, str] = {
     "subject_references": "the index itself",
+    "dependency_edges": "ids and edge types only (#220)",
     "transcript_messages": "a projection of the story's events, which are indexed",
     "story_texts": "a projection of the pinned_memories_set and custom_instructions_set events",
     "story_heads": "a projection (the active variants)",
@@ -820,10 +853,25 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "rebuild and a fork), which are indexed",
     "turn_queue": "transient: a queued turn's request until it runs (its input is then an event)",
     "jobs": "transient work items, deleted by the retention sweep",
+    "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "
+    "counts (#249); the archive's own lines are not indexed",
     "timers": "transient: a timer's kind and target id",
     "client_events": "ingest de-duplication: client ids and the ids of the events written",
     "audit_log": "deployment audit records: identifiers and outcomes (docs/04's M4 clause)",
     "story_profile_overrides": "engine-profile dial values (numbers and enums)",
+    "capability_coverage": "turn intervals and capability names (#228)",
+    "story_backfills": "a backfill's configurations, range, counts and report (counts and ids "
+    "only; #228)",
+    "backfill_chunks": "an extraction checkpoint: event ids, kinds, speakers' and present "
+    "characters' ids and normalized propositions, never the transcript's text (read again from "
+    "the transcript at reconciliation, so an erasure's redaction holds; #228)",
+    "backfill_conflicts": "a contradiction's subject, positions and event ids (#228)",
+    "profile_certifications": "deployment records (#233): fingerprints, metric ids, counts, "
+    "bounds and a report hash, no story content",
+    "model_reported_versions": "the version each model reported (#234): an endpoint hash, a "
+    "model id and a version string, no story content",
+    "certification_runs": "deployment records (#233): what a certification run plays, its "
+    "estimate and report summary (counts and verdicts), no story content",
     "story_provider_bindings": "a story's ids at its providers (#204): opaque game identifiers "
     "(an account or player id), never prose",
     "rating_check_jobs": "a rating check's progress and verdicts by record key and policy id",

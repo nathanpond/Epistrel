@@ -1060,7 +1060,7 @@ def _backgrounds(build: _Builder) -> None:
             if build.partitions and member.is_player and name == "description":
                 continue  # #173: a persona's description is its acquaintances' beliefs only
             reading = read_seed(text, build.world, holder=member.character_id)
-            if not reading.propositions:
+            if not reading.propositions and not reading.closed_sets:
                 continue
             key = f"{member.role_id}:{name}"
             field_ref = f"characters.{member.role_id}.{name}"
@@ -1070,6 +1070,14 @@ def _backgrounds(build: _Builder) -> None:
             build.add_facts(
                 tracked, key, SeedLayer.CHARACTER, reading.propositions, Visibility(scope="public")
             )
+            # #580: what the background rules out ("an only child") takes part in the merge as
+            # a character-layer closed set, so a role's "has a sister" wins and is reported.
+            for n, closed in enumerate(reading.closed_sets):
+                seed_id = f"{key}#closed{n}"
+                build.layers[SeedLayer.CHARACTER].append(
+                    SeedFact(seed_id, SeedLayer.CHARACTER, closed_set=replace(closed, id=seed_id))
+                )
+                build.owner[seed_id] = tracked
 
 
 def _merged(build: _Builder) -> MergeResult:

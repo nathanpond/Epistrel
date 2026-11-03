@@ -280,6 +280,37 @@ ORDER: dict[str, str] = {
     "reconciliation_marks": f"{_STORY_RANK}, t.since, t.reason, t.resolved_by NULLS FIRST",
     # Engine-proposed States (#192): by name.
     "state_proposals": f"{_STORY_RANK}, t.name",
+    # Dependency edges (#220): by the dependent's position, then type, tables and kinds.
+    "dependency_edges": (
+        f"{_STORY_RANK}, t.position_turn NULLS FIRST, t.position_slot_k NULLS FIRST, "
+        "t.position_beat NULLS FIRST, t.position_step NULLS FIRST, t.edge_type, "
+        "t.dependent_table, t.target_kind, t.acquisition_kind NULLS FIRST, t.created_at"
+    ),
+    # Backfill (#228): backfills by when they were asked for; chunks by index; conflicts by
+    # their subject; coverage by capability and range.
+    "story_backfills": f"{_STORY_RANK}, t.created_at, t.kind, t.status",
+    "certification_runs": f"{_STORY_RANK} NULLS FIRST, t.created_at, t.fingerprint",
+    "backfill_chunks": f"{_STORY_RANK}, t.chunk_index",
+    "backfill_conflicts": f"{_STORY_RANK}, t.subject::text, t.status",
+    "capability_coverage": (
+        f"{_STORY_RANK}, t.capability, t.from_turn, t.to_turn NULLS LAST, t.source"
+    ),
+    # Amendments (#221): by when they were recorded, then kind; parts by their amendment's
+    # time and their ordinal.
+    "amendments": f"{_STORY_RANK}, t.tx_time, t.kind, t.status",
+    "amendment_parts": (
+        f"{_STORY_RANK}, (SELECT a.tx_time FROM amendments a WHERE a.id = t.amendment_id), "  # noqa: S608
+        "t.ordinal, t.status"
+    ),
+    # Rewrite sessions and their questions (#223), directives (#226): by when they were made,
+    # then their natural keys.
+    "rewrite_sessions": f"{_STORY_RANK}, t.created_at, t.kind, t.state",
+    "rewrite_questions": (
+        f"{_STORY_RANK}, (SELECT r.created_at FROM rewrite_sessions r "  # noqa: S608
+        "WHERE r.id = t.session_id), t.created_at, t.key"
+    ),
+    "directives": f"{_STORY_RANK}, t.created_at, t.kind, t.disposition",
+    "bundle_jobs": f"{_STORY_RANK}, t.created_at, t.kind, t.status",
     # The read set's change index (#136): by revision, then valid window and change kind.
     "proposition_changes": (
         f"{_STORY_RANK}, t.timeline_revision, t.tx_time, t.valid_window, t.change, t.holder"

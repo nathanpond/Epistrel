@@ -596,6 +596,80 @@ async def test_p_04__seed_keeps_its_connections(
             await service.dispose()
 
 
+class _SeedStopped(Exception):
+    """Raised by the seeders' engine spy, so a seeder stops before it writes anything."""
+
+
+@pytest.mark.part("M5", "NFR-PERF-4")
+@pytest.mark.parametrize("seeder", [structured, multi], ids=["structured", "multi"])
+async def test_p_04__seeders_use_the_seed_engine(
+    seeder: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#592: each seeder opens its database through ``seed_engine`` with its story count (the
+    #587 fix), not the service's engine. A seeder reverting to ``make_engine`` would pass every
+    other P-04 test: the multi smoke seeds only two stories.
+
+    Complement asserted: the spy saw the target's database and the requested story count, and
+    the seeder never reached ``make_engine``."""
+    asked: list[tuple[str, int]] = []
+
+    def spy(settings: Settings, stories: int) -> AsyncEngine:
+        asked.append((settings.database_url.get_secret_value(), stories))
+        raise _SeedStopped
+
+    def service_engine(*args: Any, **kwargs: Any) -> AsyncEngine:
+        raise AssertionError("the seeder opened the service's engine")
+
+    monkeypatch.setattr(seeder, "seed_engine", spy)
+    monkeypatch.setattr(seed_module, "make_engine", service_engine)
+    dsn = "postgresql+psycopg://perf:perf@db.invalid:5432/epistrel_perf"
+    target = Target(base_url="http://engine.invalid", credential="c", principal="p", dsn=dsn)
+    with pytest.raises(_SeedStopped):
+        await seeder.seed(target, stories=7, log=lambda _: None)
+    assert len(asked) == 1
+    assert asked[0][1] == 7
+    assert "db.invalid" in asked[0][0]
+
+
+@pytest.mark.part("M5", "NFR-PERF-4")
+@pytest.mark.parametrize(
+    "reconciled",
+    [{"s1": {"lost": [3]}}, {"s2": {"duplicated": [5]}}],
+    ids=["lost", "duplicated"],
+)
+def test_p_04__lost_or_duplicated_turns_fail_the_criterion(
+    reconciled: dict[str, dict[str, Any]],
+) -> None:
+    """#592: the report's own "lost or duplicated turns" criterion fails when the reconciliation
+    found a lost or a duplicated turn (perf.yml's check step reads ``figures`` separately, so
+    this line was unguarded).
+
+    Complement asserted: the same run with nothing reconciled passes the criterion."""
+    info = report.RunInfo(
+        started="2026-10-11 00:00 UTC",
+        minutes=10,
+        interval_s=15.0,
+        stories=2,
+        host_class="mac",
+        host="test",
+        engine_sha="0" * 12,
+        stub_latency_s=2.0,
+    )
+    stories = [("s1", 0), ("s2", 1)]
+    commit = {"0.1": 70.0, "0.25": 78.0, "0.5": 78.0, "+Inf": 78.0}
+    samples = [{"t": float(t), "queue": {}, "db_connections": 4} for t in range(0, 600, 5)]
+
+    def criterion(found: report.Evaluation) -> Any:
+        (line,) = [c for c in found.aggregate if c.name == "lost or duplicated turns"]
+        return line
+
+    clean = report.evaluate(info, stories, _run(info), samples, {"commit": commit}, {})
+    assert criterion(clean).passed
+    bad = report.evaluate(info, stories, _run(info), samples, {"commit": commit}, reconciled)
+    assert not criterion(bad).passed
+    assert not bad.passed
+
+
 # -- M5: the multi-character variant (#182) ---------------------------------------------------
 
 
@@ -624,7 +698,8 @@ def test_p_04__multi() -> None:
     info = sidecar["info"]
     assert info["scenario"] == "multi"
     assert info["host_class"] == newest.host_class
-    assert str(info["profile"]).startswith("Structured v"), info["profile"]
+    # A committed report names the profile as it ran: "Structured" before #227 renamed it Full.
+    assert str(info["profile"]).startswith(("Full v", "Structured v")), info["profile"]
     assert info["perception"] == "full"
     assert sidecar["passed"] == (newest.verdict == report.PASS)
     names = {c["name"] for c in sidecar["aggregate"]}
@@ -888,7 +963,7 @@ def test_p_04__multi_smoke(
     sidecar = json.loads(page.with_suffix(".json").read_text())
     info = sidecar["info"]
     assert (info["scenario"], info["smoke"], info["stories"]) == ("multi", True, SMOKE_STORIES)
-    assert info["profile"].startswith("Structured v"), info["profile"]
+    assert info["profile"].startswith("Full v"), info["profile"]
     assert info["perception"] == "full"
     by_name = {c["name"]: c for c in sidecar["aggregate"]}
     for name in (

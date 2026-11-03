@@ -424,7 +424,11 @@ async def write(
         proposition = belief.proposition
         if proposition is None:
             if trait_predicate is None:
-                trait_predicate = (await auto_register(conn, story_id, TRAIT)).id
+                # #523: a trait is a literal (a word), never an entity: a render's or an
+                # extraction's ``trait`` claim then normalizes its object as one.
+                trait_predicate = (
+                    await auto_register(conn, story_id, TRAIT, object_type=LiteralKind.STR.value)
+                ).id
             proposition = Proposition(
                 subject_id=str(belief.subject),
                 predicate_id=trait_predicate,

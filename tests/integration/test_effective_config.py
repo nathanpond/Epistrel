@@ -62,11 +62,12 @@ from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
 from tests.profile_support import (
+    DEFAULT_UPGRADE_MODE,
     LITE_CAPABILITIES,
+    NO_BACKFILL,
     POLISH,
     PROFILES,
     REDERIVATION,
-    UNAVAILABLE_WARNINGS,
     configuration_rows,
     merged,
     nest,
@@ -359,7 +360,7 @@ async def test_assignment_runs_in_two_stages(stub_settings: Settings, engine: As
         assert (report["warnings"], report["affected_count"]) == (["capabilities_lost"], 1)
         (entry,) = report["affected_stories"]
         assert (entry["story_id"], entry["capabilities_lost"]) == (story, ["rolling_summary"])
-        assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+        assert entry[REDERIVATION] == NO_BACKFILL
         assert report["capabilities_after"] == [
             c for c in LITE_CAPABILITIES if c != "rolling_summary"
         ]
@@ -822,15 +823,16 @@ async def test_an_edit_reaches_each_follower_through_its_overrides(scratch: Spac
 
 
 async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch: Space) -> None:
-    """M3's interim rule reaches each follower through its own overrides (FR-PROF-5,7): a
+    """A data-producing edit reaches each follower through its own overrides (FR-PROF-5,7,8): a
     confirmed edit that adds data-producing capability keeps a following story with history on
-    the version it ran on only when the change that story sees adds the capability. The polish
+    the version it ran on, its re-derivation queued (#229), only when the change that story
+    sees adds the capability. The polish
     pass is marked data-producing for the test (``data_producing``; none is in M3). Two stories
     follow a profile with the polish pass off and have each played a turn; one of them
     overrides the polish pass on. The edit that turns it on reports the plain story
-    ``upgrade_unavailable`` (it gains the polish pass) and the other not (it gains nothing).
-    Confirmed, the plain story is pinned to version 1 without the polish pass, and the other
-    moves to version 2, unpinned. ``GET /stories/{id}`` names the version each runs on: the
+    under the default upgrade mode (it gains the polish pass) and the other not (it gains
+    nothing). Confirmed, the plain story is pinned to version 1 without the polish pass, and the
+    other moves to version 2, unpinned. ``GET /stories/{id}`` names the version each runs on: the
     plain story's pin (1), not the profile's latest, and the other's latest (2)."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         profile = await _profile(client, nest(POLISH, False), "Unpolished")
@@ -847,9 +849,9 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
             assert held["applied"] is False
             entries = {e["story_id"]: e for e in held["impact"]["affected_stories"]}
             assert (
-                entries[plain]["upgrade_unavailable"],
+                entries[plain]["upgrade_mode"],
                 entries[plain]["capabilities_gained"],
-            ) == (True, ["polish"])
+            ) == (DEFAULT_UPGRADE_MODE, ["polish"])
             assert (
                 entries[polished]["upgrade_unavailable"],
                 entries[polished]["capabilities_gained"],
@@ -918,10 +920,13 @@ async def _kept_as_it_was(
 ) -> dict[str, Any]:
     """``send`` makes a write that adds the polish pass to ``story``, which has history.
     Without ``ignore_warnings`` it is held, and writes nothing. Confirmed under the same key it
-    is applied: its entry is ``upgrade_unavailable``, its ``result`` is the story's
-    configuration as it was, the revisions it answers are the story's, and nothing is written
-    but the call's own ``Idempotency-Key`` record (#61). Returns the confirmed answer."""
+    starts a backfill instead of applying (#228): 202 ``applied: false`` with the backfill, its
+    entry ``backfill.needed`` (not ``upgrade_unavailable``), and the story's configuration as it
+    was until the backfill completes (``pending_backfill``). Cancelling the backfill leaves the
+    configuration as it was. A profile edit's backfill of the story still queued is superseded
+    by the confirmed write (#229). Returns the confirmed answer."""
     shown = await _effective(client, story)
+    shown.pop("pending_backfill", None)
     start = await _story_row(db, story)
     revisions = (start.config_revision, start.timeline_revision)
     before = await _trace(db, story)
@@ -929,23 +934,27 @@ async def _kept_as_it_was(
     key = f"unavailable-{secrets.token_hex(6)}"
     held = await ok(await send(story, key))
     assert (held["applied"], held["result"]) == (False, None)
-    assert held["impact"]["warnings"] == UNAVAILABLE_WARNINGS
+    assert held["impact"]["warnings"] == ["capabilities_gained", "backfill_needed"]
     assert (held["config_revision"], held["timeline_revision"]) == revisions
     assert await _trace(db, story) == before
     assert await scalar(db, KEYS) == keys  # a held call keeps no key
-    confirmed = await ok(await send(story, key, ignore_warnings=True))
-    assert confirmed["applied"] is True
-    assert confirmed["impact"] == held["impact"]
-    (entry,) = confirmed["impact"]["affected_stories"]
-    assert (entry["story_id"], entry["upgrade_unavailable"]) == (story, True)
+    confirmed = await send(story, key, ignore_warnings=True)
+    assert confirmed.status_code == 202, confirmed.text
+    found: dict[str, Any] = confirmed.json()
+    assert (found["applied"], found["result"]) == (False, None)
+    assert found["backfill"]["status"] == "queued"
+    (entry,) = found["impact"]["affected_stories"]
+    assert (entry["story_id"], entry["upgrade_unavailable"]) == (story, False)
     assert (entry["capabilities_gained"], entry[REDERIVATION]["needed"]) == (["polish"], True)
-    assert entry["fingerprint_after"] == entry["fingerprint_before"] == shown["fingerprint"]
-    assert confirmed["result"] == shown
-    assert (confirmed["config_revision"], confirmed["timeline_revision"]) == revisions
-    assert await _trace(db, story) == before
-    assert await scalar(db, KEYS) == keys + 1
+    pending = await _effective(client, story)
+    assert pending.pop("pending_backfill") == {"id": found["backfill"]["id"]}
+    assert pending == shown
+    cancelled = await client.delete(f"/stories/{story}/backfill", headers=headers())
+    assert cancelled.status_code == 200, cancelled.text
     assert await _effective(client, story) == shown
-    return confirmed
+    after = await _story_row(db, story)
+    assert (after.config_revision, after.timeline_revision) == revisions
+    return found
 
 
 async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch: Space) -> None:
@@ -991,14 +1000,15 @@ async def test_a_story_write_whose_upgrade_is_unavailable_writes_nothing(scratch
             assert (start.engine_profile_id, start.engine_profile_version_pin) == (shared, 1)
             pinned = {"id": shared, "version": 1, "pinned": True, "deleted": False}
             for send in (patch, assign):
-                result = (await _kept_as_it_was(client, scratch.db, lived, send))["result"]
+                await _kept_as_it_was(client, scratch.db, lived, send)
+                result = await _effective(client, lived)
                 assert (result["profile"], result["overrides"]) == (
                     pinned,
                     {"settings": {}, "revision": 0},
                 ), send.__name__
                 assert result["effective"]["repair"]["polish"]["enabled"] is False
                 assert "polish" not in result["capabilities"]
-            assert tuple(await _story_row(scratch.db, lived)) == tuple(start)
+            assert tuple(await _story_row(scratch.db, lived)) == tuple(start)  # nothing applied
             shown = await ok(await client.get(f"/stories/{lived}", headers=READ))
             assert shown["engine_profile"] == {"id": shared, "version": 1, "pinned": True}
 

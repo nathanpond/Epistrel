@@ -141,11 +141,13 @@ def test_place_time() -> None:
     assert ss.place_time("five o'clock", at, Position(1)) == ZERO + 6 * 60
     # Earlier in the day: tomorrow.
     assert ss.place_time("10 am", at, Position(1)) == ZERO + 23 * 60
-    # Complements: no anchor, a partial anchor, and no time of day.
+    # Complements: no anchor, and no time of day.
     assert ss.place_time("3 pm", basis(None), Position(1)) is None
+    # #645: a partial (range) anchor places it as ``range_placement`` does: held at its next
+    # occurrence the range's earliest admissible value (05:00 this morning) reaches.
     morning = statement_of("morning")
     assert morning is not None
     partial = Anchor.unanchored().refine(morning, 0, Position(0))
     assert isinstance(partial, Anchor)
-    assert ss.place_time("3 pm", basis(partial), Position(1)) is None
+    assert ss.place_time("3 pm", basis(partial), Position(1)) == ZERO + 10 * 60
     assert ss.place_time("soon", at, Position(1)) is None

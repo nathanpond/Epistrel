@@ -63,6 +63,7 @@ from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
 from tests.profile_support import (
     LITE_CAPABILITIES,
+    NO_BACKFILL,
     POLISH,
     PROFILES,
     REDERIVATION,
@@ -358,7 +359,7 @@ async def test_assignment_runs_in_two_stages(stub_settings: Settings, engine: As
         assert (report["warnings"], report["affected_count"]) == (["capabilities_lost"], 1)
         (entry,) = report["affected_stories"]
         assert (entry["story_id"], entry["capabilities_lost"]) == (story, ["rolling_summary"])
-        assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+        assert entry[REDERIVATION] == NO_BACKFILL
         assert report["capabilities_after"] == [
             c for c in LITE_CAPABILITIES if c != "rolling_summary"
         ]
@@ -821,15 +822,16 @@ async def test_an_edit_reaches_each_follower_through_its_overrides(scratch: Spac
 
 
 async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch: Space) -> None:
-    """M3's interim rule reaches each follower through its own overrides (FR-PROF-5,7): a
+    """A data-producing edit reaches each follower through its own overrides (FR-PROF-5,7,8): a
     confirmed edit that adds data-producing capability keeps a following story with history on
-    the version it ran on only when the change that story sees adds the capability. The polish
+    the version it ran on, its backfill queued (#229), only when the change that story sees adds
+    the capability. The polish
     pass is marked data-producing for the test (``data_producing``; none is in M3). Two stories
     follow a profile with the polish pass off and have each played a turn; one of them
     overrides the polish pass on. The edit that turns it on reports the plain story
-    ``upgrade_unavailable`` (it gains the polish pass) and the other not (it gains nothing).
-    Confirmed, the plain story is pinned to version 1 without the polish pass, and the other
-    moves to version 2, unpinned. ``GET /stories/{id}`` names the version each runs on: the
+    with ``upgrade_mode: backfill`` (it gains the polish pass) and the other not (it gains
+    nothing). Confirmed, the plain story is pinned to version 1 without the polish pass, and the
+    other moves to version 2, unpinned. ``GET /stories/{id}`` names the version each runs on: the
     plain story's pin (1), not the profile's latest, and the other's latest (2)."""
     async with respond_client(scratch.settings, scratch.db) as (client, _):
         profile = await _profile(client, nest(POLISH, False), "Unpolished")
@@ -846,9 +848,9 @@ async def test_a_data_producing_edit_keeps_only_the_followers_it_raises(scratch:
             assert held["applied"] is False
             entries = {e["story_id"]: e for e in held["impact"]["affected_stories"]}
             assert (
-                entries[plain]["upgrade_unavailable"],
+                entries[plain]["upgrade_mode"],
                 entries[plain]["capabilities_gained"],
-            ) == (True, ["polish"])
+            ) == ("backfill", ["polish"])
             assert (
                 entries[polished]["upgrade_unavailable"],
                 entries[polished]["capabilities_gained"],
@@ -920,8 +922,10 @@ async def _kept_as_it_was(
     starts a backfill instead of applying (#228): 202 ``applied: false`` with the backfill, its
     entry ``backfill.needed`` (not ``upgrade_unavailable``), and the story's configuration as it
     was until the backfill completes (``pending_backfill``). Cancelling the backfill leaves the
-    configuration as it was. Returns the confirmed answer."""
+    configuration as it was. A profile edit's backfill of the story still queued is superseded
+    by the confirmed write (#229). Returns the confirmed answer."""
     shown = await _effective(client, story)
+    shown.pop("pending_backfill", None)
     start = await _story_row(db, story)
     revisions = (start.config_revision, start.timeline_revision)
     before = await _trace(db, story)

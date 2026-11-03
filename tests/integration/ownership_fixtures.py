@@ -1042,6 +1042,8 @@ CALLS: dict[tuple[str, str], Call] = {
     # writes nothing, a delete) and the ownership routes
     ("PUT", P): Call(200, {"name": "Brisk Lite", "settings": EDITED}),
     ("POST", f"{P}/copy"): Call(201, {"name": "My copy"}),
+    # #229: no story is pinned to an older version: an empty report, applied.
+    ("POST", f"{P}/upgrade-pinned"): Call(200, {"ignore_warnings": True}),
     ("POST", f"{P}/validate"): Call(200, {"settings": EDITED}),
     ("DELETE", P): Call(200),
     ("PUT", f"{P}/owner"): Call(200, {"principal": NEW_OWNER}),

@@ -141,6 +141,7 @@ from tests.profile_support import (
     EDITED,
     LITE_CAPABILITIES,
     M3_DELIVERED,
+    NO_BACKFILL,
     PROFILES,
     REDERIVATION,
     SEEDED_PROFILES,
@@ -713,7 +714,7 @@ async def test_c_16__two_stage(scratch: Space) -> None:
                 [],
                 ["rolling_summary"],
             )
-            assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+            assert entry[REDERIVATION] == NO_BACKFILL
             assert entry["upgrade_unavailable"] is False
             assert entry["fingerprint_before"] == before[entry["story_id"]]
             assert entry["fingerprint_after"] != entry["fingerprint_before"]
@@ -1135,7 +1136,7 @@ async def test_c_16__follow_latest(scratch: Space) -> None:
         assert [e["story_id"] for e in report["affected_stories"]] == [s for s, _ in followers]
         for entry in report["affected_stories"]:
             assert (entry["capabilities_gained"], entry["capabilities_lost"]) == ([], [])
-            assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+            assert entry[REDERIVATION] == NO_BACKFILL
             assert entry["upgrade_unavailable"] is False
         changes = await rows(
             scratch.db,

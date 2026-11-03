@@ -6,7 +6,9 @@
   ``resummarize`` (#232)), the configuration it came from (``source``) and the one it applies on
   completion (``target``), the capabilities it re-derives over its turn range, its chunk counts
   and reconciliation cursor, who asked, its ``report`` and ``error``. At most one row of a story
-  is non-terminal (a partial unique index).
+  is non-terminal (a partial unique index). #229 (migration 0121): ``origin`` ``single_story``
+  (paused at request time) or ``profile_edit`` (queued, the story paused only once the handler
+  claims it), and ``seq``, the queue's claim order.
 - ``backfill_chunks``: the extraction checkpoint, one row per chunk of whole turns: its range,
   ``status`` (``pending``, ``extracted``) and what extraction found (``extraction``).
 - ``backfill_conflicts``: a contradiction reconciliation met between statements about one
@@ -25,9 +27,11 @@ from __future__ import annotations
 
 from sqlalchemy import (
     TIMESTAMP,
+    BigInteger,
     CheckConstraint,
     Column,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     PrimaryKeyConstraint,
@@ -41,7 +45,8 @@ from epistrel.core.tables.base import metadata, ulid_type
 
 NOW = text("transaction_timestamp()")
 ACTIVE_STATUSES = ("queued", "extracting", "reconciling", "paused_for_conflicts")
-"""A backfill in one of these statuses is running (the story is paused)."""
+"""A backfill in one of these statuses has not ended (a ``profile_edit`` row ``queued`` and not
+yet claimed has not paused its story, #229)."""
 
 story_backfills = Table(
     "story_backfills",
@@ -66,6 +71,9 @@ story_backfills = Table(
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
     Column("started_at", TIMESTAMP(timezone=True), nullable=True),
     Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("origin", Text, nullable=False, server_default=text("'single_story'")),
+    Column("seq", BigInteger, Identity(always=False), nullable=False),
+    CheckConstraint("origin IN ('single_story', 'profile_edit')", name="origin"),
     CheckConstraint(
         "status IN ('queued', 'extracting', 'reconciling', 'paused_for_conflicts', 'completed', "
         "'cancelled', 'failed')",
@@ -73,6 +81,7 @@ story_backfills = Table(
     ),
     CheckConstraint("kind IN ('upgrade', 'gap_fill', 'resummarize')", name="kind"),
     Index("ix_story_backfills_story", "story_id", "created_at"),
+    Index("ix_story_backfills_queue", "status", "seq"),
     Index(
         "uq_story_backfills_running",
         "story_id",

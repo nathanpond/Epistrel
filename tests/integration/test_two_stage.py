@@ -1,9 +1,9 @@
 """C-18's M3 part (docs/04: FR-PROF-16) and the detailed tests of #109's two-stage flow, impact
 preview and effective-configuration read.
 
-C-16's M3 slices of the same story (``test_c_16__two_stage``) and its M4 interim slice
-(``test_c_16__upgrade_unavailable``) are in ``tests/integration/test_engine_profiles.py``, beside
-#106's ``test_c_16__crud``: traceability counts a test ID per milestone in one file.
+C-16's M3 slices of the same story (``test_c_16__two_stage``) are in
+``tests/integration/test_engine_profiles.py``, beside #106's ``test_c_16__crud``: traceability
+counts a test ID per milestone in one file.
 
 The tests that change the deployment's default or the Lite preset run on a scratch database of
 their own.
@@ -39,14 +39,15 @@ from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
 from tests.profile_support import (
+    BACKFILL_WARNINGS,
     LITE_CAPABILITIES,
+    NO_BACKFILL,
     POLISH,
     PROFILES,
     QUALITY_STATUSES,
     REDERIVATION,
     SETTINGS,
     STATUS_COMPONENT,
-    UNAVAILABLE_WARNINGS,
     UNCERTIFIED,
     configuration_rows,
     merged,
@@ -467,7 +468,7 @@ async def test_reports_list_at_most_the_cap(
             listed = [e["story_id"] for e in held["impact"]["affected_stories"]]
             assert listed == sorted([lived, *others])[:2]
             assert held["impact"]["affected_count"] == 4
-            assert "upgrade_unavailable" in held["impact"]["warnings"]
+            assert "backfill_needed" in held["impact"]["warnings"]
             await ok(
                 await client.put(
                     f"{PROFILES}/{profile}",
@@ -503,15 +504,15 @@ async def test_reports_list_at_most_the_cap(
 
 
 async def test_only_a_committed_active_turn_is_history(scratch: Space) -> None:
-    """A story has history, for M3's interim rule, when it has at least one committed, active
+    """A story has history, for its upgrade's backfill, when it has at least one committed, active
     turn. Four stories follow a profile with the polish pass off: one has played a turn; one's
     only turn failed (503 ``model_unavailable``: its operation is ``failed``); one played a turn
     and truncated it away (its operation is still ``committed``, but ``discarded``); one never
-    played. Turning the polish pass on, marked data-producing, lists only the first as
-    ``upgrade_unavailable`` with its re-derivation needed. The other three gain the polish pass
-    with nothing to re-derive, in the edit's report and in a preview of each alone. Confirmed,
-    the first keeps version 1 (pinned) while the other three run on version 2, unpinned, with
-    the polish pass."""
+    played. Turning the polish pass on, marked data-producing, lists only the first with its
+    re-derivation needed (#229: queued under ``upgrade_mode: backfill``). The other three gain the
+    polish pass with nothing to re-derive, in the edit's report and in a preview of each alone.
+    Confirmed, the first keeps version 1 (pinned until its backfill completes) while the other
+    three run on version 2, unpinned, with the polish pass."""
     off = merged(SETTINGS, nest(POLISH, False))
     edit = {"name": "Brisk Lite", "settings": merged(SETTINGS, nest(POLISH, True))}
     async with respond_client(scratch.settings, scratch.db) as (client, lib):
@@ -562,19 +563,19 @@ async def test_only_a_committed_active_turn_is_history(scratch: Space) -> None:
             held = await ok(
                 await client.put(f"{PROFILES}/{profile}", json=edit, headers=headers(A))
             )
-            assert (held["applied"], held["impact"]["warnings"]) == (False, UNAVAILABLE_WARNINGS)
+            assert (held["applied"], held["impact"]["warnings"]) == (False, BACKFILL_WARNINGS)
             entries = {e["story_id"]: e for e in held["impact"]["affected_stories"]}
             assert list(entries) == sorted([lived, *without])
-            assert entries[lived]["upgrade_unavailable"] is True
+            assert (entries[lived]["upgrade_unavailable"], entries[lived]["upgrade_mode"]) == (
+                False,
+                "backfill",
+            )
             assert entries[lived][REDERIVATION]["needed"] is True
             shown = await ok(await _preview(client, lived, polish))
-            assert shown["affected_stories"][0]["upgrade_unavailable"] is True
+            assert shown["affected_stories"][0][REDERIVATION]["needed"] is True
             for story in without:
                 entry = entries[story]
-                assert (entry["upgrade_unavailable"], entry[REDERIVATION]) == (
-                    False,
-                    {"needed": False, "estimate": None},
-                )
+                assert (entry["upgrade_unavailable"], entry[REDERIVATION]) == (False, NO_BACKFILL)
                 assert entry["capabilities_after"] == LITE_CAPABILITIES
                 alone = await ok(await _preview(client, story, polish))
                 assert alone["warnings"] == ["capabilities_gained"]
@@ -607,9 +608,9 @@ async def test_history_beyond_the_listing_is_judged_and_kept(
     report lists. With the listing capped at two, three stories follow a profile with the polish
     pass off, and only the one whose id sorts last, beyond the cap, has played a turn. Turning
     the polish pass on, marked data-producing, is held: the report lists the other two, each
-    gaining the polish pass with nothing to re-derive, counts all three, and still warns that an
-    upgrade is unavailable. Confirmed, the two listed stories run on version 2 and the unlisted
-    one keeps version 1 (pinned)."""
+    gaining the polish pass with nothing to re-derive, counts all three, and still warns that a
+    backfill is needed. Confirmed, the two listed stories run on version 2 and the unlisted one
+    keeps version 1 (pinned until its queued backfill completes, #229)."""
     monkeypatch.setattr(impact, "AFFECTED_MAX", 2)
     off = merged(SETTINGS, nest(POLISH, False))
     edit = {"name": "Brisk Lite", "settings": merged(SETTINGS, nest(POLISH, True))}
@@ -631,13 +632,13 @@ async def test_history_beyond_the_listing_is_judged_and_kept(
             assert held["applied"] is False
             report = held["impact"]
             assert [e["story_id"] for e in report["affected_stories"]] == [first, second]
-            assert (report["affected_count"], report["warnings"]) == (3, UNAVAILABLE_WARNINGS)
+            assert (report["affected_count"], report["warnings"]) == (3, BACKFILL_WARNINGS)
             for entry in report["affected_stories"]:
                 assert (entry["capabilities_gained"], entry["upgrade_unavailable"]) == (
                     ["polish"],
                     False,
                 )
-                assert entry[REDERIVATION] == {"needed": False, "estimate": None}
+                assert entry[REDERIVATION] == NO_BACKFILL
             confirmed = await client.put(
                 f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=headers(A)
             )
@@ -663,11 +664,11 @@ async def test_archived_followers_are_listed_judged_and_kept(scratch: Space) -> 
     data-producing capability, and nothing re-derived, once it is unarchived. Two stories follow
     a profile with the polish pass off and are archived: one after playing a turn, one that never
     played. Turning the polish pass on, marked data-producing, is held, and the report lists both:
-    the first ``upgrade_unavailable``, its re-derivation needed and its fingerprint kept, the
-    second gaining the polish pass with nothing to re-derive. Confirmed, the first keeps version 1
-    (pinned) and the second runs on version 2, as their effective configurations state while
-    archived. Unarchived, the first still runs on version 1: its next turn has no polish pass and
-    the fingerprint it kept."""
+    the first with its re-derivation needed (#229: its backfill queued, never claimed while it is
+    archived), the second gaining the polish pass with nothing to re-derive. Confirmed, the first
+    keeps version 1 (pinned) and the second runs on version 2, as their effective configurations
+    state while archived. Unarchived, the first still runs on version 1 until its backfill runs:
+    its next turn has no polish pass."""
     off = merged(SETTINGS, nest(POLISH, False))
     edit = {"name": "Brisk Lite", "settings": merged(SETTINGS, nest(POLISH, True))}
     async with respond_client(scratch.settings, scratch.db) as (client, _):
@@ -691,17 +692,17 @@ async def test_archived_followers_are_listed_judged_and_kept(scratch: Space) -> 
             )
             assert held["applied"] is False
             report = held["impact"]
-            assert (report["affected_count"], report["warnings"]) == (2, UNAVAILABLE_WARNINGS)
+            assert (report["affected_count"], report["warnings"]) == (2, BACKFILL_WARNINGS)
             entries = {e["story_id"]: e for e in report["affected_stories"]}
             assert list(entries) == sorted([lived, idle])
             kept, moved = entries[lived], entries[idle]
-            assert (kept["upgrade_unavailable"], kept[REDERIVATION]["needed"]) == (True, True)
-            assert kept["fingerprint_after"] == kept["fingerprint_before"]
+            assert (kept["upgrade_unavailable"], kept[REDERIVATION]["needed"]) == (False, True)
+            assert kept["fingerprint_after"] != kept["fingerprint_before"]
             assert (moved["capabilities_gained"], moved["upgrade_unavailable"]) == (
                 ["polish"],
                 False,
             )
-            assert moved[REDERIVATION] == {"needed": False, "estimate": None}
+            assert moved[REDERIVATION] == NO_BACKFILL
             confirmed = await client.put(
                 f"{PROFILES}/{profile}", json={**edit, "ignore_warnings": True}, headers=headers(A)
             )
@@ -723,7 +724,7 @@ async def test_archived_followers_are_listed_judged_and_kept(scratch: Space) -> 
         assert (await _effective(client, lived))["profile"]["version"] == 1
         turn = await _play(client, lived, actor)
         assert "polish" not in turn["capabilities"]
-        assert turn["fingerprint"] == kept["fingerprint_after"]
+        assert turn["fingerprint"] == kept["fingerprint_before"]
 
 
 async def test_a_profile_edit_reports_the_guarantees_it_loses(scratch: Space) -> None:

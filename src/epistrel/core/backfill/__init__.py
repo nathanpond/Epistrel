@@ -150,6 +150,17 @@ class Preview(BaseModel):
     capabilities: list[str]
 
 
+class Queued(BaseModel):
+    """#229: a profile edit's queued backfill of one story: the story, the backfill, its job, its
+    status and its 1-based place in the deployment's queue."""
+
+    story_id: str
+    id: str
+    job_id: str
+    status: str
+    queue_position: int | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Started:
     """A started backfill: its id, job and status (REST 202), with the story's revisions."""
@@ -244,10 +255,11 @@ async def get(db: AsyncEngine, story_id: str) -> Backfill:
         return await view(conn, row)
 
 
-async def refuse_running(conn: AsyncConnection, story_id: str) -> None:
-    """409 ``backfill_in_progress`` while a backfill of the story runs."""
+async def refuse_running(conn: AsyncConnection, story_id: str, *, queued_ok: bool = False) -> None:
+    """409 ``backfill_in_progress`` while a backfill of the story runs (``queued_ok``: not for a
+    profile edit's backfill still queued, which the caller's change supersedes, #229)."""
     found = await running(conn, story_id)
-    if found is not None:
+    if found is not None and not (queued_ok and await waiting(conn, found)):
         raise BackfillInProgress(
             "a backfill of the story is running",
             {"backfill_id": str(found.id), "status": str(found.status)},
@@ -312,7 +324,9 @@ async def start(
     start_job: StartJob,
 ) -> Started:
     """Start a backfill in ``conn``'s transaction (see the module docstring); the caller holds
-    the story's row lock."""
+    the story's row lock. A queued profile-edit backfill of the story not yet claimed is
+    superseded (#229)."""
+    await supersede_queued(conn, story_id)
     await refuse_running(conn, story_id)
     backfill_id = new_ulid()
     low, high = span
@@ -331,19 +345,7 @@ async def start(
             requested_by=principal,
         )
     )
-    await conn.execute(
-        insert(backfill_chunks),
-        [
-            {
-                "backfill_id": backfill_id,
-                "story_id": story_id,
-                "chunk_index": index,
-                "from_turn": first,
-                "to_turn": last,
-            }
-            for index, (first, last) in enumerate(chunks)
-        ],
-    )
+    await _chunks(conn, backfill_id, story_id, span)
     job_id = await start_job(conn, backfill_id, story_id)
     await conn.execute(
         update(story_backfills).where(story_backfills.c.id == backfill_id).values(job_id=job_id)
@@ -571,10 +573,226 @@ async def complete(
     log.info("backfill completed", backfill_id=str(row.id))
 
 
+# -- the profile-edit queue (#229) ---------------------------------------------------------------
+
+SINGLE_STORY = "single_story"
+PROFILE_EDIT = "profile_edit"
+QUEUE_LOCK = "backfill_queue"
+"""The advisory lock a claim takes (``pg_advisory_xact_lock(hashtext(...))``)."""
+
+ClaimOutcome = Literal["claimed", "wait", "ended"]
+
+
+async def _chunks(
+    conn: AsyncConnection, backfill_id: str, story_id: str, span: tuple[int, int]
+) -> int:
+    chunks = chunk_ranges(*span)
+    await conn.execute(
+        insert(backfill_chunks),
+        [
+            {
+                "backfill_id": backfill_id,
+                "story_id": story_id,
+                "chunk_index": index,
+                "from_turn": first,
+                "to_turn": last,
+            }
+            for index, (first, last) in enumerate(chunks)
+        ],
+    )
+    return len(chunks)
+
+
+async def enqueue(
+    conn: AsyncConnection,
+    story_id: str,
+    *,
+    capabilities: Sequence[str],
+    span: tuple[int, int],
+    source: Mapping[str, Any],
+    target: Mapping[str, Any],
+    principal: str,
+    start_job: StartJob,
+) -> Started:
+    """Queue a profile edit's backfill of one story (#229) in ``conn``'s transaction: the
+    ``story_backfills`` row (``queued``, ``origin = profile_edit``) and its job, the story **not**
+    paused (the handler pauses it when it claims the row, ``claim``). A queued row of the story
+    not yet claimed is superseded (``supersede_queued``)."""
+    await supersede_queued(conn, story_id)
+    await refuse_running(conn, story_id)
+    backfill_id = new_ulid()
+    low, high = span
+    await conn.execute(
+        insert(story_backfills).values(
+            id=backfill_id,
+            story_id=story_id,
+            kind="upgrade",
+            origin=PROFILE_EDIT,
+            source=dict(source),
+            target=dict(target),
+            capabilities=list(capabilities),
+            range_from_turn=low,
+            range_to_turn=high,
+            chunks_total=0,
+            requested_by=principal,
+        )
+    )
+    total = await _chunks(conn, backfill_id, story_id, span)
+    job_id = await start_job(conn, backfill_id, story_id)
+    await conn.execute(
+        update(story_backfills)
+        .where(story_backfills.c.id == backfill_id)
+        .values(job_id=job_id, chunks_total=total)
+    )
+    log.info("backfill queued", backfill_id=backfill_id, chunks=total)
+    return Started(backfill_id, job_id, "queued")
+
+
+async def waiting(conn: AsyncConnection, row: Any) -> bool:
+    """Whether ``row`` is a profile edit's backfill not yet claimed (its story not paused by
+    it)."""
+    if str(row.origin) != PROFILE_EDIT or str(row.status) != "queued":
+        return False
+    paused_by = await conn.scalar(select(stories.c.paused_by).where(stories.c.id == row.story_id))
+    return bool(paused_by != row.id)
+
+
+async def supersede_queued(conn: AsyncConnection, story_id: str) -> bool:
+    """Cancel the story's queued profile-edit backfill not yet claimed (a later change of the
+    story's configuration supersedes it, #229); whether there was one. The story keeps its
+    pin."""
+    found = await running(conn, story_id)
+    if found is None or not await waiting(conn, found):
+        return False
+    await conn.execute(delete(backfill_chunks).where(backfill_chunks.c.backfill_id == found.id))
+    await conn.execute(
+        update(story_backfills)
+        .where(story_backfills.c.id == found.id)
+        .values(status="cancelled", error="superseded", finished_at=clock.now())
+    )
+    log.info("queued backfill superseded", backfill_id=str(found.id))
+    return True
+
+
+def _unclaimed_before(seq: int) -> Any:
+    t = story_backfills.c
+    return (
+        t.origin == PROFILE_EDIT,
+        t.status == "queued",
+        t.seq < seq,
+        stories.c.paused_by.is_distinct_from(t.id),
+    )
+
+
+def _joined() -> Any:
+    return story_backfills.join(stories, stories.c.id == story_backfills.c.story_id)
+
+
+async def queue_position(conn: AsyncConnection, row: Any) -> int | None:
+    """``row``'s 1-based place among the queued profile-edit backfills not yet claimed."""
+    if not await waiting(conn, row):
+        return None
+    ahead = await conn.scalar(
+        select(func.count()).select_from(_joined()).where(*_unclaimed_before(int(row.seq)))
+    )
+    return int(ahead or 0) + 1
+
+
+async def _pause(conn: AsyncConnection, row: Any) -> None:
+    """Pause the story for its claimed backfill (``start``'s pause)."""
+    story_id = str(row.story_id)
+    principal = str(row.requested_by)
+    operation_id = await control.record_control_operation(conn, actor=principal, story_id=story_id)
+    await conn.execute(
+        update(stories)
+        .where(stories.c.id == story_id)
+        .values(status=StoryStatus.PAUSED.value, paused_by=row.id)
+    )
+    from epistrel.core.ratings.change import control_event
+
+    await control_event(
+        conn,
+        story_id=story_id,
+        operation_id=operation_id,
+        type_="story_paused",
+        payload=StoryPausedEvent(job_id=str(row.job_id or row.id), cause=pause.BACKFILL),
+        actor=principal,
+    )
+
+
+Replan = Callable[[AsyncConnection, Any], Awaitable[tuple[list[str], tuple[int, int] | None]]]
+"""``replan(conn, row) -> (capabilities, span)``: the gained capabilities and their range now
+(``None``: nothing left to derive)."""
+
+
+async def claim(
+    conn: AsyncConnection,
+    backfill_id: str,
+    *,
+    concurrency: int,
+    replan: Replan,
+    apply_target: ApplyTarget,
+) -> ClaimOutcome:
+    """Claim a queued profile-edit backfill (#229) in ``conn``'s transaction, under the queue's
+    advisory lock: ``wait`` while ``concurrency`` backfills already run, an earlier queued one
+    is unclaimed or the story is paused otherwise; else the range re-planned (``replan``: turns
+    committed since, or a newer target) and the story paused (``claimed``), or, with nothing
+    left to derive, the held configuration applied (the pin cleared) and the row ``completed``
+    (``ended``)."""
+    await conn.execute(select(func.pg_advisory_xact_lock(func.hashtext(QUEUE_LOCK))))
+    row = await _lock(conn, backfill_id)
+    if row is None or str(row.status) in TERMINAL:
+        return "ended"
+    if not await waiting(conn, row):
+        return "claimed"
+    t = story_backfills.c
+    earlier = await conn.scalar(
+        select(func.count()).select_from(_joined()).where(*_unclaimed_before(int(row.seq)))
+    )
+    running_now = await conn.scalar(
+        select(func.count())
+        .select_from(_joined())
+        .where(t.status.in_(ACTIVE_STATUSES), stories.c.paused_by == t.id)
+    )
+    status = await conn.scalar(
+        select(stories.c.status).where(stories.c.id == row.story_id).with_for_update()
+    )
+    if earlier or int(running_now or 0) >= concurrency or status != StoryStatus.ACTIVE.value:
+        return "wait"
+    capabilities, span = await replan(conn, row)
+    await conn.execute(delete(backfill_chunks).where(backfill_chunks.c.backfill_id == row.id))
+    if span is None:
+        with pause.holding(str(row.id)):
+            await apply_target(conn, str(row.story_id), dict(row.target), str(row.requested_by))
+        await conn.execute(
+            update(story_backfills)
+            .where(story_backfills.c.id == row.id)
+            .values(status="completed", finished_at=clock.now(), report={"no_op": True})
+        )
+        log.info("queued backfill ended: nothing to derive", backfill_id=str(row.id))
+        return "ended"
+    total = await _chunks(conn, str(row.id), str(row.story_id), span)
+    await conn.execute(
+        update(story_backfills)
+        .where(story_backfills.c.id == row.id)
+        .values(
+            capabilities=list(capabilities),
+            range_from_turn=span[0],
+            range_to_turn=span[1],
+            chunks_total=total,
+        )
+    )
+    await _pause(conn, row)
+    log.info("queued backfill claimed", backfill_id=str(row.id), chunks=total)
+    return "claimed"
+
+
 __all__ = [
     "BACKFILL_KIND",
     "CHUNK_TURNS",
     "PARALLELISM",
+    "PROFILE_EDIT",
+    "SINGLE_STORY",
     "TERMINAL",
     "Backfill",
     "BackfillCancelled",
@@ -583,18 +801,24 @@ __all__ = [
     "GapFill",
     "Preview",
     "Progress",
+    "Queued",
     "Started",
     "cancel",
     "chunk_ranges",
+    "claim",
     "complete",
     "discard",
+    "enqueue",
     "estimate",
     "gap_fill",
     "get",
     "latest_row",
+    "queue_position",
     "refuse_running",
     "running",
     "span_of",
     "start",
+    "supersede_queued",
     "view",
+    "waiting",
 ]

@@ -90,7 +90,7 @@ GUARANTEES_DESCRIPTION = (
 )
 TWO_STAGE = (
     " Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a "
-    "change it warns of (a capability gained or lost, an upgrade unavailable) is applied only "
+    "change it warns of (a capability gained or lost, a backfill needed) is applied only "
     "with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: "
     "false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may "
     "reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). "
@@ -98,10 +98,13 @@ TWO_STAGE = (
     "story-scoped configuration change: it moves the story's `config_revision` and is listed in "
     "`GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn "
     "already running finishes under the configuration it started with. A confirmed change "
-    "whose upgrade is unavailable (`upgrade_unavailable`: it adds data-producing capability to "
-    "a story with history, and M3 has no backfill) keeps the story's configuration: `applied: "
-    "true`, `result` is the configuration as it was, nothing is written and `config_revision` "
-    "does not move. An archived story is 409 `story_archived` when the call would change "
+    "that adds data-producing capability to a story with history upgrades it by the body's "
+    "`upgrade_mode` (`upgradeMode`; FR-PROF-8, #229): `backfill` (the default) starts its "
+    "backfill (202, `applied: false`, the change applied when it completes), and "
+    "`forward_only` applies it now (the earlier turns keep a coverage gap that retrieval and "
+    "verification mark until a gap fill). Either supersedes a profile edit's backfill of the "
+    "story still queued; `upgrade_unavailable` is always `false`. "
+    "An archived story is 409 `story_archived` when the call would change "
     "something; a call that changes nothing (the story's own profile, a patch that changes no "
     "setting) answers 200 and writes nothing."
 )

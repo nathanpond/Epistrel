@@ -11356,3 +11356,34 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - `check-membership` flagged raw `.c.membership` filters in the new modules (`support_check`, `directed`, `timing`, `canon.merged_with`); they now use `active_only`/`active_operation`. The fix also scopes the support check's fact lookups to the story.
   - C-01 requires every `StorySettings` field to be named in `PATCH /stories/{id}/settings`' description; `ambiguous_retcon_timing` is now documented there.
   **Issue:** #239, #240, #241
+
+### #229 — upgrade modes and the backfill queue, 2026-11-02
+
+- **Decision:** `upgrade_mode` (`backfill` | `forward_only`, alias `upgradeMode`) is a `TwoStageRequest` field, so every two-stage profile mutation takes it. The narrowed `Literal["backfill"]` fields #228 put on `ProfileAssignment` and `ProfileOverridesPatch` are removed. A story needs a backfill only where a gained capability has a coverage gap (`impact.gap_span` over `coverage.gaps`), so a story with history whose gained capabilities already cover its turns follows at once.
+  **Issue:** #229
+- **Decision (Rule 4 judged not to apply; new columns, not a table):** migration 0121 adds `story_backfills.origin` (`single_story` | `profile_edit`) and `seq` (identity), as the issue's discretion planned. A queued profile-edit row is "claimed" when its story's `paused_by` names it; there is no new status.
+  **Issue:** #229
+- **Decision:** the claim (`core.backfill.claim`, run by the handler under `pg_advisory_xact_lock(hashtext('backfill_queue'))`):
+  - It waits while `backfill_concurrency` backfills run (any row whose story is paused by it, single-story ones included), while an earlier profile-edit row is unclaimed, or while the story is not `active` (archived or paused otherwise).
+  - It re-plans at claim, so a later turn, or a newer version through the target `{profile_id, pin: null}`, is included. With nothing left to derive, the target is applied and the row completes with `report.no_op`.
+  - Single-story triggers are not gated by the queue: they pause at request time as in #228, but they count toward the running total.
+  - `backfill_concurrency` is a process `Settings` field (1..8, default 1), not a `DeploymentSettings` field as the discretion said. The handler is configured at worker start, and a waiting job requeues after `worker_poll_interval`.
+  **Issue:** #229
+- **Decision:** collisions.
+  - A story's own confirmed change (PUT/PATCH, `forward_only` or a backfill start) supersedes its profile-edit row while that row is still queued (status `cancelled`, `error = superseded`, pin kept).
+  - A running backfill blocks a profile edit's queueing for that story: the story stays pinned and appears in `upgrade-pinned` later. The 409 is reserved for the story's own routes.
+  **Issue:** #229
+- **Decision:** a profile edit that adds data-producing capability now calls `coverage.extend_live` for every story following the new version. Before this, followers recorded no `live` interval for capabilities gained by an edit, which was a #228 gap. Under `forward_only` this is what opens the gap's end.
+  **Issue:** #229
+- **Decision:** gap marks (`core.retrieval.coverage_marks`).
+  - Retrieval reads `pipeline`, `consolidation`, `partitions` and `nested_beliefs`; `episodic` is not a coverage capability.
+  - Verification reads `pipeline` and `verification`.
+  - `gap_affected` is attached to every verdict of a turn when the story has a verification-reader gap at or before the turn. It does not narrow to the verdict's own evidence search: every claim's evidence reads canon.
+  - `turn_report.retrieval` is a new section (`coverage_gaps` only). The respond response carries top-level `coverage_gaps` when any applies.
+  **Issue:** #229
+- **Decision:** `POST /engine-profiles/{id}/upgrade-pinned` (`Engine.upgrade_pinned_stories`) answers `ProfileEditBody` (`backfills` added). The confirmed multi-story `PUT /engine-profiles/{id}` answers `backfills: [{story_id, id, job_id, status, queue_position}]`.
+  **Issue:** #229
+- **Decision (Ad-hoc, interim retired):** `test_c_16__m4_interim` and `UNAVAILABLE_WARNINGS` are deleted. The M3/M5/M6 parts that asserted `upgrade_unavailable` now assert the M7 outcome under their own part IDs: `backfill` mode keeps the story pinned with a queued row. `check-traceability --write` changed nothing while `current_milestone` is M6, and marking §15's `C-16 (M4, interim until M7)` entry is still #306. `epistrel.testing.profiles.data_producing` stays, because `test_two_stage`, `test_effective_config` and `test_profile_facts` still use it.
+  **Issue:** #229, #306
+- **Decision (process):** the plan comment was posted after the code, a deviation from the skill. The fail-first run against the pre-change code was not done: the routes and fields the test asserts did not exist before.
+  **Issue:** #229

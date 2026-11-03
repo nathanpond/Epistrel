@@ -40,11 +40,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import backfill as core_backfill
 from epistrel.core import pause
-from epistrel.core.backfill import reconcile
+from epistrel.core.backfill import coverage, reconcile
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.membership import flip_membership
-from epistrel.core.profiles import effective
+from epistrel.core.profiles import effective, schema
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.propositions.model import Proposition
 from epistrel.core.propositions.registry import load as load_registry
@@ -84,6 +84,17 @@ def bind(models: ModelAccessLayer | None) -> None:
 
 def bound() -> ModelAccessLayer | None:
     return _models[0]
+
+
+_gate: dict[str, float] = {"concurrency": 1, "wait_s": 5.0}
+
+
+def configure(*, concurrency: int, wait_s: float) -> None:
+    """#229: at most ``concurrency`` backfills run at once across the deployment
+    (``backfill_concurrency``); a queued one waits ``wait_s`` (``worker_poll_interval``) before
+    it tries to claim again."""
+    _gate["concurrency"] = concurrency
+    _gate["wait_s"] = wait_s
 
 
 class BackfillPayload(BaseModel):
@@ -438,6 +449,40 @@ async def _complete(ctx: JobContext, row: Any) -> None:
         )
 
 
+async def _replan(conn: AsyncConnection, row: Any) -> tuple[list[str], tuple[int, int] | None]:
+    """#229: a queued backfill's capabilities and range at claim: what the target (its latest
+    version) adds over the configuration the story runs on now, over the turns that lack it."""
+    story_id = str(row.story_id)
+    current = await effective.effective_configuration(conn, story_id, validate=False)
+    target = await _target_settings(conn, row)
+    levels = coverage.capabilities_of(target)
+    gained = {
+        m: levels.get(m) for m in schema.data_increases(current.settings, target) if m in levels
+    }
+    missing = await coverage.gaps_of(conn, story_id, gained)
+    return sorted(missing), core_backfill.span_of(missing)
+
+
+async def _claim(ctx: JobContext, row: Any) -> tuple[dict[str, str], float | None] | None:
+    """Claim a queued profile-edit backfill (``core.backfill.claim``): ``None`` once claimed
+    (the run goes on), else the step's result and when to try again."""
+    from epistrel.core.profiles.story import apply_held
+
+    async with ctx.db.begin() as conn:
+        outcome = await core_backfill.claim(
+            conn,
+            str(row.id),
+            concurrency=int(_gate["concurrency"]),
+            replan=_replan,
+            apply_target=apply_held,
+        )
+    if outcome == "claimed":
+        return None
+    if outcome == "wait":
+        return {"step": "wait"}, float(_gate["wait_s"])
+    return {"step": "ended"}, None
+
+
 async def _run(ctx: JobContext) -> JobOutput:
     payload = cast(BackfillPayload, ctx.payload)
     result: dict[str, Any] = {"backfill_id": payload.backfill_id}
@@ -450,6 +495,10 @@ async def _run(ctx: JobContext) -> JobOutput:
     if row is None or row.status in core_backfill.TERMINAL:
         return JobOutput(result={**result, "skipped": "ended"})
     try:
+        if row.status == "queued" and str(row.origin) == core_backfill.PROFILE_EDIT:
+            claimed = await _claim(ctx, row)
+            if claimed is not None:
+                return JobOutput(result={**result, **claimed[0]}, requeue_in=claimed[1])
         if row.status == "queued":
             waiting = await _begin(ctx, row)
             return waiting or JobOutput(result={**result, "step": "begin"}, requeue_in=0)
@@ -515,4 +564,4 @@ BACKFILL_HANDLER = JobHandler(
     records_operation=False,
 )
 
-__all__ = ["BACKFILL_HANDLER", "BackfillPayload", "bind", "bound", "start_job"]
+__all__ = ["BACKFILL_HANDLER", "BackfillPayload", "bind", "bound", "configure", "start_job"]

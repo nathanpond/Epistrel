@@ -41,9 +41,10 @@ story's configuration is read-only (409 ``story_archived``), as its settings are
 call would change something: a call that changes nothing (the story's own profile, a patch that
 changes no setting) answers 200 and writes nothing.
 
-**M3's interim rule.** A change that adds data-producing capability to a story with history is
-``upgrade_unavailable`` (``impact``): confirmed, the story keeps its previous configuration, and
-nothing is written for it.
+**Upgrades with history (#228, #229).** A confirmed change that adds data-producing capability
+to a story with history starts its backfill (``upgrade_mode: backfill``, the default; the change
+applies on completion) or applies now with a coverage gap (``forward_only``). Either supersedes a
+profile edit's backfill of the story still queued.
 
 **Locks.** A write reads the deployment row ``FOR SHARE`` (the defaults cannot change under it),
 then holds the profiles it validates against ``FOR SHARE`` (a profile edit, which holds its
@@ -124,13 +125,6 @@ class ProfileAssignment(TwoStageRequest):
         "does not have is 422 `validation_error`.",
     )
 
-    upgrade_mode: Literal["backfill"] | None = Field(
-        default=None,
-        description="How a confirmed change that adds data-producing capability reaches a "
-        "story with history (#228): `backfill` (the default) re-derives the history's "
-        "structured data first, pausing the story, and applies the change when it completes.",
-    )
-
     @property
     def pin(self) -> int | None:
         """The version the story is pinned to (``None``: it follows the latest)."""
@@ -155,10 +149,6 @@ class ProfileOverridesPatch(TwoStageRequest):
         le=2**31 - 1,
         description="The overrides' revision the patch was made against (0: none yet); another "
         "is 409 `revision_conflict` and nothing is written.",
-    )
-    upgrade_mode: Literal["backfill"] | None = Field(
-        default=None,
-        description="As `PUT /stories/{id}/engine-profile` takes it (#228).",
     )
 
 
@@ -222,29 +212,28 @@ async def _report(
     facts: RuntimeFacts,
     safety: SafetyFacts | None = None,
     *,
-    backfills: bool = False,
+    mode: impact.UpgradeMode | None = None,
 ) -> tuple[ImpactReport, bool, impact.Delta]:
     """The one-story report of the change, whether its upgrade needs the story's history
-    re-derived, and the change; ``safety``: what its ``budget_warnings`` count (#456). With
-    ``backfills`` (#228: the two story routes, which start a backfill) the entry says
-    ``backfill.needed`` and not ``upgrade_unavailable``."""
+    re-derived (a gained capability has a coverage gap, #229), and the change; ``safety``: what
+    its ``budget_warnings`` count (#456); ``mode``: the request's ``upgrade_mode``."""
     change = impact.delta(before, after, facts)
     history = await impact.with_history(conn, [story_id]) if change.increases else set()
     sizes = await impact.transcripts(conn, history)
+    levels = coverage.capabilities_of(after.settings)
+    span = await impact.gap_span(conn, story_id, change, levels) if history else None
     entry = impact.affected(
-        story_id, change, history=story_id in history, transcript=sizes.get(story_id, (0, 0))
+        story_id,
+        change,
+        history=span is not None,
+        transcript=sizes.get(story_id, (0, 0)),
+        mode=mode,
+        span=span,
+        queue_position=None if span is None else await impact.queued_count(conn) + 1,
     )
-    needed = entry.upgrade_unavailable
+    needed = entry.backfill.needed
     warned = safety_warnings(after.settings, safety)
     report = impact.single_report(entry, change, budget_warnings=warned)
-    if backfills and needed:
-        held = entry.model_copy(update={"upgrade_unavailable": False})
-        report = report.model_copy(
-            update={
-                "affected_stories": [held],
-                "warnings": [w for w in report.warnings if w != "upgrade_unavailable"],
-            }
-        )
     return report, needed, change
 
 
@@ -268,6 +257,7 @@ async def _staged(
     hold: Mapping[str, Any] | None = None,
     start_job: core_backfill.StartJob | None = None,
     principal: str | None = None,
+    upgrade_mode: impact.UpgradeMode | None = None,
 ) -> TwoStageResult[EffectiveConfig]:
     """The write through #109's two stages (``impact.two_stage``, which logs the report): the
     one-story report of ``change`` (the configuration now, and the one the story would run
@@ -285,7 +275,7 @@ async def _staged(
     async def report() -> ImpactReport:
         nonlocal unavailable, delta
         found, unavailable, delta = await _report(
-            conn, story_id, before, after, facts, safety, backfills=backfills
+            conn, story_id, before, after, facts, safety, mode=upgrade_mode
         )
         return found
 
@@ -293,7 +283,11 @@ async def _staged(
         nonlocal started
         if write is None:
             return effective.view(kept, facts)
-        if not unavailable:
+        # #229: the story's own change supersedes a profile edit's backfill still queued.
+        await core_backfill.supersede_queued(conn, story_id)
+        if not unavailable or upgrade_mode == "forward_only":
+            # #229: forward_only applies at the next turn boundary; the earlier turns keep a
+            # coverage gap (``write`` extends the live coverage from the next turn).
             return await write()
         if start_job is None or hold is None or principal is None or delta is None:
             return effective.view(kept, facts)
@@ -321,7 +315,7 @@ async def _staged(
         return effective.view(kept, facts)
 
     if backfills:
-        await core_backfill.refuse_running(conn, story_id)
+        await core_backfill.refuse_running(conn, story_id, queued_ok=True)
     outcome = await impact.two_stage(report, apply, ignore_warnings=ignore_warnings)
     if started is not None:
         outcome = dataclasses.replace(outcome, applied=False, result=None, backfill=started)
@@ -471,6 +465,7 @@ async def assign_profile(
                 (current.configuration(), current.configuration()),
                 facts=facts,
                 ignore_warnings=request.ignore_warnings,
+                upgrade_mode=request.upgrade_mode,
                 kept=current,
                 safety=safety,
             )
@@ -503,11 +498,12 @@ async def assign_profile(
             (current.configuration(), moved.configuration()),
             facts=facts,
             ignore_warnings=request.ignore_warnings,
+            upgrade_mode=request.upgrade_mode,
             kept=current,
             write=write,
             safety=safety,
             hold={"profile_id": target.profile_id, "pin": pin},
-            start_job=start_job if request.upgrade_mode in (None, "backfill") else None,
+            start_job=start_job if request.upgrade_mode != "forward_only" else None,
             principal=principal,
         )
 
@@ -579,6 +575,7 @@ async def set_overrides(
                 (before, before),
                 facts=facts,
                 ignore_warnings=request.ignore_warnings,
+                upgrade_mode=request.upgrade_mode,
                 kept=current,
                 safety=safety,
             )
@@ -595,11 +592,12 @@ async def set_overrides(
             (before, Configuration(current.profile_id, current.version, settings)),
             facts=facts,
             ignore_warnings=request.ignore_warnings,
+            upgrade_mode=request.upgrade_mode,
             kept=current,
             write=write,
             safety=safety,
             hold={"overrides": dict(wanted)},
-            start_job=start_job if request.upgrade_mode in (None, "backfill") else None,
+            start_job=start_job if request.upgrade_mode != "forward_only" else None,
             principal=principal,
         )
 

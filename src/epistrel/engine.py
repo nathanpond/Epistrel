@@ -488,6 +488,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "create_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     # Two-stage (#109): stored only once applied; a report alone releases its key.
     "update_profile": ResultCodec.of(TwoStageResult[profiles.ProfileWrite], revision_field=_CONFIG),
+    "upgrade_pinned_stories": ResultCodec.of(
+        TwoStageResult[profiles.ProfileWrite], revision_field=_CONFIG
+    ),
     "copy_profile": ResultCodec.of(profiles.ProfileWrite, status=201, revision_field=_CONFIG),
     "delete_profile": ResultCodec.of(profiles.DeletedProfile, revision_field=_CONFIG),
     # A story's profile and overrides (#113): story-scoped configuration writes, two-stage.
@@ -805,6 +808,10 @@ class Engine:
         importance_job.bind(self.models)
         consolidation_job.bind(self.models)
         backfill_job.bind(self.models)
+        backfill_job.configure(
+            concurrency=self.settings.backfill_concurrency,
+            wait_s=self.settings.worker_poll_interval,
+        )
         extraction_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
@@ -5959,9 +5966,10 @@ class Engine:
         following the profile, and a change it warns of applies only with
         ``request.ignore_warnings``; otherwise the result is the report (``applied`` false),
         nothing is written and the ``Idempotency-Key`` is released. A data-producing increase
-        cannot apply to a following story with history: a confirmed edit keeps that story on its
-        version. 404 for an unknown profile, 422 ``profile_deleted`` for a deleted one, and the
-        settings are refused as on creation, confirmed or not."""
+        queues each following story with history for its own backfill (#229, ``upgrade_mode``
+        ``backfill``: pinned to its version until its turn) or applies at its next turn with a
+        coverage gap (``forward_only``). 404 for an unknown profile, 422 ``profile_deleted``
+        for a deleted one, and the settings are refused as on creation, confirmed or not."""
         principal = self.require_principal(ctx)
 
         async def run(_: RequestContext) -> TwoStageResult[profiles.ProfileWrite]:
@@ -5973,11 +5981,42 @@ class Engine:
                 facts=await self._runtime_facts(),
                 purposes=self.purposes,
                 safety=await self._safety_facts(),
+                start_job=backfill_job.start_job,
             )
 
         return await self._keyed(
             ctx,
             "update_profile",
+            run,
+            material={"profile_id": profile_id, "body": _body(request)},
+            keep=TwoStageResult.kept,
+        )
+
+    async def upgrade_pinned_stories(
+        self, ctx: RequestContext, profile_id: str, request: profiles.UpgradePinned
+    ) -> TwoStageResult[profiles.ProfileWrite]:
+        """Bring every story pinned to an older version of the profile forward to its latest
+        version (FR-PROF-7,8; #229), in two stages: the report lists each pinned story; with
+        ``request.ignore_warnings`` (or a report without warnings) each pin is cleared, a
+        data-producing increase for a story with history queued as a backfill
+        (``upgrade_mode`` ``backfill``) or applied with a coverage gap (``forward_only``).
+        404 for an unknown profile."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> TwoStageResult[profiles.ProfileWrite]:
+            return await profiles.upgrade_pinned(
+                self.db,
+                profile_id,
+                request,
+                principal=principal,
+                facts=await self._runtime_facts(),
+                purposes=self.purposes,
+                start_job=backfill_job.start_job,
+            )
+
+        return await self._keyed(
+            ctx,
+            "upgrade_pinned_stories",
             run,
             material={"profile_id": profile_id, "body": _body(request)},
             keep=TwoStageResult.kept,

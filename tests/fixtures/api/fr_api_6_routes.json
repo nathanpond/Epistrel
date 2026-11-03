@@ -1019,6 +1019,11 @@
       "method": "POST",
       "path": "/stories/{story_id}/directives",
       "why": "FR-DIRECT-1: an author's directive (#226)"
+    },
+    {
+      "method": "POST",
+      "path": "/engine-profiles/{profile_id}/upgrade-pinned",
+      "why": "FR-PROF-7: bring pinned stories forward"
     }
   ],
   "outside": [

@@ -21,6 +21,7 @@ from epistrel.api.routes.history import (
 )
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
+from epistrel.core.retrieval.coverage_marks import CoverageGap
 from epistrel.orchestrator.lite.schemas import RespondRequest, RespondResult
 from epistrel.orchestrator.models.metrics import ModelCall
 
@@ -317,6 +318,10 @@ class RespondResponse(MutationResponse):
     clock: TurnClockBody | None = Field(default=None, exclude_if=lambda c: c is None)
     """The world clock before and after the turn (FR-CLOCK-13; #193): ``{before, after}``, each
     ``{offset, display}``; absent when the story runs the clock off."""
+    coverage_gaps: list[CoverageGap] = Field(default_factory=list, exclude_if=lambda g: not g)
+    """#229 (FR-PROF-8): the ``{capability, from_turn, to_turn}`` runs of earlier turns that a
+    capability the turn's retrieval or verification reads has no data for (an upgrade applied
+    ``forward_only``, or a backfill not yet run); absent when none."""
     notices: list[NoticeBody] = Field(default_factory=list, exclude_if=lambda n: not n)
     """#598 (FR-RESP-14): one ``implausible_knowledge`` notice per presupposition of the
     ``co_author`` player's narration the narrated character could not know (under
@@ -374,6 +379,7 @@ class RespondResponse(MutationResponse):
                 RequiredEffectBody(**r) for r in result.reconciliation_required
             ],
             notices=[NoticeBody(**n) for n in result.notices],
+            coverage_gaps=[CoverageGap(**g) for g in result.coverage_gaps],
             budget=(
                 None
                 if result.budget is None

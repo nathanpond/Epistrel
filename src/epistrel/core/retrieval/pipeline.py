@@ -151,8 +151,10 @@ from epistrel.core.resolution.types import (
     TimeExpression,
     TimeResolution,
 )
+from epistrel.core.retrieval import coverage_marks
 from epistrel.core.retrieval import rank as ranking
 from epistrel.core.retrieval.assemble import Context, ContextItem, Tier, assemble
+from epistrel.core.retrieval.coverage_marks import CoverageGap
 from epistrel.core.retrieval.filtered import _seal
 from epistrel.core.retrieval.lexical import (
     LexicalFilters,
@@ -418,6 +420,9 @@ class RetrievalResult:
     model_calls: int = 0
     embedding_model_version: str | None = None
     position: tuple[int, int] = (0, 0)
+    coverage_gaps: tuple[CoverageGap, ...] = ()
+    """#229 (FR-PROF-8): the gaps of the capabilities retrieval reads that overlap the query's
+    window (``core.retrieval.coverage_marks``); empty when the story has none."""
 
     @property
     def rehydrated(self) -> tuple[str, ...]:
@@ -1365,6 +1370,17 @@ async def retrieve(
         model_calls=model_calls,
         embedding_model_version=version,
         position=position,
+        coverage_gaps=tuple(
+            await coverage_marks.gaps(
+                conn,
+                story_id,
+                settings,
+                window=(
+                    (turns[0] if turns else None) or 1,
+                    (turns[1] if turns else None) or position[0],
+                ),
+            )
+        ),
     )
 
 

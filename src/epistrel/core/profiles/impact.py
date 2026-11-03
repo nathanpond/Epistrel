@@ -42,24 +42,22 @@ and an edit's, when no story follows the profile, states the profile's own befor
 (what a story following it would run under). A report that lists a profile's following stories
 leaves them null at its top.
 
-**M3's interim rule (FR-PROF-8, until M7).** A change that adds data-producing capability
-(``schema.data_increases``) to a story with history, meaning at least one committed, active
-turn, cannot apply to it, because M3 has no backfill. The report lists that story with
-``upgrade_unavailable: true`` and ``backfill.needed: true`` with the estimate; a confirmed change
-applies to every other affected story, and that one keeps its previous configuration (a profile
-edit pins it to the version it ran on). Its ``fingerprint_after`` and ``capabilities_after`` are
-the ones it keeps. A story with no committed, active turn upgrades, as there is nothing to
-backfill: one that never played, one whose only turn failed, one whose turns were truncated
-away. So in M3 ``backfill.needed`` is true exactly when the upgrade is unavailable. No module
-delivered in M3 is data-producing; ``epistrel.testing.profiles.data_producing`` marks one for
-tests.
+**Upgrades with history (FR-PROF-8, #229).** A change that adds data-producing capability
+(``schema.data_increases``) to a story with history (at least one committed, active turn) needs
+its data re-derived: ``backfill.needed: true`` with the estimate and the range (the gained
+capabilities' coverage gaps, #228). The request's ``upgrade_mode`` decides how it upgrades:
+``backfill`` (the default) queues the story's backfill (``queue_position``) and keeps it on its
+previous version until its turn; ``forward_only`` applies the change at the next turn boundary
+and the turns before the switch keep a coverage gap (``forward_only_gap``). M3's interim
+``upgrade_unavailable`` stays in the schema, always ``false``. A story with no committed,
+active turn upgrades at once, as there is nothing to backfill.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, Self
+from dataclasses import dataclass, field
+from typing import Any, Literal, Self
 
 from pydantic import (
     AliasChoices,
@@ -99,6 +97,10 @@ AFFECTED_MAX = 1_000
 """The most affected stories a report lists; ``affected_count`` counts them all."""
 CAMEL_CASE = "ignoreWarnings"
 """The camelCase spelling of ``ignore_warnings`` (FR-PROF-7)."""
+UPGRADE_CAMEL = "upgradeMode"
+"""The camelCase spelling of ``upgrade_mode`` (#229)."""
+UpgradeMode = Literal["backfill", "forward_only"]
+"""#229 (FR-PROF-8): how a story with history gains data-producing capability."""
 WARNING_KINDS = (
     "capabilities_gained",
     "capabilities_lost",
@@ -125,14 +127,35 @@ class BackfillEstimate(BaseModel):
     duration_s: float
 
 
+class TurnSpan(BaseModel):
+    """A range of turns, both ends included."""
+
+    model_config = ConfigDict(frozen=True)
+
+    from_turn: int
+    to_turn: int
+
+
 class Backfill(BaseModel):
-    """Whether the change needs a backfill for this story, and its estimate when it does. In M3
-    one is needed exactly when the upgrade is unavailable (no backfill exists until M7)."""
+    """Whether the change needs a backfill for this story (it adds data-producing capability to
+    a story with history), its estimate and (#229) the turns it would cover, from the gained
+    capabilities' coverage gaps (#228)."""
 
     model_config = ConfigDict(frozen=True)
 
     needed: bool
     estimate: BackfillEstimate | None = None
+    range: TurnSpan | None = None
+
+
+class ForwardOnlyGap(BaseModel):
+    """#229 (FR-PROF-8): under ``forward_only``, the gained capabilities the story's turns
+    before the switch lack, through ``through_turn``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    capabilities: list[str]
+    through_turn: int
 
 
 class AffectedStory(BaseModel):
@@ -148,7 +171,17 @@ class AffectedStory(BaseModel):
     capabilities_gained: list[str]
     capabilities_lost: list[str]
     backfill: Backfill
-    upgrade_unavailable: bool
+    upgrade_unavailable: bool = False
+    """Kept for API stability: always ``false`` from M7 on, when both upgrade modes exist
+    (#229)."""
+    upgrade_mode: UpgradeMode | None = None
+    """#229: how the story upgrades when it needs a backfill (the request's, ``backfill`` by
+    default); ``null`` when it needs none."""
+    queue_position: int | None = None
+    """#229: under ``backfill``, the story's place in the deployment's backfill queue
+    (1-based)."""
+    forward_only_gap: ForwardOnlyGap | None = None
+    """#229: under ``forward_only``, what the turns before the switch lack."""
     fingerprint_before: str | None = None
     fingerprint_after: str | None = None
     capabilities_after: list[str] | None = None
@@ -303,27 +336,50 @@ def unmet(
 
 
 def affected(
-    story_id: str, change: Delta, *, history: bool, transcript: tuple[int, int] = (0, 0)
+    story_id: str,
+    change: Delta,
+    *,
+    history: bool,
+    transcript: tuple[int, int] = (0, 0),
+    mode: UpgradeMode | None = None,
+    span: tuple[int, int] | None = None,
+    queue_position: int | None = None,
 ) -> AffectedStory:
-    """``story_id``'s entry: an upgrade is unavailable when the change adds data-producing
-    capability and the story has history; then it keeps its configuration (the stamp after is
-    the one before), and the estimate is over its transcript (``messages``, ``characters``)."""
-    unavailable = bool(change.increases) and history
+    """``story_id``'s entry: a backfill is needed when the change adds data-producing
+    capability and the story has history (#229: never unavailable from M7 on), estimated over
+    its transcript (``messages``, ``characters``) for the turns ``span`` holds; ``mode`` is how
+    it upgrades (``backfill`` by default: its ``queue_position``; ``forward_only``: the gap its
+    earlier turns keep)."""
+    needed = bool(change.increases) and history
     estimate = None
-    if unavailable:
+    if needed:
         calls, tokens, duration = estimates.backfill_cost(*transcript, len(change.increases))
         estimate = BackfillEstimate(model_calls=calls, tokens=tokens, duration_s=duration)
-    kept = change.before if unavailable else change.after
+    chosen: UpgradeMode | None = (mode or "backfill") if needed else None
+    gap = None
+    if chosen == "forward_only":
+        gap = ForwardOnlyGap(
+            capabilities=sorted(change.increases), through_turn=span[1] if span else 0
+        )
     return AffectedStory(
         story_id=story_id,
         capabilities_gained=list(change.gained),
         capabilities_lost=list(change.lost),
-        backfill=Backfill(needed=unavailable, estimate=estimate),
-        upgrade_unavailable=unavailable,
+        backfill=Backfill(
+            needed=needed,
+            estimate=estimate,
+            range=None
+            if not needed or span is None
+            else TurnSpan(from_turn=span[0], to_turn=span[1]),
+        ),
+        upgrade_unavailable=False,
+        upgrade_mode=chosen,
+        queue_position=queue_position if chosen == "backfill" else None,
+        forward_only_gap=gap,
         fingerprint_before=change.before.fingerprint,
-        fingerprint_after=kept.fingerprint,
-        capabilities_after=list(kept.capabilities),
-        quality_status_after=kept.quality_status,
+        fingerprint_after=change.after.fingerprint,
+        capabilities_after=list(change.after.capabilities),
+        quality_status_after=change.after.quality_status,
     )
 
 
@@ -339,7 +395,7 @@ def _warnings(
         "capabilities_gained": affects and change is not None and bool(change.gained),
         "capabilities_lost": affects and change is not None and bool(change.lost),
         "backfill_needed": unavailable,
-        "upgrade_unavailable": unavailable,
+        "upgrade_unavailable": False,
         "recommendations_unmet": bool(recommendations),
         "guarantees_lost": affects and change is not None and bool(change.guarantees_lost),
         "certification_lost": lost,
@@ -356,7 +412,7 @@ def single_report(
 ) -> ImpactReport:
     """The report of a change to one story (a preview, an assignment, overrides);
     ``budget_warnings`` are the validator's for its configuration after (#456)."""
-    lost = None if entry.upgrade_unavailable else certification_lost(change, entry.story_id)
+    lost = certification_lost(change, entry.story_id)
     return ImpactReport(
         affected_stories=[entry],
         affected_count=1,
@@ -370,7 +426,7 @@ def single_report(
         warnings=_warnings(
             change,
             affects=True,
-            unavailable=entry.upgrade_unavailable,
+            unavailable=entry.backfill.needed,
             recommendations=recommendations,
             lost=lost is not None,
         ),
@@ -399,6 +455,36 @@ def creation_report(
 
 
 # -- the stories a change reaches ----------------------------------------------------------------
+
+
+async def gap_span(
+    conn: AsyncConnection,
+    story_id: str,
+    change: Delta,
+    levels: Mapping[str, str | None] | None = None,
+) -> tuple[int, int] | None:
+    """#229: the turns a backfill of ``change``'s gained data-producing capabilities would
+    cover (their coverage gaps at the level ``levels`` names, #228), ``None`` when none."""
+    from epistrel.core.backfill import coverage
+
+    levels = levels or {}
+    found = await coverage.gaps_of(conn, story_id, {m: levels.get(m) for m in change.increases})
+    turns = [t for spans in found.values() for span in spans for t in span]
+    return (min(turns), max(turns)) if turns else None
+
+
+async def queued_count(conn: AsyncConnection) -> int:
+    """#229: the backfills waiting in the deployment's queue."""
+    from epistrel.core.tables import story_backfills
+
+    return int(
+        await conn.scalar(
+            select(func.count())
+            .select_from(story_backfills)
+            .where(story_backfills.c.status == "queued")
+        )
+        or 0
+    )
 
 
 async def with_history(conn: AsyncConnection, story_ids: Collection[str]) -> set[str]:
@@ -437,10 +523,14 @@ async def transcripts(
 
 @dataclass(frozen=True, slots=True)
 class Following:
-    """A profile edit's report and the following stories that keep their configuration."""
+    """A profile edit's report, the following stories whose upgrade needs a backfill (#229:
+    queued under ``backfill``, a gap under ``forward_only``), each one's turn range and queue
+    position."""
 
     report: ImpactReport
     keep: frozenset[str]
+    spans: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+    positions: Mapping[str, int] = field(default_factory=dict)
 
 
 async def following_report(
@@ -450,6 +540,8 @@ async def following_report(
     overridden: Mapping[str, Delta] | None = None,
     *,
     budget_warnings: Sequence[ProfileValidationWarning] = (),
+    mode: UpgradeMode | None = None,
+    levels: Mapping[str, str | None] | None = None,
 ) -> Following:
     """The report of a change to every story that follows ``profile_id``'s latest version (a
     story pinned to an earlier version does not follow it, and is not affected). ``change`` is
@@ -469,6 +561,7 @@ async def following_report(
     )
     count = int(await conn.scalar(select(func.count()).select_from(stories).where(*following)) or 0)
     keep: set[str] = set()
+    spans: dict[str, tuple[int, int]] = {}
     increases = bool(change.increases) or any(d.increases for d in overridden.values())
     if increases and count:
         every = list(
@@ -479,11 +572,18 @@ async def following_report(
                 .with_for_update(key_share=True)
             )
         )
-        keep = {
+        candidates = sorted(
             story
             for story in await with_history(conn, every)
             if overridden.get(story, change).increases
-        }
+        )
+        # #229: a story with history needs a backfill only where a gained capability has a
+        # coverage gap (one already covering its turns follows at once).
+        for story in candidates:
+            span = await gap_span(conn, story, overridden.get(story, change), levels)
+            if span is not None:
+                spans[story] = span
+        keep = set(spans)
     listed = [
         str(story_id)
         for story_id in await conn.scalars(
@@ -491,8 +591,18 @@ async def following_report(
         )
     ]
     sizes = await transcripts(conn, [s for s in listed if s in keep])
+    ahead = await queued_count(conn)
+    order = {s: ahead + n for n, s in enumerate(sorted(keep), start=1)}
     entries = [
-        affected(s, overridden.get(s, change), history=s in keep, transcript=sizes.get(s, (0, 0)))
+        affected(
+            s,
+            overridden.get(s, change),
+            history=s in keep,
+            transcript=sizes.get(s, (0, 0)),
+            mode=mode,
+            span=spans.get(s),
+            queue_position=order.get(s),
+        )
         for s in listed
     ]
     unlisted = not entries  # no entry states a stamp, so the top states the profile's own
@@ -520,7 +630,7 @@ async def following_report(
         certifications_lost=lost,
         budget_warnings=list(budget_warnings),
     )
-    return Following(report, frozenset(keep))
+    return Following(report, frozenset(keep), spans, order)
 
 
 def _lost(changes: Sequence[Delta]) -> list[str]:
@@ -533,11 +643,60 @@ def _gained(changes: Sequence[Delta]) -> list[str]:
     return ordered({name for found in changes for name in found.guarantees_gained})
 
 
+async def stories_report(
+    conn: AsyncConnection,
+    changes: Mapping[str, Delta],
+    *,
+    mode: UpgradeMode | None = None,
+    levels: Mapping[str, Mapping[str, str | None]] | None = None,
+) -> Following:
+    """#229: the report of a change to each story of ``changes`` (``upgrade-pinned``: each
+    pinned story's move to its profile's latest version), as ``following_report`` reports a
+    profile edit: a story with history whose change adds data-producing capability with a
+    coverage gap needs a backfill (``levels``: each story's capability levels after)."""
+    ids = sorted(changes)
+    increasing = [s for s in ids if changes[s].increases]
+    history = await with_history(conn, increasing) if increasing else set()
+    spans: dict[str, tuple[int, int]] = {}
+    for story in sorted(history):
+        span = await gap_span(conn, story, changes[story], (levels or {}).get(story))
+        if span is not None:
+            spans[story] = span
+    keep = set(spans)
+    sizes = await transcripts(conn, sorted(keep))
+    ahead = await queued_count(conn)
+    order = {s: ahead + n for n, s in enumerate(sorted(keep), start=1)}
+    entries = [
+        affected(
+            s,
+            changes[s],
+            history=s in keep,
+            transcript=sizes.get(s, (0, 0)),
+            mode=mode,
+            span=spans.get(s),
+            queue_position=order.get(s),
+        )
+        for s in ids[:AFFECTED_MAX]
+    ]
+    seen = [changes[s] for s in ids]
+    lost = [found for s in ids if (found := certification_lost(changes[s], s)) is not None]
+    report = ImpactReport(
+        affected_stories=entries,
+        affected_count=len(ids),
+        recommendations_unmet=[],
+        guarantees_lost=_lost(seen) if ids else [],
+        guarantees_gained=_gained(seen) if ids else [],
+        warnings=_following_warnings(seen, unavailable=bool(keep), lost=bool(lost)),
+        certifications_lost=lost,
+    )
+    return Following(report, frozenset(keep), spans, order)
+
+
 def _following_warnings(
     changes: Sequence[Delta], *, unavailable: bool, lost: bool = False
 ) -> list[str]:
     """The warning kinds of a report over stories that see ``changes``."""
-    found: set[str] = {"backfill_needed", "upgrade_unavailable"} if unavailable else set()
+    found: set[str] = {"backfill_needed"} if unavailable else set()
     if lost:
         found.add("certification_lost")
     for one in changes:
@@ -563,6 +722,14 @@ class TwoStageRequest(BaseModel):
         description="Apply the change even when its impact report warns (FR-PROF-7). An invalid "
         "configuration is refused all the same.",
     )
+    upgrade_mode: UpgradeMode | None = Field(
+        default=None,
+        validation_alias=AliasChoices("upgrade_mode", UPGRADE_CAMEL),
+        description="#229 (FR-PROF-8): how a story with history gains data-producing "
+        "capability: `backfill` (the default: its data re-derived, the story paused only while "
+        "its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a "
+        "coverage gap). Ignored for a change that adds no such capability.",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -571,6 +738,10 @@ class TwoStageRequest(BaseModel):
             if data["ignore_warnings"] != data[CAMEL_CASE]:
                 raise ValueError("ignore_warnings and ignoreWarnings disagree: send one of them")
             data = {key: value for key, value in data.items() if key != CAMEL_CASE}
+        if isinstance(data, Mapping) and "upgrade_mode" in data and UPGRADE_CAMEL in data:
+            if data["upgrade_mode"] != data[UPGRADE_CAMEL]:
+                raise ValueError("upgrade_mode and upgradeMode disagree: send one of them")
+            data = {key: value for key, value in data.items() if key != UPGRADE_CAMEL}
         return data
 
     @classmethod
@@ -589,6 +760,12 @@ class TwoStageRequest(BaseModel):
                     "title": "Ignorewarnings",
                     "description": "`ignore_warnings`, for camelCase clients (send one of the "
                     "two).",
+                }
+            if "upgrade_mode" in properties:
+                properties[UPGRADE_CAMEL] = {
+                    **properties["upgrade_mode"],
+                    "title": "Upgrademode",
+                    "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
                 }
         return found
 
@@ -632,7 +809,7 @@ async def two_stage[T](
         "impact report",
         applied=applied,
         affected=report.affected_count,
-        unavailable=sum(1 for entry in report.affected_stories if entry.upgrade_unavailable),
+        backfills=sum(1 for entry in report.affected_stories if entry.backfill.needed),
         warnings=list(report.warnings),
     )
     if not applied:
@@ -709,6 +886,7 @@ async def preview(
 __all__ = [
     "AFFECTED_MAX",
     "CAMEL_CASE",
+    "UPGRADE_CAMEL",
     "WARNING_KINDS",
     "AffectedStory",
     "Backfill",
@@ -716,19 +894,25 @@ __all__ = [
     "CertificationLost",
     "Delta",
     "Following",
+    "ForwardOnlyGap",
     "ImpactPreviewRequest",
     "ImpactReport",
     "Recommendation",
+    "TurnSpan",
     "TwoStageRequest",
     "TwoStageResult",
     "UnmetRecommendation",
+    "UpgradeMode",
     "affected",
     "certification_lost",
     "creation_report",
     "delta",
     "following_report",
+    "gap_span",
     "preview",
+    "queued_count",
     "single_report",
+    "stories_report",
     "transcripts",
     "two_stage",
     "unmet",

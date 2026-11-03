@@ -345,8 +345,11 @@ QUALITY_STATUSES = ("certified", "uncertified", "stale")
 STATUS_COMPONENT = "QualityStatusValue"
 """The OpenAPI component of the status enum (its name holds a later milestone's term)."""
 UNCERTIFIED = {"status": "uncertified"}
-UNAVAILABLE_WARNINGS = ["capabilities_gained", "backfill_needed", "upgrade_unavailable"]
-"""A report's warnings when a story cannot gain a data-producing capability."""
+BACKFILL_WARNINGS = ["capabilities_gained", "backfill_needed"]
+"""A report's warnings when a story with history gains a data-producing capability (#229: it
+upgrades by backfill or ``forward_only``; M3's ``upgrade_unavailable`` is retired)."""
+NO_BACKFILL = {"needed": False, "estimate": None, "range": None}
+"""An entry's ``backfill`` when it needs none (#229 adds ``range``)."""
 LITE_CAPABILITIES = ["budgets", "lite", "models", "pins", "polish", "rolling_summary"]
 """What the Lite preset enables: its pipeline by level, and every delivered module it turns on."""
 POLISH = "repair.polish.enabled"

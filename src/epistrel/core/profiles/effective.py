@@ -8,8 +8,9 @@ over the other (``layered``: an object merges into an object, any other value re
    document seeded from the Lite preset, edited through ``/admin/settings``);
 2. the story's engine profile (``stories.engine_profile_id``) at the version it runs on: the
    profile's latest (FR-PROF-6), unless the story keeps an earlier one
-   (``stories.engine_profile_version_pin``, set when a confirmed data-producing edit could not
-   apply to it: FR-PROF-7's ``upgrade_unavailable``, M3's interim rule until M7). A stored
+   (``stories.engine_profile_version_pin``: a confirmed data-producing edit keeps it there until
+   its queued backfill completes, #229; M3-M6's interim and seed pins until ``upgrade-pinned``
+   brings it forward). A stored
    version may be sparse;
 3. the story's own overrides (``story_profile_overrides``): a sparse settings document with a
    ``revision`` (0 while the story has none). They persist across the profile's versions and a
@@ -810,8 +811,8 @@ class StoryProfileRef(ProfileVersionRef):
 
 class ProfileRef(BaseModel):
     """The engine profile a story runs under and the version it runs on. ``pinned``: the story
-    keeps an earlier version, because a data-producing edit could not apply to its history
-    (``upgrade_unavailable``, M3's interim rule); ``false`` while it follows the latest.
+    keeps an earlier version (its backfill queued, #229, or left behind by M3-M6's interim rule
+    until ``upgrade-pinned``); ``false`` while it follows the latest.
     ``deleted``: the profile is deleted and still serves the story."""
 
     model_config = ConfigDict(frozen=True)

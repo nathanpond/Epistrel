@@ -256,6 +256,7 @@ from epistrel.core.resolution import identity as identity_rules
 from epistrel.core.resolution.context import load_context, load_index
 from epistrel.core.resolution.entities import NARRATOR, PLAYER
 from epistrel.core.resolution.types import Mention
+from epistrel.core.retrieval import coverage_marks
 from epistrel.core.retrieval.lexical import LexicalSearch
 from epistrel.core.retrieval.pipeline import (
     RetrievalQuery,
@@ -6848,9 +6849,11 @@ async def play(
             return
         fixed["raw_render_event_ids"] = await _raw_render_ids(conn, op.operation_id, ids, checked)
         clock.add("commit", time.perf_counter() - committing)
-        await write_report(conn, rendered, checked)
+        await write_report(conn, rendered, checked, op_turn=read.turn)
 
-    async def write_report(conn: AsyncConnection, rendered: Rendered, checked: Checked) -> None:
+    async def write_report(
+        conn: AsyncConnection, rendered: Rendered, checked: Checked, *, op_turn: int
+    ) -> None:
         fixed["elapsed_ms"] = budget.elapsed_ms()
         report = lite.turn_report(
             calls,
@@ -6927,6 +6930,22 @@ async def play(
                 report["verify_primaries"] = [v.report() for v in checked.more_verifiers]
         if checked.follow_up_verifier is not None:
             report["verify_follow_up"] = checked.follow_up_verifier.report()
+        # #229 (FR-PROF-8): the gaps the turn's retrieval met, and the verdicts they mark.
+        met = {g for r in rendered.retrievals for g in r.coverage_gaps}
+        report["retrieval"] = {
+            "coverage_gaps": [
+                g.model_dump()
+                for g in sorted(met, key=lambda g: (g.capability, g.from_turn, g.to_turn))
+            ]
+        }
+        checking = await coverage_marks.gaps(
+            conn, story_id, settings, readers=coverage_marks.VERIFICATION_READERS
+        )
+        for section in ("verify", "verify_follow_up"):
+            if isinstance(report.get(section), dict):
+                coverage_marks.mark_verdicts(report[section], checking, op_turn)
+        for primary in report.get("verify_primaries", []):
+            coverage_marks.mark_verdicts(primary, checking, op_turn)
         report["commit"] = fixed.get("commit", {})
         if "perception" in fixed:
             report["perception"] = fixed["perception"]
@@ -7439,6 +7458,14 @@ async def play(
                 for r in committed.effects.reconciliation_required
             ],
         }
+        # #229 (FR-PROF-8): the earlier turns a capability the turn read has no data for.
+        if isinstance(conn, AsyncConnection):
+            gapped = await _coverage_gaps(conn, story_id, settings, committed.narrative_turn)
+        else:
+            async with conn.connect() as reading:
+                gapped = await _coverage_gaps(reading, story_id, settings, committed.narrative_turn)
+        if gapped:
+            fields["coverage_gaps"] = [g.model_dump() for g in gapped]
         noticed = authority[0].notices(committed.narrative_turn) if authority else ()
         if noticed:
             # #598 (FR-RESP-14): the turn's notices, with whether it has external effects.
@@ -7582,6 +7609,16 @@ async def _boundary_report(
             d.flag.as_payload() for d in depended if d.kind == "committed" and d.flag is not None
         ],
     }
+
+
+async def _coverage_gaps(
+    conn: AsyncConnection, story_id: str, settings: ProfileSettings, turn: int
+) -> list[coverage_marks.CoverageGap]:
+    """#229: the gaps before ``turn`` of every capability the turn's reads use."""
+    readers = tuple(
+        dict.fromkeys((*coverage_marks.RETRIEVAL_READERS, *coverage_marks.VERIFICATION_READERS))
+    )
+    return await coverage_marks.gaps(conn, story_id, settings, readers=readers, window=(1, turn))
 
 
 def _with_context(draft: Draft, retrieval: RetrievalResult) -> Draft:

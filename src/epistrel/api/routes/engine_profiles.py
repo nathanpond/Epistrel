@@ -54,6 +54,7 @@ from epistrel.api.routes.stories import (
     RELATION_FILTERS_SCHEMA,
     RelationFilterParam,
 )
+from epistrel.core.backfill import Queued
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.profiles.guarantees import GuaranteeTable
 from epistrel.core.profiles.impact import ImpactReport, TwoStageResult
@@ -73,6 +74,7 @@ from epistrel.core.profiles.store import (
     ProfileVersion,
     ProfileWarning,
     ProfileWrite,
+    UpgradePinned,
 )
 from epistrel.core.profiles.validate import ProfileValidation, ProfileValidationWarning
 from epistrel.core.settings_schema import ConfigClass
@@ -124,6 +126,12 @@ class ProfileEditBody(DeploymentMutationResponse):
     applied: bool
     impact: ImpactReport
     result: EngineProfile | None
+    backfills: list[Queued] = Field(
+        default_factory=list,
+        description="#229 (FR-PROF-8): the backfills a confirmed data-producing edit queued "
+        "under `upgrade_mode: backfill`, one per following story with history, in queue order "
+        "(each story keeps its previous version, unpaused, until its backfill is claimed).",
+    )
 
     @classmethod
     def of(cls, edit: TwoStageResult[ProfileWrite]) -> ProfileEditBody:
@@ -133,6 +141,7 @@ class ProfileEditBody(DeploymentMutationResponse):
             impact=edit.impact,
             result=edit.result.profile if edit.result is not None else None,
             config_revision=edit.config_revision,
+            backfills=list(edit.result.backfills) if edit.result is not None else [],
         )
 
 
@@ -344,8 +353,9 @@ async def get_profile(
         "\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story "
         "that follows the profile's latest version: the capabilities each gains and loses, its "
         "fingerprint before and after with the capabilities enabled and the quality status "
-        "after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is "
-        "unavailable. The report's own `fingerprint_before`, `fingerprint_after`, "
+        "after (FR-PROF-16), whether a backfill would be needed (its estimate and turn `range`), "
+        "its `upgrade_mode`, and its `queue_position` or `forward_only_gap`. The report's own "
+        "`fingerprint_before`, `fingerprint_after`, "
         "`capabilities_after` and `quality_status_after` are null, since each entry states its "
         "story's, unless no story follows the profile: then they state the profile's own, "
         "before and after the edit. When the report has `warnings` and the body does not set "
@@ -353,9 +363,15 @@ async def get_profile(
         "`applied: false` and the report; the `Idempotency-Key` is not kept, so the "
         "confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the "
         "edit applies: `applied: true`, the report, and the profile in `result`. A "
-        "data-producing increase (none is delivered in M3) cannot apply to a following story "
-        "with history (a committed turn still on its timeline): that story keeps the version "
-        "it ran on, and every other story moves to the new one. Each story's entry is the "
+        "data-producing increase for a following story with history (a committed turn still "
+        "on its timeline) upgrades it by the body's `upgrade_mode` (`upgradeMode`; FR-PROF-8, "
+        "#229): `backfill` (the default) keeps the story on the version it ran on, unpaused, "
+        "and queues its backfill (`backfills`), which pauses it only while its own run goes "
+        "on, at most `backfill_concurrency` at once across the deployment, and moves it to "
+        "the new version on completion; `forward_only` moves it at its next turn, and its "
+        "earlier turns keep a coverage gap that retrieval and verification mark until "
+        "`POST /stories/{id}/backfill` fills it. Every other story moves to the new version. "
+        "Each story's entry is the "
         "change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a "
         "setting a story overrides keeps the story's value. Settings that cannot run are "
         "refused whatever `ignore_warnings` says, and so is an edit under which a following "
@@ -383,6 +399,37 @@ async def update_profile(
     engine: EngineDep,
 ) -> ProfileEditBody:
     edit = await engine.update_profile(ctx, profile_id, body)
+    return answered(ProfileEditBody.of(edit), ctx, response, replayed=edit.replayed)
+
+
+@router.post(
+    "/{profile_id}/upgrade-pinned",
+    response_model=ProfileEditBody,
+    operation_id="upgrade_pinned_stories",
+    summary="Bring pinned stories to the profile's latest version",
+    description=(
+        "FR-PROF-7,8 (#229): every story pinned to an older version of this profile (left "
+        "behind by an earlier edit or a seed update) moves to its latest version, in two "
+        "stages. The `impact` report has one entry per pinned story, the change it sees through "
+        "its own overrides. When the report has `warnings` and the body does not set "
+        "`ignore_warnings` (`ignoreWarnings`), nothing is written: 200 with `applied: false`. "
+        "Confirmed (or without warnings), each pin is cleared: a behavioral change applies at "
+        "the story's next turn; a data-producing increase for a story with history follows "
+        "`upgrade_mode` (`upgradeMode`): `backfill` (the default) queues its backfill "
+        "(`backfills`; the pin is cleared when it completes), `forward_only` clears the pin now "
+        "and the earlier turns keep a coverage gap. A story whose own backfill is running is "
+        "left as it is. No pinned story: 200 `applied: true` with an empty report. 404 "
+        "`not_found` for an unknown profile."
+    ),
+)
+async def upgrade_pinned_stories(
+    profile_id: ProfileId,
+    body: UpgradePinned,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ProfileEditBody:
+    edit = await engine.upgrade_pinned_stories(ctx, profile_id, body)
     return answered(ProfileEditBody.of(edit), ctx, response, replayed=edit.replayed)
 
 

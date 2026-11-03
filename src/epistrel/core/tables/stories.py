@@ -11,9 +11,10 @@ creation and changed only by a transfer (``core.ownership``); it decides nothing
 #106 adds ``engine_profile_id`` (FR-PROF-1): the engine profile the story runs under, the
 deployment's default when it was created (a fork keeps its source's). It references
 ``engine_profiles``, so a profile is never purged while a story uses it. #109 adds
-``engine_profile_version_pin`` (FR-PROF-7,8's interim rule until M7): ``NULL`` while the story
-follows its profile's latest version; the version it keeps when a confirmed data-producing edit
-could not apply to it (``upgrade_unavailable``: it has history and M3 has no backfill). The pair
+``engine_profile_version_pin`` (FR-PROF-7,8): ``NULL`` while the story follows its profile's
+latest version; the version it keeps while a confirmed data-producing edit's backfill of it is
+queued (#229; M3-M6's interim rule pinned such stories for good, until ``upgrade-pinned``). The
+pair
 references ``engine_profile_versions``, so a pinned version always exists. #119 adds
 ``scenario_id``, ``scenario_version`` and ``scenario_snapshot`` (FR-SCN-9): the scenario version a
 story was created from, by identifiers only (the catalog never participates in a running story),
@@ -162,8 +163,8 @@ stories = Table(
     # FR-PROF-1 (#106): every story runs under exactly one profile. No server default: story
     # creation names the deployment's default, and a fork copies its source's.
     Column("engine_profile_id", ulid_type(), ForeignKey("engine_profiles.id"), nullable=False),
-    # FR-PROF-7,8 interim (#109): the version an ``upgrade_unavailable`` story keeps; ``NULL``:
-    # the story follows its profile's latest version.
+    # FR-PROF-7,8 (#109, #229): the version a story keeps until its upgrade's backfill
+    # completes; ``NULL``: the story follows its profile's latest version.
     Column("engine_profile_version_pin", Integer, nullable=True),
     ForeignKeyConstraint(
         ["engine_profile_id", "engine_profile_version_pin"],

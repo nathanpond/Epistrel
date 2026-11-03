@@ -482,6 +482,9 @@ class RespondResult:
     """#211 (FR-EXT-14): the claimed, ``unknown`` or confirmed external effects of the turns
     the commit took out of the active timeline (a regenerate's retired variant, a rewound tail
     written over), ``{outbox_id, provider, status, value?}``; empty when none."""
+    coverage_gaps: list[dict[str, Any]] = field(default_factory=list)
+    """#229 (FR-PROF-8): a structured turn's ``{capability, from_turn, to_turn}`` runs of turns
+    a capability its reads use has no data for; empty when none."""
     notices: list[dict[str, Any]] = field(default_factory=list)
     """#598 (FR-RESP-14): a structured turn under ``player_authority = co_author`` and
     ``co_author_knowledge = confirm``, one ``implausible_knowledge`` notice per presupposition of

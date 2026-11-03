@@ -222,7 +222,13 @@ from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
 from epistrel.core.profiles.certification import InvalidateRequest
 from epistrel.core.profiles.impact import ImpactPreviewRequest
-from epistrel.core.profiles.store import ProfileCopy, ProfileCreate, ProfileUpdate, ProfileValidate
+from epistrel.core.profiles.store import (
+    ProfileCopy,
+    ProfileCreate,
+    ProfileUpdate,
+    ProfileValidate,
+    UpgradePinned,
+)
 from epistrel.core.profiles.story import ProfileAssignment, ProfileOverridesPatch
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
@@ -883,6 +889,7 @@ PROFILE_ANSWERS = [
     ("get_profile", 200),
     ("list_profiles", 200),
     ("update_profile", 200),
+    ("upgrade_pinned_stories", 200),
     ("get_profile", 200),
     ("list_profile_versions", 200),
     ("get_profile_guarantees", 200),
@@ -2736,6 +2743,16 @@ def _steps() -> list[Step]:
             lambda ids: Rest("PUT", "/engine-profiles/{profile}", PROFILE_EDIT),
             lambda e, ids: _profile_edit(
                 e.update_profile(CTX, ids["profile"], ProfileUpdate(**PROFILE_EDIT))
+            ),
+            group=PROFILE_GROUP,
+        ),
+        Step(  # #229: no story pinned to an older version: an empty report, applied
+            "upgrade_pinned_stories",
+            lambda ids: Rest(
+                "POST", "/engine-profiles/{profile}/upgrade-pinned", {"ignore_warnings": True}
+            ),
+            lambda e, ids: _profile_edit(
+                e.upgrade_pinned_stories(CTX, ids["profile"], UpgradePinned(ignore_warnings=True))
             ),
             group=PROFILE_GROUP,
         ),

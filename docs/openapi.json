@@ -248,6 +248,16 @@
             ],
             "title": "Fingerprint Before"
           },
+          "forward_only_gap": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ForwardOnlyGap"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "quality_status_after": {
             "anyOf": [
               {
@@ -258,11 +268,38 @@
               }
             ]
           },
+          "queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Position"
+          },
           "story_id": {
             "title": "Story Id",
             "type": "string"
           },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upgrade Mode"
+          },
           "upgrade_unavailable": {
+            "default": false,
             "title": "Upgrade Unavailable",
             "type": "boolean"
           }
@@ -271,8 +308,7 @@
           "story_id",
           "capabilities_gained",
           "capabilities_lost",
-          "backfill",
-          "upgrade_unavailable"
+          "backfill"
         ],
         "title": "AffectedStory",
         "type": "object"
@@ -6266,6 +6302,30 @@
           "gap_minutes"
         ],
         "title": "CouldHaveKnownFlagBody",
+        "type": "object"
+      },
+      "CoverageGap": {
+        "description": "A run of turns a capability has no data for.",
+        "properties": {
+          "capability": {
+            "title": "Capability",
+            "type": "string"
+          },
+          "from_turn": {
+            "title": "From Turn",
+            "type": "integer"
+          },
+          "to_turn": {
+            "title": "To Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "capability",
+          "from_turn",
+          "to_turn"
+        ],
+        "title": "CoverageGap",
         "type": "object"
       },
       "CreatedCharacterBody": {
@@ -13626,6 +13686,28 @@
         "title": "ForkedFromBody",
         "type": "object"
       },
+      "ForwardOnlyGap": {
+        "description": "#229 (FR-PROF-8): under ``forward_only``, the gained capabilities the story's turns\nbefore the switch lack, through ``through_turn``.",
+        "properties": {
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "through_turn": {
+            "title": "Through Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "capabilities",
+          "through_turn"
+        ],
+        "title": "ForwardOnlyGap",
+        "type": "object"
+      },
       "GapFillBody": {
         "description": "A gap fill's answer: ``applied`` is false; without ``ignore_warnings`` the ``backfill``\npreview (needed, estimate, range, capabilities), with it also ``started``, the backfill\nqueued (REST 202).",
         "properties": {
@@ -19981,6 +20063,38 @@
             ],
             "description": "The new owner for every `transfer` (required with one; never the offboarded principal or `system`).",
             "title": "Transfer To"
+          },
+          "upgradeMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
+            "title": "Upgrade Mode"
           }
         },
         "required": [
@@ -23894,17 +24008,36 @@
             "title": "Profile Id",
             "type": "string"
           },
-          "upgrade_mode": {
+          "upgradeMode": {
             "anyOf": [
               {
-                "const": "backfill",
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "How a confirmed change that adds data-producing capability reaches a story with history (#228): `backfill` (the default) re-derives the history's structured data first, pausing the story, and applies the change when it completes.",
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
             "title": "Upgrade Mode"
           },
           "version": {
@@ -25686,6 +25819,14 @@
             "title": "Applied",
             "type": "boolean"
           },
+          "backfills": {
+            "description": "#229 (FR-PROF-8): the backfills a confirmed data-producing edit queued under `upgrade_mode: backfill`, one per following story with history, in queue order (each story keeps its previous version, unpaused, until its backfill is claimed).",
+            "items": {
+              "$ref": "#/components/schemas/Queued"
+            },
+            "title": "Backfills",
+            "type": "array"
+          },
           "config_revision": {
             "title": "Config Revision",
             "type": "integer"
@@ -27146,17 +27287,36 @@
             "title": "ProfileSettings",
             "type": "object"
           },
-          "upgrade_mode": {
+          "upgradeMode": {
             "anyOf": [
               {
-                "const": "backfill",
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "As `PUT /stories/{id}/engine-profile` takes it (#228).",
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
             "title": "Upgrade Mode"
           }
         },
@@ -27167,7 +27327,7 @@
         "type": "object"
       },
       "ProfileRef": {
-        "description": "The engine profile a story runs under and the version it runs on. ``pinned``: the story\nkeeps an earlier version, because a data-producing edit could not apply to its history\n(``upgrade_unavailable``, M3's interim rule); ``false`` while it follows the latest.\n``deleted``: the profile is deleted and still serves the story.",
+        "description": "The engine profile a story runs under and the version it runs on. ``pinned``: the story\nkeeps an earlier version (its backfill queued, #229, or left behind by M3-M6's interim rule\nuntil ``upgrade-pinned``); ``false`` while it follows the latest.\n``deleted``: the profile is deleted and still serves the story.",
         "properties": {
           "deleted": {
             "title": "Deleted",
@@ -28031,6 +28191,38 @@
             },
             "title": "ProfileSettings",
             "type": "object"
+          },
+          "upgradeMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
+            "title": "Upgrade Mode"
           }
         },
         "required": [
@@ -30323,6 +30515,46 @@
         "title": "QuestionOption",
         "type": "object"
       },
+      "Queued": {
+        "description": "#229: a profile edit's queued backfill of one story: the story, the backfill, its job, its\nstatus and its 1-based place in the deployment's queue.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "queue_position": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Position"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "story_id",
+          "id",
+          "job_id",
+          "status"
+        ],
+        "title": "Queued",
+        "type": "object"
+      },
       "QueuedTurn": {
         "description": "A turn that waits in the story's queue (FR-CONC-5): its operation and its place in the\nqueue. ``GET /operations/{id}`` (the ``Location``) reports it once it has played.",
         "properties": {
@@ -31824,6 +32056,13 @@
             ],
             "title": "Config Revision"
           },
+          "coverage_gaps": {
+            "items": {
+              "$ref": "#/components/schemas/CoverageGap"
+            },
+            "title": "Coverage Gaps",
+            "type": "array"
+          },
           "deferred_characters": {
             "items": {
               "$ref": "#/components/schemas/DeferredCharacterBody"
@@ -33029,6 +33268,13 @@
             ],
             "title": "Config Revision"
           },
+          "coverage_gaps": {
+            "items": {
+              "$ref": "#/components/schemas/CoverageGap"
+            },
+            "title": "Coverage Gaps",
+            "type": "array"
+          },
           "deferred_characters": {
             "items": {
               "$ref": "#/components/schemas/DeferredCharacterBody"
@@ -33365,6 +33611,14 @@
           },
           "context": {
             "$ref": "#/components/schemas/ContextBody"
+          },
+          "coverage_gaps": {
+            "description": "#229 (FR-PROF-8): each `{capability, from_turn, to_turn}` run of turns, overlapping the query's window, that a capability retrieval reads has no data for (an upgrade applied `forward_only`, or a backfill not yet run); empty when none.",
+            "items": {
+              "$ref": "#/components/schemas/CoverageGap"
+            },
+            "title": "Coverage Gaps",
+            "type": "array"
           },
           "degradation": {
             "items": {
@@ -42985,6 +43239,40 @@
             "default": false,
             "title": "Strict",
             "type": "boolean"
+          },
+          "upgradeMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
+            "title": "Upgrade Mode"
           }
         },
         "required": [
@@ -44989,6 +45277,25 @@
         "title": "TurnRange",
         "type": "object"
       },
+      "TurnSpan": {
+        "description": "A range of turns, both ends included.",
+        "properties": {
+          "from_turn": {
+            "title": "From Turn",
+            "type": "integer"
+          },
+          "to_turn": {
+            "title": "To Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "from_turn",
+          "to_turn"
+        ],
+        "title": "TurnSpan",
+        "type": "object"
+      },
       "TurnSummaryModel": {
         "description": "A turn on the page and its reply; ``message`` is null for a reply-less turn.",
         "properties": {
@@ -45283,6 +45590,64 @@
           "cancelled_on_reactivation"
         ],
         "title": "UntruncatedBody",
+        "type": "object"
+      },
+      "UpgradePinned": {
+        "additionalProperties": false,
+        "description": "``POST /engine-profiles/{id}/upgrade-pinned`` (#229): ``ignore_warnings`` confirms the\nreport's warnings, ``upgrade_mode`` how a story with history gains data-producing\ncapability.",
+        "examples": [
+          {
+            "ignore_warnings": true,
+            "upgrade_mode": "backfill"
+          }
+        ],
+        "properties": {
+          "ignoreWarnings": {
+            "default": false,
+            "description": "`ignore_warnings`, for camelCase clients (send one of the two).",
+            "title": "Ignorewarnings",
+            "type": "boolean"
+          },
+          "ignore_warnings": {
+            "default": false,
+            "description": "Apply the change even when its impact report warns (FR-PROF-7). An invalid configuration is refused all the same.",
+            "title": "Ignore Warnings",
+            "type": "boolean"
+          },
+          "upgradeMode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`upgrade_mode`, for camelCase clients (send one of the two).",
+            "title": "Upgrademode"
+          },
+          "upgrade_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "backfill",
+                  "forward_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "#229 (FR-PROF-8): how a story with history gains data-producing capability: `backfill` (the default: its data re-derived, the story paused only while its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a coverage gap). Ignored for a change that adds no such capability.",
+            "title": "Upgrade Mode"
+          }
+        },
+        "title": "UpgradePinned",
         "type": "object"
       },
       "UploadOpen": {
@@ -46661,7 +47026,7 @@
         "type": "object"
       },
       "epistrel__core__profiles__impact__Backfill": {
-        "description": "Whether the change needs a backfill for this story, and its estimate when it does. In M3\none is needed exactly when the upgrade is unavailable (no backfill exists until M7).",
+        "description": "Whether the change needs a backfill for this story (it adds data-producing capability to\na story with history), its estimate and (#229) the turns it would cover, from the gained\ncapabilities' coverage gaps (#228).",
         "properties": {
           "estimate": {
             "anyOf": [
@@ -46676,6 +47041,16 @@
           "needed": {
             "title": "Needed",
             "type": "boolean"
+          },
+          "range": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnSpan"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -61739,7 +62114,7 @@
         ]
       },
       "put": {
-        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story that follows the profile's latest version: the capabilities each gains and loses, its fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), whether a backfill would be needed and whether its upgrade is unavailable. The report's own `fingerprint_before`, `fingerprint_after`, `capabilities_after` and `quality_status_after` are null, since each entry states its story's, unless no story follows the profile: then they state the profile's own, before and after the edit. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with `applied: false` and the report; the `Idempotency-Key` is not kept, so the confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the edit applies: `applied: true`, the report, and the profile in `result`. A data-producing increase (none is delivered in M3) cannot apply to a following story with history (a committed turn still on its timeline): that story keeps the version it ran on, and every other story moves to the new one. Each story's entry is the change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a setting a story overrides keeps the story's value. Settings that cannot run are refused whatever `ignore_warnings` says, and so is an edit under which a following story's overrides could not run: 422 `invalid_profile` naming those stories in `details.stories` (at most 1,000; `details.count` counts them all), with nothing written. The report's `budget_warnings` carry the validator's `below_safety_minimum` for the new settings, as `POST /engine-profiles/{id}/validate` answers it; they do not hold the edit.\n\nA new version is a configuration change (FR-PROF-6): every story that follows the profile runs under it from its next turn, and a turn already running finishes under the configuration it started with. The answer's `config_revision`, the deployment's, moves by one, and `GET /admin/config-changes` lists, at that revision, an `engine_profile:<id>` row (the old and new version numbers, with the strongest class among the changed settings) and one `engine_profile:<id>.<setting>` row per setting whose value over the deployment's `profile_defaults` changed, each with its class. A name-only edit changes no configuration and leaves `config_revision` as it is.",
+        "description": "Replace the profile's name and settings. A new version is made only when the settings differ from the latest version's; a name-only edit makes none, and an edit that changes nothing records nothing. A preset is edited like any profile (FR-PROF-3). A deleted profile cannot be edited (422 `profile_deleted`; copy it instead). The settings may name any delivered module and level (`GET /engine-profiles/schema`); what they leave out takes the default. A shape error is 422 `validation_error` at the field; a module or level this deployment has not delivered, or a module whose dependencies are off (FR-PROF-4), is 422 `invalid_profile` naming each (`details.undelivered`, `details.missing_dependencies`), and nothing is written.\n\nAn edit runs in two stages (FR-PROF-7). Its `impact` report lists every story that follows the profile's latest version: the capabilities each gains and loses, its fingerprint before and after with the capabilities enabled and the quality status after (FR-PROF-16), whether a backfill would be needed (its estimate and turn `range`), its `upgrade_mode`, and its `queue_position` or `forward_only_gap`. The report's own `fingerprint_before`, `fingerprint_after`, `capabilities_after` and `quality_status_after` are null, since each entry states its story's, unless no story follows the profile: then they state the profile's own, before and after the edit. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written and the answer is 200 with `applied: false` and the report; the `Idempotency-Key` is not kept, so the confirmation may reuse it. With `ignore_warnings`, or a report without warnings, the edit applies: `applied: true`, the report, and the profile in `result`. A data-producing increase for a following story with history (a committed turn still on its timeline) upgrades it by the body's `upgrade_mode` (`upgradeMode`; FR-PROF-8, #229): `backfill` (the default) keeps the story on the version it ran on, unpaused, and queues its backfill (`backfills`), which pauses it only while its own run goes on, at most `backfill_concurrency` at once across the deployment, and moves it to the new version on completion; `forward_only` moves it at its next turn, and its earlier turns keep a coverage gap that retrieval and verification mark until `POST /stories/{id}/backfill` fills it. Every other story moves to the new version. Each story's entry is the change it sees through its own overrides (`PATCH /stories/{id}/profile-overrides`): a setting a story overrides keeps the story's value. Settings that cannot run are refused whatever `ignore_warnings` says, and so is an edit under which a following story's overrides could not run: 422 `invalid_profile` naming those stories in `details.stories` (at most 1,000; `details.count` counts them all), with nothing written. The report's `budget_warnings` carry the validator's `below_safety_minimum` for the new settings, as `POST /engine-profiles/{id}/validate` answers it; they do not hold the edit.\n\nA new version is a configuration change (FR-PROF-6): every story that follows the profile runs under it from its next turn, and a turn already running finishes under the configuration it started with. The answer's `config_revision`, the deployment's, moves by one, and `GET /admin/config-changes` lists, at that revision, an `engine_profile:<id>` row (the old and new version numbers, with the strongest class among the changed settings) and one `engine_profile:<id>.<setting>` row per setting whose value over the deployment's `profile_defaults` changed, each with its class. A name-only edit changes no configuration and leaves `config_revision` as it is.",
         "operationId": "update_profile",
         "parameters": [
           {
@@ -63033,6 +63408,172 @@
         "summary": "Remove a relation from an engine profile",
         "tags": [
           "ownership"
+        ]
+      }
+    },
+    "/engine-profiles/{profile_id}/upgrade-pinned": {
+      "post": {
+        "description": "FR-PROF-7,8 (#229): every story pinned to an older version of this profile (left behind by an earlier edit or a seed update) moves to its latest version, in two stages. The `impact` report has one entry per pinned story, the change it sees through its own overrides. When the report has `warnings` and the body does not set `ignore_warnings` (`ignoreWarnings`), nothing is written: 200 with `applied: false`. Confirmed (or without warnings), each pin is cleared: a behavioral change applies at the story's next turn; a data-producing increase for a story with history follows `upgrade_mode` (`upgradeMode`): `backfill` (the default) queues its backfill (`backfills`; the pin is cleared when it completes), `forward_only` clears the pin now and the earlier turns keep a coverage gap. A story whose own backfill is running is left as it is. No pinned story: 200 `applied: true` with an empty report. 404 `not_found` for an unknown profile.",
+        "operationId": "upgrade_pinned_stories",
+        "parameters": [
+          {
+            "description": "The engine profile's id (a ULID).",
+            "in": "path",
+            "name": "profile_id",
+            "required": true,
+            "schema": {
+              "description": "The engine profile's id (a ULID).",
+              "examples": [
+                "00000000000000000000PRF001"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Profile Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpgradePinned"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileEditBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bring pinned stories to the profile's latest version",
+        "tags": [
+          "profiles"
         ]
       }
     },
@@ -73202,7 +73743,7 @@
     },
     "/stories/{story_id}/engine-profile": {
       "put": {
-        "description": "Run the story under another engine profile, at the profile's latest version, from its next turn (FR-PROF-1,7). The story keeps its overrides; when they cannot run over the new profile the call is 422 `invalid_profile` with `details.overrides`. A profile that is deleted or unknown is 422 `profile_deleted` (`reason`). Naming the story's current profile changes nothing (200): the story keeps the version it runs on. Recorded as the setting `engine_profile_id`. Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a change it warns of (a capability gained or lost, an upgrade unavailable) is applied only with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). Applied, `result` is the story's effective configuration after the write. The write is a story-scoped configuration change: it moves the story's `config_revision` and is listed in `GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn already running finishes under the configuration it started with. A confirmed change whose upgrade is unavailable (`upgrade_unavailable`: it adds data-producing capability to a story with history, and M3 has no backfill) keeps the story's configuration: `applied: true`, `result` is the configuration as it was, nothing is written and `config_revision` does not move. An archived story is 409 `story_archived` when the call would change something; a call that changes nothing (the story's own profile, a patch that changes no setting) answers 200 and writes nothing.",
+        "description": "Run the story under another engine profile, at the profile's latest version, from its next turn (FR-PROF-1,7). The story keeps its overrides; when they cannot run over the new profile the call is 422 `invalid_profile` with `details.overrides`. A profile that is deleted or unknown is 422 `profile_deleted` (`reason`). Naming the story's current profile changes nothing (200): the story keeps the version it runs on. Recorded as the setting `engine_profile_id`. Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a change it warns of (a capability gained or lost, a backfill needed) is applied only with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). Applied, `result` is the story's effective configuration after the write. The write is a story-scoped configuration change: it moves the story's `config_revision` and is listed in `GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn already running finishes under the configuration it started with. A confirmed change that adds data-producing capability to a story with history upgrades it by the body's `upgrade_mode` (`upgradeMode`; FR-PROF-8, #229): `backfill` (the default) starts its backfill (202, `applied: false`, the change applied when it completes), and `forward_only` applies it now (the earlier turns keep a coverage gap that retrieval and verification mark until a gap fill). Either supersedes a profile edit's backfill of the story still queued; `upgrade_unavailable` is always `false`. An archived story is 409 `story_archived` when the call would change something; a call that changes nothing (the story's own profile, a patch that changes no setting) answers 200 and writes nothing.",
         "operationId": "assign_engine_profile",
         "parameters": [
           {
@@ -78219,7 +78760,7 @@
     },
     "/stories/{story_id}/profile-overrides": {
       "patch": {
-        "description": "Change the story's overrides of its profile's dials (FR-PROF-5) with a JSON merge patch (RFC 7396) in `settings`: a key present sets that dial (an object merges into an object), and `null` removes the override, so the dial follows the profile again. The overrides persist across the profile's versions. A `null` must name a setting or group of the published schema (422 `validation_error` at its field; `invalid_profile` for one this deployment has not delivered). The overrides that result must be a settings document naming only delivered settings (422 `validation_error` at `body.settings.<path>`, or `invalid_profile`), and the whole configuration must run (422 `invalid_profile`); nothing is stored otherwise. They are stored without empty objects. `expected_revision` (optional) is the overrides' revision the patch was made against: another is 409 `revision_conflict` (`details.reason: overrides_revision`). A patch that changes no setting (one that removes an override the story does not have, or names an empty group) writes nothing: neither revision moves. `POST /stories/{id}/impact-preview` with the same patch in `overrides` answers this call's report without writing. Recorded as one setting per dial, `profile_overrides.<path>`. Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a change it warns of (a capability gained or lost, an upgrade unavailable) is applied only with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). Applied, `result` is the story's effective configuration after the write. The write is a story-scoped configuration change: it moves the story's `config_revision` and is listed in `GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn already running finishes under the configuration it started with. A confirmed change whose upgrade is unavailable (`upgrade_unavailable`: it adds data-producing capability to a story with history, and M3 has no backfill) keeps the story's configuration: `applied: true`, `result` is the configuration as it was, nothing is written and `config_revision` does not move. An archived story is 409 `story_archived` when the call would change something; a call that changes nothing (the story's own profile, a patch that changes no setting) answers 200 and writes nothing.",
+        "description": "Change the story's overrides of its profile's dials (FR-PROF-5) with a JSON merge patch (RFC 7396) in `settings`: a key present sets that dial (an object merges into an object), and `null` removes the override, so the dial follows the profile again. The overrides persist across the profile's versions. A `null` must name a setting or group of the published schema (422 `validation_error` at its field; `invalid_profile` for one this deployment has not delivered). The overrides that result must be a settings document naming only delivered settings (422 `validation_error` at `body.settings.<path>`, or `invalid_profile`), and the whole configuration must run (422 `invalid_profile`); nothing is stored otherwise. They are stored without empty objects. `expected_revision` (optional) is the overrides' revision the patch was made against: another is 409 `revision_conflict` (`details.reason: overrides_revision`). A patch that changes no setting (one that removes an override the story does not have, or names an empty group) writes nothing: neither revision moves. `POST /stories/{id}/impact-preview` with the same patch in `overrides` answers this call's report without writing. Recorded as one setting per dial, `profile_overrides.<path>`. Two stages (FR-PROF-7): the impact report (`impact`, one story) is always answered; a change it warns of (a capability gained or lost, a backfill needed) is applied only with `ignore_warnings` (`ignoreWarnings`), and otherwise nothing is written (`applied: false`, `result: null`) and the `Idempotency-Key` is not kept, so the confirmation may reuse it. A configuration that cannot run is refused all the same (422 `invalid_profile`). Applied, `result` is the story's effective configuration after the write. The write is a story-scoped configuration change: it moves the story's `config_revision` and is listed in `GET /stories/{id}/config-changes`; the story's next turn runs under it, and a turn already running finishes under the configuration it started with. A confirmed change that adds data-producing capability to a story with history upgrades it by the body's `upgrade_mode` (`upgradeMode`; FR-PROF-8, #229): `backfill` (the default) starts its backfill (202, `applied: false`, the change applied when it completes), and `forward_only` applies it now (the earlier turns keep a coverage gap that retrieval and verification mark until a gap fill). Either supersedes a profile edit's backfill of the story still queued; `upgrade_unavailable` is always `false`. An archived story is 409 `story_archived` when the call would change something; a call that changes nothing (the story's own profile, a patch that changes no setting) answers 200 and writes nothing.",
         "operationId": "set_profile_overrides",
         "parameters": [
           {

@@ -237,7 +237,7 @@ async def test_certify_presets__stub(
 def test_committed_certifications() -> None:
     """Every committed record validates and matches its committed report's SHA-256, was
     measured on the reference model (``model_tier = reference``, #54's model) and, for a preset
-    with partitions, ran NFR-QUAL-1's zero-tolerance floors on at least 300 cases a seed.
+    with partitions, ran the zero-leak floors on at least 300 cases a seed.
     Standard, Full and Max each have one."""
     found = committed_records()
     assert found, "no committed certification records yet"

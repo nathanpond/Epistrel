@@ -43,6 +43,7 @@ from epistrel.core import pause
 from epistrel.core.backfill import conflicts as backfill_conflicts
 from epistrel.core.backfill import coverage, reconcile
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
+from epistrel.core.genesis import deferred
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.membership import flip_membership
 from epistrel.core.profiles import effective, schema
@@ -356,6 +357,23 @@ async def _begin(ctx: JobContext, row: Any) -> JobOutput | None:
                 committed_at=now,
             )
         )
+        # #231: the deferred genesis content the target enables, at position 0 under the
+        # backfill's operation (dormant until completion): reconciliation meets the seeds as
+        # its earliest statements.
+        materialization: dict[str, Any] | None = None
+        settings = await _target_settings(conn, row)
+        if await deferred.pending(conn, story_id, settings):
+            materialization = await deferred.materialize_deferred(
+                conn, story_id, settings, operation_id, principal=str(row.requested_by)
+            )
+            await flip_membership(conn, [operation_id], Membership.DORMANT, story_id=story_id)
+        report: dict[str, Any] = {
+            **dict(row.report or {}),
+            "timeline_revision": int(revision or 0),
+            "policy": policy,
+        }
+        if materialization is not None:
+            report["materialization"] = materialization
         await conn.execute(
             update(story_backfills)
             .where(story_backfills.c.id == row.id)
@@ -363,11 +381,7 @@ async def _begin(ctx: JobContext, row: Any) -> JobOutput | None:
                 status="extracting",
                 operation_id=operation_id,
                 started_at=datetime.now(UTC),
-                report={
-                    **dict(row.report or {}),
-                    "timeline_revision": int(revision or 0),
-                    "policy": policy,
-                },
+                report=report,
             )
         )
     return None
@@ -405,6 +419,7 @@ async def _restart_if_moved(ctx: JobContext, row: Any) -> bool:
             await flip_membership(
                 conn, [str(row.operation_id)], Membership.DISCARDED, story_id=str(row.story_id)
             )
+            await deferred.undo(conn, str(row.story_id), str(row.operation_id))  # #231
         await conn.execute(
             update(backfill_chunks)
             .where(backfill_chunks.c.backfill_id == row.id)

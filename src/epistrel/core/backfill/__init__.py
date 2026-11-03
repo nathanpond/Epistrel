@@ -534,9 +534,12 @@ async def discard(conn: AsyncConnection, row: Any, *, status: str, error: str | 
     """End ``row`` without its results: its operation's rows (and the operation) discarded, its
     chunks dropped, the story resumed on its configuration."""
     if row.operation_id is not None:
+        from epistrel.core.genesis import deferred
+
         await flip_membership(
             conn, [str(row.operation_id)], Membership.DISCARDED, story_id=str(row.story_id)
         )
+        await deferred.undo(conn, str(row.story_id), str(row.operation_id))  # #231
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == row.operation_id)

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import Membership, OperationKind, OperationStatus
@@ -117,7 +117,35 @@ async def extend_live(conn: AsyncConnection, story_id: str) -> None:
 
     current = await effective.effective_configuration(conn, story_id, validate=False)
     turns = await active_turns(conn, story_id)
+    await close_lost(conn, story_id, current.settings, last_turn=turns[-1] if turns else 0)
     await seed_live(conn, story_id, current.settings, from_turn=(turns[-1] + 1) if turns else 1)
+
+
+async def close_lost(
+    conn: AsyncConnection, story_id: str, settings: ProfileSettings, *, last_turn: int
+) -> None:
+    """#231 (a data-producing decrease): each open ``live`` interval of a capability (or level)
+    ``settings`` no longer has on ends at ``last_turn``, the last turn before the change; one
+    that had not begun is removed. The data it covers is kept; a later re-enable's gap is then
+    exactly the turns in between."""
+    t = capability_coverage
+    levels = capabilities_of(settings)
+    rows = await conn.execute(
+        select(t.c.id, t.c.capability, t.c.level, t.c.from_turn).where(
+            t.c.story_id == story_id, t.c.source == LIVE, t.c.to_turn.is_(None)
+        )
+    )
+    for row in list(rows):
+        capability = str(row.capability)
+        still = capability in levels and (
+            capability not in LEVELLED or row.level is None or levels[capability] == row.level
+        )
+        if still:
+            continue
+        if int(row.from_turn) > last_turn:
+            await conn.execute(delete(t).where(t.c.id == row.id))
+        else:
+            await conn.execute(update(t).where(t.c.id == row.id).values(to_turn=last_turn))
 
 
 async def intervals(
@@ -203,6 +231,7 @@ __all__ = [
     "active_turns",
     "add",
     "capabilities_of",
+    "close_lost",
     "extend_live",
     "gaps",
     "gaps_of",

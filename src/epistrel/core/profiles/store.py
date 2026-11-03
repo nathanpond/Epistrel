@@ -611,7 +611,7 @@ async def update_profile(
             await conn.execute(
                 update(engine_profiles).where(engine_profiles.c.id == profile_id).values(**values)
             )
-            if new_version and (change.increases or any(d.increases for d in overridden.values())):
+            if new_version:  # #231: decreases close coverage, increases queue or gap
                 queued = await _upgrade_following(
                     conn,
                     profile_id,
@@ -673,8 +673,11 @@ async def _upgrade_following(
             .order_by(stories.c.id)
         )
     )
+    from epistrel.core.genesis import deferred
+
     for story in now_following:
         await coverage.extend_live(conn, str(story))
+        await deferred.on_configuration(conn, str(story), principal)  # #231
     if forward or start_job is None:
         return ()
     return await queue_upgrades(

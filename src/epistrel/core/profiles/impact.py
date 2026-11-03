@@ -182,6 +182,15 @@ class AffectedStory(BaseModel):
     (1-based)."""
     forward_only_gap: ForwardOnlyGap | None = None
     """#229: under ``forward_only``, what the turns before the switch lack."""
+    data_kept_dormant: bool = False
+    """#231: the change stops a data-producing module: its data is kept, unread and unwritten,
+    and reused if it is enabled again."""
+    deferred_to_materialize: dict[str, Any] | None = None
+    """#231: the story's deferred genesis content the change enables, ``{by_capability}``
+    counts; ``null`` when none."""
+    genesis_conflicts_unchecked: bool | None = None
+    """#231: under ``forward_only``, a story with history gets deferred seeds whose conflicts
+    with its earlier turns are never checked (their structured data is never derived)."""
     fingerprint_before: str | None = None
     fingerprint_after: str | None = None
     capabilities_after: list[str] | None = None
@@ -285,6 +294,10 @@ class Delta:
     before: Stamp
     after: Stamp
     guarantees_gained: tuple[str, ...] = ()
+    decreases: tuple[str, ...] = ()
+    """#231: the data-producing modules the change stops (their data is kept dormant)."""
+    settings_after: Any = None
+    """#231: the configuration after, for the deferred genesis content it enables."""
 
 
 def _moved(before: ProfileSettings, after: ProfileSettings, *, up: bool) -> set[str]:
@@ -310,6 +323,8 @@ def delta(before: Configuration, after: Configuration, facts: RuntimeFacts) -> D
         before=before.stamp(facts),
         guarantees_gained=guarantees_gained(before.settings, after.settings),
         after=after.stamp(facts),
+        decreases=tuple(schema.data_increases(after.settings, before.settings)),
+        settings_after=after.settings,
     )
 
 
@@ -344,6 +359,7 @@ def affected(
     mode: UpgradeMode | None = None,
     span: tuple[int, int] | None = None,
     queue_position: int | None = None,
+    deferred: Mapping[str, int] | None = None,
 ) -> AffectedStory:
     """``story_id``'s entry: a backfill is needed when the change adds data-producing
     capability and the story has history (#229: never unavailable from M7 on), estimated over
@@ -376,6 +392,11 @@ def affected(
         upgrade_mode=chosen,
         queue_position=queue_position if chosen == "backfill" else None,
         forward_only_gap=gap,
+        data_kept_dormant=bool(change.decreases),
+        deferred_to_materialize={"by_capability": dict(deferred)} if deferred else None,
+        genesis_conflicts_unchecked=True
+        if deferred and history and (mode == "forward_only")
+        else None,
         fingerprint_before=change.before.fingerprint,
         fingerprint_after=change.after.fingerprint,
         capabilities_after=list(change.after.capabilities),
@@ -471,6 +492,16 @@ async def gap_span(
     found = await coverage.gaps_of(conn, story_id, {m: levels.get(m) for m in change.increases})
     turns = [t for spans in found.values() for span in spans for t in span]
     return (min(turns), max(turns)) if turns else None
+
+
+async def deferred_counts(conn: AsyncConnection, story_id: str, change: Delta) -> dict[str, int]:
+    """#231: the story's deferred genesis content ``change``'s configuration would
+    materialize, by capability."""
+    if change.settings_after is None or not change.gained:
+        return {}
+    from epistrel.core.genesis import deferred
+
+    return await deferred.pending(conn, story_id, change.settings_after)
 
 
 async def queued_count(conn: AsyncConnection) -> int:
@@ -602,6 +633,7 @@ async def following_report(
             mode=mode,
             span=spans.get(s),
             queue_position=order.get(s),
+            deferred=await deferred_counts(conn, s, overridden.get(s, change)),
         )
         for s in listed
     ]
@@ -675,6 +707,7 @@ async def stories_report(
             mode=mode,
             span=spans.get(s),
             queue_position=order.get(s),
+            deferred=await deferred_counts(conn, s, changes[s]),
         )
         for s in ids[:AFFECTED_MAX]
     ]
@@ -906,6 +939,7 @@ __all__ = [
     "affected",
     "certification_lost",
     "creation_report",
+    "deferred_counts",
     "delta",
     "following_report",
     "gap_span",

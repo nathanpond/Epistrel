@@ -68,6 +68,7 @@ from epistrel.core.backfill import coverage
 from epistrel.core.config_changes import ConfigScope, record_config_change
 from epistrel.core.enums import StoryStatus
 from epistrel.core.errors import InvalidProfile, RevisionConflict, StoryArchived, StoryNotFound
+from epistrel.core.genesis import deferred
 from epistrel.core.ids import Ulid
 from epistrel.core.profiles import effective, impact, schema
 from epistrel.core.profiles.effective import Configuration, EffectiveConfig, StoryProfile
@@ -230,6 +231,7 @@ async def _report(
         mode=mode,
         span=span,
         queue_position=None if span is None else await impact.queued_count(conn) + 1,
+        deferred=await impact.deferred_counts(conn, story_id, change),
     )
     needed = entry.backfill.needed
     warned = safety_warnings(after.settings, safety)
@@ -375,6 +377,8 @@ async def _write_assignment(
             scope_id=story_id,
         )
     await coverage.extend_live(conn, story_id)
+    await deferred.on_configuration(conn, story_id, principal)  # #231
+    await deferred.on_configuration(conn, story_id, principal)  # #231
 
 
 async def _write_overrides(

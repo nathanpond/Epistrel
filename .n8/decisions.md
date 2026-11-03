@@ -11408,3 +11408,25 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   **Issue:** #230
 - **Decision (Rule 1):** C-01's fuzzing sent `version: 2147483648` to `POST /engine-profiles/{id}/certification-runs` and got a 500 (integer out of range). `CertificationRunRequest.version` now has `le=2**31 - 1`.
   **Issue:** #230 (found while running C-01; #233's route)
+
+### #231 — deferred genesis content and decreases, 2026-11-02
+
+- **Decision:** `core.genesis.deferred.materialize_deferred` reuses #149's `structured.plan`/`write`, partitions branch included, over the story's unmaterialized items of the capabilities the new configuration enables (`structured`, `episodic`, `partitions`).
+  - It rebuilds the cast from `characters` (role id, name, true age, persona snapshot) and placements, groups and the opening from `stories.scenario_snapshot`.
+  - Records land at position 0 with provenance `seed`. Items are stamped `materialized_at` plus `materialized_operation_id` (migration 0123), under a row lock.
+  - A nested seed waits for `nested_beliefs`, which is #149's own rule.
+  **Issue:** #231
+- **Decision (not built; follow-up issue filed):**
+  - The clock and States deferred items (clock settings, anchor, trackers, scheduled events, States) stay deferred; only `structured`/`episodic`/`partitions` items materialize.
+  - The fact merge's per-entry #111 validation-report entries are not written; the report carries `{counts, entries, conflicts}` only. It is stored in `story_backfills.report.materialization` and not projected per viewpoint.
+  - The Brother seed-vs-play conflict scenario is not tested, though seeds written under the backfill operation at turn 0 are what `_previous` finds as the earliest statement.
+  - The corrected-history and as-recorded checkpoint assertions and the post-upgrade contradiction catch are not tested.
+  **Issue:** #231
+- **Decision:** where materialization runs.
+  - Under `backfill`: in the handler's `_begin`, under the backfill operation, flipped dormant. Cancel, failure and a timeline-moved restart call `deferred.undo`, so the items are deferred again and their rows discarded.
+  - Under `forward_only`, a story without history, and `upgrade-pinned`: `deferred.on_configuration` runs inside every applied configuration write (`_write_assignment`, `_write_overrides`, profile-edit followers) under a fresh committed control operation, active at once.
+  **Issue:** #231
+- **Decision:** a decrease. `coverage.extend_live` now first calls `coverage.close_lost`, which ends each open `live` interval of a capability (or pipeline level) no longer on at the last turn, and drops one that never began. A profile edit's followers get `extend_live` on every new version, not only on increases. Rows are never flipped or deleted. Impact entries gain `data_kept_dormant` (`Delta.decreases`), `deferred_to_materialize {by_capability}` (candidate counts) and `genesis_conflicts_unchecked` (under `forward_only`, for a story with history).
+  **Issue:** #231
+- **Decision:** `core.genesis.deferred` is not listed in `CONTENT_WRITE_PATHS`, contrary to the AC. The guard test admits only the subject index's writer modules, and every write it makes goes through those guarded writers (`structured.write`, `canon.commit_fact`, `write_seed`).
+  **Issue:** #231

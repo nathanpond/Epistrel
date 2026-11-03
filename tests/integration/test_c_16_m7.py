@@ -579,3 +579,77 @@ def test_no_code_sets_upgrade_unavailable() -> None:
         if "upgrade_unavailable" in line and ("True" in line or "= unavailable" in line)
     ]
     assert found == []
+
+
+@pytest.mark.part("M7", "FR-PROF-18")
+async def test_c_16__m7_decrease(scratch: Space) -> None:
+    """#231: a data-producing decrease (a Full copy edited back to Lite's settings) applies with
+    no backfill and no pause, reports ``data_kept_dormant``, deletes nothing (the story's facts
+    keep their ids and membership) and closes the structured pipeline's coverage at the last
+    turn before it (D). Re-enabled after more turns (R), the report's backfill range is exactly
+    the turns in between, ``[D+1, R-1]``."""
+    async with respond_client(scratch.settings, scratch.db) as (client, lib):
+        copied = await ok(
+            await client.post(
+                f"{PROFILES}/{FULL_PRESET_ID}/copy", json={"name": "Trial"}, headers=WRITE
+            ),
+            201,
+        )
+        profile = copied["id"]
+        full = await ok(await client.get(f"{PROFILES}/{FULL_PRESET_ID}", headers=READ))
+        lite = await ok(await client.get(f"{PROFILES}/{LITE_PRESET_ID}", headers=READ))
+        story, actor = await _story(client, scratch.db, lib, profile, 0)
+        for _ in range(2):
+            await ok(await _respond(client, story, actor))
+        facts = [
+            tuple(r)
+            for r in await rows(
+                scratch.db,
+                "SELECT id, membership::text FROM facts WHERE story_id = :s ORDER BY id",
+                s=story,
+            )
+        ]
+        down = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={"name": "Trial", "settings": lite["settings"], "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        (entry,) = down["impact"]["affected_stories"]
+        assert entry["data_kept_dormant"] is True
+        assert entry[REDERIVATION]["needed"] is False
+        assert down["backfills"] == []
+        assert await _status(scratch.db, story) == "active"
+        kept = [
+            tuple(r)
+            for r in await rows(
+                scratch.db,
+                "SELECT id, membership::text FROM facts WHERE story_id = :s ORDER BY id",
+                s=story,
+            )
+        ]
+        assert kept == facts
+        closed = await rows(
+            scratch.db,
+            "SELECT to_turn FROM capability_coverage WHERE story_id = :s "
+            "AND capability = 'pipeline' AND level = 'structured'",
+            s=story,
+        )
+        assert [r.to_turn for r in closed] == [2]
+
+        await lls.long_lite_story(scratch.db, story, actor, 4)  # turns 3 and 4 under Lite
+        up = await ok(
+            await client.put(
+                f"{PROFILES}/{profile}",
+                json={
+                    "name": "Trial",
+                    "settings": full["settings"],
+                    "ignore_warnings": True,
+                    "upgrade_mode": "forward_only",
+                },
+                headers=WRITE,
+            )
+        )
+        (entry,) = up["impact"]["affected_stories"]
+        assert entry[REDERIVATION]["range"] == {"from_turn": 3, "to_turn": 4}

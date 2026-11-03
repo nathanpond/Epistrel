@@ -226,6 +226,23 @@
             "title": "Capabilities Lost",
             "type": "array"
           },
+          "data_kept_dormant": {
+            "default": false,
+            "title": "Data Kept Dormant",
+            "type": "boolean"
+          },
+          "deferred_to_materialize": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deferred To Materialize"
+          },
           "fingerprint_after": {
             "anyOf": [
               {
@@ -257,6 +274,17 @@
                 "type": "null"
               }
             ]
+          },
+          "genesis_conflicts_unchecked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Genesis Conflicts Unchecked"
           },
           "quality_status_after": {
             "anyOf": [

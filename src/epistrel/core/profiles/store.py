@@ -666,7 +666,7 @@ async def _upgrade_following(
     pinned (``upgrade-pinned`` brings it forward later)."""
     for story in sorted(following.keep) if forward else ():
         await core_backfill.supersede_queued(conn, story)
-    await _fold_queued(conn, profile_id, set(following.keep))  # #698
+    await _fold_queued(conn, profile_id, set(following.keep), previous_settings)  # #698
     now_following = list(
         await conn.scalars(
             select(stories.c.id)
@@ -704,13 +704,17 @@ async def _upgrade_following(
     )
 
 
-async def _fold_queued(conn: AsyncConnection, profile_id: str, skip: set[str]) -> None:
+async def _fold_queued(
+    conn: AsyncConnection, profile_id: str, skip: set[str], previous: Any = None
+) -> None:
     """#698 (#229's queue): a later version of the profile folds into each queued upgrade
     backfill toward it not yet claimed (``target.pin`` null: its latest version): the backfill's
     capabilities become what the latest version adds to the story's pinned configuration (a
     decrease drops one; a further increase adds one). When nothing is left to re-derive, the
     backfill is superseded and the pin cleared: the story follows the latest version now, its
-    coverage closed for what it lost. ``skip``: the stories this edit itself queues or gaps."""
+    coverage closed for what it lost. ``skip``: the stories this edit itself queues or gaps.
+    Only a version that changes data-producing settings against ``previous`` (the profile's
+    settings before it) folds: a behavioral edit leaves the queue as it is."""
     t = story_backfills.c
     rows = await conn.execute(
         select(story_backfills)
@@ -720,6 +724,10 @@ async def _fold_queued(conn: AsyncConnection, profile_id: str, skip: set[str]) -
     defaults = await effective.profile_defaults(conn)
     head = await _head(conn, profile_id)
     latest = await _version(conn, profile_id, int(head.current_version))
+    if previous is not None:
+        now = effective.merged_settings(defaults, latest.settings)
+        if not schema.data_increases(previous, now) and not schema.data_increases(now, previous):
+            return
     for row in rows:
         target = dict(row.target or {})
         story = str(row.story_id)

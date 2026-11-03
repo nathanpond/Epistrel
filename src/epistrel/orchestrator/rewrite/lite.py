@@ -244,11 +244,19 @@ async def reach(
     return found
 
 
+CONFLICTING = frozenset({"conflicts"})
+"""A reach hit's relation that contradicts the correction (``mentions`` only names it)."""
+
+
+def _conflicting(hit: LiteReachHit) -> bool:
+    return hit.relation in CONFLICTING
+
+
 def _better(hit: LiteReachHit, kept: LiteReachHit) -> bool:
     """#700's merge of duplicate hits: ``conflicts`` beats ``mentions``, then a fix beats
     none; otherwise the earliest chunk's (``kept``) stays."""
-    if (hit.relation == "conflicts") != (kept.relation == "conflicts"):
-        return hit.relation == "conflicts"
+    if _conflicting(hit) != _conflicting(kept):
+        return _conflicting(hit)
     return bool(hit.fix_text) and not kept.fix_text
 
 
@@ -266,7 +274,7 @@ async def _recheck(
         return {(h.turn, h.quote) for h in fixes}
     still: set[tuple[int, str]] = set()
     for found in result.hits:
-        if found.relation != "conflicts":
+        if not _conflicting(found):
             continue
         for fix in fixes:
             # A hit on a fixed line quotes the fixed text (a quote of the original names a

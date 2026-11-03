@@ -109,6 +109,10 @@ DO $do$
 DECLARE
     fn record;
     body text;
+    head text := E'\\n    -- epistrel prune exemption (0126)\\n';
+    tail text := E'-- epistrel prune exemption (0126) end\\n';
+    start integer;
+    stop integer;
 BEGIN
     FOR fn IN
         WITH funcs AS MATERIALIZED (
@@ -119,18 +123,18 @@ BEGIN
         SELECT oid FROM funcs WHERE pg_get_functiondef(oid) LIKE '%%(0126)%%'
     LOOP
         body := pg_get_functiondef(fn.oid);
-        body := regexp_replace(
-            body,
-            E'\\n    -- epistrel prune exemption \\(0126\\).*-- epistrel prune exemption '
-            || E'\\(0126\\) end\\n',
-            E'\\n',
-            ''
-        );
-        EXECUTE body;
+        start := strpos(body, head);
+        stop := strpos(body, tail);
+        IF start > 0 AND stop > start THEN
+            body := substr(body, 1, start - 1) || substr(body, stop + length(tail));
+            EXECUTE body;
+        END IF;
     END LOOP;
 END
 $do$;
 """
+"""Each guard's clause cut out by position (the clause, between its two marker comments, and
+the line break before it), giving back the function as it was."""
 
 
 def _literal(text: str) -> str:

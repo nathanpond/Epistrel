@@ -586,6 +586,10 @@ DEFAULT_EXTRACTION_SHADOW_RETENTION_DAYS = 90
 default window, so a gate tightening's validation can read a full one (FR-OBS-4)."""
 
 
+MIB = 1024 * 1024
+GIB = 1024 * MIB
+
+
 class RetentionSettings(BaseModel):
     """How long the ``retention_sweep`` keeps what may expire (FR-STORE-30; #71), stored under
     ``deployment_state.settings``: audit records (``audit`` events and ``audit_log`` rows) for
@@ -629,6 +633,19 @@ class RetentionSettings(BaseModel):
     bundle_export_ttl_hours: Annotated[StrictInt, PROSPECTIVE] = Field(default=24, ge=1, le=720)
     """#704 (FR-STORE-7): how long a story export's archive is kept; ``retention_sweep`` then
     deletes the file and sets the export ``expired``."""
+    bundle_max_uncompressed_bytes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=4 * GIB, ge=MIB, le=64 * GIB
+    )
+    """#250 (FR-STORE-7, ADR-143): the most bytes an imported bundle decompresses to, counted
+    while it decompresses (and the upload's own cap); past it, ``bundle_too_large``."""
+    bundle_max_entries: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=100_000, ge=10, le=10_000_000
+    )
+    """#250: the most members an imported bundle holds."""
+    bundle_max_entry_bytes: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=GIB, ge=MIB, le=64 * GIB
+    )
+    """#250: the most bytes one member of an imported bundle decompresses to."""
 
 
 class WorkerHealthSettings(BaseModel):
@@ -954,6 +971,22 @@ class RewriteSettings(BaseModel):
     lite_author_facts_max: Annotated[StrictInt, PROSPECTIVE] = Field(default=50, ge=1, le=1_000)
     """#699 (FR-LITE-8): the most active lasting author facts a Lite story holds; one more is
     409 ``author_fact_limit``."""
+    lite_reach_chunk_messages: Annotated[StrictInt, PROSPECTIVE] = Field(default=60, ge=1, le=500)
+    """#700 (FR-LITE-8): the transcript lines one ``lite_rewrite_reach`` call reads."""
+    lite_reach_chunk_tokens: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=12_000, ge=500, le=200_000
+    )
+    """#700: a reach chunk closes early when its next line would pass this estimate (a single
+    line over it is left unsearched)."""
+    lite_reach_max_calls: Annotated[StrictInt, PROSPECTIVE] = Field(default=24, ge=2, le=500)
+    """#700: the most ``lite_rewrite_reach`` calls one reach pass makes, the summary and
+    re-check calls included; past it the unsearched range is reported ``truncated``."""
+    lite_reach_parallelism: Annotated[StrictInt, PROSPECTIVE] = Field(default=4, ge=1, le=32)
+    """#700: the transcript chunks a reach pass searches at once."""
+    lite_reach_deadline_seconds: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=120, ge=5, le=3_600
+    )
+    """#700: a whole reach pass's deadline; chunks it leaves out are reported unsearched."""
 
 
 DAY_S = 86_400

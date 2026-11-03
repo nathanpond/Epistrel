@@ -577,7 +577,10 @@ async def test_c_20__m7_rewrite(
     ``guardrail_violation`` naming the policy (#223), before anything else: no
     ``rewrite_sessions`` row, no ``rewrite_parse`` call, and the audit row (entry point
     ``rewrite``) holds the policy id only, never the text. A free-text answer that breaks it is
-    refused the same way and stores nothing. Complement: clean text opens a session."""
+    refused the same way and stores nothing. #700: on a Lite story an instruction and a line
+    edit's ``new_text`` are refused before any ``lite_rewrite_parse`` or ``lite_rewrite_reach``
+    call, and a reach fix that breaks the story's rating policy is refused and becomes a
+    conflict. Complement: clean text opens a session."""
     from tests.structured_turn_support import structured_story
 
     settings = auth_settings(pg_url, model_adapter="stub")
@@ -669,6 +672,78 @@ async def test_c_20__m7_rewrite(
                 {"index": 0, "reason": "guardrail", "policy_ids": [made["id"]]}
             ]
             assert word not in gated.text
+
+            # #700: on a Lite story the instruction and a line edit's new text are gated the
+            # same way, before the Lite parse and the reach pass: no session, no call.
+            lite = str((await create(client, story_body("Wren", "Ada")))["story_id"])
+            stub.reset()
+            for body in (
+                {"instruction": f"Ada always carried a {word}."},
+                {"line_edit": {"turn": 1, "new_text": f"Ada lifts the {word}."}},
+            ):
+                blocked = await client.post(
+                    f"/stories/{lite}/rewrites",
+                    params={"viewpoint": "omniscient"},
+                    json=body,
+                    headers=WRITE,
+                )
+                assert blocked.status_code == 422, blocked.text
+                assert blocked.json()["error"]["code"] == "guardrail_violation"
+            side = {"rewrite_parse", "lite_rewrite_parse", "lite_rewrite_reach"}
+            assert [c for c in stub.calls if c.purpose in side] == []
+            assert await scalar(engine, sessions, s=lite) == 0
+
+            # #700: the story's rating policies gate a Lite reach's fix like the global ones
+            # (the rating gate): a fix that breaks the rating's policy is refused (its id
+            # listed, never the text) and the line becomes an irreducible conflict.
+            darn = f"darn{new_ulid().lower()}"
+            rating_id, rating_policy = await _rating_with_policy(client, engine, darn)
+            rated = str(
+                (await create(client, story_body("Wren", "Ada", content_rating_id=rating_id)))[
+                    "story_id"
+                ]
+            )
+            cast = await rows(
+                engine, "SELECT id, name FROM characters WHERE story_id = :s", s=rated
+            )
+            actor = next(str(c.id) for c in cast if c.name == "Wren")
+            stub.reset()
+            stub.when("", "Ada wipes her hands. I was a farmer.", purpose="generation")
+            played = await client.post(
+                f"/stories/{rated}/respond", json=respond_body(actor, "Hello."), headers=WRITE
+            )
+            assert played.status_code == 200, played.text
+            stub.reset()
+            stub.when(
+                "",
+                json.dumps({"change_statement": "Ada was a sailor.", "world_change": True}),
+                purpose="lite_rewrite_parse",
+            )
+            fix = {
+                "turn": 1,
+                "quote": "I was a farmer",
+                "relation": "conflicts",
+                "fix_text": f"Ada wipes her hands. I was a {darn} sailor.",
+                "reason": "her trade",
+            }
+            stub.script(
+                "lite_rewrite_reach",
+                [json.dumps({"hits": [fix]}), json.dumps({"hits": []})],
+            )
+            rated_session = await client.post(
+                f"/stories/{rated}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"instruction": "Ada was a sailor."},
+                headers=WRITE,
+            )
+            assert rated_session.status_code == 201, rated_session.text
+            assert darn not in rated_session.text
+            preview = rated_session.json()["preview"]
+            assert preview["changes"] == []
+            assert {"index": 0, "reason": "guardrail", "policy_ids": [rating_policy]} in preview[
+                "refused_changes"
+            ]
+            assert [c["reason"] for c in preview["blast_radius"]["irreducible"]] == ["fix_refused"]
         finally:
             await _retire(client, made["id"])
 

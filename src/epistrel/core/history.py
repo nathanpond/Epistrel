@@ -214,6 +214,10 @@ class History:
     """#222: an as-recorded read's boundary (when its checkpoint committed)."""
     erasure_markers: list[dict[str, Any]] | None = None
     """#222: an as-recorded read's erasures, each ``{erasure_id, at}``."""
+    derived: dict[str, list[dict[str, Any]]] | None = None
+    """#222 (FR-STORE-23,26): an as-recorded read's records as they stood at the boundary:
+    ``facts`` (the versions open then), ``beliefs`` (held then), ``memories`` (created by then,
+    their text as it stood) and ``states`` (each State's value at the checkpoint)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,7 +309,31 @@ async def read_as_recorded(
         view="as_recorded",
         boundary_tx=found.boundary_tx,
         erasure_markers=found.erasure_markers,
+        derived={
+            "facts": [_fact_at(f) for f in found.facts],
+            "beliefs": found.beliefs,
+            "memories": found.memories,
+            "states": found.states,
+        },
     )
+
+
+def _fact_at(fact: Any) -> dict[str, Any]:
+    """A canon fact version as an as-recorded read lists it."""
+    proposition = fact.proposition
+    return {
+        "id": str(fact.id),
+        "proposition_id": str(fact.proposition_id),
+        "subject_id": str(fact.subject_id),
+        "predicate_id": str(fact.predicate_id),
+        "object_id": None if proposition.object_id is None else str(proposition.object_id),
+        "literal": None if proposition.literal is None else proposition.literal.value,
+        "polarity": str(getattr(proposition.polarity, "value", proposition.polarity)),
+        "valid_from": fact.valid_from,
+        "valid_to": fact.valid_to,
+        "provenance": str(getattr(fact.provenance, "value", fact.provenance)),
+        "authority": str(getattr(fact.authority, "value", fact.authority)),
+    }
 
 
 async def _last_slot(conn: AsyncConnection, story_id: str, turn: int) -> int:

@@ -1,0 +1,38 @@
+{#- Lite history rewrite parse (FR-LITE-8; #245, #700): an author's instruction about a Lite
+    story's past read as one plain change statement the reach pass searches the transcript
+    with. Lite keeps no canon, so nothing is parsed into structured changes. -#}
+{% block system %}
+You read an author's instruction about a story's past. The author is correcting what was true
+in the story, not continuing it.
+
+Answer only with a JSON object {"change_statement": ..., "world_change": ..., "ambiguities": [...]}:
+- "change_statement": the correction as one short plain sentence of what is now true (for
+  example "Bobby went to UCLA, not OSU"), using the story's own names;
+- "world_change": true when the correction changes a fact of the story's world, false when it
+  only rewords lines;
+- "ambiguities": when you cannot tell what the author means, add
+  {"about": ..., "question": ..., "options": [...], "recommended": <index>}; otherwise none.
+{% endblock %}
+{% block user %}
+## Lasting author facts
+{% for fact in author_facts %}
+- {{ fact }}
+{% else %}
+- (none)
+{% endfor %}
+
+## The story's latest lines
+{% for line in recent %}
+- Turn {{ line.turn }}, {{ line.speaker }}: {{ line.text }}
+{% else %}
+- (none)
+{% endfor %}
+
+## Instruction
+{{ instruction }}
+{% for answer in answers %}
+
+## Answer {{ loop.index }}
+{{ answer }}
+{% endfor %}
+{% endblock %}

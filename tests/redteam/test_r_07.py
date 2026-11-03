@@ -542,8 +542,10 @@ async def test_r_07__m7_rewrite(pg_url: str, engine: AsyncEngine) -> None:
     """The rewrite path is blocked too (#223): with a 16-year-old in the cast, the euphemism,
     the framing and the older claim sent as rewrite instructions are each refused 422
     ``guardrail_violation`` naming the minors policy, with no session row and no
-    ``rewrite_parse`` call. Complement: the same cast without a minor lets the instructions
-    past the gate (the Lite story's session then plans, #245)."""
+    ``rewrite_parse`` call. #700: the same holds for a Lite line edit's ``new_text``, and no
+    ``lite_rewrite_parse`` or ``lite_rewrite_reach`` call is made. Complement: the same cast
+    without a minor lets the instructions past the gate (the Lite story's session then plans,
+    #245)."""
     from sqlalchemy import func
 
     from epistrel.core.tables import rewrite_sessions as sessions_table
@@ -563,13 +565,26 @@ async def test_r_07__m7_rewrite(pg_url: str, engine: AsyncEngine) -> None:
                 headers=WRITE,
             )
 
+        def line_edit(story_id: str, said: str) -> Any:
+            return client.post(
+                f"/stories/{story_id}/rewrites",
+                params={"viewpoint": "omniscient"},
+                json={"line_edit": {"turn": 1, "new_text": said}},
+                headers=WRITE,
+            )
+
         for said in INPUTS:
-            refused = await rewrite(story, said)
-            assert refused.status_code == 422, refused.text
-            error = refused.json()["error"]
-            assert error["code"] == "guardrail_violation"
-            assert [v["policy_id"] for v in error["details"]["violations"]] == [MINORS_POLICY_ID]
-        assert [c for c in stub.calls if c.purpose == "rewrite_parse"] == []
+            # #700: an instruction and a line edit's new text (Lite or not) are gated alike.
+            for sent in (rewrite, line_edit):
+                refused = await sent(story, said)
+                assert refused.status_code == 422, refused.text
+                error = refused.json()["error"]
+                assert error["code"] == "guardrail_violation"
+                assert [v["policy_id"] for v in error["details"]["violations"]] == [
+                    MINORS_POLICY_ID
+                ]
+        side = {"rewrite_parse", "lite_rewrite_parse", "lite_rewrite_reach"}
+        assert [c for c in stub.calls if c.purpose in side] == []
         async with engine.connect() as conn:
             count = await conn.scalar(
                 select(func.count()).where(sessions_table.c.story_id.in_([story, adults]))

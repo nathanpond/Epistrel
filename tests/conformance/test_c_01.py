@@ -88,6 +88,7 @@ from epistrel.api.auth import EXEMPT_ROUTES
 from epistrel.api.openapi import DOCUMENTED_BODIES, SCHEMA_VERSION, TAG_NAMES, dumps
 from epistrel.api.routes.stories import StorySettingsPatch
 from epistrel.config import Settings
+from epistrel.core.bundles.import_job import ImportMetadata
 from epistrel.core.catalog.characters import CharacterCreate, PublishRequest
 from epistrel.core.catalog.personas import PersonaCreate
 from epistrel.core.catalog.scenario_models import ScenarioCreate
@@ -430,7 +431,7 @@ def _operations(schema: dict[str, Any]) -> Iterator[tuple[str, str, dict[str, An
             yield method.upper(), path, operation
 
 
-MULTIPART_MODELS: dict[str, Any] = {"upload_media": MediaUpload}
+MULTIPART_MODELS: dict[str, Any] = {"upload_media": MediaUpload, "import_story": ImportMetadata}
 """Routes that read a multipart body themselves (#105): the model of its JSON ``metadata``
 part, which the document's ``MULTIPART_BODIES`` component describes."""
 

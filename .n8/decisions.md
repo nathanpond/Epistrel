@@ -11944,3 +11944,140 @@ Branch `milestone/m7-verify-fixes-1`. Picks up the open `bug`/`confirmed` issues
   **Issue:** #702, #703, #700, #698
 - **Decision (Rule 1, #709):** `summary_rebuild.discard_segments` now also sets the cancelled rebuild's segment rows to `discarded`. Before, only their operations were flipped and the projection rows stayed `active`. Every later summary run was then dropped as "already written" and requeued forever: CI's `test_notify_wakes_a_worker_before_its_poll` found the worker always busy. The import-unchecked test now asserts through #120's guard functions instead of leaving a reactivation check pending on the shared database.
   **Issue:** #709, #705
+
+## /n8-exec M7 (retry 2: verify fixes) — 2026-11-03
+
+Branch `milestone/m7-verify-fixes-2`, PR #719. This pass takes the open `bug`/`confirmed` issues the re-verify at e9881ea filed (#716, #717, #718) and the open partial ones (#700, #709), then the open M7 stories.
+
+- **Decision:** the local gate per issue is the touched tests, the tests matching their area, and every static CI check (a scratchpad script runs the 17 `ci.yml` static steps). The full suite runs in CI on the PR.
+  **Why:** same practice as the earlier M7 and M6 fix passes; a local full run takes over two hours on this host.
+  **Issue:** all below
+
+### #717 — the upgrade estimate's parse calls
+
+- **Decision:** the Lite fact and note queries (`lite_facts`, `lite_note_parts`, `converted_before`) moved from the Orchestrator to a new `core.author_facts`, and the Orchestrator reads them from there.
+  **Why:** the impact report is Core, and Core may not import the Orchestrator (import-linter contract).
+  **Issue:** #717
+- **Decision:** the estimate adds one `directive_parse` call per *pending* key: active facts plus active notes, less the keys an earlier completed backfill converted. That is exactly what `_parse_author_facts` will call. Tokens are not raised; the duration follows the calls.
+  **Issue:** #717
+
+### #718 — the held render
+
+- **Decision:** the "held render" is built as a withdrawn dry run plus replayed model answers, rather than serializing the pipeline's in-memory turn draft.
+  - **At the regenerate call:** the regeneration plays under `directed.capture`. Its commit's first step reads the composed reply and raises `HeldRenderCaptured` (a `Withdrawn`), so the operation ends `abandoned` with no events. The `HeldCalls` the Model Access Layer recorded are stored as `held_render {message_text, calls}`.
+  - **At apply:** the play is repeated with the answers replayed by purpose and message hash. A prompt the story changed under is sent again: the planner's "re-generated only if ... touched".
+  **Why:** the structured turn's draft (TurnRead, Rendered, Checked, composition) is a graph of in-memory objects across a 7,000-line pipeline. Serializing it would be a far larger change with a far larger blast radius. Replaying the answers re-runs every deterministic check against the state at apply, and commits the same reply when nothing changed.
+  **Issue:** #718
+- **Decision:** a held play leaves one `abandoned` turn operation row with no events.
+  **Why:** it is the same audit trace any withdrawn or abandoned turn leaves. "On cancel nothing is committed" holds: no event, no membership change, no revision.
+  **Issue:** #718
+- **Decision:** a play that fails at the regenerate call cancels the session, and the error is returned to the caller. The 202 is never answered without a held render.
+  **Issue:** #718
+- **Decision (Rule 1):** an apply of a held `directed_resolution` session through `POST .../apply` stored the turn's `RegenerateResult` as the apply's idempotent result, and serialization failed (500). `IdempotentCall.result_in_commit` is now a property, and `keeping_result()` makes a turn played inside another call bind the key without storing its own result.
+  **Why:** the apply path had never been driven over REST (#712's test applied directly in the regenerate call).
+  **Issue:** #718, #712
+
+### #716 — a nudge during a Lite turn
+
+- **Decision:** built #244's AC for Lite turns, and kept #226's rule for structured turns, instead of blocking for the owner.
+  **Why:** #226's rule ("the next structured turn's renders carry it") is written for structured turns, and #244's read-set AC for Lite turns, so the two need not conflict.
+  - `UNVERSIONED_MEMBERS = ("author_direction",)` are compared at a Lite turn's commit even when the revision has not moved.
+  - `decide` regenerates on a touched member when the revision has not moved.
+  - Cost if wrong: one condition in `Operation._revalidate`.
+  **Issue:** #716
+
+### #700 — the Lite rewrite's remaining parts
+
+- **Decision:** `lite_rewrite_parse`'s answer is `{change_statement, world_change, ambiguities}`. An empty statement falls back to the instruction (the stub's default answer). With an ambiguity no reach runs until the answer, which reads the instruction again (a second parse call) and then searches.
+  **Why:** #245's Discretion schema. Searching before the statement is settled would spend up to 24 calls on a reading the author may reject.
+  **Issue:** #700
+- **Decision:** the "rating gate" is #56's output gate. Its policy set is the story's effective guardrails: global, the rating's (nearest source first) and the story's own. No second gate exists; a C-20 test drives a rating policy against a Lite fix.
+  **Issue:** #700
+- **Decision:** Lite conflicts are fed to the planner as extra `irreducible` entries (stored as `plan.lite_conflicts`, kept across re-plans), the way #713 adds merge contradictions. #224's dispose and apply then handle them: `rewrite` goes through `rewrite_record` with the change statement as the canon and the hit's reason as the guidance; `drop` is an overlay drop; `keep` is a notification.
+  **Why:** one conflict machinery for both pipelines, with no Lite copy of the apply.
+  **Issue:** #700
+- **Decision (#237's Lite read set):** the plan stores `lite_read {statement, seen_seq}` (the last event position the reach saw). Positions are used instead of times, so a turn committed in the same second is not missed.
+  - **At apply,** when the revision moved, the reach searches only `seq > seen_seq` (no summary call). New hits merge into the stored plan, and the apply raises #237's `Stale` (`new_reach_hits`), so `_restale` recomputes and re-previews.
+  - **With no new hit,** the existing checks under the lock decide (planned lines' membership and versions).
+  **Issue:** #700
+- **Decision:** the post-undo reach makes every hit that conflicts or carries a fix an `after_undo` conflict. A fix is offered through `rewrite`, never applied silently, because the undo restores text the model never saw.
+  **Issue:** #700
+- **Decision:** the six-mode test holds back `_apply_directly` so every combination plans against the same story. Each session is cancelled before the next opens (the limit is 5).
+  **Issue:** #700
+- **Decision (Rule 1):** `rewrite.lite` read a player's line as the narrator's (`role != "user"`). The transcript projection's role is `player`. `PLAYER_ROLES = {"player"}` now drives the speaker label, `beat_required`'s `speaker_kind` and the player-line conflicts.
+  **Issue:** #700
+- **Decision:** `tests/docs/test_lite_rewrite_rows.py` carries no part marker. docs/04's C-14 has no M7 slot, so the complement #245 names (`test_c_14__m7_lite_rows`) runs as a plain test rather than adding a C-14 M7 part.
+  **Issue:** #700
+
+### #709 — S-PROFILE-SWITCH's meeting, beliefs and clock
+
+- **Decision:** reconciliation runs inside `profiles.effective.deriving(story, target_settings)`, a ContextVar that every `effective_configuration` read honours for that story. The clock's gate (`clock_level`), its time basis and the live writers then act as the target configuration does, while nothing is stored until the completion.
+  **Why:** the backfill writes "through the same writers live turns use" (#228). Without it, the clock writers refuse with `module_off` on a story still stored as Lite.
+  **Issue:** #709, #228
+- **Decision:** a new `state_change_source` value `backfill` (migration 0129; `CLOCK_SOURCES` includes it). How the minutes were derived goes in `estimate_meta.derived` (`pacing`, `declared_skip`, `estimate`).
+  **Why:** #228's AC names `source = backfill`. Reusing `pacing` would make a backfilled advance indistinguishable from a live one.
+  **Issue:** #709, #228
+- **Decision:** clock steps are planned in the job outside any transaction. The planner reads the reconciled clock in a rolled-back transaction with the operation's rows flipped active, then walks the turns in order. `time_estimation` is called with the running time of day, then the reconcile transaction writes the steps.
+  **Why:** FR-CONC-2 forbids holding a transaction across a model call; #228's replan requires the estimate in order, with the reconciled clock.
+  **Issue:** #709, #228
+- **Decision:** "presence inferred from the text" stands in for #161's routing when a Lite era is backfilled. The characters a turn names observe its narrated claims at `content` fidelity, through `observation.observe`. Says keep the inferred, lazily resolved exposures.
+  **Why:** a Lite era has no placements, so #161's router would find no perceiver. The placements themselves (inferred `located_at`) and testimony stay open on #228.
+  **Issue:** #709, #228
+- **Decision:** S-PROFILE-SWITCH's clock is checked in both tests.
+  - **Round trip** (a `prompt_only` Lite era): nothing is re-derived (owner decision 2), and the clock equals the fold of its advances.
+  - **Main test** (Lite preset, clock off): turns 3 and 4 are planted with a paced render and a player-invited "two hours" skip, so the derivation is exercised.
+  **Issue:** #709
+
+### #222 — the as-recorded view's derived sections
+
+- **Decision:** the derived sections are read per request from the derived tables:
+  - `beliefs`: open at the boundary by `tx_from`/`tx_to`;
+  - `memories`: `created_at` at or before the boundary, not retired then;
+  - `states`: counted changes with `tx_from` at or before the boundary, folded on the initial value.
+
+  Each keeps only rows whose producing operation was active at the boundary (#222's `membership_at` fold) and whose position is at or before the checkpoint. The history route serves them as `derived {facts, beliefs, memories, states}`.
+  **Why:** the view is an audit tool, not a hot path (#222's Discretion: no projection), and it reuses the fold the events section already uses.
+  **Issue:** #222
+- **Decision:** an `in_place` part recorded after the boundary is reverse-applied from the earliest such part's `patch_before` for its record. A later revert is a part too, so the earliest part after the boundary holds the value as it stood.
+  **Issue:** #222
+- **Decision (Rule 1):** `boundary_tx` read `stage_log` entries named `completed`/`abandoned`, but the log names stages (`completion`, …), so a completed staged turn fell back to its intent commit. Now:
+  - a completed turn ends at its `completion` entry;
+  - an abandoned one ends at its last logged stage (a discard moves `turn_stage` and logs no entry).
+  **Issue:** #222
+
+### #250, #251, #705 — story import as a job, and its gates
+
+- **Decision:** the import's planned shape is built: a multipart request; up-front checks; a story row created `importing`; a `bundle_jobs` row of `kind = import`; and a `story_import` job with `GET /admin/stories/imports/{job_id}`.
+  **Why:** the last pass logged the 202-plus-job contract as Rule 4. It is #250's own planned AC, though, so building it executes the plan rather than deviating from it. Executing the plan is this skill's job; no replan is needed.
+  **Issue:** #250, #705
+- **Decision:** the job reads the whole staged archive into memory under the frozen limits, still counted while it decompresses. It inserts the rows in one transaction (`importing.insert_bundle`, the former synchronous path refactored), then runs the gates, then rebuilds.
+  - **Not built** (#250's Discretion mechanics): the streaming COPY in 5,000-row batches, progress per member, and the crash points and pauses.
+  - **Recovery:** a crashed attempt is reset by the next one (the story's rows purged, its row recreated) and restarts from the staged file. Ids are recomputed the same (`fresh_id`: the old id's time prefix plus HMAC(job id, old id)).
+  **Why:** memory is bounded by `bundle_max_uncompressed_bytes`. One transaction makes "a refusal leaves nothing" hold for the insert by construction.
+  **Issue:** #250
+- **Decision:** after a refusal the `bundle_jobs` record is kept with `story_id` null, and a story's deletion no longer deletes its import record (`delete_story_bundles` deletes exports only). The table gains `request`, `report`, `stage` and `progress`, and `story_id` becomes nullable (migration 0130).
+  **Issue:** #250
+- **Decision:** `story_importing` rides on the Engine's story gate (`erasure_ledger.check_story` calls `core.importing.refuse`), so every story-naming method answers 409. `delete_story` checks it explicitly. `Operation._refuse_blocked` is the backstop. The job claim and the outbox's `story_blocked` skip importing stories, and the import job's own work passes (`core.importing.passing`).
+  **Issue:** #250
+- **Decision:** with no `engine_profile_id`, the import attaches the bundle's own profile when this deployment has it, pinned at the bundle's version when this deployment holds that version, else the deployment's default. The up-front impact report is skipped for the bundle's own pinned configuration.
+  **Why:** "identical to the source apart from the deployment-specific choices". Without the pin, an edited profile would make every re-import gain capability and start a backfill (found by the outbox test).
+  **Issue:** #250, #251
+- **Decision:** `rating_required` and the profile's impact are checked up front. The up-front report's "before" configuration is `manifest.engine_profile.settings`; it warns when `ImpactReport.warnings` is non-empty.
+  **Issue:** #251
+- **Decision (gates):**
+  - **`apply_erasure_ledger`** re-runs `erase()` with the entry's id, principal `system` and `write_ledger=False`. Its subject is remapped for story scope; for catalog scope it is the story character whose `source_catalog_id`/`persona_id` matches. It then copies the entries with `copied_from` and runs `guard.check_content` over every indexed record.
+  - **Confirmed candidates are not translated:** `confirmed=()`, and the report carries `candidates_remaining`. A candidate id hashes the record's text offset, which `Candidate` does not expose. The text fence still refuses the import if a confirmed mention survives.
+  - **`check_guardrails`** reuses #118's evaluator and the rating check's `ModelPolicyCheck`.
+  - **`park_outbox`** reuses `close_in_fork`. The reservation timers come back through `timers.schedule`.
+  - **`attach_profile`** starts a `gap_fill` backfill (in the finishing transaction) only for capability the attach adds over the bundle's configuration, never for gaps the source already had.
+  **Issue:** #251
+- **Decision:** a parked `imported_unsettled` row is listed by `GET /stories/{id}/reconciliation` (`_listed` admits it, though not executable), and #661's resolve action accepts it.
+  - **Not built:** `compensate` accepting `imported_unsettled`. Compensate dispatches a new effect against an executable row, which a parked row is not by design.
+  **Issue:** #251
+- **Decision:** `FORMAT_MIGRATIONS` maps a from-version to `(to-version, step)` and chains to `FORMAT_VERSION`. A registered version with a gap is `unsupported_format_version`; an older MINOR with no step imports as it is.
+  **Issue:** #250
+
+### #235 / #228 / #720 — scope left at the end of retry 2
+- **#235**: I did not build the `evals certify --presets` tooling. A draft depended on runner/report APIs that are shaped differently, and the owner's multi-hour live run gates it anyway. #235 stays blocked/needs-owner-action; the tooling and the live run are both named on the issue.
+- **#228**: partial (clock, scheduled times, inferred observations). It stays open and is not in the PR's Closes list.
+- **#250/#251**: closed by the PR. The hardening follow-ups (imported_unsettled compensation, erasure-candidate translation, streaming batches and crash points) are filed as #720 (needs-triage), not built inline.

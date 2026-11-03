@@ -55,13 +55,14 @@ from epistrel.core import (
 )
 from epistrel.core import config_changes as config_log
 from epistrel.core import control as control_ops
+from epistrel.core import importing as story_importing
 from epistrel.core import outbox as core_outbox
 from epistrel.core import providers as core_providers
 from epistrel.core import prune as core_prune
 from epistrel.core import story_settings as settings_store
 from epistrel.core.amendments import read as amendment_reads
 from epistrel.core.backfill import conflicts as backfill_conflicts
-from epistrel.core.bundles import importing as bundle_import
+from epistrel.core.bundles import import_job
 from epistrel.core.canon.facts import Fact
 from epistrel.core.catalog import characters as catalog_characters
 from epistrel.core.catalog import companion as catalog_companion
@@ -194,6 +195,7 @@ from epistrel.orchestrator.jobs.handlers import prune_policy as prune_policy_job
 from epistrel.orchestrator.jobs.handlers import rating_check as rating_check_job
 from epistrel.orchestrator.jobs.handlers import reembed as reembed_job
 from epistrel.orchestrator.jobs.handlers import story_export as story_export_job
+from epistrel.orchestrator.jobs.handlers import story_import as story_import_job
 from epistrel.orchestrator.jobs.handlers import turn_queue as turn_queue_job
 from epistrel.orchestrator.jobs.handlers.rebuild import (
     REBUILD_KIND,
@@ -220,8 +222,10 @@ from epistrel.orchestrator.lite.schemas import (
 from epistrel.orchestrator.models import ModelAccessLayer, ModelError, ModelParams
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models import facts as model_facts
+from epistrel.orchestrator.models import held as held_models
 from epistrel.orchestrator.models import metrics as model_metrics
 from epistrel.orchestrator.models import registry as model_registry
+from epistrel.orchestrator.models.held import HeldCalls
 from epistrel.orchestrator.policies import admin as policy_admin
 from epistrel.orchestrator.policies import input_gate, output_gate
 from epistrel.orchestrator.policies import store as policy_store
@@ -355,7 +359,12 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "cancel_backfill": ResultCodec.of(core_backfill.BackfillCancelled),
     "prune_story": ResultCodec.of(core_prune.PruneOutcome),
     "export_story": ResultCodec.of(bundles.ExportStarted, status=202),
-    "import_story": ResultCodec.of(bundle_import.Imported, status=201, revision_field=_CONFIG),
+    # #250: 202 with the import's job; #251: 200 ``{applied: false, impact}`` when it warns.
+    "import_story": ResultCodec.of(
+        import_job.ImportStarted | import_job.ImportImpact,
+        status=lambda found: 202 if isinstance(found, import_job.ImportStarted) else 200,
+        revision_field=_CONFIG,
+    ),
     "resolve_backfill_conflict": ResultCodec.of(backfill_conflicts.Resolved),
     # Rewrite sessions (#223): story-scoped side-channel writes; the revision never moves.
     "open_rewrite": ResultCodec.of(rewrite_api.RewriteWrite, status=201),
@@ -847,6 +856,7 @@ class Engine:
             source=self._model_secrets,
             blobs=self._blob_bytes,
         )
+        self._configure_import()  # #250
         backfill_job.configure(
             concurrency=self.settings.backfill_concurrency,
             wait_s=self.settings.worker_poll_interval,
@@ -2850,30 +2860,84 @@ class Engine:
         return await self._keyed(ctx, "export_story", run, material={"story_id": story_id})
 
     async def import_story(
-        self, ctx: RequestContext, data: bytes, request: bundle_import.ImportRequest
-    ) -> bundle_import.Imported:
-        """Import a story bundle as a new story (FR-STORE-7, FR-ADMIN-4; #250; REST 201): the
-        archive is checked under limits, every id it owns remapped, its rows written in one
-        transaction and its projections rebuilt. 413 ``bundle_too_large``, 422
-        ``corrupt_bundle`` / ``unsupported_format_version``; a refusal leaves nothing."""
+        self, ctx: RequestContext, data: bytes, metadata: import_job.ImportMetadata
+    ) -> import_job.ImportStarted | import_job.ImportImpact:
+        """Import a story bundle as a new story (FR-STORE-7, FR-ADMIN-4; #250, #251): the
+        upload, its manifest, its format, the rating and the profile are checked up front
+        (413 ``bundle_too_large``, 422 ``corrupt_bundle`` / ``unsupported_format_version`` /
+        ``rating_required``), then the story is created ``importing`` and a background job
+        inserts the bundle, runs the import gates and makes it ready (REST 202, ``Location`` the
+        import's status). An impact report that warns, without ``ignore_warnings``, is answered
+        instead and nothing is created (REST 200 ``{applied: false, impact}``). A refusal
+        leaves nothing. Keyed per deployment: the request hash covers the archive's SHA-256 and
+        the metadata."""
         principal = self.require_principal(ctx)
         digest = hashlib.sha256(data).hexdigest()
+        self._configure_import()
+        facts = await self._runtime_facts()
+
+        async def impact_of(
+            conn: AsyncConnection,
+            manifest: Mapping[str, Any],
+            profile_id: str,
+            metadata: import_job.ImportMetadata,
+        ) -> Any:
+            return await import_job.import_impact(conn, manifest, profile_id, metadata, facts)
+
+        async def run(_: RequestContext) -> import_job.ImportStarted | import_job.ImportImpact:
+            found = await import_job.start_import(
+                self.db,
+                data,
+                metadata,
+                principal=principal,
+                directory=self.settings.bundle_dir,
+                enqueue=story_import_job.enqueue,
+                impact=impact_of,
+            )
+            async with self.db.connect() as conn:
+                revision = await profiles.config_revision(conn)
+            return dataclasses.replace(found, config_revision=revision)
+
+        return await self._keyed(
+            ctx,
+            "import_story",
+            run,
+            material={"sha256": digest, **metadata.model_dump(mode="json")},
+        )
+
+    @refuses_nul()
+    async def import_status(self, ctx: RequestContext, job_id: str) -> import_job.ImportJob:
+        """An import's state (#250): its status, story, stage and progress, and the error and
+        report that ended it; 404 ``job_not_found``."""
+        return await import_job.status(self.db, job_id)
+
+    def _configure_import(self) -> None:
+        """#250: what the import job needs of this Engine (its media store, the embed job, the
+        bundle directory) and #251's gates (the erasure key, the summary compressor, the blob
+        collector, the Model Access Layer)."""
 
         async def embed(conn: AsyncConnection, story_id: str) -> None:
             # #705: the imported story's active memories get vectors in the background;
             # retrieval is lexical-only until then.
             await reembed_job.schedule(conn, reembed_job.EMBED, story_id)
 
-        async def run(_: RequestContext) -> bundle_import.Imported:
-            return await bundle_import.import_story(
-                self.db, data, request, principal=principal, blobs=self._blob_put, after=embed
-            )
+        async def collect(checksum: str) -> bool:
+            return await media_sweep.collect_blob(self.db, self.media, checksum)
 
-        return await self._keyed(
-            ctx,
-            "import_story",
-            run,
-            material={"sha256": digest, **request.model_dump(mode="json")},
+        import_job.configure(
+            import_job.ImportServices(
+                blobs=self._blob_put,
+                after=embed,
+                directory=self.settings.bundle_dir,
+                extra={
+                    "config_key": None
+                    if self.settings.config_key is None
+                    else self.settings.config_key.get_secret_value(),
+                    "compressor": self.ports.summary_compressor,
+                    "collect": collect,
+                    "models": self.models,
+                },
+            )
         )
 
     @refuses_nul()
@@ -3090,10 +3154,13 @@ class Engine:
                 run=self._held_run(ctx, story_id, request, principal, prepared, held),
             )
             if written.apply is None:
+                session = await self._hold_render(
+                    ctx, story_id, request, principal, prepared, written
+                )
                 async with self.db.connect() as conn:
                     head = await directed.head_variant(conn, story_id)
                 return directed.DirectedPending(
-                    rewrite_session=written.session,
+                    rewrite_session=session,
                     previous_variant=head,
                     timeline_revision=written.timeline_revision,
                     warnings=list(prepared.warnings),
@@ -3147,6 +3214,45 @@ class Engine:
         finally:
             handle.close()
 
+    async def _hold_render(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: RegenerateRequest,
+        principal: str,
+        prepared: directed.Directed,
+        written: rewrite_api.RewriteWrite,
+    ) -> rewrite_api.RewriteSession:
+        """#718 (FR-COMMIT-12): the variant of a held directed regeneration, rendered now. The
+        regeneration plays up to its commit, which is withdrawn (``directed.capture``: nothing is
+        written, the revision does not move); the composed reply and the answers the play's
+        model calls got are held on the session (``held_render``), and the apply replays them.
+        A play that fails cancels the session and the error is the call's."""
+        replay = request.model_copy(update={"directive": None})
+        calls = HeldCalls()
+        session_id = written.session.id
+        token = directed.HELD.set(directed.capture)
+        call = idempotency.current_call()
+        try:
+            with held_models.holding(calls), directed.directing(prepared):
+                await self._regenerate(ctx, story_id, replay, principal)
+        except directed.HeldRenderCaptured as captured:
+            text = captured.text
+        except BaseException:
+            await rewrite_session.cancel(self.db, story_id, session_id, principal=principal)
+            raise
+        else:  # pragma: no cover - a structured regenerate always stages ``HELD``
+            raise RewriteApplyFailed(
+                "the directed regeneration committed without its amendment", {"retryable": False}
+            )
+        finally:
+            directed.HELD.reset(token)
+            if call is not None:
+                call.result_in_commit = None  # the withdrawn commit stored nothing
+        return await rewrite_session.hold_render(
+            self.db, story_id, session_id, text, calls.document()
+        )
+
     def _held_run(
         self,
         ctx: RequestContext,
@@ -3155,11 +3261,14 @@ class Engine:
         principal: str,
         prepared: directed.Directed,
         held: dict[str, Any],
+        recorded: list[Any] | None = None,
     ) -> rewrite_apply.Run:
         """#712: the commit of a ``directed_resolution`` session's apply: the directed
         regeneration, played with the amendment staged on its turn (``directed.HELD``), so the
         regenerated variant and the amendment commit in one transaction or neither does.
-        ``held`` receives the regeneration's result."""
+        ``held`` receives the regeneration's result. ``recorded`` (#718): the answers of the
+        session's held render, replayed so the variant the author saw is the one that commits
+        (a call the story changed under since is made again)."""
         replay = request.model_copy(update={"directive": None})
 
         async def run(stage: rewrite_apply.Stage) -> tuple[str, int]:
@@ -3168,11 +3277,24 @@ class Engine:
                 stage(op)
 
             token = directed.HELD.set(staging)
+            calls = HeldCalls(recorded) if recorded is not None else None
+            call = idempotency.current_call()
+            outer = (
+                call.keeping_result()
+                if call is not None and call.operation != "regenerate"
+                else contextlib.nullcontext()
+            )
             try:
-                with directed.directing(prepared):
-                    result = await self._regenerate(ctx, story_id, replay, principal)
+                with outer, directed.directing(prepared):
+                    if calls is None:
+                        result = await self._regenerate(ctx, story_id, replay, principal)
+                    else:
+                        with held_models.holding(calls):
+                            result = await self._regenerate(ctx, story_id, replay, principal)
             finally:
                 directed.HELD.reset(token)
+            if calls is not None:
+                held["held_render"] = {"replayed": calls.replayed, "made_again": calls.live}
             if "operation_id" not in held:  # pragma: no cover - a structured regenerate stages
                 raise RewriteApplyFailed(
                     "the directed regeneration did not carry its amendment",
@@ -3323,7 +3445,12 @@ class Engine:
 
         async def run(ctx: RequestContext) -> stories.DeletedStory:
             # The core check, not the gated method: a story blocked by the erasure reconciler
-            # may still be deleted (#125).
+            # may still be deleted (#125); one being imported may not (#250).
+            async with self.db.connect() as conn:
+                status = await conn.scalar(
+                    select(stories_table.c.status).where(stories_table.c.id == story_id)
+                )
+                await story_importing.refuse(conn, story_id, status)
             await check_expected_revision(self.db, story_id, ctx.expected_revision)
             removed = await stories.delete_story(self.db, story_id, principal=principal)
             return stories.DeletedStory(removed)
@@ -5502,11 +5629,16 @@ class Engine:
         the story gate never sees) is answered only while the story is not blocked: 503
         ``erasure_pending`` otherwise, as every read of it is (#369). A deployment-scoped
         result (``record``, its index record) a pending catalog-scope erasure reaches is 503
-        too (#346). The reapply purges the result, so a later replay answers the reference."""
+        too (#346). The reapply purges the result, so a later replay answers the reference.
+        A story still ``importing`` does not refuse the replay (#250): the stored result is
+        ``import_story``'s own 202, ids only, and its retry is answered as the original was."""
         body = stored.body
         story_id = body.get("story_id") if isinstance(body, Mapping) else None
         if isinstance(story_id, str):
-            await self._erasure_gate(story_id)
+            from epistrel.core import importing as story_importing
+
+            with story_importing.passing(story_id):
+                await self._erasure_gate(story_id)
         if record is not None and (block := await self._catalog_block()) is not None:
             block.check_records([record])
 
@@ -6883,6 +7015,7 @@ class Engine:
         async def run(ctx_: RequestContext) -> rewrite_api.RewriteWrite:
             async with self.db.connect() as conn:
                 stored = await rewrite_session.stored_plan(conn, story_id, session_id)
+                recorded = await rewrite_session.held_calls(conn, story_id, session_id)
             document = stored.get("directed")
             commit = None
             prepared = None
@@ -6891,7 +7024,9 @@ class Engine:
                 # amendment staged on its turn: one transaction.
                 prepared = directed.Directed.of(dict(document))
                 replay = RegenerateRequest.model_validate(document.get("regenerate") or {})
-                commit = self._held_run(ctx_, story_id, replay, principal, prepared, {})
+                commit = self._held_run(
+                    ctx_, story_id, replay, principal, prepared, {}, recorded=recorded
+                )
             written = await rewrite_session.apply_session(
                 self.db,
                 self.models,

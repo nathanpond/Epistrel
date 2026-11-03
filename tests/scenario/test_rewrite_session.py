@@ -243,7 +243,9 @@ async def test_rewrite_lite_interim(pg_url: str, engine: AsyncEngine) -> None:
     settings = auth_settings(pg_url, model_adapter="stub")
     async with respond_client(settings, engine) as (client, epistrel):
         story = (await create(client, story_body("Wren", "Ada")))["story_id"]
-        epistrel.models.stub.when("", json.dumps({"changes": []}), purpose="rewrite_parse")
+        epistrel.models.stub.when(
+            "", json.dumps({"change_statement": ""}), purpose="lite_rewrite_parse"
+        )
         epistrel.models.stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
         found = await _open(client, story, "Ada was always a sailor.")
         assert found.status_code == 422, found.text

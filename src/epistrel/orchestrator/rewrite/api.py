@@ -210,6 +210,18 @@ class Preview(BaseModel):
     )
 
 
+class HeldRender(BaseModel):
+    """#718 (FR-COMMIT-12): a ``directed_resolution`` session's variant, rendered at the
+    regenerate call and held until the apply commits it: the reply the author approves. Its
+    ``model_calls`` answers are replayed at apply; a call whose prompt the story changed
+    under is made again."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    message_text: str
+    model_calls: int
+
+
 class RewriteSession(BaseModel):
     """A rewrite session as the author sees it: its instruction, the modes it runs with, its
     state, its preview (``null`` while a question blocks the plan) and its questions."""
@@ -236,6 +248,9 @@ class RewriteSession(BaseModel):
     """An applied session's report (#224): its resolutions, what it applied, its
     notifications."""
     last_error: dict[str, Any] | None = None
+    held_render: HeldRender | None = None
+    """#718: a ``directed_resolution`` session's held variant (``null`` for every other kind,
+    and for one applied directly in its regenerate call)."""
     created_at: datetime
     updated_at: datetime
     expires_at: datetime
@@ -360,6 +375,7 @@ __all__ = [
     "Applied",
     "ApplyRequest",
     "BlastRadius",
+    "HeldRender",
     "MergeRequest",
     "Preview",
     "PreviewMode",

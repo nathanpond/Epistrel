@@ -523,6 +523,59 @@ async def test_i_19__m7_conflict_value(stub_settings: Any, engine: AsyncEngine) 
 
 
 @pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
+async def test_i_19__m7_author_fact_estimate(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#717 (#244's upgrade clause: "the estimate counts one parse call per active fact"): a
+    Lite story's upgrade estimate grows by one model call per active lasting author fact, in
+    the held change's report and in ``impact-preview`` alike."""
+    import json
+
+    async def estimates(client: httpx.AsyncClient, story: str) -> tuple[int, int]:
+        held = await ok(
+            await client.put(
+                f"/stories/{story}/engine-profile",
+                json={"profile_id": FULL_PRESET_ID},
+                headers=WRITE,
+            )
+        )
+        assert held["applied"] is False, held
+        (entry,) = held["impact"]["affected_stories"]
+        preview = await ok(
+            await client.post(
+                f"/stories/{story}/impact-preview",
+                json={"profile_id": FULL_PRESET_ID},
+                headers=WRITE,
+            )
+        )
+        (seen,) = preview["affected_stories"]
+        return (
+            int(entry["backfill"]["estimate"]["model_calls"]),
+            int(seen["backfill"]["estimate"]["model_calls"]),
+        )
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, _, _ = await _story(client, engine, lib, 2 * lls.EARLY)
+        stub = lib.models.stub
+        assert stub is not None
+        before = await estimates(client, story)
+        assert min(before) > 0
+        for text_ in ("Bobby is forty years old.", "The air smells of rain."):
+            stub.when(
+                text_,
+                json.dumps({"classification": "durable", "temporal_scope": "now", "changes": []}),
+                purpose="directive_parse",
+            )
+            made = await client.post(
+                f"/stories/{story}/directives",
+                params={"viewpoint": "omniscient"},
+                json={"text": text_},
+                headers=WRITE,
+            )
+            assert made.status_code == 200, made.text
+        after = await estimates(client, story)
+        assert (after[0] - before[0], after[1] - before[1]) == (2, 2)
+
+
+@pytest.mark.part("M7", "FR-LITE-6; FR-PROF-9")
 async def test_i_19__m7_author_facts(stub_settings: Any, engine: AsyncEngine) -> None:
     """#699 (#244's upgrade clause): a Lite story holds two lasting author facts at a slot, one
     ``directive_parse`` turns into a structured change ("Bobby is forty") and one it does not
@@ -873,6 +926,41 @@ async def test_backfill__gap_fill(stub_settings: Any, engine: AsyncEngine) -> No
         assert none.json()["error"]["code"] == "nothing_to_backfill"
 
 
+async def test_backfill__erased_subject(pg_url: str, engine: AsyncEngine) -> None:
+    """#228: a subject erased before the backfill is never re-derived: Bobby, planted at turn
+    ``EARLY`` ("Bobby is thirty"), is erased; the backfill to Full then writes no fact whose
+    subject is Bobby and no memory naming him. Complement: the backfill completes and writes
+    other memories."""
+    from tests import erasure_support as es
+
+    settings = es.erasure_settings(pg_url)
+    async with respond_client(settings, engine) as (client, lib):
+        story, _, ids = await _story(client, engine, lib, 2 * lls.EARLY)
+        await es.erase(client, "character", ids["Bobby"], story, confirm_all=True)
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM facts WHERE story_id = :s AND subject_id = :b",
+                s=story,
+                b=ids["Bobby"],
+            )
+            == 0
+        )
+        texts = await rows(
+            engine,
+            "SELECT text FROM memories WHERE story_id = :s AND provenance = 'backfill'",
+            s=story,
+        )
+        assert texts
+        assert not any(es.naming(str(t.text), ["Bobby"]) for t in texts)
+
+
 async def engine_reset_coverage(engine: AsyncEngine, story: str) -> None:
     """Drop verification's backfilled interval: a gap the gap fill must cover."""
     async with engine.begin() as conn:
@@ -900,19 +988,8 @@ async def test_i_19__m7_lite_corrections(stub_settings: Any, engine: AsyncEngine
         assert stub is not None
         stub.when(
             "",
-            json.dumps(
-                {
-                    "changes": [
-                        {
-                            "kind": "proposition",
-                            "subject": "Bobby",
-                            "predicate": "age",
-                            "literal": 40,
-                        }
-                    ]
-                }
-            ),
-            purpose="rewrite_parse",
+            json.dumps({"change_statement": forty, "world_change": True}),
+            purpose="lite_rewrite_parse",
         )
         stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
         opened = await ok(

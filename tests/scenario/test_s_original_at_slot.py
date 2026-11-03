@@ -109,3 +109,90 @@ async def test_s_original_at_slot__derived(
     async with engine.connect() as conn:
         through = {m.text for m in await records.memories_through(conn, story, 14)}
     assert "Bobby kept at it all day." in through
+
+
+async def _set_at_slot(engine: AsyncEngine, story: str, value: int) -> str:
+    """An inter-turn slot after the head turn that sets the story's ``lamp`` State; the
+    change's id."""
+    from epistrel.core import states
+    from tests import state_support as ss
+
+    found: dict[str, Any] = {}
+    async with Operation(
+        engine, story_id=story, kind=OperationKind.INTER_TURN, principal="p-test", slot=True
+    ) as op:
+        op.append("message_rendered", {"text": f"the lamp is set to {value}"})
+
+        async def step(conn: Any) -> None:
+            applied = await states.apply_change(conn, op, ss.set_to("lamp", value))
+            assert isinstance(applied, states.Applied)
+            found["id"] = applied.change_id
+
+        op.add_commit_step(step)
+        await op.commit()
+    return str(found["id"])
+
+
+@pytest.mark.part("M7", "FR-STORE-23,26")
+async def test_s_original_at_slot__derived_sections(
+    engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """#222's derived sections. Fourteen turns each write a memory; slot ``14⁺1`` sets the
+    ``lamp`` State to 3 and ``14⁺2`` to 5. Later an amendment corrects turn 12's memory text and
+    the ``14⁺1`` set (to 4), both ``in_place``. As recorded, ``lamp`` is its initial 0 at
+    ``14``, 3 at ``14⁺1`` (not the later 4) and 5 at ``14⁺2``; turn 12's memory reads its
+    original text at every checkpoint; turns 13 and 14's memories, written after turn 14
+    committed, are absent at ``14`` and present at ``14⁺1``. Complement: the current values
+    carry the corrections."""
+    from epistrel.core.states import StateDefinition
+    from tests import consolidation_support as cs
+    from tests import state_support as ss
+
+    w = await cs.story(engine, cs.dials(window_memories=1_000, cadence_turns=1_000))
+    story, bobby = w.story_id, w.characters["Bobby"]
+    await ss.set_level(engine, story, "on")
+    lamp = StateDefinition.model_validate(
+        {"name": "lamp", "type": "number", "scope": "story", "initial_value": 0}
+    )
+    await ss.define(engine, story, lamp)
+    # Two batches: the first's twelve memories are written before turn 13 commits, the
+    # second's two after turn 14 (a bulk batch writes its memories after its last turn).
+    turns = await cs.bulk_turns(engine, story, 12, actor=bobby, name="Bobby", does=True)
+    turns += await cs.bulk_turns(engine, story, 2, actor=bobby, name="Bobby", does=True)
+    first = await _set_at_slot(engine, story, 3)
+    await _set_at_slot(engine, story, 5)
+    twelve = next(t for t in turns if t.number == 12)
+    original = next(
+        str(r["text"])
+        for r in await am.table_rows(engine, "memories", story)
+        if str(r["id"]) == twelve.memory_id
+    )
+    await am.amend(
+        engine,
+        story,
+        [
+            RecordPartDraft("memories", twelve.memory_id, "replace", {"text": "corrected"}),
+            RecordPartDraft("state_changes", first, "replace", {"value": 4}),
+        ],
+    )
+
+    def lamp_of(view: Any) -> Any:
+        (found,) = [s for s in view.states if s["state"] == "lamp"]
+        return found["value"]
+
+    def memory_texts(view: Any) -> dict[int | None, str]:
+        return {m["narrative_turn"]: m["text"] for m in view.memories}
+
+    at_14 = await as_originally_recorded(engine, story, Checkpoint(14))
+    at_1 = await as_originally_recorded(engine, story, Checkpoint(14, 1))
+    at_2 = await as_originally_recorded(engine, story, Checkpoint(14, 2))
+    assert [lamp_of(v) for v in (at_14, at_1, at_2)] == [0, 3, 5]
+    for view in (at_14, at_1, at_2):
+        assert memory_texts(view)[12] == original  # the later in-place correction undone
+    # A memory created after the boundary is in no view of it (FR-STORE-26).
+    assert 13 not in memory_texts(at_14)
+    assert {13, 14} <= set(memory_texts(at_1))
+
+    assert await ss.value(engine, story, "lamp") == 5
+    texts = await am.table_rows(engine, "memories", story)
+    assert "corrected" in {str(r["text"]) for r in texts}

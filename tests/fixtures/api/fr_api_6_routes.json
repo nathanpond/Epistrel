@@ -1054,6 +1054,11 @@
       "method": "POST",
       "path": "/admin/stories/import",
       "why": "FR-STORE-7/FR-ADMIN-4: story import (#250)"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/stories/imports/{job_id}",
+      "why": "FR-STORE-7/FR-ADMIN-4: story import (#250)"
     }
   ],
   "outside": [

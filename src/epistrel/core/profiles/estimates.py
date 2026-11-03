@@ -30,12 +30,15 @@ CALL_LATENCY_MS = 20_715
 """One model call's latency, in milliseconds (see the module docstring)."""
 
 
-def backfill_cost(messages: int, characters: int, modules: int) -> tuple[int, int, float]:
+def backfill_cost(
+    messages: int, characters: int, modules: int, *, parses: int = 0
+) -> tuple[int, int, float]:
     """``(model_calls, tokens, duration_s)`` of re-deriving ``modules`` modules' data from a
-    transcript of ``messages`` messages and ``characters`` characters."""
+    transcript of ``messages`` messages and ``characters`` characters, plus ``parses``
+    ``directive_parse`` calls, one per Lite author fact an upgrade converts (#717)."""
     if messages <= 0 or modules <= 0:
-        return 0, 0, 0.0
-    calls = math.ceil(messages / CHUNK_MESSAGES) * modules
+        return parses, 0, parses * CALL_LATENCY_MS / 1000
+    calls = math.ceil(messages / CHUNK_MESSAGES) * modules + parses
     tokens = (characters // CHARS_PER_TOKEN) * modules
     return calls, tokens, calls * CALL_LATENCY_MS / 1000
 

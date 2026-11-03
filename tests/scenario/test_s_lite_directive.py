@@ -114,7 +114,7 @@ async def test_s_lite_directive(stub_settings: Settings, engine: AsyncEngine) ->
 
         # The past: a Lite rewrite session (#245); with no line to fix, a no-op.
         stub.when("Ohio", PAST, purpose="directive_parse")
-        stub.when("", json.dumps({"changes": []}), purpose="rewrite_parse")
+        stub.when("", json.dumps({"change_statement": ""}), purpose="lite_rewrite_parse")
         stub.when("", json.dumps({"hits": []}), purpose="lite_rewrite_reach")
         count = await rs.count(engine, "directives", story)
         past = await _directive(client, story, text="Ada grew up in Ohio.")

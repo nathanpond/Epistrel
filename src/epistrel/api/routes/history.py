@@ -372,6 +372,9 @@ class HistoryResponse(BaseModel):
     """#222: when the checkpoint committed (ISO-8601, UTC, microseconds)."""
     erasure_markers: list[dict[str, str]] | None = None
     """#222: the story's erasures, ``{erasure_id, at}`` (no subject ids)."""
+    derived: dict[str, list[dict[str, Any]]] | None = None
+    """#222: on an as-recorded read, the records as they stood at the boundary: ``facts``,
+    ``beliefs``, ``memories`` and ``states`` (FR-STORE-23,26)."""
 
     @classmethod
     def of(cls, found: History) -> HistoryResponse:
@@ -384,6 +387,7 @@ class HistoryResponse(BaseModel):
                 else None
             )
             extra["erasure_markers"] = list(found.erasure_markers or [])
+            extra["derived"] = found.derived
         if found.audit is not None:
             extra["audit"] = [item_model(i) for i in found.audit]
         if found.summary is not None:

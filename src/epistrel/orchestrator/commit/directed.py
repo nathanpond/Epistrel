@@ -17,11 +17,16 @@ reconciliation check of FR-COMMIT-14:
 - **Conflict**: the author's choice stands, but proceeds as an amendment
   (``rewrite.session.open_directed``: a ``directed_resolution`` session whose changes are the
   binding's implied obligations at the thunk's time and whose conflicts are the conflicting
-  records and the bound character's later lines). Applied, the directed regeneration is
-  played with the amendment staged on its turn (``HELD``, #712): the regenerated variant and
-  the amendment commit in one transaction, or neither does (a failed regeneration leaves the
-  session ``awaiting_approval``, nothing written). The resolution commits even though the
-  recorded history it settled conflicted (``lifecycle.AUTHOR_DIRECTED``).
+  records and the bound character's later lines). A session left for the author's approval
+  holds its variant (#718): the regeneration is rendered at the regenerate call up to its
+  commit, which is withdrawn (``capture``), and the composed reply and its model answers are
+  the session's ``held_render``. Applied, the directed regeneration is played again with the
+  held answers replayed (``orchestrator.models.held``: a call whose prompt the story changed
+  under is made again) and the amendment staged on its turn (``HELD``, #712): the variant the
+  author saw and the amendment commit in one transaction, or neither does (a failed
+  regeneration leaves the session ``awaiting_approval``, nothing written). The resolution
+  commits even though the recorded history it settled conflicted
+  (``lifecycle.AUTHOR_DIRECTED``).
 
 A direction with no binding, or a binding that matches no open thunk, is a steer for this
 regeneration only (warning ``binding_unmatched``).
@@ -43,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core.commit import lifecycle
 from epistrel.core.commit.reconcile import Conflict, Ok, reconcile
 from epistrel.core.enums import OpenSlot
+from epistrel.core.events.operation import Withdrawn
 from epistrel.core.membership import active_operation
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Proposition
@@ -60,6 +66,27 @@ HELD: ContextVar[Callable[[Any], None] | None] = ContextVar("epistrel_held_amend
 (``rewrite.apply.apply``'s ``Stage``): the structured regenerate stages it on its operation
 before the turn's own commit steps, so the variant and the amendment commit in one
 transaction."""
+
+
+class HeldRenderCaptured(Withdrawn):
+    """#718: the held render of a directed regeneration was made, and its commit is withdrawn
+    (nothing is written; the operation ends ``abandoned``). ``text``: the composed reply."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__("the directed regeneration's render is held on its session")
+        self.text = text
+
+
+def capture(op: Any) -> None:
+    """#718: ``HELD`` for the render made at the regenerate call: the regeneration plays up to
+    its commit, whose first step reads the composed reply from the staged events and withdraws
+    the commit (``HeldRenderCaptured``), so nothing the play staged is written."""
+
+    async def withdraw(_conn: AsyncConnection) -> None:
+        text = next((str(e.payload.text) for e in op.staged if e.type == "message_rendered"), "")
+        raise HeldRenderCaptured(text)
+
+    op.add_commit_step(withdraw)
 
 
 @dataclass(frozen=True)
@@ -322,6 +349,8 @@ __all__ = [
     "HELD",
     "Directed",
     "DirectedPending",
+    "HeldRenderCaptured",
+    "capture",
     "conflict_document",
     "decision",
     "directing",

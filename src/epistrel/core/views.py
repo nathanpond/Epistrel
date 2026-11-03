@@ -15,8 +15,13 @@ The category filter is the only thing that keeps audit records out of story view
   folds the operations' commits with the ``truncate``/``untruncate``/``swap`` events up to it,
   never the current column), at positions up to the checkpoint and recorded by then, with the
   amendment overlays in effect then (later ones ignored), and the erasure markers (an erasure
-  is the one change it cannot undo). Only an omniscient read reaches it, and only the history
-  read calls it (``tools/gates/as_recorded.py``).
+  is the one change it cannot undo). Its derived sections (FR-STORE-26) are the records as they
+  stood then: the canon fact versions open at the boundary, the beliefs held then, the memories
+  created by then and each State's value folded from the changes recorded by then, all from
+  operations active at the boundary and at positions up to the checkpoint, with every
+  ``in_place`` amendment part recorded later reverse-applied from its ``patch_before``. Only an
+  omniscient read reaches it, and only the history read calls it
+  (``tools/gates/as_recorded.py``).
 
 Both return typed ``Event``s ordered by ``(narrative_turn, turn_variant, seq)``, with
 position-less rows first. ``seq`` is never used as a narrative position (FR-STORE-8).
@@ -26,8 +31,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import Select, and_, or_, select
@@ -302,6 +308,12 @@ class HistoryView:
     events: list[Event]
     erasure_markers: list[dict[str, Any]]
     facts: list[Any]
+    beliefs: list[dict[str, Any]] = field(default_factory=list)
+    """#222: the beliefs held at the boundary (recorded by then, not yet closed then)."""
+    memories: list[dict[str, Any]] = field(default_factory=list)
+    """#222: the memories created by the boundary, their text as it stood then."""
+    states: list[dict[str, Any]] = field(default_factory=list)
+    """#222: each State's value at the checkpoint, folded from the changes recorded by then."""
 
 
 async def boundary_tx(
@@ -361,14 +373,20 @@ async def boundary_tx(
         raise CheckpointIncomplete(
             "the turn is still under way", {"turn": checkpoint.turn, "turn_stage": stage}
         )
-    ended = [
+    # #222 (Rule 1): the log names its stages (``intent``, ``claim``, ``outcome``,
+    # ``completion``, ``response``), never the turn's ``turn_stage``. A completed turn's
+    # boundary is its completion stage's commit; an abandoned one (a discard moves
+    # ``turn_stage`` and logs nothing) ends at its last logged stage.
+    logged = [
         entry
         for entry in (row.stage_log or [])
-        if isinstance(entry, dict) and entry.get("stage") in ("completed", "abandoned")
+        if isinstance(entry, dict) and entry.get("at") and entry.get("stage") != "response"
     ]
-    if not ended or not ended[-1].get("at"):
+    if stage == "completed":
+        logged = [e for e in logged if e.get("stage") == "completion"]
+    if not logged:
         return row.committed_at  # type: ignore[no-any-return]
-    return datetime.fromisoformat(str(ended[-1]["at"]))
+    return datetime.fromisoformat(str(logged[-1]["at"]))
 
 
 async def membership_at(conn: AsyncConnection, story_id: str, at: datetime) -> dict[str, bool]:
@@ -533,4 +551,252 @@ async def as_originally_recorded(
         # #702: the pruned ranges, beside the erasures (#222's marker list).
         markers += await prune_markers(conn, story_id)
         recorded = await canon.canon_as_recorded(conn, story_id, record_time=boundary)
-    return HistoryView(checkpoint, boundary, kept, markers, list(recorded))
+        befores = await _in_place_before(conn, story_id, boundary)
+        held = await _beliefs_at(conn, story_id, boundary, active, checkpoint)
+        remembered = await _memories_at(conn, story_id, boundary, active, checkpoint, befores)
+        valued = await _states_at(conn, story_id, boundary, active, checkpoint, befores)
+    return HistoryView(
+        checkpoint, boundary, kept, markers, list(recorded), held, remembered, valued
+    )
+
+
+# -- the derived sections (#222, FR-STORE-23,26) ---------------------------------------------
+
+
+def _derived_in(row: Any, at: datetime, active: dict[str, bool], checkpoint: Checkpoint) -> bool:
+    """Whether a derived row belongs to the as-recorded checkpoint: its producing operation was
+    on the active timeline at the boundary, and its position (``NULL``: position-less) is at or
+    before the checkpoint."""
+    if not active.get(str(row.operation_id), False):
+        return False
+    turn = row.narrative_turn
+    if turn is None or int(turn) < checkpoint.turn:
+        return True
+    if int(turn) > checkpoint.turn:
+        return False
+    slot = getattr(row, "slot_k", None)
+    return slot is None or int(slot) <= checkpoint.slot_k
+
+
+async def _in_place_before(
+    conn: AsyncConnection, story_id: str, at: datetime
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """#222: the before-images of the ``in_place`` amendment parts recorded after ``at``, by
+    ``(table, record id)``: for each record the earliest such part's ``patch_before``, what the
+    corrected columns held at the boundary (a later revert is a part too, so the earliest one
+    after the boundary is what stood then)."""
+    from epistrel.core.tables import amendment_parts
+
+    p = amendment_parts.c
+    found = await conn.execute(
+        select(p.record_table, p.record_id, p.patch_before)
+        .where(
+            p.story_id == story_id,
+            p.kind == "record",
+            p.record_table.in_(("memories", "state_changes", "utterances")),
+            p.tx_from > at,
+            p.patch_before.is_not(None),
+        )
+        .order_by(p.tx_from, p.amendment_id, p.ordinal)
+    )
+    befores: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in found:
+        key = (str(row.record_table), str(row.record_id))
+        befores.setdefault(key, dict(row.patch_before or {}))
+    return befores
+
+
+async def _beliefs_at(
+    conn: AsyncConnection,
+    story_id: str,
+    at: datetime,
+    active: dict[str, bool],
+    checkpoint: Checkpoint,
+) -> list[dict[str, Any]]:
+    """The beliefs held at the boundary: recorded by then (``tx_from``), not yet closed then
+    (``tx_to``), from operations active then, held from a position at or before the
+    checkpoint."""
+    from epistrel.core.tables import beliefs
+
+    b = beliefs.c
+    rows = await conn.execute(
+        select(
+            b.id,
+            b.holder_character_id,
+            b.kind,
+            b.proposition_id,
+            b.polarity,
+            b.confidence_level,
+            b.operation_id,
+            b.narrative_turn,
+            b.held_from_turn,
+            b.held_from_slot_k.label("slot_k"),
+        )
+        .where(
+            b.story_id == story_id,
+            b.tx_from <= at,
+            or_(b.tx_to.is_(None), b.tx_to > at),
+        )
+        .order_by(b.held_from_turn, b.id)
+    )
+    return [
+        {
+            "id": str(r.id),
+            "holder_character_id": str(r.holder_character_id),
+            "kind": str(getattr(r.kind, "value", r.kind)),
+            "proposition_id": str(r.proposition_id),
+            "polarity": str(r.polarity),
+            "confidence_level": str(getattr(r.confidence_level, "value", r.confidence_level)),
+            "held_from_turn": int(r.held_from_turn),
+        }
+        for r in rows
+        if _derived_in(
+            SimpleNamespace(
+                operation_id=r.operation_id, narrative_turn=r.held_from_turn, slot_k=r.slot_k
+            ),
+            at,
+            active,
+            checkpoint,
+        )
+    ]
+
+
+async def _memories_at(
+    conn: AsyncConnection,
+    story_id: str,
+    at: datetime,
+    active: dict[str, bool],
+    checkpoint: Checkpoint,
+    befores: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The memories created by the boundary and not retired by then, from operations active
+    then, at positions up to the checkpoint; a text an ``in_place`` part corrected later reads
+    as it stood (``patch_before``)."""
+    from epistrel.core.tables import memories
+
+    m = memories.c
+    rows = await conn.execute(
+        select(
+            m.id,
+            m.kind,
+            m.text,
+            m.holder_character_id,
+            m.operation_id,
+            m.narrative_turn,
+            m.turn_variant,
+        )
+        .where(
+            m.story_id == story_id,
+            m.created_at <= at,
+            or_(m.retired_at.is_(None), m.retired_at > at),
+        )
+        .order_by(m.narrative_turn, m.id)
+    )
+    found: list[dict[str, Any]] = []
+    for r in rows:
+        if not _derived_in(r, at, active, checkpoint):
+            continue
+        before = befores.get(("memories", str(r.id)), {})
+        found.append(
+            {
+                "id": str(r.id),
+                "kind": str(getattr(r.kind, "value", r.kind)),
+                "text": str(before.get("text", r.text)),
+                "holder_character_id": None
+                if r.holder_character_id is None
+                else str(r.holder_character_id),
+                "narrative_turn": None if r.narrative_turn is None else int(r.narrative_turn),
+            }
+        )
+    return found
+
+
+async def _states_at(
+    conn: AsyncConnection,
+    story_id: str,
+    at: datetime,
+    active: dict[str, bool],
+    checkpoint: Checkpoint,
+    befores: dict[tuple[str, str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Each State's value at the checkpoint as recorded: its counted changes recorded by the
+    boundary, from operations active then, at positions up to the checkpoint, folded on its
+    initial value; a change an ``in_place`` part corrected later folds its value as it stood.
+    A State whose defining operation was not on the timeline then is left out."""
+    from decimal import Decimal
+
+    from epistrel.core import states as states_api
+    from epistrel.core.states.model import COUNTED, ChangeRow, fold
+    from epistrel.core.tables import state_changes, state_definitions
+
+    d = state_definitions.c
+    defined = {
+        str(r.id): r
+        for r in await conn.execute(
+            select(d.id, d.operation_id, d.narrative_turn).where(d.story_id == story_id)
+        )
+        if _derived_in(r, at, active, checkpoint)
+    }
+    if not defined:
+        return []
+    by_name = {
+        s.id: s
+        for s in await states_api.definitions(conn, story_id, view=states_api.View.AS_RECORDED)
+        if s.id in defined
+    }
+    c = state_changes.c
+    grouped: dict[tuple[str, str | None], list[ChangeRow]] = {}
+    for r in await conn.execute(
+        select(state_changes).where(
+            c.story_id == story_id,
+            c.state_id.in_(sorted(by_name)),
+            c.tx_from <= at,
+            c.status.in_(sorted(str(getattr(s, "value", s)) for s in COUNTED)),
+        )
+    ):
+        if not _derived_in(r, at, active, checkpoint):
+            continue
+        before = befores.get(("state_changes", str(r.id)), {})
+        state = by_name[str(r.state_id)]
+        value = before.get("value", r.value)
+        delta = before.get("delta", r.delta)
+        grouped.setdefault((str(r.state_id), r.scope_key), []).append(
+            states_api._change_of(
+                state.type,
+                SimpleNamespace(
+                    **{
+                        **dict(r._mapping),
+                        "value": value,
+                        "delta": None if delta is None else Decimal(str(delta)),
+                        "amended_valid_to": None,
+                    }
+                ),
+            )
+        )
+    found: list[dict[str, Any]] = []
+    for state_id, state in sorted(by_name.items(), key=lambda kv: kv[1].name):
+        keys = [k for k in grouped if k[0] == state_id] or [(state_id, None)]
+        for key in keys:
+            folded = fold(state.initial_value, grouped.get(key, []))
+            value = None if folded.count == 0 and state.initial_value is None else folded.value
+            found.append(
+                {
+                    "state": state.name,
+                    "scope_key": None if key[1] is None else str(key[1]),
+                    "value": _jsonable(value),
+                    "changes": folded.count,
+                }
+            )
+    return found
+
+
+def _jsonable(value: Any) -> Any:
+    from decimal import Decimal
+
+    from epistrel.core.states.model import UndefinedType
+
+    if isinstance(value, UndefinedType):
+        return None
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    return value

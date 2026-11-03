@@ -30,6 +30,7 @@ re-plans at the story's current revision: questions the new parse asks again kee
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -61,7 +62,7 @@ from epistrel.core.settings_schema import RewriteSettings
 from epistrel.core.tables import rewrite_questions, rewrite_sessions, stories
 from epistrel.core.tables.rewrites import OPEN_STATES
 from epistrel.orchestrator.models.access import ModelAccessLayer
-from epistrel.orchestrator.models.registry import RewriteParseResult
+from epistrel.orchestrator.models.registry import REWRITE_MAX_CHANGES, RewriteParseResult
 from epistrel.orchestrator.rewrite import apply as rewrite_apply
 from epistrel.orchestrator.rewrite import parse as parsing
 from epistrel.orchestrator.rewrite import revalidate
@@ -70,6 +71,7 @@ from epistrel.orchestrator.rewrite.api import (
     AnswerRequest,
     Applied,
     ApplyRequest,
+    HeldRender,
     MergeRequest,
     Preview,
     QuestionOption,
@@ -148,6 +150,45 @@ def _mode(row: Any) -> Any:
     return str(row.resolution_mode)
 
 
+def _held_view(held: Any) -> HeldRender | None:
+    """#718: the session's held render as the author sees it (the answers stay stored)."""
+    if not held:
+        return None
+    return HeldRender(
+        message_text=str(held.get("message_text") or ""),
+        model_calls=len(held.get("calls") or []),
+    )
+
+
+async def hold_render(
+    db: AsyncEngine, story_id: str, session_id: str, text: str, calls: Sequence[Any]
+) -> RewriteSession:
+    """#718: store a ``directed_resolution`` session's held render (its composed reply and the
+    answers its play recorded), indexed for erasure like the session's other texts."""
+    async with db.begin() as conn:
+        row = await _row(conn, story_id, session_id, lock=True)
+        _open(row)
+        await conn.execute(
+            update(rewrite_sessions)
+            .where(rewrite_sessions.c.id == session_id)
+            .values(held_render={"message_text": text, "calls": list(calls)})
+        )
+        await _index(conn, session_id)
+        return await view(conn, await _row(conn, story_id, session_id))
+
+
+async def held_calls(conn: AsyncConnection, story_id: str, session_id: str) -> list[Any] | None:
+    """#718: the answers a session's held render recorded (``None``: it holds none)."""
+    found = await conn.scalar(
+        select(rewrite_sessions.c.held_render).where(
+            rewrite_sessions.c.story_id == story_id, rewrite_sessions.c.id == session_id
+        )
+    )
+    if not found:
+        return None
+    return list(dict(found).get("calls") or [])
+
+
 async def view(conn: AsyncConnection, row: Any) -> RewriteSession:
     plan = dict(row.plan or {})
     preview = plan.get("preview")
@@ -175,6 +216,7 @@ async def view(conn: AsyncConnection, row: Any) -> RewriteSession:
         result_amendment_id=row.result_amendment_id,
         report=row.report,
         last_error=row.last_error,
+        held_render=_held_view(row.held_render),
         created_at=row.created_at,
         updated_at=row.updated_at,
         expires_at=row.expires_at,
@@ -355,7 +397,10 @@ async def _compute(
     gated: Sequence[dict[str, Any]] = (),
     mode: str = "synchronous",
     threshold: str | None = None,
+    conflicts: Sequence[dict[str, Any]] = (),
 ) -> tuple[parsing.Parsed, Plan | None, int]:
+    """The normalized parse, the plan and the revision it was computed at. ``conflicts``
+    (#700): a Lite reach's irreducible conflicts on lines, planned with the changes."""
     story = await parsing.load_story(
         conn, story_id, await _registry(conn, story_id), margin=settings.rewrite_ambiguity_margin
     )
@@ -365,6 +410,12 @@ async def _compute(
     if any(q.required for q in parsed.questions):
         return parsed, None, revision
     plan = await _planner_of(pipeline).plan(conn, story, parsed, base_revision=revision)
+    if conflicts:
+        known = {(c["record"]["table"], c["record"]["id"]) for c in plan.irreducible}
+        plan.irreducible = [
+            *plan.irreducible,
+            *(dict(c) for c in conflicts if (c["record"]["table"], c["record"]["id"]) not in known),
+        ]
     # #224: the mode decides who settles each conflict (the plan itself is mode-free).
     parsed.questions.extend(dispose(plan.irreducible, mode, threshold).questions)
     return parsed, plan, revision
@@ -585,8 +636,10 @@ async def open_session(
     from epistrel.orchestrator.rewrite import lite as lite_rewrite
 
     gated: list[dict[str, Any]]
-    no_canon: list[dict[str, Any]] = []
     reach_meta: dict[str, Any] | None = None
+    note: str | None = None
+    lite_conflicts: list[dict[str, Any]] = []
+    lite_read: dict[str, Any] | None = None
     if edit is not None:
         # #700: a direct line edit plans its one record change with no model call (no parse,
         # no reach, no output gate: the author's text passed the input gate).
@@ -594,22 +647,21 @@ async def open_session(
         gated = []
     else:
         assert request.instruction is not None  # noqa: S101 - the request validates one
-        # The model call runs with no transaction open (FR-CONC-2).
-        result = await parsing.call_parse(models, story, request.instruction, [])
+        # The model calls run with no transaction open (FR-CONC-2).
         if pipeline != "structured":
-            # #245 (FR-LITE-8): a Lite story's reach is model-searched over its transcript.
-            reached = await lite_rewrite.reach(db, models, story_id, request.instruction)
-            if reached.unfixed[:1] == [{"reason": "reach_unavailable"}]:
-                from epistrel.core.errors import RewriteReachFailed
-
-                raise RewriteReachFailed(
-                    "the reach pass could not search the transcript", {"retryable": True}
-                )
-            reach_meta = reached.meta()
-            result, no_canon = lite_rewrite.lite_result(result, reached.changes)
-            no_canon.extend(reached.unfixed)
-        result, gated = await gate_new_texts(db, models, story_id, result)
-        gated = [*gated, *no_canon]
+            # #245, #700 (FR-LITE-8): ``lite_rewrite_parse``, then the model-searched reach.
+            planned = await lite_planned(db, models, story_id, request.instruction, [], settings)
+            result, gated, reach_meta, note = (
+                planned.result,
+                planned.refused,
+                planned.reach,
+                planned.note,
+            )
+            lite_conflicts = planned.conflicts
+            lite_read = planned.read
+        else:
+            result = await parsing.call_parse(models, story, request.instruction, [])
+            result, gated = await gate_new_texts(db, models, story_id, result)
     mode, threshold = request.mode()
     async with db.begin() as conn:
         parsed, plan, revision = await _compute(
@@ -622,8 +674,15 @@ async def open_session(
             gated=gated,
             mode=mode,
             threshold=threshold,
+            conflicts=lite_conflicts,
         )
-        if not parsed.changes and not parsed.questions and not parsed.refused:
+        if (
+            not parsed.changes
+            and not parsed.questions
+            and not parsed.refused
+            and not note
+            and not lite_conflicts
+        ):
             raise RewriteNoop(
                 "the instruction asks for no change the story does not already have",
                 {"already_true": len(parsed.noops)},
@@ -672,8 +731,10 @@ async def open_session(
                 plan={
                     **_stored_plan(result, {}, [], parsed, plan, gated),
                     **({} if edit is None else {"line_edit": edit.model_dump(mode="json")}),
-                    **_lite_note(pipeline, request.instruction, no_canon),
+                    **({} if note is None else {"lite_note": note}),
                     **({} if reach_meta is None else {"reach": reach_meta}),
+                    **({"lite_conflicts": lite_conflicts} if lite_conflicts else {}),
+                    **({} if lite_read is None else {"lite_read": lite_read}),
                 },
                 plan_hash=None if plan is None else plan.plan_hash,
                 plan_read_set=None if plan is None else plan.read_set,
@@ -694,19 +755,96 @@ async def open_session(
 LITE_NOTE_PREFIX = "Author correction: "
 
 
-def _lite_note(
-    pipeline: str, instruction: str | None, refused: Sequence[Mapping[str, Any]]
-) -> dict[str, Any]:
-    """#700 (FR-LITE-8): a Lite rewrite whose instruction states a world change (the parse
-    gave proposition or State changes, which Lite cannot hold: ``lite_no_canon``) records one
-    ``lite_note`` part with the instruction, rendered under "Author corrections"."""
-    from epistrel.orchestrator.rewrite.lite import NO_CANON
+@dataclass(frozen=True, slots=True)
+class LitePlanned:
+    """#700: what a Lite instruction plans (``lite_planned``)."""
 
-    if pipeline == "structured" or not instruction:
-        return {}
-    if not any(r.get("reason") == NO_CANON for r in refused):
-        return {}
-    return {"lite_note": LITE_NOTE_PREFIX + instruction}
+    result: RewriteParseResult
+    """The reach's clean fixes as record changes (gated) and the parse's ambiguities."""
+    refused: list[dict[str, Any]]
+    """The hits listed in ``refused_changes``: unfixed hits, and fixes a content check refused
+    (``guardrail``, with the policy ids)."""
+    reach: dict[str, Any] | None
+    """``preview.reach`` (``None``: the reach waits for an answer)."""
+    note: str | None
+    """The ``lite_note`` text ("Author correction: " + the statement) for a world change."""
+    conflicts: list[dict[str, Any]]
+    """The irreducible conflicts on lines (``lite.conflicts``), planned with the changes."""
+    read: dict[str, Any] | None = None
+    """#237's Lite read set: the change statement and the last event position the reach saw
+    (``None``: the reach waits for an answer)."""
+
+
+async def lite_planned(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    instruction: str,
+    answers: Sequence[str],
+    settings: RewriteSettings,
+) -> LitePlanned:
+    """#700 (FR-LITE-8): what a Lite instruction plans. ``lite_rewrite_parse`` reads it as a
+    change statement (an ambiguity is a clarification question with a recommendation, and the
+    reach waits for its answer); the reach pass searches with the statement; each clean fix is
+    gated by the output policies (#56, the rating's included). A fix on a line the player wrote,
+    a ``conflicts`` hit with no clean fix, and a fix the re-check or a content check refused are
+    irreducible conflicts on their lines. 503 ``rewrite_reach_failed`` when no chunk could be
+    searched."""
+    from epistrel.orchestrator.rewrite import lite as lite_rewrite
+
+    parsed = await lite_rewrite.parse(db, models, story_id, instruction, answers)
+    statement = lite_rewrite.statement_of(parsed, instruction)
+    note = LITE_NOTE_PREFIX + statement if parsed.world_change else None
+    if parsed.ambiguities:
+        return LitePlanned(RewriteParseResult(ambiguities=parsed.ambiguities), [], None, note, [])
+    seen = await lite_rewrite.head_seq(db, story_id)
+    reached = await lite_rewrite.reach(db, models, story_id, statement, settings)
+    if reached.unfixed[:1] == [{"reason": "reach_unavailable"}]:
+        from epistrel.core.errors import RewriteReachFailed
+
+        raise RewriteReachFailed(
+            "the reach pass could not search the transcript", {"retryable": True}
+        )
+    result, refused, found = await _lite_hits(db, models, story_id, statement, reached)
+    return LitePlanned(
+        result,
+        refused,
+        reached.meta(),
+        note,
+        found,
+        {"statement": statement, "seen_seq": seen},
+    )
+
+
+async def _lite_hits(
+    db: AsyncEngine,
+    models: ModelAccessLayer,
+    story_id: str,
+    statement: str,
+    reached: Any,
+) -> tuple[RewriteParseResult, list[dict[str, Any]], list[dict[str, Any]]]:
+    """A reach's hits as a plan's input: the clean fixes on lines the engine may rewrite
+    (gated by the output policies), what is listed in ``refused_changes``, and the
+    irreducible conflicts (#700)."""
+    from epistrel.orchestrator.rewrite import lite as lite_rewrite
+
+    kept, player = await lite_rewrite.player_lines(db, story_id, reached.changes)
+    proposed = RewriteParseResult(changes=kept[:REWRITE_MAX_CHANGES])
+    result, refused = await gate_new_texts(db, models, story_id, proposed)
+    blocked = [
+        {
+            "reason": lite_rewrite.FIX_REFUSED,
+            "turn": ref.turn,
+            "quote": ref.quote,
+            "relation": "conflicts",
+        }
+        for entry in refused
+        if (ref := proposed.changes[int(entry["index"])].ref) is not None
+    ]
+    found = await lite_rewrite.conflicts(
+        db, story_id, statement, [*reached.unfixed, *player, *blocked]
+    )
+    return result, [*refused, *reached.unfixed], found
 
 
 async def _apply_directly(
@@ -885,6 +1023,113 @@ async def open_merge(
 # -- undo and redo (#238) -----------------------------------------------------------------------
 
 
+async def _undo_reach(
+    db: AsyncEngine, models: ModelAccessLayer, story_id: str, amendment_id: str
+) -> list[dict[str, Any]]:
+    """#700 (FR-REWRITE-10): an undo of a Lite amendment made from an instruction searches the
+    lines committed after it with the template statement ("Undo: <its change statement> (the
+    original text is restored)", no parse call). Each line that still states the change is a
+    conflict offered a fix (``after_undo``). An amendment of line edits only, or one on a
+    structured story, gets no reach."""
+    from epistrel.core.tables import amendments
+    from epistrel.orchestrator.rewrite import lite as lite_rewrite
+
+    async with db.connect() as conn:
+        if await pipeline_of(conn, story_id) == "structured":
+            return []
+        found = (
+            await conn.execute(
+                select(amendments.c.operation_id, amendments.c.payload).where(
+                    amendments.c.story_id == story_id, amendments.c.id == amendment_id
+                )
+            )
+        ).one_or_none()
+        if found is None:
+            return []
+        session_id = dict(found.payload or {}).get("session_id")
+        source = (
+            None
+            if session_id is None
+            else (
+                await conn.execute(
+                    select(rewrite_sessions.c.instruction, rewrite_sessions.c.plan).where(
+                        rewrite_sessions.c.id == session_id
+                    )
+                )
+            ).one_or_none()
+        )
+        settings = await read_section(conn, RewriteSettings)
+    if source is None or not source.instruction:
+        return []
+    plan = dict(source.plan or {})
+    if plan.get("line_edit") is not None:
+        return []
+    statement = str(dict(plan.get("lite_read") or {}).get("statement") or source.instruction)
+    after = await lite_rewrite.operation_seq(db, str(found.operation_id))
+    if after is None:
+        return []
+    undo_statement = lite_rewrite.undo_statement(statement)
+    reached = await lite_rewrite.reach(
+        db, models, story_id, undo_statement, settings, after_seq=after
+    )
+    return await lite_rewrite.conflicts(
+        db, story_id, undo_statement, lite_rewrite.undo_hits(reached)
+    )
+
+
+async def _lite_revalidate(
+    db: AsyncEngine, models: ModelAccessLayer, story_id: str, row: Any
+) -> None:
+    """#700 (#237's Lite read set): before a Lite session's apply, when the story moved since
+    the preview, the turns played since are reach-searched (only those) with the session's
+    change statement. New hits merge into the stored plan (its record changes and conflicts)
+    and the apply goes stale (``new_reach_hits``: recomputed and previewed again; under
+    ``apply_directly`` with nothing to answer, applied again). No new hit: the apply goes on,
+    and #237's checks under the lock decide on the planned lines (membership and versions)."""
+    from epistrel.orchestrator.rewrite import lite as lite_rewrite
+
+    plan = dict(row.plan or {})
+    read = plan.get("lite_read")
+    if str(row.pipeline) == "structured" or not read or plan.get("line_edit") is not None:
+        return
+    async with db.connect() as conn:
+        current = int((await _story(conn, story_id)).timeline_revision)
+        settings = await read_section(conn, RewriteSettings)
+    if row.base_revision is not None and current == int(row.base_revision):
+        return
+    seen = int(read.get("seen_seq") or 0)
+    head = await lite_rewrite.head_seq(db, story_id)
+    if head <= seen:
+        return
+    statement = str(read.get("statement") or row.instruction or "")
+    reached = await lite_rewrite.reach(db, models, story_id, statement, settings, after_seq=seen)
+    result, refused, found = await _lite_hits(db, models, story_id, statement, reached)
+    if not result.changes and not found:
+        return
+    parse = RewriteParseResult.model_validate(plan.get("parse") or {})
+    merged = parse.model_copy(
+        update={"changes": [*parse.changes, *result.changes][:REWRITE_MAX_CHANGES]}
+    )
+    plan.update(
+        parse=merged.model_dump(mode="json", by_alias=True),
+        gated=[*list(plan.get("gated") or []), *refused],
+        lite_conflicts=[*list(plan.get("lite_conflicts") or []), *found],
+        lite_read={"statement": statement, "seen_seq": head},
+    )
+    async with db.begin() as conn:
+        await conn.execute(
+            update(rewrite_sessions).where(rewrite_sessions.c.id == row.id).values(plan=plan)
+        )
+    refs = [c["record"] for c in found] + [
+        {"table": "events", "id": str(c.ref.event_id or "")}
+        for c in result.changes
+        if c.ref is not None and c.ref.event_id
+    ]
+    raise revalidate.Revalidated(
+        revalidate.Stale([{"kind": "new_reach_hits", "refs": refs[: revalidate.MAX_REFS]}])
+    )
+
+
 async def open_amendment_session(
     db: AsyncEngine,
     models: ModelAccessLayer,
@@ -907,6 +1152,9 @@ async def open_amendment_session(
     if kind not in ("undo", "redo"):
         raise ValueError(f"not an amendment session: {kind}")
     mode, threshold = request.mode()
+    # #700: a Lite undo searches the lines committed after the amendment (model calls, so
+    # before the transaction).
+    after = await _undo_reach(db, models, story_id, amendment_id) if kind == "undo" else []
     async with db.begin() as conn:
         settings = await read_section(conn, RewriteSettings)
         locked = await _story(conn, story_id, lock=True)
@@ -918,7 +1166,9 @@ async def open_amendment_session(
             await undo.check_redo(conn, story_id, amendment_id)
         pipeline = await pipeline_of(conn, story_id)
         _planner_of(pipeline)
-        stored_source = {kind: {"amendment_id": amendment_id}}
+        stored_source: dict[str, Any] = {kind: {"amendment_id": amendment_id}}
+        if after:
+            stored_source["lite_conflicts"] = after
         sourced = await _sourced(conn, story_id, stored_source)
         assert sourced is not None  # noqa: S101 - an undo or redo is sourced
         parsed, plan, revision = await _plan_sourced(
@@ -1192,16 +1442,32 @@ async def answer(
         return await cancel(db, story_id, session_id, principal=principal)
     result = RewriteParseResult.model_validate(plan.get("parse") or {})
     gated: list[dict[str, Any]] = list(plan.get("gated") or [])
+    lite_fresh: dict[str, Any] | None = None
     if reparse:
         try:
-            result = await parsing.call_parse(models, story, str(row.instruction or ""), answers)
+            if pipeline != "structured" and row.instruction:
+                # #700: a Lite answer reads the instruction again, then searches its reach.
+                planned = await lite_planned(
+                    db, models, story_id, str(row.instruction), answers, settings
+                )
+                result, gated = planned.result, planned.refused
+                lite_fresh = {
+                    "lite_note": planned.note,
+                    "reach": planned.reach,
+                    "lite_conflicts": planned.conflicts or None,
+                    "lite_read": planned.read,
+                }
+            else:
+                result = await parsing.call_parse(
+                    models, story, str(row.instruction or ""), answers
+                )
+                result, gated = await gate_new_texts(db, models, story_id, result)
         except EpistrelError as failed:
             if failed.code != "rewrite_unparseable":
                 raise
             raise InvalidAnswer(
                 "the answer could not be parsed", {"session_id": session_id}
             ) from failed
-        result, gated = await gate_new_texts(db, models, story_id, result)
     async with db.begin() as conn:
         row = await _row(conn, story_id, session_id, lock=True)
         _open(row)
@@ -1231,11 +1497,23 @@ async def answer(
                 gated=gated,
                 mode=str(row.resolution_mode),
                 threshold=row.threshold_severity,
+                conflicts=(
+                    (lite_fresh or {}).get("lite_conflicts")
+                    if lite_fresh is not None
+                    else plan.get("lite_conflicts")
+                )
+                or (),
             )
         stored = _stored_plan(result, bindings, answers, parsed, computed, gated)
         for source in KEPT:
             if plan.get(source) is not None:
                 stored[source] = plan[source]
+        if lite_fresh is not None:
+            for name, value in lite_fresh.items():
+                if value is None:
+                    stored.pop(name, None)
+                else:
+                    stored[name] = value
         await _write_questions(conn, story_id, session_id, parsed.questions)
         await conn.execute(
             update(rewrite_sessions)
@@ -1309,7 +1587,7 @@ UNDO_DEPTH = 3
 SOURCES = ("merge", "undo", "redo", "directed")
 """Sessions whose changes come from the engine, not a parse: an identity merge (#225), an undo
 and a redo (#238); the stored plan names the source."""
-KEPT = (*SOURCES, "line_edit", "lite_note", "reach")
+KEPT = (*SOURCES, "line_edit", "lite_note", "reach", "lite_conflicts", "lite_read")
 """What a re-plan keeps of the stored plan (#700: a line edit's target, a Lite world note)."""
 
 
@@ -1461,6 +1739,17 @@ async def _plan_sourced(
                 conn, story_id, list(stored["merge"]["entity_ids"])
             ),
         ]
+    if stored.get("lite_conflicts"):
+        # #700: an undo's post-amendment reach found lines that still state the change.
+        known = {(c["record"]["table"], c["record"]["id"]) for c in plan.irreducible}
+        plan.irreducible = [
+            *plan.irreducible,
+            *(
+                dict(c)
+                for c in stored["lite_conflicts"]
+                if (c["record"]["table"], c["record"]["id"]) not in known
+            ),
+        ]
     asked = dispose(plan.irreducible, mode, threshold).questions
     if stored.get("undo") is not None:
         dependent = {
@@ -1520,6 +1809,7 @@ async def _recompute(
             gated=gated,
             mode=mode,
             threshold=threshold,
+            conflicts=stored.get("lite_conflicts") or (),
         )
     again = _stored_plan(result, bindings, list(stored.get("answers") or []), parsed, plan, gated)
     for source in KEPT:
@@ -1700,6 +1990,10 @@ async def _apply_once(
 ) -> RewriteWrite:
     from epistrel.core import pause
 
+    async with db.connect() as conn:
+        before = await _row(conn, story_id, session_id)
+    if str(before.state) not in TERMINAL and str(before.state) != "applying":
+        await _lite_revalidate(db, models, story_id, before)
     async with db.begin() as conn:
         settings = await read_section(conn, RewriteSettings)
         row = await _row(conn, story_id, session_id, lock=True)

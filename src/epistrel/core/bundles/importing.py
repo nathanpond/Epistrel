@@ -54,13 +54,12 @@ import json
 import re
 import tarfile
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from sqlalchemy import JSON, TIMESTAMP, Date, LargeBinary, Table, insert, null, select
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.bundles import FORMAT_VERSION, NEVER, REBUILD
 from epistrel.core.errors import BundleTooLarge, CorruptBundle, UnsupportedFormatVersion
@@ -71,54 +70,64 @@ from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
 
-MAX_TOTAL_BYTES = 512 * 1024 * 1024
-MAX_ENTRIES = 1_000
-MAX_ENTRY_BYTES = 256 * 1024 * 1024
 ULID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
 CHUNK = 64 * 1024
 BATCH = 200
-
-
-class ImportRequest(BaseModel):
-    """``POST /admin/stories/import``'s choices (query parameters; the archive is the body)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    owner: StrictStr | None = Field(default=None, max_length=200)
-    engine_profile_id: StrictStr | None = Field(default=None, max_length=26)
+MANIFEST_MAX = 64 * 1024 * 1024
+"""The most bytes ``manifest.json`` may decompress to (#250's planner: a constant)."""
 
 
 @dataclass(frozen=True, slots=True)
-class Imported:
-    """An import's answer (REST 201): the new story, the bundle's source and its counts. An
-    import is deployment-scoped: ``config_revision`` is the deployment's, unchanged."""
+class Limits:
+    """An import's limits (``RetentionSettings``' ``bundle_max_*``), frozen into its request:
+    the decompressed total, the members and one member's decompressed size."""
 
-    story_id: str
-    source_story_id: str
-    exported_revision: int
-    counts: dict[str, int] = field(default_factory=dict)
-    config_revision: int = 0
-    replayed: bool = False
-    operation_id: str | None = None
-    """#705: the ``import`` operation that recorded ``imported_from``."""
-    warnings: list[dict[str, Any]] = field(default_factory=list)
-    """#705: what a newer MINOR's bundle carried that this deployment ignored."""
+    total: int
+    entries: int
+    entry: int
+
+    @classmethod
+    def of(cls, settings: Any) -> Limits:
+        return cls(
+            int(settings.bundle_max_uncompressed_bytes),
+            int(settings.bundle_max_entries),
+            min(int(settings.bundle_max_entry_bytes), int(settings.bundle_max_uncompressed_bytes)),
+        )
+
+    def as_json(self) -> dict[str, int]:
+        return {"total": self.total, "entries": self.entries, "entry": self.entry}
+
+    @classmethod
+    def from_json(cls, found: Mapping[str, Any]) -> Limits:
+        return cls(int(found["total"]), int(found["entries"]), int(found["entry"]))
+
+
+def _defaults() -> Limits:
+    from epistrel.core.settings_schema import RetentionSettings
+
+    return Limits.of(RetentionSettings())
+
+
+DEFAULT_LIMITS = _defaults()
+MAX_TOTAL_BYTES = DEFAULT_LIMITS.total
+MAX_ENTRIES = DEFAULT_LIMITS.entries
+MAX_ENTRY_BYTES = DEFAULT_LIMITS.entry
 
 
 # -- reading the archive -------------------------------------------------------------------------
 
 
-def _members(data: bytes) -> Iterator[tuple[str, bytes]]:
+def _members(data: bytes, limits: Limits = DEFAULT_LIMITS) -> Iterator[tuple[str, bytes]]:
     """The archive's members as a stream, under the limits (see the module docstring)."""
     total = entries = 0
     try:
         with tarfile.open(fileobj=io.BytesIO(data), mode="r|gz") as tar:
             for member in tar:
                 entries += 1
-                if entries > MAX_ENTRIES:
+                if entries > limits.entries:
                     raise BundleTooLarge(
                         "the bundle has too many entries",
-                        {"limit": "bundle_max_entries", "value": MAX_ENTRIES},
+                        {"limit": "bundle_max_entries", "value": limits.entries},
                     )
                 name = member.name
                 if not member.isreg():
@@ -139,19 +148,19 @@ def _members(data: bytes) -> Iterator[tuple[str, bytes]]:
                         break
                     body += piece
                     total += len(piece)
-                    if len(body) > MAX_ENTRY_BYTES:
+                    if len(body) > limits.entry:
                         raise BundleTooLarge(
                             "a bundle member is too large",
                             {
                                 "limit": "bundle_max_entry_bytes",
-                                "value": MAX_ENTRY_BYTES,
+                                "value": limits.entry,
                                 "entry": name,
                             },
                         )
-                    if total > MAX_TOTAL_BYTES:
+                    if total > limits.total:
                         raise BundleTooLarge(
                             "the bundle is too large uncompressed",
-                            {"limit": "bundle_max_uncompressed_bytes", "value": MAX_TOTAL_BYTES},
+                            {"limit": "bundle_max_uncompressed_bytes", "value": limits.total},
                         )
                 yield name, bytes(body)
     except (tarfile.TarError, EOFError, OSError) as exc:
@@ -193,15 +202,22 @@ def _minor(version: str) -> int:
     return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
 
 
-def read_bundle(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
-    """The manifest and the members by path, checked (see the module docstring)."""
-    members = list(_members(data))
-    if not members or members[0][0] != "manifest.json":
+def _manifest(name: str, body: bytes) -> dict[str, Any]:
+    """The first member as the bundle's manifest: ``manifest.json``, JSON, a supported format
+    and its schema (``corrupt_bundle``, ``unsupported_format_version``)."""
+    if name != "manifest.json":
         raise CorruptBundle("a bundle starts with manifest.json", {"reason": "member_order"})
+    if len(body) > MANIFEST_MAX:
+        raise BundleTooLarge(
+            "the bundle's manifest is too large",
+            {"limit": "manifest_max_bytes", "value": MANIFEST_MAX, "entry": name},
+        )
     try:
-        manifest = json.loads(members[0][1])
+        manifest = json.loads(body)
     except ValueError as exc:
         raise CorruptBundle("the manifest is not JSON", {"reason": "manifest_invalid"}) from exc
+    if not isinstance(manifest, dict):
+        raise CorruptBundle("the manifest is not a JSON object", {"reason": "manifest_invalid"})
     version = str(manifest.get("format_version", ""))
     major = version.split(".", 1)[0]
     if not major.isdigit():
@@ -224,6 +240,42 @@ def read_bundle(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
             "the manifest does not hold to its schema",
             {"reason": "manifest_invalid", "field": _field(str(exc))},
         ) from exc
+    return manifest
+
+
+def read_head(
+    data: bytes, limits: Limits = DEFAULT_LIMITS
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """#250's up-front read: the manifest (the first member, checked) and the story's own record
+    (``records/story.json``, the second member in the canonical order; ``None`` when the bundle
+    does not start with it), reading no further."""
+    members = _members(data, limits)
+    try:
+        first = next(members, None)
+        if first is None:
+            raise CorruptBundle("a bundle starts with manifest.json", {"reason": "member_order"})
+        manifest = _manifest(*first)
+        second = next(members, None)
+    finally:
+        members.close()  # type: ignore[attr-defined]
+    story = None
+    if second is not None and second[0] == "records/story.json":
+        try:
+            found = json.loads(second[1])
+        except ValueError:
+            found = None
+        story = found if isinstance(found, dict) else None
+    return manifest, story
+
+
+def read_bundle(
+    data: bytes, limits: Limits = DEFAULT_LIMITS
+) -> tuple[dict[str, Any], dict[str, bytes]]:
+    """The manifest and the members by path, checked (see the module docstring)."""
+    members = list(_members(data, limits))
+    if not members:
+        raise CorruptBundle("a bundle starts with manifest.json", {"reason": "member_order"})
+    manifest = _manifest(*members[0])
     listed = {str(f["path"]): f for f in manifest.get("files", [])}
     by_path: dict[str, bytes] = {}
     last: tuple[int, int, str] | None = None
@@ -277,17 +329,28 @@ def _known(row: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _rows(
-    name: str, body: bytes, *, newer: bool = False, warnings: list[dict[str, Any]] | None = None
+    name: str,
+    body: bytes,
+    *,
+    newer: bool = False,
+    warnings: list[dict[str, Any]] | None = None,
+    steps: Sequence[Any] = (),
 ) -> list[dict[str, Any]]:
     """#705: the member's lines, each a JSON object holding to its schema (an event's payload to
-    #45's registry); under a newer MINOR, unknown fields are dropped and listed in ``warnings``."""
+    #45's registry); under a newer MINOR, unknown fields are dropped and listed in ``warnings``.
+    #250: a bundle of an older format has each line migrated first (``steps``, from
+    ``format.migrations_for``; a step answering ``None`` drops the line)."""
     from epistrel.core.bundles.format import LineInvalid, validate_line
     from epistrel.core.events.registry import validate
 
     found: list[dict[str, Any]] = []
     dropped: set[str] = set()
-    for row in _json_rows(name, body):
-        number = len(found) + 1
+    for number, raw in enumerate(_json_rows(name, body), start=1):
+        row: dict[str, Any] | None = raw
+        for step in steps:
+            row = step(name, row) if row is not None else None
+        if row is None:
+            continue
         if newer:
             kept = _known(row, name)
             dropped |= set(row) - set(kept)
@@ -412,35 +475,107 @@ content-addressed, so an existing blob is kept)."""
 After = Callable[[AsyncConnection, str], Awaitable[None]]
 
 
-async def import_story(
-    db: AsyncEngine,
-    data: bytes,
-    request: ImportRequest,
-    *,
-    principal: str,
-    blobs: BlobWriter | None = None,
-    after: After | None = None,
-) -> Imported:
-    """Import ``data`` as a new story (see the module docstring)."""
-    from epistrel.core.erasure.index import reindex_story
-    from epistrel.core.profiles.store import config_revision, default_profile
-    from epistrel.core.projections.fold import replace_with_fold
+def format_steps(version: str) -> list[Any]:
+    """#250: the migration steps from the bundle's ``version`` to this deployment's format
+    (``format.FORMAT_MIGRATIONS``); a registered version whose chain has a gap is
+    ``unsupported_format_version``."""
+    from epistrel.core.bundles import format as bundle_format
 
-    manifest, by_path = read_bundle(data)
+    steps = bundle_format.migrations_for(version, FORMAT_VERSION)
+    if steps is None:
+        raise UnsupportedFormatVersion(
+            "this deployment cannot migrate the bundle's format",
+            {"bundle_version": version, "supported": "1.x"},
+        )
+    return steps
+
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def fresh_id(job_id: str, old: str) -> str:
+    """#250: a bundle id's new ULID, with no map table. It keeps the old id's 48-bit time
+    prefix (so ids keep their order), and takes its 80 random bits from HMAC-SHA256(job id, old
+    id), so a crash-resumed import recomputes the same ids."""
+    import hmac
+
+    digest = hmac.new(job_id.encode(), old.encode(), hashlib.sha256).digest()
+    value = int.from_bytes(digest[:10], "big")
+    tail = "".join(_CROCKFORD[(value >> (5 * (15 - n))) & 31] for n in range(16))
+    return old[:10] + tail
+
+
+@dataclass(slots=True)
+class Inserted:
+    """What ``insert_bundle`` wrote: the id map, the counts, the warnings, the ``import``
+    operation, the media assets it created and the source's ids (for #251's gates)."""
+
+    ids: dict[str, str]
+    counts: dict[str, int]
+    warnings: list[dict[str, Any]]
+    operation_id: str
+    media_ids: list[str]
+    source_story_id: str
+    exported_revision: int
+
+
+async def stage_media(
+    manifest: Mapping[str, Any], by_path: Mapping[str, bytes], blobs: BlobWriter | None
+) -> list[dict[str, Any]]:
+    """Each ``media.jsonl`` line's bytes checked against its checksum and written through
+    ``blobs`` (outside any transaction: content-addressed, so a refusal leaves only an
+    unreferenced blob for #105's sweep); the lines."""
+    body = by_path.get("media.jsonl")
+    if body is None:
+        return []
     version = str(manifest.get("format_version", ""))
     newer = _minor(version) > _minor(FORMAT_VERSION)
+    lines = _rows("media.jsonl", body, newer=newer, steps=format_steps(version))
+    for line in lines:
+        blob = by_path.get(f"media/{line['sha256']}")
+        if blob is None or hashlib.sha256(blob).hexdigest() != line["sha256"]:
+            raise CorruptBundle(
+                "a media line's bytes are missing or do not match its checksum",
+                {"reason": "checksum_mismatch", "entry": f"media/{line['sha256']}"},
+            )
+        if blobs is not None:
+            await asyncio.to_thread(blobs, str(line["sha256"]), blob)
+    return lines
+
+
+async def insert_bundle(
+    conn: AsyncConnection,
+    story_id: str,
+    manifest: Mapping[str, Any],
+    by_path: Mapping[str, bytes],
+    *,
+    job_id: str,
+    principal: str,
+    owner: str,
+    media: Sequence[Mapping[str, Any]],
+    bundle_sha256: str,
+) -> Inserted:
+    """#250: the bundle's rows into the story row ``story_id`` (status ``importing``, created by
+    the request with its name, owner, rating and profile), in ``conn``'s transaction (see the
+    module docstring): every id the bundle owns remapped (``fresh_id``), the rows inserted in
+    dependency order with their original recording times, the ``import`` operation recorded,
+    the projections folded and the subject index rewritten."""
+    from epistrel.core.erasure.index import reindex_story
+    from epistrel.core.projections.fold import replace_with_fold
+
+    version = str(manifest.get("format_version", ""))
+    newer = _minor(version) > _minor(FORMAT_VERSION)
+    steps = format_steps(version)
     warnings: list[dict[str, Any]] = []
     story_row = json.loads(by_path["records/story.json"])
+    for step in steps:
+        story_row = step("records/story.json", story_row) or story_row
     if newer:
         story_row = _known(story_row, "records/story.json")
     _check("records/story.json", story_row)
     tables: dict[str, list[dict[str, Any]]] = {}
-    media: list[dict[str, Any]] = []
     for path, body in by_path.items():
-        if path == "records/story.json" or path.startswith("media/"):
-            continue
-        if path == "media.jsonl":
-            media = _rows(path, body, newer=newer, warnings=warnings)
+        if path in ("records/story.json", "media.jsonl") or path.startswith("media/"):
             continue
         name = (
             "events"
@@ -452,86 +587,85 @@ async def import_story(
             if table is None and newer:
                 warnings.append({"code": "unknown_member", "entry": path})
             continue  # an unknown or rebuilt table: ignored
-        tables[name] = _rows(path, body, newer=newer, warnings=warnings)
-    ids: dict[str, str] = {str(story_row["id"]): new_ulid()}
+        tables[name] = _rows(path, body, newer=newer, warnings=warnings, steps=steps)
+    source = str(story_row["id"])
+    ids: dict[str, str] = {source: story_id}
     for name, rows in tables.items():
         for old in _primary_ids(metadata.tables[name], rows):
-            ids.setdefault(old, new_ulid())
+            ids.setdefault(old, fresh_id(job_id, old))
     for line in media:
-        ids.setdefault(str(line["id"]), new_ulid())
-    new_story = ids[str(story_row["id"])]
-    owner = request.owner or principal
-    for line in media:  # outside the transaction: content-addressed, kept on a refusal
-        blob = by_path.get(f"media/{line['sha256']}")
-        if blob is None or hashlib.sha256(blob).hexdigest() != line["sha256"]:
-            raise CorruptBundle(
-                "a media line's bytes are missing or do not match its checksum",
-                {"reason": "checksum_mismatch", "entry": f"media/{line['sha256']}"},
-            )
-        if blobs is not None:
-            await asyncio.to_thread(blobs, str(line["sha256"]), blob)
-    if media and blobs is None:
-        warnings.append({"code": "media_not_imported", "count": len(media)})
+        ids.setdefault(str(line["id"]), fresh_id(job_id, str(line["id"])))
     exported = int(manifest.get("exported_revision") or 0)
     counts: dict[str, int] = {}
-    async with db.begin() as conn:
-        profile = request.engine_profile_id or story_row.get("engine_profile_id")
-        if profile is None or not await _profile_exists(conn, str(profile)):
-            profile = await default_profile(conn)
-        story = remap(story_row, ids)
-        story.update(
-            {
-                "id": new_story,
-                "owner_principal": owner,
-                "engine_profile_id": profile,
-                "engine_profile_version_pin": None,
-                "status": "active",
-                "paused_by": None,
-                "status_before_block": None,
-                "in_flight_turn": None,
-                "in_flight_lease_until": None,
-                "timeline_revision": exported + 1,
-                "embedding_model_version": None,
-            }
+    held = (
+        await conn.execute(
+            select(
+                stories.c.name,
+                stories.c.content_rating_id,
+                stories.c.engine_profile_id,
+                stories.c.engine_profile_version_pin,
+                stories.c.owner_principal,
+            ).where(stories.c.id == story_id)
         )
-        await conn.execute(insert(stories).values(**_typed(stories, story)))
-        if media and blobs is not None:
-            await _insert_media(conn, media, ids, owner=owner, principal=principal)
-            counts["media_assets"] = len(media)
-        ordered = [t for t in metadata.sorted_tables if t.name in tables]
-        for table in ordered:
-            rows = [_safe(table.name, _typed(table, remap(r, ids))) for r in tables[table.name]]
-            if not rows:
-                continue
-            for start in range(0, len(rows), BATCH):
-                await conn.execute(insert(table).values(rows[start : start + BATCH]))
-            counts[table.name] = len(rows)
-        operation_id = await _import_operation(
-            conn,
-            new_story,
-            principal=principal,
-            revision=exported + 1,
-            imported_from={
-                "source_story_id": str(manifest.get("source_story_id", "")),
-                "exported_revision": exported,
-                "format_version": version,
-                "bundle_sha256": hashlib.sha256(data).hexdigest(),
-            },
-        )
-        await replace_with_fold(conn, new_story)
-        await reindex_story(conn, new_story)
-        if after is not None:
-            await after(conn, new_story)
-        revision = await config_revision(conn)
-    log.info("story imported", story_id=new_story, tables=len(counts), warnings=len(warnings))
-    return Imported(
-        new_story,
+    ).one()
+    story = remap(story_row, ids)
+    story.update(
+        {
+            "id": story_id,
+            "name": held.name,
+            "owner_principal": held.owner_principal,
+            "content_rating_id": held.content_rating_id,
+            "engine_profile_id": held.engine_profile_id,
+            "engine_profile_version_pin": held.engine_profile_version_pin,
+            "status": "importing",
+            "archived_at": None,
+            "paused_by": None,
+            "status_before_block": None,
+            "in_flight_turn": None,
+            "in_flight_lease_until": None,
+            "timeline_revision": exported + 1,
+            "embedding_model_version": None,
+        }
+    )
+    values = _typed(stories, story)
+    values.pop("id", None)
+    await conn.execute(stories.update().where(stories.c.id == story_id).values(**values))
+    media_ids: list[str] = []
+    if media:
+        await _insert_media(conn, media, ids, owner=owner, principal=principal)
+        media_ids = [ids[str(line["id"])] for line in media]
+        counts["media_assets"] = len(media)
+    ordered = [t for t in metadata.sorted_tables if t.name in tables]
+    for table in ordered:
+        rows = [_safe(table.name, _typed(table, remap(r, ids))) for r in tables[table.name]]
+        if not rows:
+            continue
+        for start in range(0, len(rows), BATCH):
+            await conn.execute(insert(table).values(rows[start : start + BATCH]))
+        counts[table.name] = len(rows)
+    operation_id = await _import_operation(
+        conn,
+        story_id,
+        principal=principal,
+        revision=exported + 1,
+        imported_from={
+            "source_story_id": str(manifest.get("source_story_id", "")),
+            "exported_revision": exported,
+            "format_version": version,
+            "bundle_sha256": bundle_sha256,
+        },
+    )
+    await replace_with_fold(conn, story_id)
+    await reindex_story(conn, story_id)
+    log.info("bundle inserted", story_id=story_id, tables=len(counts), warnings=len(warnings))
+    return Inserted(
+        ids,
+        counts,
+        warnings,
+        operation_id,
+        media_ids,
         str(manifest.get("source_story_id", "")),
         exported,
-        counts,
-        config_revision=revision,
-        operation_id=operation_id,
-        warnings=warnings,
     )
 
 
@@ -638,12 +772,16 @@ async def _profile_exists(conn: AsyncConnection, profile_id: str) -> bool:
 
 
 __all__ = [
+    "DEFAULT_LIMITS",
     "MAX_ENTRIES",
     "MAX_ENTRY_BYTES",
     "MAX_TOTAL_BYTES",
-    "ImportRequest",
-    "Imported",
-    "import_story",
+    "Inserted",
+    "Limits",
+    "fresh_id",
+    "insert_bundle",
     "read_bundle",
+    "read_head",
     "remap",
+    "stage_media",
 ]

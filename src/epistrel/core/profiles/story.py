@@ -63,8 +63,8 @@ from pydantic import ConfigDict, Field, StrictInt
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core import author_facts, summary_rebuild
 from epistrel.core import backfill as core_backfill
-from epistrel.core import summary_rebuild
 from epistrel.core.backfill import coverage
 from epistrel.core.config_changes import ConfigScope, record_config_change
 from epistrel.core.enums import StoryStatus
@@ -234,6 +234,7 @@ async def _report(
         queue_position=None if span is None else await impact.queued_count(conn) + 1,
         deferred=await impact.deferred_counts(conn, story_id, change),
         summary=await impact.summary_counts(conn, story_id, change),
+        parses=len(await author_facts.pending_keys(conn, story_id)) if span is not None else 0,
     )
     needed = entry.backfill.needed
     warned = safety_warnings(after.settings, safety)

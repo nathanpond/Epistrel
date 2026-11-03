@@ -85,7 +85,9 @@ STATUS_BEFORE_BLOCK_CHECK = (
 ).format(
     blocked=StoryStatus.BLOCKED_BY_ERASURE.value,
     before=", ".join(
-        f"'{s.value}'" for s in StoryStatus if s is not StoryStatus.BLOCKED_BY_ERASURE
+        f"'{s.value}'"
+        for s in StoryStatus
+        if s not in (StoryStatus.BLOCKED_BY_ERASURE, StoryStatus.IMPORTING)
     ),
 )
 SCENARIO_SNAPSHOT_CHECK = (

@@ -40,12 +40,34 @@ def say_at(turn: int, *, changed: bool) -> str | None:
 
 
 async def long_lite_story(
-    engine: AsyncEngine, story_id: str, player: str, messages: int, *, changed: bool = False
+    engine: AsyncEngine,
+    story_id: str,
+    player: str,
+    messages: int,
+    *,
+    changed: bool = False,
+    lines: dict[int, tuple[str, str]] | None = None,
 ) -> dict[int, str]:
     """Play ``messages`` messages into ``story_id`` (``messages // 2`` turns): each turn the
-    player's input (``player`` speaking) and a reply; answers each turn's input event id."""
+    player's input (``player`` speaking) and a reply; answers each turn's input event id.
+    ``lines``: turns whose ``(input, reply)`` replace the defaults (#709's planted meeting)."""
     inputs: dict[int, str] = {}
     for n in range(1, messages // 2 + 1):
+        if lines and n in lines:
+            said, reply = lines[n]
+            async with Operation(
+                engine, story_id=story_id, kind=OperationKind.TURN, principal="p-test"
+            ) as op:
+                op.append(
+                    "player_input",
+                    {"text": said, "say": said},
+                    provenance=Provenance.PLAYER,
+                    character_id=player,
+                )
+                op.append("message_rendered", {"text": reply})
+                await op.commit()
+            inputs[int(op.narrative_turn or n)] = op.operation_id
+            continue
         line = say_at(n, changed=changed) or f"Line {n}."
         async with Operation(
             engine, story_id=story_id, kind=OperationKind.TURN, principal="p-test"

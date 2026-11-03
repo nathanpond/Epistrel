@@ -83,12 +83,15 @@ class StoryStatus(StrEnum):
     (a restored backup that predates it; FR-ADMIN-7, #125). Every read and write of the story is
     refused with 503 ``erasure_pending`` until the reconciler has reapplied it; the status it
     had is kept in ``stories.status_before_block`` and restored then.
+    ``importing`` (#250, FR-STORE-7): the story's import job has not finished; every read and
+    write of it is refused with 409 ``story_importing`` (``core.importing``).
     """
 
     ACTIVE = "active"
     ARCHIVED = "archived"
     PAUSED = "paused"
     BLOCKED_BY_ERASURE = "blocked_by_erasure"
+    IMPORTING = "importing"
 
 
 class EntryStatus(StrEnum):
@@ -423,7 +426,7 @@ class StateChangeSource(StrEnum):
     """Where a change came from (FR-STATE-4): a narrative ``turn``, the ``author``, the
     ``consumer`` API, a ``rule``; the world clock's advances (``pacing``, ``declared_skip``,
     ``estimate``, ``player``, #193); an ``external`` provider; a late ``settlement``
-    (FR-EXT-21); or a genesis ``seed`` at position 0 (#202). Postgres enum
+    (FR-EXT-21); a genesis ``seed`` at position 0 (#202); or a ``backfill`` (#228). Postgres enum
     ``state_change_source``."""
 
     TURN = "turn"
@@ -437,6 +440,8 @@ class StateChangeSource(StrEnum):
     EXTERNAL = "external"
     SETTLEMENT = "settlement"
     SEED = "seed"
+    BACKFILL = "backfill"
+    """#228, #709: a backfill's re-derived clock advance (FR-PROF-9; migration 0129)."""
 
 
 class StateContingency(StrEnum):

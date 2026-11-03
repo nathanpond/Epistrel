@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -92,6 +92,14 @@ not members: they belong to #64's configuration dependency set, which is re-chec
 the configuration (the generation settings, the window): a turn captures it at its start and
 runs under it, so a change of the profile, the overrides or the defaults is prospective and
 never touches a turn in flight (FR-CONC-15; #113 dropped M2's ``generation_settings``)."""
+
+
+UNVERSIONED_MEMBERS: tuple[str, ...] = ("author_direction",)
+"""#716: the Lite read-set members a write changes without moving the revision (a nudge,
+#226: ``steer_queued`` moves none). A Lite turn compares them at its commit even when the
+revision has not moved, so a nudge landing while the turn generates makes it regenerate
+with the nudge (#244's Lite read set). A structured turn's read set is keyed and keeps #226's
+rule: the nudge attaches to the next turn whose assembly starts after it."""
 
 
 # -- outcomes ---------------------------------------------------------------------------------
@@ -175,7 +183,7 @@ def decide(state: RevalidationState, *, recheck: Recheck | None = None) -> Decis
     """The FR-CONC-4 decision. Bind ``recheck`` with ``functools.partial`` to add re-checks."""
     if state.control_since_base:
         return Abandon(control_operation_id=state.control_operation_id)
-    if not state.moved and not state.config_changed:
+    if not state.moved and not state.config_changed and not state.touched:
         return Commit()
     if state.touched:
         return Regenerate(reason="read_set_touched", touched=state.touched)
@@ -308,6 +316,14 @@ class LiteReadSet:
     async def hashes(self, conn: AsyncConnection, story_id: str) -> ReadSet:
         return {
             name: hash_member(value) for name, value in (await self.values(conn, story_id)).items()
+        }
+
+    async def hashes_of(
+        self, conn: AsyncConnection, story_id: str, names: Sequence[str]
+    ) -> ReadSet:
+        """The hashes of ``names`` only (#716: the unversioned members at an unmoved commit)."""
+        return {
+            name: hash_member(await _MEMBER_LOADERS[name](conn, story_id, self)) for name in names
         }
 
 

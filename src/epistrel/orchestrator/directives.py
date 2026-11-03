@@ -38,6 +38,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstr
 from sqlalchemy import insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core.author_facts import lite_facts, lite_note_parts
 from epistrel.core.config_changes import read_section
 from epistrel.core.enums import (
     BeliefConfidenceLevel,
@@ -1008,31 +1009,6 @@ async def lite_fact_count(
     return int(found or 0)
 
 
-async def lite_facts(conn: AsyncConnection, story_id: str) -> list[tuple[str, int, int, str]]:
-    """#699: the active Lite lasting author facts in narrative order: ``(event id, turn,
-    slot, text)``."""
-    from epistrel.core.membership import active_operation
-    from epistrel.core.tables import operations
-
-    o, e = operations.c, events.c
-    rows = await conn.execute(
-        select(e.id, o.narrative_turn, o.slot_k, e.payload)
-        .join(operations, o.operation_id == e.operation_id)
-        .where(
-            e.story_id == story_id,
-            e.type == "directive_applied",
-            e.payload["lite"].as_boolean().is_(True),
-            active_operation(operations),
-        )
-        .order_by(o.narrative_turn, o.slot_k, e.seq)
-    )
-    return [
-        (str(r.id), int(r.narrative_turn or 0), int(r.slot_k or 0), str(r.payload.get("text")))
-        for r in rows
-        if str(dict(r.payload or {}).get("text", "")).strip()
-    ]
-
-
 async def kept_author_facts(conn: AsyncConnection, story_id: str, before_turn: int) -> str:
     """#699: under the structured pipeline, the Lite lasting author facts an upgrade kept as
     text (no completed backfill converted them), set before ``before_turn``: the narrator's
@@ -1094,26 +1070,6 @@ async def author_corrections(conn: AsyncConnection, story_id: str) -> list[str]:
     found.extend((t, "Author correction: " + str(text)) for t, text in structured)
     found = sorted((f for f in found if f[1]), key=lambda f: f[0])[-CORRECTIONS_MAX:]
     return [text for _, text in found]
-
-
-async def lite_note_parts(conn: AsyncConnection, story_id: str) -> list[tuple[str, str]]:
-    """#700: the story's active ``lite_note`` parts, oldest first: ``(part_id, text)`` (an
-    upgrade converts each like a lasting author fact)."""
-    from epistrel.core.tables import amendment_parts, amendments
-
-    a, p = amendments.c, amendment_parts.c
-    found = await conn.execute(
-        select(p.id, p.patch_after)
-        .select_from(amendment_parts.join(amendments, a.id == p.amendment_id))
-        .where(
-            p.story_id == story_id,
-            p.kind == "lite_note",
-            p.status == "active",
-            a.status == "active",
-        )
-        .order_by(p.tx_from, p.id)
-    )
-    return [(str(i), str((after or {}).get("text") or "")) for i, after in found]
 
 
 def lite_notes(

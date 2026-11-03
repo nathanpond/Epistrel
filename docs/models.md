@@ -34,6 +34,7 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `rewrite_record` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `directive_parse` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `lite_rewrite_reach` | no | `default` | `parse_validate_retry` | 8,192 tokens |
+| `lite_rewrite_parse` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -568,6 +569,29 @@ Finds the lines of a Lite story's transcript a correction to its past contradict
 | `lines.turn` | `recent_message` |
 | `lines.speaker` | `recent_message` |
 | `lines.text` | `recent_message` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+
+### `lite_rewrite_parse`
+
+Reads a Lite story's history-rewrite instruction as one change statement, says whether it changes the world, and asks what it cannot decide, on the author's side-channel, never in a turn (FR-LITE-8).
+
+- **Hot path:** no
+- **Default model:** the `default` row of `model_config`, unless the purpose has its own
+- **Template:** `lite_rewrite_parse.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `LiteRewriteParseResult` (`change_statement`, `world_change`, `ambiguities`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `instruction` | `author_instruction` |
+| `answers` | `author_instruction` |
+| `recent.turn` | `recent_message` |
+| `recent.speaker` | `recent_message` |
+| `recent.text` | `recent_message` |
+| `author_facts` | `author_instruction` |
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
 

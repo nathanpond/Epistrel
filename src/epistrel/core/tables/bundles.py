@@ -1,7 +1,8 @@
 """Story bundles (FR-STORE-7, FR-ADMIN-4; #249, migration 0125).
 
-``bundle_jobs``: one row per export of a story: its status (``queued``, ``running``, ``ready``,
-``failed``, ``expired``), the revision it read (``exported_revision``), where its archive is
+``bundle_jobs``: one row per export of a story (``kind = export``), and since #250 per import
+(``kind = import``): its status (``queued``, ``running``, ``ready``, ``failed``, ``expired``; an
+import's ``refused``), the revision it read (``exported_revision``), where its archive is
 (``path``, a file under ``EPISTREL_BUNDLE_DIR``), its size and SHA-256, its manifest, the error
 that ended it, who asked and when it expires. A story's deletion deletes its rows (and files);
 a fork copies none.
@@ -30,7 +31,8 @@ bundle_jobs = Table(
     "bundle_jobs",
     metadata,
     Column("id", ulid_type(), primary_key=True),
-    Column("story_id", ulid_type(), nullable=False),
+    # #250: null on a refused import (its story deleted, the row kept for its error).
+    Column("story_id", ulid_type(), nullable=True),
     Column("kind", Text, nullable=False, server_default=text("'export'")),
     Column("status", Text, nullable=False, server_default=text("'queued'")),
     Column("job_id", ulid_type(), nullable=True),
@@ -45,8 +47,16 @@ bundle_jobs = Table(
     Column("created_at", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
     Column("finished_at", TIMESTAMP(timezone=True), nullable=True),
     Column("expires_at", TIMESTAMP(timezone=True), nullable=True),
-    CheckConstraint("kind IN ('export')", name="kind"),
-    CheckConstraint("status IN ('queued', 'running', 'ready', 'failed', 'expired')", name="status"),
+    # #250 (migration 0130): an import's choices and frozen limits, its report, its stage and
+    # its progress.
+    Column("request", JSONB, nullable=True),
+    Column("report", JSONB, nullable=True),
+    Column("progress", JSONB, nullable=True),
+    Column("stage", Text, nullable=True),
+    CheckConstraint("kind IN ('export', 'import')", name="kind"),
+    CheckConstraint(
+        "status IN ('queued', 'running', 'ready', 'failed', 'expired', 'refused')", name="status"
+    ),
     Index("ix_bundle_jobs_story", "story_id", "created_at"),
 )
 

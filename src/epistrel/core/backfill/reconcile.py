@@ -23,7 +23,22 @@ through the live writers and under the backfill operation at each turn's own pos
   ``backfill`` (the lowest);
 - **exposures** (``partitions`` gained): each character present at a ``say`` other than its
   speaker is exposed to its propositions (``epistemic.exposure.record_exposures``), flagged
-  ``inferred``; unresolved, so a later turn resolves them lazily as it does live ones.
+  ``inferred``; unresolved, so a later turn resolves them lazily as it does live ones;
+- **observations** (``partitions`` gained, #709): the claims of a narrated message are observed
+  at ``content`` fidelity by the characters its turn names (presence inferred from the text):
+  ``epistemic.observation.observe``, one ``observation`` transition per perceiver and claim, so
+  each holds its own belief;
+- **the clock** (``clock`` gained, #709): each turn's advance, planned in narrative order before
+  the transaction (``ClockStep``: #194's pacing over the Lite turn's combined render, or a
+  narrated skip in its place, with ``time_estimation`` given the reconciled clock), written by
+  ``world_clock.advance`` with ``source = backfill``; a turn that already holds recorded
+  advances (a ``prompt_only`` era) keeps them and gets none;
+- **scheduled times** (#709): a ``scheduled`` claim's time of day ("at 5 pm") is placed through
+  the reconciled clock's anchor at the claim's position, as a live turn's normalization places
+  it, so its canon fact plans the event (``scheduled_events``) at that time.
+
+The live writers read the held target configuration (``profiles.effective.deriving``), so the
+clock's gate and time basis are the target's while the stored configuration is unchanged.
 
 Every write of one turn runs in a savepoint: a record naming a subject erased from the story is
 refused by the erasure guard, the turn's records are skipped, and the skip is counted
@@ -68,10 +83,13 @@ POLICIES = (LAST_MENTION, FIRST_MENTION, ASK)
 
 
 class ReadProposition(BaseModel):
-    """One proposition a claim normalized to, and whether its claim narrated a change."""
+    """One proposition a claim normalized to, and whether its claim narrated a change.
+    ``time_text`` (#709): the claim's time expression, placed at reconciliation against the
+    reconciled clock (a ``scheduled`` claim's time of day: "at five")."""
 
     proposition: dict[str, Any]
     changed: bool = False
+    time_text: str | None = None
 
 
 class ReadMessage(BaseModel):
@@ -86,10 +104,26 @@ class ReadMessage(BaseModel):
     propositions: list[ReadProposition] = Field(default_factory=list)
 
 
+class ClockStep(BaseModel):
+    """#709: a reconciled turn's clock advance, planned before the reconciliation's transaction
+    (its ``time_estimation`` call made in order, with the reconciled clock): ``minutes`` (0:
+    none), how it was ``derived`` (``pacing``, ``declared_skip``, ``estimate``), and a narrated
+    skip #199's authority refused (``refused``: reported, not repaired; the turn paces)."""
+
+    minutes: int = 0
+    derived: str = "pacing"
+    reason: str = ""
+    refused: str | None = None
+    meta: dict[str, Any] | None = None
+
+
 class ReadTurn(BaseModel):
     turn: int
     variant: int = 0
     messages: list[ReadMessage] = Field(default_factory=list)
+    clock: ClockStep | None = None
+    """#709: the turn's planned advance (``None``: the clock is not gained, or the turn already
+    holds the advances a ``prompt_only`` clock recorded)."""
 
 
 class Extracted(BaseModel):
@@ -108,6 +142,9 @@ class Tally:
     conflicts: int = 0
     open: int = 0
     skipped_erased: int = 0
+    clock_minutes: int = 0
+    skipped_skips: int = 0
+    observations: int = 0
     by_turn: dict[int, int] = field(default_factory=dict)
 
 
@@ -119,6 +156,10 @@ def _shim(op_id: str, story_id: str, principal: str, turn: ReadTurn) -> Any:
         narrative_turn=turn.turn,
         turn_variant=turn.variant,
         base_revision=None,
+        # #709: what a State change (the clock's advance) reads of its operation.
+        provenance=None,
+        slot=False,
+        slot_k=None,
     )
 
 
@@ -317,11 +358,20 @@ async def _turn(
     policy = str((row.report or {}).get("policy") or LAST_MENTION)
     beats: list[memories.Beat] = []
     exposed: list[Exposed] = []
+    observed: list[Any] = []
+    if turn.clock is not None:
+        await _advance(conn, op, story_id, turn, tally)
     for index, message in enumerate(turn.messages):
         written: list[tuple[str, Proposition]] = []
         if capabilities & FACT_CAPABILITIES:
             for read in message.propositions:
-                proposition = Proposition.model_validate(read.proposition)
+                proposition = await _placed(
+                    conn,
+                    story_id,
+                    Proposition.model_validate(read.proposition),
+                    read.time_text,
+                    Position(turn.turn, turn.variant, index + 1),
+                )
                 earlier = await _previous(conn, story_id, op_id, proposition)
                 if (
                     earlier is not None
@@ -394,6 +444,13 @@ async def _turn(
                             fidelity=ExposureFidelity.FULL,
                         )
                     )
+        if (
+            capabilities & EXPOSURE_CAPABILITIES
+            and message.kind in OBSERVED_KINDS
+            and written
+            and message.present
+        ):
+            observed.append(_observed(message, index + 1, [p for _, p in written]))
     if capabilities & MEMORY_CAPABILITIES and beats:
         made = await memories.write_episodic(
             conn, op, beats, settings=settings, foreign_events=True
@@ -402,6 +459,100 @@ async def _turn(
     if exposed:
         ids = await record_exposures(conn, op, exposed, inferred=True)
         tally.exposures += len(ids)
+    if observed:
+        from epistrel.core.epistemic import observation, transitions
+
+        with transitions.inferring():
+            tally.observations += await observation.observe(conn, op, observed, settings=settings)
+
+
+CLOCK_REASON = "backfill: re-derived from the transcript"
+OBSERVED_KINDS = frozenset({"do", "narration"})
+"""The messages whose claims the characters present observe (#164's observed kinds)."""
+
+
+def _observed(message: ReadMessage, beat: int, claims: Sequence[Proposition]) -> Any:
+    """#709 (FR-PROF-9, FR-EPI-7): a narrated message as #161's routing result for the
+    observation sink: its claims observed at ``content`` fidelity by the characters the text
+    names (presence inferred from the transcript, the only placement a Lite era has; the
+    narrator's lines have no actor). ``core.epistemic.observation.observe`` writes one
+    ``observation`` transition per perceiver and claim, skipping the player's character."""
+    from epistrel.core.epistemic import perception
+
+    return perception.PerceptionResult(
+        beat=perception.RouteBeat(
+            kind="narration",
+            beat=beat,
+            actor=message.speaker,
+            source=SimpleNamespace(event_id=message.event_id, narrated=False),
+            claims=tuple(claims),
+        ),
+        qualifiers=perception.Qualifiers(),
+        level=perception.CO_LOCATION,
+        location=None,
+        perceived=tuple(
+            perception.Perceived(character_id=c, fidelity=perception.CONTENT, channel="room")
+            for c in message.present
+        ),
+    )
+
+
+async def _advance(
+    conn: AsyncConnection, op: Any, story_id: str, turn: ReadTurn, tally: Tally
+) -> None:
+    """#709: the turn's planned clock advance, at the Lite reply's position (#203: one
+    combined-render increment, or the accepted narrated skip in its place), ``source =
+    backfill``; a refused skip is counted (``skipped_skips``), never repaired."""
+    from epistrel.core import world_clock
+    from epistrel.core.enums import StateChangeSource
+    from epistrel.core.membership import POSITION_MAX
+    from epistrel.core.turns import REPLY_BEAT
+
+    step = turn.clock
+    assert step is not None  # noqa: S101 - the caller checked
+    if step.refused is not None:
+        tally.skipped_skips += 1
+    if step.minutes <= 0:
+        return
+    await world_clock.advance(
+        conn,
+        op,
+        story_id,
+        minutes=step.minutes,
+        source=StateChangeSource.BACKFILL,
+        position=Position(turn.turn, turn.variant, 0, REPLY_BEAT, POSITION_MAX),
+        reason=(step.reason or CLOCK_REASON)[:200],
+        estimate_meta={"derived": step.derived, **(step.meta or {})},
+    )
+    tally.clock_minutes += step.minutes
+
+
+async def _placed(
+    conn: AsyncConnection,
+    story_id: str,
+    proposition: Proposition,
+    time_text: str | None,
+    position: Position,
+) -> Proposition:
+    """#709 (FR-CLOCK-9): a ``scheduled`` claim's time of day ("at five") placed through the
+    reconciled clock's anchor at the claim's position (``schedule_statements.place_time``, as a
+    live turn's normalization places it), so the canon fact plans its event at that time; any
+    other proposition, or a time the clock cannot place, as extracted."""
+    from epistrel.core.propositions.model import Granularity, Instant
+    from epistrel.core.propositions.vocabulary import SCHEDULED
+
+    if not time_text or proposition.predicate_id != SCHEDULED:
+        return proposition
+    from epistrel.core import world_clock
+    from epistrel.core.world_clock.schedule_statements import place_time
+
+    if await world_clock.clock_level(conn, story_id) is None:
+        return proposition
+    basis = await world_clock.time_basis(conn, story_id)
+    placed = place_time(time_text, basis, position)
+    if placed is None:
+        return proposition
+    return proposition.model_copy(update={"valid_time": Instant.of(placed, Granularity.MINUTE)})
 
 
 async def reconcile_turns(
@@ -449,7 +600,14 @@ async def reconcile_turns(
 def merge_report(report: Mapping[str, Any], tally: Tally) -> dict[str, Any]:
     """The backfill's report with ``tally`` added."""
     found = dict(report)
-    for key in ("facts", "memories", "exposures", "skipped_erased"):
+    for key in (
+        "facts",
+        "memories",
+        "exposures",
+        "skipped_erased",
+        "clock_minutes",
+        "skipped_skips",
+    ):
         found[key] = int(found.get(key, 0)) + int(getattr(tally, key))
     conflicts = dict(found.get("conflicts") or {"total": 0, "by_resolution": {}})
     conflicts["total"] = int(conflicts.get("total", 0)) + tally.conflicts
@@ -467,12 +625,14 @@ def merge_report(report: Mapping[str, Any], tally: Tally) -> dict[str, Any]:
 
 __all__ = [
     "ASK",
+    "CLOCK_REASON",
     "EXPOSURE_CAPABILITIES",
     "FACT_CAPABILITIES",
     "FIRST_MENTION",
     "LAST_MENTION",
     "MEMORY_CAPABILITIES",
     "POLICIES",
+    "ClockStep",
     "Extracted",
     "ReadMessage",
     "ReadProposition",

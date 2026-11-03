@@ -22,6 +22,30 @@ A deployment's state lives in three places, and a backup takes all three, separa
 
 A reapply that fails (for example, `EPISTREL_CONFIG_KEY` is unset, so the erasure's keyed hashes cannot be made) leaves its story blocked. The error class and the attempts are in `GET /admin/erasure/status`, and the 5-minute retry keeps trying.
 
+## Story snapshots and restore
+
+A story's snapshot is its export, and its restore is an import: always a **new** story, never an overwrite (FR-STORE-7, FR-ADMIN-4). Whole-deployment backup and restore are [Backups](#backups) and [Restore](#restore) above.
+
+- **Snapshot.** `POST /admin/stories/{story_id}/export` queues an export (202); `GET /admin/stories/exports/{job_id}` reads its state and `GET /admin/stories/exports/{job_id}/bundle` downloads the archive once it is ready. Archives are written under `EPISTREL_BUNDLE_DIR` and kept for `bundle_export_ttl_hours` (24 by default; `PUT /admin/settings`), then the retention sweep deletes them.
+- **Restore.** `POST /admin/stories/import` takes a `multipart/form-data` body: part `metadata` (JSON: `owner`, `name`, `content_rating_id`, `engine_profile_id`, `upgrade_mode`, `ignore_warnings`), then part `file`, the archive. The manifest, the format, the rating (the one named, else the one whose name matches the bundle's: none is 422 `rating_required`) and the profile's impact report are checked before anything is created. A report that warns, without `ignore_warnings`, is answered `{applied: false, impact}` and nothing is created. Otherwise the call answers 202: the story exists with `status: importing` (every route of it answers 409 `story_importing` until its import ends), and a background job imports it. `GET /admin/stories/imports/{job_id}` reads its state, stage and progress, and, once it ends, its error and report.
+- **The import's gates**, in order, before the story is served:
+  1. this deployment's erasure ledger is applied to it (story-scope entries of the bundle's source story or the story it was forked from, and catalog-scope entries whose subject it references), and every imported text is checked against it;
+  2. its whole active history is checked against the chosen rating's guardrails, the global policies and the minors policy among them; any violation refuses the import, with every violation listed (`rating_check_failed`), and inactive turns stay unchecked until a swap, an untruncate or a fork would reactivate them;
+  3. every incomplete staged turn is closed, and every outbox row with no terminal outcome is parked (`imported_unsettled`): never dispatched, listed by `GET /stories/{id}/reconciliation`, and resolved only by the author's `POST /stories/{id}/reconciliation/{outbox_id}/resolve`;
+  4. the profile is attached; a data-producing capability it adds over the bundle's starts a backfill as the story leaves `importing` (the story is then `paused`), unless `upgrade_mode` is `forward_only`.
+
+  A refusal at any stage deletes the story and everything it wrote; the import's record stays, `refused`, with its error.
+- **The import's limits** (deployment settings, `PUT /admin/settings`), checked while the archive decompresses:
+
+  | Setting | Default | Bounds |
+  |---|---|---|
+  | `bundle_max_uncompressed_bytes` | 4294967296 | 1048576–68719476736 |
+  | `bundle_max_entries` | 100000 | 10–10000000 |
+  | `bundle_max_entry_bytes` | 1073741824 | 1048576–68719476736 |
+
+- **The erasure boundary.** A delivered bundle is outside the erasure boundary (an erasure cannot reach a copy outside the deployment); a stored export not yet expired is inside it (a story-scope erasure expires and deletes it). Importing a bundle made before an erasure never brings the subject back: the import applies the ledger first.
+- **Media.** An imported story's media are new assets of its owner. They skip the upload moderation hook: they arrive through an operator endpoint, and the import's rating check covers the story's active content.
+
 ## Erasure ledger
 
 Every erasure (`POST /admin/erasure`) appends one line to `ledger.jsonl` before it commits, and fsyncs it. The line holds identifiers, counts and keyed hashes, never a name: `{erasure_id, subject: {kind, id}, scope, story_id, at, principal, operation_id, counts, scan_term_hashes, ledger_hash_prev, ledger_hash}`. The same row, with the same hashes, goes into the `erasure_ledger` table, so every database backup carries a copy. If the file cannot be written, the erasure is refused (503 `ledger_unavailable`) and nothing is erased.

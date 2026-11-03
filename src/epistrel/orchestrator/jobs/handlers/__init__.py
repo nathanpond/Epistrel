@@ -73,6 +73,7 @@ from epistrel.orchestrator.jobs.handlers.rewrite_expiry import (
 )
 from epistrel.orchestrator.jobs.handlers.state_proposals import STATE_PROPOSAL_HANDLER
 from epistrel.orchestrator.jobs.handlers.story_export import STORY_EXPORT_HANDLER
+from epistrel.orchestrator.jobs.handlers.story_import import STORY_IMPORT_HANDLER
 from epistrel.orchestrator.jobs.handlers.turn_queue import TURN_QUEUE_HANDLER, TURN_QUEUE_TASK
 from epistrel.orchestrator.jobs.recurring import register_recurring
 from epistrel.orchestrator.jobs.settlement import SETTLE_HANDLER
@@ -130,6 +131,7 @@ for _handler in (
     REWRITE_EXPIRY_HANDLER,
     PRUNE_RUN_HANDLER,
     STORY_EXPORT_HANDLER,
+    STORY_IMPORT_HANDLER,
 ):
     register(_handler)
 for _task in (

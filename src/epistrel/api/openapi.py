@@ -57,6 +57,7 @@ from epistrel.api.deps import (
 from epistrel.api.responses import STORY_PATH_PARAMETER
 from epistrel.api.routes.ownership import OWNERSHIP_TAG, ownership_operation_ids
 from epistrel.api.routes.stories import StorySettingsPatch
+from epistrel.core.bundles.import_job import ImportMetadata
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
@@ -253,6 +254,8 @@ ERROR_STATUS: dict[str, int] = {
     "bundle_too_large": 413,
     "corrupt_bundle": 422,
     "unsupported_format_version": 422,
+    "story_importing": 409,
+    "rating_required": 422,
     "prune_target_unknown": 422,
     "prune_target_ineligible": 422,
     "backfill_conflict_not_found": 404,
@@ -1114,16 +1117,34 @@ DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
 takes a blank story or one from a scenario, #119)."""
 
-MULTIPART_BODIES = {"upload_media": "MediaUpload"}
+MULTIPART_BODIES = {"upload_media": "MediaUpload", "import_story": "ImportMetadata"}
 """Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
 part (the component named here, as JSON) followed by a binary ``file`` part and, for a video,
-an optional binary ``poster_file`` part (#107)."""
+an optional binary ``poster_file`` part (#107). ``import_story``'s ``file`` is the bundle
+archive (#250) and it takes no poster."""
 
 RAW_BODIES = frozenset({"put_upload_part"})
 """Operations whose handler streams a raw ``application/octet-stream`` body itself (#107)."""
 
 
-def _multipart_body(component: str) -> dict[str, Any]:
+def _multipart_body(component: str, *, poster: bool) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "metadata": {"$ref": REF.format(model=component)},
+        "file": {
+            "type": "string",
+            "format": "binary",
+            "description": "The bytes, as the part's own `Content-Type` "
+            "declares them (or `application/octet-stream`).",
+        },
+    }
+    if poster:
+        properties[POSTER_FILE_FIELD] = {
+            "type": "string",
+            "format": "binary",
+            "description": "A video only, after `file`: its poster image "
+            "(stored with the video's rating, owner and subjects), instead of "
+            "`poster` or a frame ffmpeg extracts.",
+        }
     return {
         "required": True,
         "content": {
@@ -1131,22 +1152,7 @@ def _multipart_body(component: str) -> dict[str, Any]:
                 "schema": {
                     "type": "object",
                     "required": ["metadata", "file"],
-                    "properties": {
-                        "metadata": {"$ref": REF.format(model=component)},
-                        "file": {
-                            "type": "string",
-                            "format": "binary",
-                            "description": "The bytes, as the part's own `Content-Type` "
-                            "declares them (or `application/octet-stream`).",
-                        },
-                        POSTER_FILE_FIELD: {
-                            "type": "string",
-                            "format": "binary",
-                            "description": "A video only, after `file`: its poster image "
-                            "(stored with the video's rating, owner and subjects), instead of "
-                            "`poster` or a frame ffmpeg extracts.",
-                        },
-                    },
+                    "properties": properties,
                     "additionalProperties": False,
                 },
                 "encoding": {"metadata": {"contentType": "application/json"}},
@@ -1177,7 +1183,8 @@ def _rule_errors(method: str, path: str, *, mutating: bool) -> list[str]:
     if STORY_PATH_PARAMETER in path and (method, path) not in ERASURE_UNGATED_ROUTES:
         # A story the erasure reconciler blocked is refused until its erasures are reapplied
         # (#125); ``ledger_unavailable`` when the ledger cannot be compared on the first call.
-        codes += ["erasure_pending", "ledger_unavailable"]
+        # #250: a story being imported is refused until its import ends.
+        codes += ["erasure_pending", "ledger_unavailable", "story_importing"]
     elif any(parameter in path for parameter in CATALOG_PATH_PARAMETERS):
         # An entry a pending catalog-scope erasure reaches is refused until it is reapplied
         # (#346); ``ledger_unavailable`` as for a story.
@@ -1339,6 +1346,7 @@ def _extra_components() -> dict[str, Any]:
             (StorySpec, "validation"),
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
+            (ImportMetadata, "validation"),
             (CertificationRecord, "validation"),
         ],
         ref_template=REF,
@@ -1398,7 +1406,9 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
             "content": {"application/json": {"schema": body_schema}},
         }
     if operation_id in MULTIPART_BODIES:
-        operation["requestBody"] = _multipart_body(MULTIPART_BODIES[operation_id])
+        operation["requestBody"] = _multipart_body(
+            MULTIPART_BODIES[operation_id], poster=operation_id == "upload_media"
+        )
     if operation_id in RAW_BODIES:
         operation["requestBody"] = {
             "required": True,

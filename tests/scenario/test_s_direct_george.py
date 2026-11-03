@@ -96,6 +96,44 @@ def _prompts(stub: Any) -> str:
     return "\n".join(m.content for c in stub.calls if c.purpose == "generation" for m in c.messages)
 
 
+HELD_TEXT = "Jenni opens the door: Bobby stands there, knuckles still raised."
+OTHER_TEXT = "Jenni opens the door: Bobby is on the step, looking away."
+
+
+def _bobby_render(text: str) -> str:
+    return render(beat("do", text, propositions=[claim("Bobby", "knocked_at", "the door")]))
+
+
+async def _bobby_house(client: Any, engine: AsyncEngine, stub: Any) -> tuple[str, dict[str, str]]:
+    """S-KNOCK's house, then Bobby's sincere "I never knocked" and one more turn: a binding of
+    Bobby as the knocker conflicts with his recorded line."""
+    story, ids = await _house(client, engine)
+    await _knock(client, engine, stub, story, ids)
+    stub.reset()
+    stub.script(
+        "generation",
+        [
+            render(
+                beat(
+                    "say",
+                    NEVER,
+                    intent="sincere",
+                    propositions=[claim("I", "knocked_at", "the door", negated=True)],
+                )
+            )
+        ],
+    )
+    await played(
+        client,
+        story,
+        body(ids["Wren"], "Bobby, did you knock?", render_character_ids=[ids["Bobby"]]),
+    )
+    stub.reset()
+    stub.script("generation", [render(beat("narration", "Nobody answers."))])
+    await played(client, story, body(ids["Wren"], "Hello?"))
+    return story, ids
+
+
 @pytest.mark.part("M7", "FR-COMMIT-12,14; FR-DIRECT-1")
 async def test_s_direct_george(
     stub_settings: Settings,
@@ -167,41 +205,22 @@ async def test_s_direct_george__bobby(
 ) -> None:
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
-        story, ids = await _house(client, engine)
-        await _knock(client, engine, stub, story, ids)
-        stub.reset()
-        stub.script(
-            "generation",
-            [
-                render(
-                    beat(
-                        "say",
-                        NEVER,
-                        intent="sincere",
-                        propositions=[claim("I", "knocked_at", "the door", negated=True)],
-                    )
-                )
-            ],
-        )
-        await played(
-            client,
-            story,
-            body(ids["Wren"], "Bobby, did you knock?", render_character_ids=[ids["Bobby"]]),
-        )
-        stub.reset()
-        stub.script("generation", [render(beat("narration", "Nobody answers."))])
-        await played(client, story, body(ids["Wren"], "Hello?"))
+        story, ids = await _bobby_house(client, engine, stub)
         revision = await rs.revision(engine, story)
         before = await _knockers(engine, story, ids)
 
         stub.reset()
         stub.when("", _parsed("Bobby"), purpose="directive_parse")
+        stub.script("generation", [_bobby_render(HELD_TEXT)])
         held = await _regenerate(client, story, directive={"text": BOBBY})
         assert held.status_code == 202, held.text
         answer = held.json()
         assert answer["disposition"] == "awaiting_rewrite"
         session = answer["rewrite_session"]
         assert session["kind"] == "directed_resolution"
+        # #718: the variant is rendered now and held on the session, nothing committed.
+        assert HELD_TEXT in session["held_render"]["message_text"]
+        assert len([c for c in stub.calls if c.purpose == "generation"]) == 1
         assert isinstance(reconciled[-1], Conflict)
         conflicts = {c["record"]["id"] for c in session["preview"]["blast_radius"]["irreducible"]}
         # What canon recorded from Bobby's line ("I never knocked"): his negated knock.
@@ -215,7 +234,6 @@ async def test_s_direct_george__bobby(
         assert await rs.revision(engine, story) == revision
         assert await rs.count(engine, "amendments", story) == 0
         assert await _knockers(engine, story, ids) == before
-        assert [c for c in stub.calls if c.purpose == "generation"] == []
         cancelled = await client.post(
             f"/stories/{story}/rewrites/{session['id']}/cancel",
             params=rs.OMNISCIENT,
@@ -282,6 +300,76 @@ async def test_s_direct_george__bobby(
             k.subject_id for k in knockers if k.id not in {b.id for b in before}
         }
         assert "Author decision: Bobby" in _prompts(stub)
+
+
+@pytest.mark.part("M7", "FR-COMMIT-12,14; FR-DIRECT-1")
+async def test_s_direct_george__held_render(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#718 (#241's Conflict -> amendment AC): under ``preview_first`` the directed variant is
+    rendered at the regenerate call and held on the ``directed_resolution`` session; nothing
+    commits, and the revision does not move. The apply commits the held render: its message is
+    the held one although the model would now answer otherwise, with no generation call made
+    again, and the amendment commits with it."""
+    async with respond_client(stub_settings, engine) as (client, epistrel):
+        stub = epistrel.models.stub
+        story, ids = await _bobby_house(client, engine, stub)
+        revision = await rs.revision(engine, story)
+        turns = await _committed_turns(engine, story)
+
+        stub.reset()
+        stub.when("", _parsed("Bobby"), purpose="directive_parse")
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        stub.script("generation", [_bobby_render(HELD_TEXT)])
+        held = await _regenerate(
+            client,
+            story,
+            directive={"text": BOBBY},
+            resolution_mode="best_effort",
+            preview="preview_first",
+        )
+        assert held.status_code == 202, held.text
+        session = held.json()["rewrite_session"]
+        assert HELD_TEXT in session["held_render"]["message_text"]
+        assert session["held_render"]["model_calls"] >= 1
+        assert await rs.revision(engine, story) == revision
+        assert await _committed_turns(engine, story) == turns
+        assert await rs.count(engine, "amendments", story) == 0
+        read = await client.get(
+            f"/stories/{story}/rewrites/{session['id']}", params=rs.OMNISCIENT, headers=WRITE
+        )
+        assert read.status_code == 200, read.text
+        assert HELD_TEXT in read.json()["held_render"]["message_text"]
+        if session["state"] != "awaiting_approval":
+            answered = await rs.answer_all(client, story, session)
+            assert answered.status_code == 200, answered.text
+            session = answered.json()["session"]
+
+        stub.reset()
+        stub.when("", f'{{"text": "{rs.REWRITTEN}"}}', purpose="rewrite_record")
+        stub.script("generation", [_bobby_render(OTHER_TEXT)])
+        applied = await rs.apply(client, story, session["id"], session["base_revision"])
+        assert applied.status_code == 200, applied.text
+        assert [c for c in stub.calls if c.purpose == "generation"] == []
+        (message,) = await rows(
+            engine,
+            "SELECT e.payload ->> 'text' AS text FROM events e JOIN operations o "
+            "ON o.operation_id = e.operation_id WHERE e.story_id = :s "
+            "AND e.type = 'message_rendered' AND o.kind = 'turn' AND o.membership = 'active' "
+            "AND o.narrative_turn = (SELECT max(narrative_turn) FROM operations "
+            "WHERE story_id = :s AND kind = 'turn' AND membership = 'active')",
+            s=story,
+        )
+        assert HELD_TEXT in str(message.text)
+        (amendment,) = await rows(
+            engine, "SELECT kind, status FROM amendments WHERE story_id = :s", s=story
+        )
+        assert (amendment.kind, amendment.status) == ("directed_resolution", "active")
+        assert await rs.revision(engine, story) == revision + 1
+        knockers = await _knockers(engine, story, ids)
+        assert ids["Bobby"] in {k.subject_id for k in knockers}
 
 
 async def test_regenerate_without_directive_unchanged(pg_url: str, engine: AsyncEngine) -> None:

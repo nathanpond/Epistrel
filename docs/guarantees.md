@@ -63,6 +63,7 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 | history rewrite parse | `rewrite_parse` | model-dependent | unmeasured | none (outside stories) | `rewrite_parse` |
 | history rewrite repair | `rewrite_record` | model-dependent | unmeasured | none (outside stories) | `rewrite_record` |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | unmeasured | none (outside stories) | `lite_rewrite_reach` |
+| Lite history rewrite parse | `lite_rewrite_parse` | model-dependent | unmeasured | none (outside stories) | `lite_rewrite_parse` |
 | directive parse | `directive_parse` | model-dependent | unmeasured | none (outside stories) | `directive_parse` |
 | author directives | `author_directives` | deterministic | — (tested, not measured) | none (outside stories) | — |
 | quality judge | `quality_judge` | model-dependent | NFR-QUAL-14 | none (outside stories) | `quality_judge` |
@@ -93,6 +94,7 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `rewrite_parse`: The author's side-channel, never in a turn: its changes are previewed and every ambiguity is asked, with a recommendation, before anything is applied.
 - `rewrite_record`: The author's side-channel, never in a turn: a repaired text passes the output policies before it can be applied, and a failed repair is dropped or asked about.
 - `lite_rewrite_reach`: The author's side-channel, never in a turn: a Lite rewrite's reach is model-searched, not structurally complete; every fix is previewed and a line the player wrote is never rewritten silently.
+- `lite_rewrite_parse`: The author's side-channel, never in a turn: a Lite rewrite's instruction is read as one change statement, and every ambiguity is asked, with a recommendation, before the reach pass searches the transcript.
 - `directive_parse`: The author's side-channel, never in a turn: a request's explicit kind overrides its classification, and a change to the past is previewed as a rewrite. Lite form: the same parse classifies a Lite directive as a nudge or a lasting author fact (FR-LITE-8); whether the model honours the fact in its reply is unmeasured.
 - `author_directives`: The author's directions apply with author authority at the next inter-turn slot (FR-DIRECT-1,2): facts are checked by the contradiction rules, and narrative canon never supersedes them (FR-DIRECT-6). Lite form: prompt-only: a nudge for the next reply, or a lasting author fact in every later prompt, following timeline membership; no contradiction checking (Lite keeps no canon).
 - `quality_judge`: Eval only, never in a turn.
@@ -148,6 +150,7 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| Lite history rewrite parse | `lite_rewrite_parse` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
@@ -199,6 +202,7 @@ Profile `00000000000000000000PRF003`, version 1 as seeded.
 | history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| Lite history rewrite parse | `lite_rewrite_parse` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
@@ -246,6 +250,7 @@ Profile `00000000000000000000PRF002`, version 4 as seeded.
 | history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| Lite history rewrite parse | `lite_rewrite_parse` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
@@ -291,6 +296,7 @@ Profile `00000000000000000000PRF004`, version 1 as seeded.
 | history rewrite parse | `rewrite_parse` | model-dependent | outside stories |
 | history rewrite repair | `rewrite_record` | model-dependent | outside stories |
 | Lite history rewrite reach | `lite_rewrite_reach` | model-dependent | outside stories |
+| Lite history rewrite parse | `lite_rewrite_parse` | model-dependent | outside stories |
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |

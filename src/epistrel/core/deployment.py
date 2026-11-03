@@ -182,7 +182,15 @@ class SettingsPatch(BaseModel):
     rewrite_stale_retries: StrictInt | None = None
     directive_steer_ttl_minutes: StrictInt | None = None
     lite_author_facts_max: StrictInt | None = None
+    lite_reach_chunk_messages: StrictInt | None = None
+    lite_reach_chunk_tokens: StrictInt | None = None
+    lite_reach_max_calls: StrictInt | None = None
+    lite_reach_parallelism: StrictInt | None = None
+    lite_reach_deadline_seconds: StrictInt | None = None
     bundle_export_ttl_hours: StrictInt | None = None
+    bundle_max_uncompressed_bytes: StrictInt | None = None
+    bundle_max_entries: StrictInt | None = None
+    bundle_max_entry_bytes: StrictInt | None = None
     certification_canary_enabled: StrictBool | None = None
     certification_canary_interval_s: StrictInt | None = None
     certification_canary_sample_size: StrictInt | None = None

@@ -469,9 +469,12 @@ async def pending_catalog(conn: AsyncConnection) -> list[Pending]:
 async def check_story(db: AsyncEngine, story_id: str) -> None:
     """The Engine's check before any read or write naming ``story_id``. An unknown story
     passes (the call itself answers 404)."""
+    from epistrel.core import importing
+
     async with db.connect() as conn:
         status = await conn.scalar(select(stories.c.status).where(stories.c.id == story_id))
         await refuse_blocked(conn, story_id, status)
+        await importing.refuse(conn, story_id, status)  # #250: 409 story_importing
 
 
 async def settle_deleted(conn: AsyncConnection, story_id: str) -> int:

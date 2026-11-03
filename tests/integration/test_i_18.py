@@ -1497,11 +1497,10 @@ async def test_i_18__m7_author_read_set(
 ) -> None:
     """#699 (FR-CONC-4, FR-LITE-8): a Lite turn regenerates when, while it generates, a lasting
     author fact lands at a slot: two generation calls, the attempt names ``author_facts``, and
-    the second prompt carries the fact. A nudge queued meanwhile moves no revision: the turn in
-    flight commits as it is and the next turn carries the nudge (#226's steer rule; the
-    ``author_direction`` member keeps the hash honest when the revision moves for another
-    reason). Complement: a fact landing on another story leaves the turn committing with one
-    call."""
+    the second prompt carries the fact. #716: a nudge queued meanwhile moves no revision, yet
+    the turn regenerates with it too (the unversioned ``author_direction`` member is compared
+    at an unmoved commit) and consumes it. Complement: a fact landing on another story leaves
+    the turn committing with one call."""
     import json
 
     from epistrel.orchestrator.lite.pipeline import LITE_NUDGE  # noqa: F401 - the Lite path
@@ -1544,14 +1543,19 @@ async def test_i_18__m7_author_read_set(
         assert "author_facts" in regenerated[0]["touched"], attempts
         assert "It starts raining." not in system_of(calls[0])
         assert "It starts raining." in system_of(calls[1])
-        # A nudge moves no revision, so the turn in flight commits as it is (#226: a steer
-        # attaches to the next turn whose assembly starts after it); the next turn carries it.
+        # #716 (#244's Lite read set): a nudge moves no revision, yet the Lite turn in flight
+        # regenerates with it ("author_direction"); the turn's commit consumes it, so the next
+        # turn does not carry it again.
         calls, attempts = await _held(client, engine, stub, story, actor, nudge)
-        assert len(calls) == 1
+        assert len(calls) == 2
+        regenerated = [a for a in attempts if a["outcome"] == "regenerate"]
+        assert regenerated, attempts
+        assert "author_direction" in regenerated[0]["touched"], attempts
         assert "Make it quiet." not in system_of(calls[0])
+        assert "Make it quiet." in system_of(calls[1])
         stub.reset()
         await played(client, story, body(actor, "And now?"))
-        assert "Make it quiet." in system_of(generation_calls(stub)[-1])
+        assert "Make it quiet." not in system_of(generation_calls(stub)[-1])
         calls, attempts = await _held(
             client, engine, stub, story, actor, fact(other, "Snow on the other story.")
         )

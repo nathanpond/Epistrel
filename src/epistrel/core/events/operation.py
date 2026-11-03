@@ -111,13 +111,16 @@ from epistrel.core import (
     timeline_effects,
     turn_gate,
 )
+from epistrel.core import importing as story_importing
 from epistrel.core.commit import boundary as _boundary  # noqa: F401 - registers #154
 from epistrel.core.concurrency import (
     ERASED_SUBJECT,
+    UNVERSIONED_MEMBERS,
     Abandon,
     ConfigRecheck,
     Decide,
     KeyedReadSetSource,
+    LiteReadSet,
     ReadSet,
     ReadSetSource,
     Rebase,
@@ -1241,6 +1244,18 @@ class Operation:
             now = await self.read_set_source.hashes(conn, self.story_id)
             touched = touched_members(self.read_set, now)
         keyed = self._keyed()
+        if (
+            not control
+            and current == base
+            and self.read_set is not None
+            and keyed is None
+            and isinstance(self.read_set_source, LiteReadSet)
+        ):
+            # #716: a nudge moves no revision, yet a Lite prompt carries it.
+            names = [n for n in UNVERSIONED_MEMBERS if n in self.read_set]
+            if names:
+                now = await self.read_set_source.hashes_of(conn, self.story_id, names)
+                touched = touched_members({n: self.read_set[n] for n in names}, now)
         if keyed is not None and not control and current != base and not touched:
             # FR-CONC-12 (#136): a change since the base matching a query key touches the read
             # set; a base the change index no longer covers counts as touched.
@@ -1683,6 +1698,9 @@ class Operation:
         included (503 ``erasure_pending``), until its pending erasures are reapplied; an erasure
         runs, and so do the reapply's own operations. Checked at ``begin()`` and again under the
         story lock at commit."""
+        if self.story_id is not None:
+            # #250: an importing story takes no work but its import job's.
+            await story_importing.refuse(conn, self.story_id, status)
         if not self.erasure and self.story_id is not None:
             await erasure_ledger.refuse_blocked(conn, self.story_id, status)
 

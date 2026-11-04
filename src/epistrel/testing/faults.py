@@ -81,6 +81,7 @@ from typing import Any
 from epistrel.core import readset
 from epistrel.testing.crash import (
     COMMIT_POINTS,
+    EXIT_STATUS,
     POINTS,
     STAGED_POINTS,
     CrashPlan,
@@ -198,17 +199,38 @@ class EngineProcess:
 
     async def start(self) -> None:
         """Start the child and wait until ``/health`` answers: on the port it last had (any free
-        port the first time), or on a fresh one when that port was taken (#468)."""
+        port the first time), or on a fresh one when that port was taken (#468). A child given a
+        ``crash`` plan whose crash point fires before ``/health`` answers (a job it claims at
+        start-up reaches the point first) has started as planned: ``start`` returns, and the
+        caller's ``wait_exit`` sees the crash's exit status (#728)."""
         if self.process is not None and self.process.returncode is None:
             raise RuntimeError("the engine process is already running")
         for _ in range(START_ATTEMPTS):
-            if await self._spawn():
-                self.starts += 1
-                await self._wait_healthy()
-                return
+            spawned = False
+            try:
+                spawned = await self._spawn()
+                if spawned:
+                    self.starts += 1
+                    await self._wait_healthy()
+                    return
+            except RuntimeError:
+                if await self._crashed_as_planned():
+                    if not spawned:
+                        self.starts += 1
+                    return
+                raise
             self.port = 0
             self.port_retries += 1
         raise RuntimeError(f"the engine process found no free port in {START_ATTEMPTS} attempts")
+
+    async def _crashed_as_planned(self) -> bool:
+        """Whether the child, given a ``crash`` plan, ended by its crash point (``EXIT_STATUS``)."""
+        process = self.process
+        if self.crash is None or process is None:
+            return False
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(process.wait(), 5.0)
+        return process.returncode == EXIT_STATUS
 
     def _rules_file(self) -> str:
         """The child's ``stub_rules``, written to a file in its own directory."""

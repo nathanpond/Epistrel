@@ -5,14 +5,16 @@ the harness never talks to whoever holds it."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import socket
+import sys
 from collections.abc import Iterator
 
 import httpx2 as httpx
 import pytest
 
-from epistrel.testing import faults
+from epistrel.testing import crash, faults
 from tests.auth_support import CREDENTIAL_A
 
 pytestmark = pytest.mark.integration
@@ -110,3 +112,38 @@ async def test_start_gives_up_after_its_attempts(
             await child.__aexit__(None, None, None)
         assert (child.port_retries, child.starts) == (faults.START_ATTEMPTS, 0)
         assert never_connected(other)
+
+
+@pytest.mark.parametrize(
+    ("planned", "status", "started"),
+    [(True, 137, True), (False, 137, False), (True, 1, False)],
+    ids=["planned-crash", "no-plan", "other-exit"],
+)
+async def test_start_accepts_a_planned_crash_before_health(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch, planned: bool, status: int, started: bool
+) -> None:
+    """#728: a child given a crash plan whose crash point fires before ``/health`` answers (a
+    job it claims at start-up reaches the point first) has started as planned: ``start``
+    returns and ``wait_exit`` is the crash's status. Complements: the same early exit without a
+    plan, or with another status, is still "exited during start-up"."""
+
+    async def exits(self: faults.EngineProcess) -> bool:
+        self.process = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", f"import os; os._exit({status})"
+        )
+        await self.process.wait()
+        raise RuntimeError("the engine process exited during start-up")
+
+    monkeypatch.setattr(faults.EngineProcess, "_spawn", exits)
+    plan = faults.crash_at("bundles.import.mid_records", 1) if planned else None
+    child = faults.EngineProcess(pg_url, CREDENTIAL_A, mode="all", crash=plan)
+    try:
+        if started:
+            await child.start()
+            assert (await child.wait_exit(5), child.starts) == (crash.EXIT_STATUS, 1)
+        else:
+            with pytest.raises(RuntimeError, match="exited during start-up"):
+                await child.start()
+            assert child.starts == 0
+    finally:
+        await child.__aexit__(None, None, None)

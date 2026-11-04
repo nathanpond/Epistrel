@@ -254,7 +254,8 @@ jobs:
     # preset does not enable is reported not_applicable. A matrix, not a loop: three serial runs
     # would triple the job's wall time.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 18-30 min measured per preset, with ~10 min of runner variance; 30 cancelled it (#732).
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

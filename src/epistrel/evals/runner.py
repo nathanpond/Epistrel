@@ -115,6 +115,7 @@ from epistrel.core.seeds import profiles as seeded_profiles
 from epistrel.core.stories import STORY_NAME_MAX, CreatedStory, StorySpec
 from epistrel.engine import Engine
 from epistrel.evals.gate import Rule, SeedTally, Verdict, gate, judge
+from epistrel.evals.journal import Journal
 from epistrel.evals.judge_model import JudgeEndpoint, JudgeModels
 from epistrel.evals.presets import (
     DEFAULT_PRESET,
@@ -130,6 +131,7 @@ from epistrel.evals.report import (
     JudgeModel,
     MetricResult,
     Report,
+    Resumed,
     SuiteJudge,
     SuiteResult,
 )
@@ -185,6 +187,11 @@ class NotScratch(Exception):
     """The quality judge was asked about a story that is not one of the eval's scratch stories."""
 
 
+class Stopped(Exception):
+    """The run was asked to stop (``SuiteRun.stop``): no new case started, the ones in flight
+    finished and were journalled, and nothing was reported."""
+
+
 class CalibrationMissing(Exception):
     """A suite whose judge rows need the pairwise judge calibration was run with none stored for
     the run's judge model (#158): ``calibrate-judge`` (or ``run --all``) first."""
@@ -208,8 +215,15 @@ class AdapterConfig:
     model: str | None = None
     api_key: str = "lm-studio"
     embedding_model: str | None = None
-    """An embedding model at ``base_url`` (``model_config:embedding``): the retrieval suites
-    embed their stories with it; ``None``: their vector arm does not run."""
+    """An embedding model (``model_config:embedding``) at ``embedding_base_url``, else at
+    ``base_url``: the retrieval suites embed their stories with it; ``None``: their vector arm
+    does not run."""
+    embedding_base_url: str | None = None
+    """The embedding model's endpoint when it is not ``base_url`` (a hosted chat model has no
+    embeddings API: the embeddings stay on a local server); ``None``: ``base_url``."""
+    embedding_api_key: str | None = None
+    """The embedding endpoint's key; ``None``: ``api_key``, or ``lm-studio`` with its own
+    ``embedding_base_url``."""
     database_url: str | None = None
     hardware: str = ""
     server_version: str = ""
@@ -241,6 +255,12 @@ class AdapterConfig:
     @property
     def self_judged(self) -> bool:
         return self.judge_model is None
+
+    @property
+    def embedding_key(self) -> str:
+        if self.embedding_api_key is not None:
+            return self.embedding_api_key
+        return "lm-studio" if self.embedding_base_url else self.api_key
 
     @property
     def judge_endpoint(self) -> JudgeEndpoint | None:
@@ -615,9 +635,9 @@ async def preflight(engine: Engine, config: AdapterConfig) -> str | None:
                 EMBEDDING,
                 keybox=engine.models.keybox,
                 principal=PRINCIPAL,
-                base_url=config.base_url,
+                base_url=config.embedding_base_url or config.base_url,
                 model=config.embedding_model,
-                api_key=config.api_key,
+                api_key=config.embedding_key,
             )
     try:
         probe = await engine.models.probe(GENERATION.name)
@@ -662,6 +682,20 @@ class _Played:
     outcome: Outcome | None
     error: str | None
     latency_ms: int
+    reused: bool = False
+
+
+class Progress:
+    """What a run reports as it goes (``SuiteRun.progress``); the base class ignores it all."""
+
+    def suite_started(self, suite: str, cases: int, seeds: int) -> None:
+        """``suite`` starts: ``cases`` per seed, ``seeds`` seeds."""
+
+    def case_done(
+        self, suite: str, seed: int, latency_ms: int, *, reused: bool, error: bool
+    ) -> None:
+        """A case ended (``reused``: taken from the journal; ``error``: a model or harness
+        error ended it)."""
 
 
 @dataclass
@@ -689,6 +723,14 @@ class SuiteRun:
     """The judge model's layer (#475); ``None``: the run model judges."""
     judge_version: str | None = None
     """The version the judge's endpoint reported (the run model's when it judges itself)."""
+    journal: Journal | None = None
+    """The results journal (``evals.journal``, #730): cases it holds are taken from it, every
+    case played is written to it as it ends."""
+    stop: asyncio.Event | None = None
+    """Once set, no new case starts and the run raises ``Stopped`` (Ctrl-C in ``certify``)."""
+    progress: Progress = field(default_factory=Progress)
+    model_version: str | None = None
+    """The version the run model's endpoint reported, journalled with each case."""
 
 
 def sample_for(suite_name: str, sample: int | None, full: Collection[str]) -> int | None:
@@ -701,6 +743,25 @@ def _select(cases: Sequence[CaseModel], sample: int | None, seed_base: int) -> l
     if sample is None or sample >= len(ordered):
         return ordered
     return sorted(random.Random(seed_base).sample(ordered, sample), key=lambda c: c.id)  # noqa: S311 - a reproducible subset, not a secret
+
+
+def planned_cases(
+    suite: Suite,
+    *,
+    sets_dir: Path = DEFAULT_SETS_DIR,
+    sample: int | None = None,
+    full: Collection[str] = (),
+    seed_base: int = DEFAULT_SEED_BASE,
+) -> int:
+    """How many cases ``suite`` plays per seed, as ``run_suite`` selects them (0 for a malformed
+    set: the run reports it)."""
+    chosen = sample_for(suite.name, sample, full)
+    try:
+        return len(_select(suite.load(sets_dir), chosen, seed_base)) + len(
+            suite.companions(sets_dir, chosen)
+        )
+    except MalformedCase:
+        return 0
 
 
 async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Played:
@@ -799,9 +860,46 @@ async def _play_seeds(
     collected into ``every``, for ``Suite.summarize``; per seed, the cases a model error ended
     counted in ``lost``)."""
 
-    async def bounded(case: CaseModel, seed: int) -> _Played:
+    own_fingerprint = suite_fingerprint(suite, job.config)
+    sha = model_matrix.engine_sha() if job.journal is not None else ""
+
+    async def bounded(case: CaseModel, seed: int) -> _Played | None:
+        if job.journal is not None:
+            found = job.journal.lookup(suite.name, own_fingerprint, case, seed)
+            if found is not None:
+                job.progress.case_done(
+                    suite.name,
+                    seed,
+                    found.latency_ms,
+                    reused=True,
+                    error="model_error" in found.outcome.detail,
+                )
+                return _Played(case, seed, found.outcome, None, found.latency_ms, reused=True)
         async with gate_slots:
-            return await _play(suite, job, case, seed)
+            if job.stop is not None and job.stop.is_set():
+                return None
+            played = await _play(suite, job, case, seed)
+        if job.journal is not None and played.error is None and played.outcome is not None:
+            job.journal.record(
+                suite.name,
+                own_fingerprint,
+                case,
+                seed,
+                played.outcome,
+                played.latency_ms,
+                engine_sha=sha,
+                model_version=job.model_version,
+                preset=job.config.preset,
+            )
+        job.progress.case_done(
+            suite.name,
+            seed,
+            played.latency_ms,
+            reused=False,
+            error=played.error is not None
+            or (played.outcome is not None and "model_error" in played.outcome.detail),
+        )
+        return played
 
     for seed in job.seeds:
         order = list(cases)
@@ -809,7 +907,10 @@ async def _play_seeds(
         for metric in suite.metrics:
             tallies[metric.id][seed] = SeedTally(seed)
         outcomes: list[Outcome] = []
-        for played in await asyncio.gather(*(bounded(c, seed) for c in order)):
+        finished = await asyncio.gather(*(bounded(c, seed) for c in order))
+        if any(played is None for played in finished):
+            raise Stopped(f"{suite.name}: stopped on seed {seed}")
+        for played in (p for p in finished if p is not None):
             latencies.append(played.latency_ms)
             if played.error is not None:
                 errors.append(played.error)
@@ -863,6 +964,7 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     gate_slots = asyncio.Semaphore(max(1, job.concurrency))
     every: list[Outcome] = []
     lost: dict[int, int] = {}
+    job.progress.suite_started(suite.name, len(cases), len(job.seeds))
     try:
         await suite.setup(job.engine, _ctx())
     except Exception as exc:
@@ -1017,6 +1119,9 @@ async def run_suites(
     profile: Preset | None = None,
     fingerprint_value: str | None = None,
     probed: tuple[str | None, str | None] | None = None,
+    journal: Journal | None = None,
+    stop: asyncio.Event | None = None,
+    progress: Progress | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -1034,7 +1139,12 @@ async def run_suites(
 
     ``probed`` (#235: ``epistrel evals certify`` probes the endpoint once for all its presets):
     the versions the run model and the judge already reported, so no preflight runs again.
-    ``config.preset`` names the preset the run plays (``profile`` aside)."""
+    ``config.preset`` names the preset the run plays (``profile`` aside).
+
+    ``journal`` (#730, ``evals.journal``): the cases it holds are taken from it and every case
+    played is written to it, and the report says so (``Report.resumed``). Once ``stop`` is set,
+    no new case starts and ``Stopped`` is raised after the cases in flight end. ``progress``
+    sees each suite start and each case end."""
     started = now or datetime.now(UTC)
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
@@ -1114,6 +1224,10 @@ async def run_suites(
                 calibration=stored,
                 judge_layer=None if config.self_judged else judging,
                 judge_version=judge_version,
+                journal=journal,
+                stop=stop,
+                progress=progress or Progress(),
+                model_version=report.model_version,
             )
             preset_token = RUN_PRESET.set(chosen)
             try:
@@ -1129,6 +1243,15 @@ async def run_suites(
                 await sweep(live)
             problems = isolation_problems(before, await story_rows(live.db))
     report.errors.extend(f"isolation: {p}" for p in problems)
+    if journal is not None and journal.reused:
+        shas = set(journal.reused_shas)
+        if journal.played:
+            shas.add(report.engine_sha)
+        report.resumed = Resumed(
+            cases_reused=journal.reused,
+            cases_played=journal.played,
+            engine_shas=sorted(shas),
+        )
     report.finish(datetime.now(UTC))
     return report
 
@@ -1216,7 +1339,9 @@ __all__ = [
     "CaseContext",
     "EndpointUnavailable",
     "NotScratch",
+    "Progress",
     "Scratch",
+    "Stopped",
     "calibrate_judge",
     "calibration_path",
     "default_run_id",
@@ -1225,6 +1350,7 @@ __all__ = [
     "judge_layer_for",
     "judge_preflight",
     "not_applicable",
+    "planned_cases",
     "run",
     "run_calibration",
     "run_fingerprint",

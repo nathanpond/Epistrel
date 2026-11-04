@@ -14,3 +14,6 @@ htmlcov/
 .venv-runtime/
 # The local blob store's default root (EPISTREL_MEDIA_ROOT, #105) when the engine runs outside Docker.
 /var/
+
+# The eval results journal (#730): per-case outcomes, model output included; never committed.
+/.evals-results/

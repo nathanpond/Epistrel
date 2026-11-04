@@ -1,14 +1,16 @@
 """The **Presets** table of ``docs/evals/INDEX.md`` (NFR-QUAL-11, FR-PROF-16; #235).
 
-One row per shipped preset (Lite, Standard, Full, Max), from the committed certification
+One row per shipped preset (Lite, Standard, Full, Max) and model it was certified on (the
+model of a record's ``generation`` purpose; #730: certifications on several models sit side by
+side), or one ``uncertified`` row for a preset with no record, from the committed certification
 records (``src/epistrel/core/seeds/certifications/*.json``, written by ``epistrel evals
 certify``) and the preset constants (#227, ``evals.presets.PRESETS``):
 
 - **Fingerprint**: the preset's fingerprint now, recomputed from its constants and the models
-  its newest record names (``current_fingerprint``); with no record, the reference model
+  the row's newest record names (``current_fingerprint``); with no record, the reference model
   (``REFERENCE_MODEL_ID``) for every story purpose.
-- **Certification**: the newest record (by ``run_at``) whose fingerprint is that one, or
-  ``uncertified``. When the preset has records but none matches (its constants, or a prompt
+- **Certification**: the row's newest record (by ``run_at``) whose fingerprint is that one, or
+  ``uncertified``. When the row has records but none matches (its constants, or a prompt
   template, changed since), ``uncertified (preset changed since certification <id>)`` names the
   newest. The published claim never outlives the configuration it was measured on: the
   committed ``INDEX.md`` then differs from what the records regenerate, and ``evals index
@@ -48,10 +50,11 @@ EM_DASH = "—"
 PRESETS_HEADING = "## Presets"
 RUNS_HEADING = "## Runs"
 PRESETS_INTRO = """\
-The quality floors each shipped preset is certified for on the reference model (NFR-QUAL-11),
-from the committed certification records and the presets as they ship. A preset edited after
-its certification reads `uncertified` here until it is certified again. `epistrel evals
-certify` writes the reports and records; [README.md](README.md) has the procedure.
+The quality floors each shipped preset is certified for (NFR-QUAL-11), one row per model it
+was certified on, from the committed certification records and the presets as they ship. A
+preset edited after its certification reads `uncertified` here until it is certified again.
+`epistrel evals certify` writes the reports and records; [README.md](README.md) has the
+procedure.
 """
 PRESETS_HEADER = (
     "Preset",
@@ -198,6 +201,20 @@ def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) 
     )
 
 
+def preset_rows(preset: PresetName, found: Sequence[Committed], index_dir: Path) -> list[str]:
+    """``preset``'s rows: one per model its records name (``generation``'s), by model id, or
+    its single ``uncertified`` row when it has none."""
+    by_model: dict[str, list[Committed]] = {}
+    for committed in found:
+        if committed.record.preset != preset:
+            continue
+        named = committed.record.models.get("generation", {}).get("id")
+        by_model.setdefault(str(named or ""), []).append(committed)
+    if not by_model:
+        return [preset_row(preset, [], index_dir)]
+    return [preset_row(preset, by_model[model], index_dir) for model in sorted(by_model)]
+
+
 def presets_section(records_dir: Path = SEEDS_DIR, index_dir: Path | None = None) -> str:
     """The Presets section: its heading, introduction and table (one row per preset)."""
     found = records(records_dir)
@@ -208,7 +225,7 @@ def presets_section(records_dir: Path = SEEDS_DIR, index_dir: Path | None = None
         PRESETS_INTRO,
         _row(PRESETS_HEADER),
         "|" + "---|" * len(PRESETS_HEADER),
-        *(preset_row(name, found, where) for name in PRESET_NAMES),
+        *(row for name in PRESET_NAMES for row in preset_rows(name, found, where)),
     ]
     return "\n".join(lines) + "\n"
 
@@ -219,6 +236,7 @@ __all__ = [
     "current_fingerprint",
     "floor_cells",
     "preset_row",
+    "preset_rows",
     "presets_section",
     "records",
 ]

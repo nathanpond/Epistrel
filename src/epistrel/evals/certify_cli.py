@@ -9,7 +9,25 @@
 **One process, in order.** The presets run in canonical order (Lite, Standard, Full, Max,
 whatever order was typed) on one in-process Engine over one scratch database
 (``--database-url``, else a testcontainer). The endpoint is probed once and the quality judge
-calibrated once (#158), and both are shared by every preset.
+calibrated once (#158), and both are shared by every preset. A stored calibration of the same
+judge model and reported version is reused (``--recalibrate`` runs it again).
+
+**Stop and continue** (#730). Every case's outcome is written to the results journal
+(``evals.journal``: ``.evals-results/<model>/<preset>-<fingerprint[:12]>.jsonl``, ignored by
+git; ``--journal-dir`` moves it) as the case ends, and a run plays only the cases its journal
+lacks. So the same command, run again, carries on where the last one stopped, on any day and
+with any engine commit (the report lists the commits). Results are kept per model and
+configuration fingerprint and never discarded: ``--fresh`` sets the journal aside and starts
+over. A case a transient model error ended (a timeout, a rate limit, a provider 5xx) plays
+again; ``--retry-errors all`` replays every model error, ``none`` none. The first Ctrl-C lets
+the cases in flight finish and be journalled, then exits 130 without a report; a second one
+stops at once (the journal keeps every finished case either way). Progress lines with an ETA
+go to stderr (``evals.progress``).
+
+**A hosted model** (#235). ``--embedding-base-url`` (and ``--embedding-api-key``) put the
+embedding model on its own endpoint, for a chat endpoint with no embeddings API (Anthropic's):
+the embeddings stay on a local server. ``--api-key`` defaults to ``EPISTREL_EVALS_API_KEY``
+when set, so a key need not appear in the process list.
 
 **Per preset:**
 
@@ -43,15 +61,17 @@ or harness error: the remaining presets are not run, the finished ones' outputs 
 index regenerated. 2 on a usage error: an unknown or repeated preset, a real model without
 ``--base-url``, ``--model`` or ``--embedding-model``, no repository found without ``--out``, or
 a record that would be overwritten without ``--force`` (``--resume`` skips a preset that already
-has today's record for the same fingerprint instead). A model-output error on a case is that
-case's failure (#179's rule), never a harness error.
+has a record for the same fingerprint instead, whatever its date: #730). 130 when stopped. A
+model-output error on a case is that case's failure (#179's rule), never a harness error.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
+import signal
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -70,16 +90,20 @@ from epistrel.evals.certify import (
 )
 from epistrel.evals.gate import Verdict
 from epistrel.evals.index import REFERENCE_MODEL_ID
+from epistrel.evals.journal import Journal, default_root, journal_path
 from epistrel.evals.presets import PRESET_NAMES, PRESETS, PresetName
+from epistrel.evals.progress import Printer
 from epistrel.evals.runner import (
     DEFAULT_SEED_BASE,
     AdapterConfig,
     EndpointUnavailable,
+    Stopped,
     calibrate_judge,
     default_run_id,
     engine_for,
     judge_layer_for,
     judge_preflight,
+    planned_cases,
     preflight,
     run_suites,
     seeds_from,
@@ -88,6 +112,7 @@ from epistrel.evals.suites import SUITES, MalformedCase
 
 EX_FAILED = 1
 EX_USAGE = 2
+EX_STOPPED = 130
 DEFAULT_SEEDS = 3
 CALIBRATION_NAME = "judge-calibration.json"
 RECORDS_PATH = Path("src/epistrel/core/seeds/certifications")
@@ -169,16 +194,15 @@ def write_record(
     )
 
 
-def _today_record(path: Path, fingerprint: str, today: str) -> bool:
+def _matching_record(path: Path, fingerprint: str) -> bool:
+    """Whether ``path`` is a record of ``fingerprint``, whatever its date (#730)."""
     if not path.is_file():
         return False
     try:
         found = json.loads(path.read_text("utf-8"))
     except ValueError:
         return False
-    return bool(
-        found.get("fingerprint") == fingerprint and str(found.get("run_at", ""))[:10] == today
-    )
+    return bool(found.get("fingerprint") == fingerprint)
 
 
 def _bound(value: float | None) -> str:
@@ -241,10 +265,11 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
             "a real-model certification needs --base-url, --model and --embedding-model"
         )
     where = layout(args.out, adapter)
+    journals = _journal_root(args)
     tier = _tier(args, adapter)
     now = datetime.now(UTC)
-    today = now.strftime("%Y-%m-%d")
     seeds = seeds_from(args.seeds, args.seed_base)
+    stop = _install_stop()
     first = _config(args, adapter, presets[0])
     done: list[Certified] = []
     failed = False
@@ -257,27 +282,36 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
         except EndpointUnavailable as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EX_FAILED
-        planned = await _plan(live, presets, where, today, args)
-        calibration = await calibrate_judge(
-            live,
-            first,
-            sets_dir=args.sets_dir,
-            model_version=judge_version,
-            seed=args.seed_base,
-            judge_layer=judging,
-        )
+        planned = await _plan(live, presets, where, args)
         from epistrel.evals import judging as judges
 
-        judges.save(where.calibration_file, calibration)
+        calibration = (
+            None if args.recalibrate else judges.lookup(where.calibration_file, first.judge_name)
+        )
+        if calibration is not None and calibration.model_version not in (None, judge_version):
+            calibration = None
+        if calibration is None:
+            calibration = await calibrate_judge(
+                live,
+                first,
+                sets_dir=args.sets_dir,
+                model_version=judge_version,
+                seed=args.seed_base,
+                judge_layer=judging,
+            )
+            judges.save(where.calibration_file, calibration)
+            reused = ""
+        else:
+            reused = f", stored {calibration.date}"
         print(
             f"judge {calibration.judge_model}: {calibration.status} "
-            f"({calibration.pairs} pairs); shared by {', '.join(presets)}"
+            f"({calibration.pairs} pairs{reused}); shared by {', '.join(presets)}"
         )
         harness = EvalHarness(live, adapter=first)
         for preset, (request, settings, skip) in planned.items():
             print(f"{preset}: fingerprint {request.fingerprint}")
             if skip:
-                print(f"{preset}: today's record exists for this fingerprint (--resume): skipped")
+                print(f"{preset}: a record exists for this fingerprint (--resume): skipped")
                 done.append(Certified(preset, request.fingerprint, skipped=True))
                 continue
             try:
@@ -295,7 +329,16 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
                     now=now,
                     probed=(model_version, judge_version),
                     calibrated=calibration.status == "calibrated",
+                    journals=journals,
+                    stop=stop,
                 )
+            except Stopped:
+                print(
+                    f"stopped: {preset}'s finished cases are in its journal under {journals}; "
+                    "run the same command again to carry on",
+                    file=sys.stderr,
+                )
+                return EX_STOPPED
             except (EndpointUnavailable, MalformedCase) as exc:
                 print(f"error: {preset}: {exc}", file=sys.stderr)
                 failed = True
@@ -314,8 +357,45 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
     return 0
 
 
+def _journal_root(args: argparse.Namespace) -> Path:
+    if args.journal_dir is not None:
+        return Path(args.journal_dir)
+    if args.out is not None:
+        return Path(args.out) / "journal"
+    root = repo_root()
+    if root is None:
+        raise UsageError("no repository here (no pyproject.toml above): pass --journal-dir")
+    return default_root(root)
+
+
+def _install_stop() -> asyncio.Event:
+    """The first Ctrl-C sets the returned event (the run finishes its cases in flight and
+    stops); a second cancels the run at once."""
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    main = asyncio.current_task()
+
+    def interrupted() -> None:
+        if not stop.is_set():
+            stop.set()
+            print(
+                "\nstopping: finishing the cases in flight (Ctrl-C again to stop at once)",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        loop.remove_signal_handler(signal.SIGINT)
+        if main is not None:
+            main.cancel()
+
+    # No signal handlers here (not the main thread, or Windows): Ctrl-C stops at once.
+    with contextlib.suppress(NotImplementedError, RuntimeError):
+        loop.add_signal_handler(signal.SIGINT, interrupted)
+    return stop
+
+
 async def _plan(
-    live: Any, presets: Sequence[PresetName], where: Layout, today: str, args: argparse.Namespace
+    live: Any, presets: Sequence[PresetName], where: Layout, args: argparse.Namespace
 ) -> dict[PresetName, tuple[Any, Any, bool]]:
     """Each preset's configuration (fingerprint, models, settings) as this deployment computes
     it, and whether ``--resume`` skips it; ``UsageError`` before any suite runs when a record
@@ -331,7 +411,7 @@ async def _plan(
                 conn, PRESETS[preset].profile_id, facts=facts
             )
             path = record_path(where.records_dir, preset, request.fingerprint)
-            skip = bool(args.resume) and _today_record(path, request.fingerprint, today)
+            skip = bool(args.resume) and _matching_record(path, request.fingerprint)
             if path.exists() and not skip and not args.force:
                 raise UsageError(
                     f"{path} exists: pass --force to certify {preset} again (a new "
@@ -356,11 +436,34 @@ async def _certify_one(
     now: datetime,
     probed: tuple[str | None, str | None],
     calibrated: bool,
+    journals: Path,
+    stop: asyncio.Event | None = None,
 ) -> Certified:
     names = [n for n in harness.applicable(settings) if n not in set(args.skip)]
     if args.suite:
         names = [n for n in names if n in set(args.suite)]
     config = _config(args, adapter, preset)
+    journal = Journal.open(
+        journal_path(journals, config.model_name, preset, request.fingerprint),
+        model=config.model_name,
+        fingerprint=request.fingerprint,
+        retry_errors=args.retry_errors,
+        fresh=args.fresh,
+    )
+    planned = len(seeds) * sum(
+        planned_cases(
+            SUITES[n],
+            sets_dir=args.sets_dir,
+            sample=args.sample,
+            full=args.full,
+            seed_base=args.seed_base,
+        )
+        for n in names
+    )
+    print(
+        f"{preset}: {planned:,} case runs planned; {len(journal.entries):,} in the journal "
+        f"{journal.path}"
+    )
     taken = [*where.reports_dir.glob("*.md")] if where.reports_dir.is_dir() else []
     run_id = reports.unique_run_id(default_run_id(request.fingerprint, now, preset), taken)
     report = await run_suites(
@@ -379,6 +482,9 @@ async def _certify_one(
         profile=PRESETS[preset],
         fingerprint_value=request.fingerprint,
         probed=probed,
+        journal=journal,
+        stop=stop,
+        progress=Printer(preset, planned),
     )
     report_md = reports.render_markdown(report)
     report_file = where.reports_dir / f"{run_id}.md"
@@ -421,7 +527,7 @@ async def _certify_one(
 
 def add_parser(sub: Any) -> argparse.ArgumentParser:
     """The ``certify`` subcommand's options (``evals.cli``)."""
-    from epistrel.evals.cli import _endpoint_options, _positive
+    from epistrel.evals.cli import _embedding_options, _endpoint_options, _positive
 
     command: argparse.ArgumentParser = sub.add_parser(
         "certify",
@@ -431,7 +537,7 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
         "--presets", required=True, help="comma-separated: lite, standard, full, max"
     )
     _endpoint_options(command)
-    command.add_argument("--embedding-model", help="the embedding model at --base-url (required)")
+    _embedding_options(command, required=True)
     command.add_argument("--seeds", type=_positive, default=DEFAULT_SEEDS, help="seeds (3)")
     command.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     command.add_argument("--sample", type=_positive, help="a seeded subset of each set (CI)")
@@ -467,8 +573,33 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
         help="record host tier 'reference' (the reference model, full sets)",
     )
     command.add_argument("--out", type=Path, help="write reports/, records/ and INDEX.md here")
-    command.add_argument("--resume", action="store_true", help="skip today's certified presets")
+    command.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip a preset that already has a record for its fingerprint (any date)",
+    )
     command.add_argument("--force", action="store_true", help="overwrite an existing record")
+    command.add_argument(
+        "--journal-dir",
+        type=Path,
+        help="where the results journal lives (default .evals-results/ in the repository)",
+    )
+    command.add_argument(
+        "--fresh",
+        action="store_true",
+        help="set the preset's journal aside and play every case again",
+    )
+    command.add_argument(
+        "--retry-errors",
+        choices=("transient", "all", "none"),
+        default="transient",
+        help="journalled model errors to play again (default: transient ones)",
+    )
+    command.add_argument(
+        "--recalibrate",
+        action="store_true",
+        help="calibrate the judge again even when a calibration of it is stored",
+    )
     command.add_argument(
         "--fail-on-gate",
         action="store_true",
@@ -484,6 +615,9 @@ def run(args: argparse.Namespace, adapter: str) -> int:
     except UsageError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EX_USAGE
+    except KeyboardInterrupt, asyncio.CancelledError:
+        print("stopped at once: the journal keeps every finished case", file=sys.stderr)
+        return EX_STOPPED
 
 
 __all__ = [

@@ -8,10 +8,11 @@ the procedure.
 
 ## Presets
 
-The quality floors each shipped preset is certified for on the reference model (NFR-QUAL-11),
-from the committed certification records and the presets as they ship. A preset edited after
-its certification reads `uncertified` here until it is certified again. `epistrel evals
-certify` writes the reports and records; [README.md](README.md) has the procedure.
+The quality floors each shipped preset is certified for (NFR-QUAL-11), one row per model it
+was certified on, from the committed certification records and the presets as they ship. A
+preset edited after its certification reads `uncertified` here until it is certified again.
+`epistrel evals certify` writes the reports and records; [README.md](README.md) has the
+procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|

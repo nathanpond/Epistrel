@@ -151,6 +151,16 @@ class JudgeModel(BaseModel):
     endpoint: str | None = None
 
 
+class Resumed(BaseModel):
+    """How a run built up over several sessions from its results journal (#730,
+    ``evals.journal``): the cases taken from the journal, the cases this session played, and
+    every engine commit the results came from."""
+
+    cases_reused: int
+    cases_played: int
+    engine_shas: list[str] = Field(default_factory=list)
+
+
 class SuiteJudge(BaseModel):
     """The judge a judged suite's calls went to (#475): its model and reported version, the
     purposes it judged with, and whether it was the run model judging its own output."""
@@ -220,6 +230,9 @@ class Report(BaseModel):
     """The run's second judge model (#475); ``None``: the run model judged (self-judged)."""
     real_purposes: list[str] | None = None
     """The purposes a real-model run sent to its endpoint (#179); ``None``: every purpose."""
+    resumed: Resumed | None = None
+    """Set when some of the run's cases came from its results journal (#730); ``None``: every
+    case was played in this run."""
     seed_base: int
     seeds: list[int]
     suites: list[SuiteResult] = Field(default_factory=list)
@@ -534,6 +547,13 @@ def render_markdown(report: Report) -> str:
         f"- **Engine:** `{report.engine_sha}`",
         f"- **Run:** {report.started_at} to {report.finished_at or EM_DASH} (UTC)",
     ]
+    if report.resumed is not None:
+        shas = ", ".join(f"`{sha}`" for sha in report.resumed.engine_shas) or EM_DASH
+        lines.append(
+            f"- **Resumed:** {report.resumed.cases_reused} case results from earlier sessions "
+            f"(results journal), {report.resumed.cases_played} played in this one; engine "
+            f"commits {shas}"
+        )
     if report.errors:
         lines += ["", "**Run errors:**", ""] + [f"- {error}" for error in report.errors]
     for suite in report.suites:
@@ -712,6 +732,7 @@ __all__ = [
     "JudgeModel",
     "MetricResult",
     "Report",
+    "Resumed",
     "SuiteJudge",
     "SuiteResult",
     "calibration_text",

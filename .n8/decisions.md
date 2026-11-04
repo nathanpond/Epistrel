@@ -12196,3 +12196,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the new #235 tests (`tests/evals/test_certify_presets.py`) carry no part marker. The plan named `part("M7", "NFR-QUAL-11; FR-PROF-15")`, but docs/04 §15 maps those requirements to C-16 and C-18. A part lives in one file, and C-18's M7 part is in `tests/integration/test_c_18_m7.py`. `check-traceability` refused the markers.
   **Why:** the same reason as retry 3's #721–#723 decision: adding a §15 row is a docs change outside this story, and the behaviour is asserted either way.
   **Issue:** #235
+
+## /n8-exec M7 (retry 5) — 2026-11-03
+
+- **Decision:** #726's test raises States to `prompt_only` through `PATCH /stories/{id}/profile-overrides` with `upgrade_mode: forward_only`, and drops it with a merge-patch `null`. It does not insert `capability_coverage` rows by hand.
+  **Why:** a backfill-mode raise queues a backfill of turn 1 and holds the change until that backfill completes. A forward-only raise records the `live` `prompt_only` interval through `coverage.extend_live`, the same way a real change does, so the test exercises the production path.
+  **Issue:** #726
+- **Decision (Rule 1):** `backfill.complete` records `backfill` coverage only over each capability's own gaps (`coverage.gaps`) inside the range. Before, it recorded the whole range for every capability.
+  **Why:** the range spans every capability's gaps, so it also took in turns where the clock or States ran at `prompt_only`, and turns that another capability's gap widened it over. Coverage then claimed `on`-level data that nothing derived (seen as `(1, 5, 'on', 'backfill')` over a 2-3 `prompt_only` range). #726's expected result says the range's coverage stays `live`. Regression test: `test_i_19__m7_state_changes_prompt_only`.
+  **Issue:** #726

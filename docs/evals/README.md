@@ -11,8 +11,10 @@ No automated check spends money or calls a real model (the owner's decision, 202
 - **CI** runs every registered suite against the **stub adapter** on every pull request, two
   seeds, scripted per case. That proves the harness itself — loading the labeled sets, playing
   turns through the real code paths, the gate rules, the report — and the deterministic stub
-  floors of the suites marked `ci_gate`. A stub report is never quality evidence; it is a CI
-  artifact (`evals-stub-report`), not a file here.
+  floors of the suites marked `ci_gate`. CI runs it through the certification command
+  (`certify --presets <preset> --adapter stub`, one preset per job, #235), so the certification
+  path is exercised too. A stub report or record is never quality evidence; it is a CI artifact
+  (`evals-certify-stub-<preset>`), not a file here.
 - **The reference tier is run by hand**: a local model (LM Studio) on the owner's machine.
   There are no scheduled or nightly real-model runs. The committed report of such a run is the
   evidence a floor was met.
@@ -54,6 +56,67 @@ No automated check spends money or calls a real model (the owner's decision, 202
 5. `uv run python -m epistrel.evals --check` (CI's lint job runs it) checks that the suites
    measure every model-dependent row of the guarantee table ([docs/guarantees.md](../guarantees.md)),
    that every floored metric has a floor, and that the index matches the reports.
+
+## Certify the presets (#235, NFR-QUAL-11)
+
+One command certifies Standard, Full and Max on the reference model, in that order, in one
+process (owner decision 2). The committed reports and certification records are M7's preset
+certification evidence; a deployment loads the records at start-up, so the presets on the
+reference model report `certified` with no run of their own.
+
+**Prerequisites.** LM Studio serving the reference model named in the local row of
+[docs/model-matrix.md](../model-matrix.md) (`cydonia-24b-v4.3`) and an embedding model (every
+preset needs embeddings), Docker running (the harness starts its own scratch PostgreSQL), and
+nothing else using the model server.
+
+```sh
+uv run epistrel evals certify --presets standard,full,max \
+    --base-url http://localhost:1234/v1 --model cydonia-24b-v4.3 \
+    --embedding-model <embedding model> --seeds 3 --reference \
+    --hardware "<machine, memory>" --server-version "LM Studio <version>"
+```
+
+It probes the endpoint once and calibrates the judge once, shared by the three presets. Each
+preset prints its fingerprint as it starts and a `metric_id | verdict | n | bound` table as it
+finishes. It writes, per preset:
+
+- `docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md`, the report;
+- `src/epistrel/core/seeds/certifications/<preset>-<fingerprint[:12]>.json`, the certification
+  record (the floors passed, failed and insufficient; the report's SHA-256, with the report
+  embedded so the installed wheel validates it too). A preset with no floor passed gets its
+  report and no record.
+
+Then it regenerates [INDEX.md](INDEX.md), whose **Presets** table shows each preset's
+certification, its floors per NFR-QUAL id and its report.
+
+**Expected duration**: the cases of every suite the preset enables × the seeds × the calls per
+case × the measured per-call latency, summed over the presets. On the reference tier a
+structured turn takes 114–126 s at p50 (docs/model-matrix.md), so the full sets run for several
+hours; most turns run past the presets' `deadline_ms` (Standard 45 s, Full 60 s, Max 120 s) and
+are degraded, which the report shows (#454, M9). The presets are certified as shipped: the run
+never overrides a deadline.
+
+**What to commit**, exactly: the three reports (`docs/evals/standard-*.md`, `full-*.md`,
+`max-*.md`), `docs/evals/INDEX.md`, `docs/evals/judge-calibration.json` and the three records
+(`src/epistrel/core/seeds/certifications/{standard,full,max}-*.json`). Then file one bug per
+floor the Presets table shows failed (`area:evals`, `sev:medium`, linking the report): a miss of
+a floor assigned to M9 (NFR-QUAL-2..4, 7, 14) goes to M9; any other follows ADR-164.
+
+Options: `--host`, `--hardware` and `--server-version` describe the run as `run` does;
+`--resume` skips a preset that already has today's record for the same fingerprint (after an
+interrupted run); `--force` certifies a preset again over its record (a new certification id;
+without it the command exits 2 before running anything); `--out <dir>` writes `reports/` (with a
+scratch `INDEX.md`) and `records/` there instead of the committed locations. `host.tier` is
+`reference` only with `--reference`, a real model and the full sets: `--sample` forces `other`.
+Lite is not certified in M7 (its one floor gates from M9); `--presets lite` certifies it the
+same way. A preset edited after its certification, or a prompt template changed, turns its
+Presets row `uncertified (preset changed since certification <id>)`, and CI's
+`evals index --check` stays red until the index is regenerated: the claim never outlives the
+configuration it was measured on.
+
+Exit codes: 0 once every report is written, whatever the floors say; 1 on an endpoint or
+harness error (the presets finished so far keep their outputs, and the index is regenerated);
+2 on a usage error.
 
 ## Reading a report
 

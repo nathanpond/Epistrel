@@ -541,9 +541,53 @@ async def _resume(conn: AsyncConnection, row: Any, outcome: str) -> None:
     )
 
 
-async def discard(conn: AsyncConnection, row: Any, *, status: str, error: str | None) -> None:
+AUDITED = {"cancelled": "backfill_cancelled", "failed": "backfill_failed"}
+"""#228: the ends of a backfill that write an ``audit_log`` row (its ``AuditKind``)."""
+
+
+async def _audit(
+    conn: AsyncConnection, row: Any, status: str, error: str | None, principal: str | None
+) -> None:
+    """#228: a cancelled or failed backfill's ``audit_log`` row: ids, the capabilities, the
+    range and the progress counts, and a failure's exception name (never story text,
+    NFR-SEC-4)."""
+    from epistrel.core import audit
+    from epistrel.core.tables.audit_log import AuditKind
+
+    kind = AUDITED.get(status)
+    if kind is None:
+        return
+    await audit.record(
+        conn,
+        AuditKind(kind),
+        principal=principal or str(row.requested_by),
+        story_id=str(row.story_id),
+        details={
+            "backfill_id": str(row.id),
+            "job_id": None if row.job_id is None else str(row.job_id),
+            "kind": str(row.kind),
+            "status_before": str(row.status),
+            "capabilities": list(row.capabilities or []),
+            "range": {"from_turn": row.range_from_turn, "to_turn": row.range_to_turn},
+            "chunks_done": int(row.chunks_done or 0),
+            "chunks_total": int(row.chunks_total or 0),
+            "reconcile_cursor": row.reconcile_cursor,
+            **({"error": error} if status == "failed" and error else {}),
+        },
+    )
+
+
+async def discard(
+    conn: AsyncConnection,
+    row: Any,
+    *,
+    status: str,
+    error: str | None,
+    principal: str | None = None,
+) -> None:
     """End ``row`` without its results: its operation's rows (and the operation) discarded, its
-    chunks dropped, the story resumed on its configuration."""
+    chunks dropped, the story resumed on its configuration. A cancel or a failure also writes
+    its ``audit_log`` row (#228; ``principal``: who cancelled, else the requester)."""
     if row.operation_id is not None:
         from epistrel.core.genesis import deferred
 
@@ -569,10 +613,11 @@ async def discard(conn: AsyncConnection, row: Any, *, status: str, error: str | 
         .where(story_backfills.c.id == row.id)
         .values(status=status, error=error, finished_at=clock.now())
     )
+    await _audit(conn, row, status, error, principal)
     await _resume(conn, row, status)
 
 
-async def cancel(db: AsyncEngine, story_id: str) -> Backfill:
+async def cancel(db: AsyncEngine, story_id: str, *, principal: str | None = None) -> Backfill:
     """Cancel the story's running backfill (see the module docstring): 404
     ``backfill_not_found`` without one, 409 ``backfill_not_cancellable`` when it has ended."""
     async with db.begin() as conn:
@@ -585,7 +630,7 @@ async def cancel(db: AsyncEngine, story_id: str) -> Backfill:
                 "the backfill has ended",
                 {"backfill_id": str(latest.id), "status": str(latest.status)},
             )
-        await discard(conn, row, status="cancelled", error=None)
+        await discard(conn, row, status="cancelled", error=None, principal=principal)
         log.info("backfill cancelled", backfill_id=str(row.id))
         found = await latest_row(conn, story_id)
         return await view(conn, found)

@@ -179,8 +179,13 @@ def test_c_11__ci_wires_every_gate_into_the_required_check() -> None:
     assert combine < report
     (threshold,) = [w for w in runs[report].split() if w.startswith("--fail-under=")]
     assert threshold == "--fail-under=90"
-    (stub_run,) = [s for s in jobs["evals"]["steps"] if "epistrel.evals run" in s.get("run", "")]
-    assert {"--adapter", "stub", "--all", "--fail-on-gate"} <= set(stub_run["run"].split())
+    # #235: one stub step per preset, every suite the preset enables.
+    (stub_run,) = [
+        s
+        for s in jobs["evals"]["steps"]
+        if "epistrel.evals" in s.get("run", "") and "--adapter stub" in s.get("run", "")
+    ]
+    assert {"--adapter", "stub", "--presets", "--fail-on-gate"} <= set(stub_run["run"].split())
     assert stub_run.get("if") is None
     (zero_leak,) = [
         s for s in jobs["evals-zero-leak"]["steps"] if "epistrel.evals run" in s.get("run", "")

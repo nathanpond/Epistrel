@@ -1045,3 +1045,433 @@ async def test_i_19__m7_lite_corrections(stub_settings: Any, engine: AsyncEngine
             s=story,
         )
         assert [a.literal["value"] for a in authored] == [40]
+
+
+# -- #228's remaining record kinds (M7 retry 4) ---------------------------------------------------
+
+
+def _age_claim(beat: int, span: str, value: str) -> str:
+    import json
+
+    return json.dumps(
+        {
+            "claims": [
+                {
+                    "beat": beat,
+                    "span": span,
+                    "subject": "Bobby",
+                    "predicate": "age",
+                    "object": value,
+                    "time": None,
+                    "polarity": "affirmed",
+                    "confidence": 0.95,
+                }
+            ]
+        }
+    )
+
+
+async def _entity(engine: AsyncEngine, story: str, kind: str, name: str) -> str:
+    from epistrel.core.propositions import store
+
+    async with engine.begin() as conn:
+        return await store.add_entity(conn, story, kind, name)
+
+
+async def _report(engine: AsyncEngine, backfill_id: str) -> dict[str, Any]:
+    (found,) = await rows(engine, "SELECT report FROM story_backfills WHERE id = :b", b=backfill_id)
+    return dict(found.report)
+
+
+async def _played(
+    client: httpx.AsyncClient,
+    engine: AsyncEngine,
+    lib: Engine,
+    lines: dict[int, tuple[str, str]],
+    *names: str,
+    messages: int = 10,
+) -> tuple[str, dict[str, str]]:
+    """A Lite story of ``names`` (the first the player) with ``lines`` planted, played by
+    direct commits."""
+    story, ids = await new_story(client, *names)
+    await lls.long_lite_story(engine, story, ids[names[0]], messages, lines=lines)
+    assert lib.models.stub is not None
+    backfill_job.bind(lib.models)
+    return story, ids
+
+
+async def _switch(client: httpx.AsyncClient, engine: AsyncEngine, story: str) -> dict[str, Any]:
+    await ok(await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202)
+    await run_backfill(engine, story)
+    done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+    assert done["status"] == "completed", done
+    return done
+
+
+@pytest.mark.part("M7", "FR-PROF-9")
+async def test_i_19__m7_placements(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#228: a turn whose text names a place places every character present there, before its
+    messages are routed: ``located_at`` facts with provenance ``backfill``, active after the
+    run. Complements: a turn naming no place writes no placement, and a later turn naming the
+    same place does not place again a character canon already places there; one naming
+    another place moves only who is present."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        lines = {
+            2: ("Let's go in.", "Bobby and Cal walk into the kitchen."),
+            3: ("Nice.", "Bobby and Cal look around the kitchen."),
+            4: ("Hello.", "Cal waits."),
+            5: ("Come on.", "Bobby steps out onto the porch."),
+        }
+        story, ids = await new_story(client, "Ada", "Bobby", "Cal")
+        kitchen = await _entity(engine, story, "place", "kitchen")
+        porch = await _entity(engine, story, "place", "porch")
+        await lls.long_lite_story(engine, story, ids["Ada"], 12, lines=lines)
+        backfill_job.bind(lib.models)
+        done = await _switch(client, engine, story)
+        placed = await rows(
+            engine,
+            "SELECT f.subject_id, pr.object_id, f.narrative_turn, f.provenance::text AS p, "
+            "f.membership::text AS m, f.tx_to IS NULL AND f.valid_to IS NULL AS now "
+            "FROM facts f JOIN propositions pr "
+            "ON pr.id = f.proposition_id WHERE f.story_id = :s AND f.predicate_id = :p "
+            "ORDER BY f.narrative_turn, f.subject_id",
+            s=story,
+            p="01JPRED0000000000000000002",
+        )
+        assert {(r.p, r.m) for r in placed} == {("backfill", "active")}
+        # Written at turn 2 (all three) and 5 (the two present); none at 3 (already placed
+        # there) or 4 (no place named).
+        assert {int(r.narrative_turn) for r in placed} == {2, 5}
+        assert {(str(r.subject_id), str(r.object_id)) for r in placed if r.now} == {
+            (ids["Ada"], porch),
+            (ids["Bobby"], porch),
+            (ids["Cal"], kitchen),
+        }
+        assert (await _report(engine, done["id"]))["placements"] == 5
+
+
+@pytest.mark.part("M7", "FR-PROF-9")
+async def test_i_19__m7_testimony(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#228 (#162): a witness of a backfilled ``say`` whose partition already holds something
+    about the claim's subject takes it as testimony through the live writers: a ``said``
+    belief and its decision (Cal, who observed Bobby to be forty, rejects "fifty"), every
+    transition ``inferred``, and its exposure recorded resolved. Complement: Dee, present but
+    holding nothing about Bobby, gets an unresolved inferred exposure and no transition."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        lines = {
+            2: ("Hello.", "Cal sees that Bobby is forty years old."),
+            3: ("Bobby is fifty years old.", "Cal frowns at Dee."),
+        }
+        story, ids = await _played(client, engine, lib, lines, "Ada", "Bobby", "Cal", "Dee")
+        stub = lib.models.stub
+        assert stub is not None
+        stub.when(
+            "Cal sees that Bobby",
+            _age_claim(1, "Bobby is forty years old", "40"),
+            purpose=EXTRACTION_BACKSTOP.name,
+        )
+        stub.when(
+            "Bobby is fifty years old.",
+            _age_claim(0, "Bobby is fifty years old", "50"),
+            purpose=EXTRACTION_BACKSTOP.name,
+        )
+        done = await _switch(client, engine, story)
+        said = await rows(
+            engine,
+            "SELECT holder_character_id AS h, kind::text AS k, outcome, inferred "
+            "FROM belief_transitions WHERE story_id = :s AND holder_character_id = :c "
+            "AND outcome IS NOT NULL",
+            s=story,
+            c=ids["Cal"],
+        )
+        assert said, "Cal's testimony"
+        assert all(r.inferred for r in said)
+        assert "reject" in {r.outcome for r in said}
+        cal = await rows(
+            engine,
+            "SELECT resolved_by_transition, inferred FROM exposures WHERE story_id = :s "
+            "AND witness_character_id = :c",
+            s=story,
+            c=ids["Cal"],
+        )
+        assert cal
+        assert all(e.inferred and e.resolved_by_transition is not None for e in cal)
+        dee = await rows(
+            engine,
+            "SELECT resolved_by_transition, inferred FROM exposures WHERE story_id = :s "
+            "AND witness_character_id = :d",
+            s=story,
+            d=ids["Dee"],
+        )
+        assert dee
+        assert all(e.inferred and e.resolved_by_transition is None for e in dee)
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM belief_transitions WHERE story_id = :s "
+                "AND holder_character_id = :d",
+                s=story,
+                d=ids["Dee"],
+            )
+            == 0
+        )
+        assert (await _report(engine, done["id"]))["testimonies"] >= 1
+
+
+@pytest.mark.part("M7", "FR-PROF-9")
+async def test_i_19__m7_commitments(stub_settings: Any, engine: AsyncEngine) -> None:
+    """#228 (#146): a reference ``salience_detection`` marks salient ("Someone knocks at the
+    door") becomes an open thunk with a ledger entry under the backfill's operation, and a
+    later narrated claim that fills it ("The mailman knocked at the door") settles it through
+    ``lifecycle.depend``: its resolution fact has provenance ``backfill``. The extraction
+    checkpoint keeps the reference's offsets, never its words. Complement: a second salient
+    reference nothing fills stays open."""
+    import json
+
+    from epistrel.core.propositions import registry
+    from epistrel.orchestrator.models.registry import SalienceSketch
+    from tests import commit_support as c
+
+    async with respond_client(stub_settings, engine) as (client, lib):
+        lines = {
+            2: ("Hello.", "Someone knocks at the door."),
+            3: ("What was that?", "Something rattles the window."),
+            4: ("Who was it?", "The mailman knocked at the door."),
+        }
+        story, ids = await new_story(client, "Ada", "Bobby", "Cal")
+        await _entity(engine, story, "item", "door")
+        await _entity(engine, story, "item", "window")
+        mailman = await _entity(engine, story, "person", "mailman")
+        async with engine.begin() as conn:
+            await registry.auto_register(conn, story, "knocked_at")
+            await registry.auto_register(conn, story, "rattles")
+        await lls.long_lite_story(engine, story, ids["Ada"], 10, lines=lines)
+        backfill_job.bind(lib.models)
+        stub = lib.models.stub
+        assert stub is not None
+        stub.when(
+            "Someone knocks at the door.",
+            c.salience_answer((1, "Someone knocks at the door", c.KNOCK)),
+            purpose="salience_detection",
+        )
+        stub.when(
+            "Something rattles the window.",
+            c.salience_answer(
+                (
+                    1,
+                    "Something rattles the window",
+                    SalienceSketch(subject="something", relation="rattles", object="the window"),
+                )
+            ),
+            purpose="salience_detection",
+        )
+        stub.when(
+            "The mailman knocked at the door.",
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "beat": 1,
+                            "span": "The mailman knocked at the door",
+                            "subject": "the mailman",
+                            "predicate": "knocked_at",
+                            "object": "the door",
+                            "time": None,
+                            "polarity": "affirmed",
+                            "confidence": 0.95,
+                        }
+                    ]
+                }
+            ),
+            purpose=EXTRACTION_BACKSTOP.name,
+        )
+        await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        # Through extraction: the checkpoint holds offsets, not the words.
+        for _ in range(10):
+            status = await scalar(
+                engine, "SELECT status FROM story_backfills WHERE story_id = :s", s=story
+            )
+            if status == "reconciling":
+                break
+            await run_backfill(engine, story, 1)
+        stored = await rows(
+            engine,
+            "SELECT extraction::text AS x FROM backfill_chunks c JOIN story_backfills b "
+            "ON b.id = c.backfill_id WHERE b.story_id = :s",
+            s=story,
+        )
+        assert any('"references"' in r.x and '"model"' in r.x for r in stored)
+        assert not any("knocks" in r.x or "Someone" in r.x for r in stored)
+        await run_backfill(engine, story)
+        done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert done["status"] == "completed", done
+        operation = await scalar(
+            engine, "SELECT operation_id FROM story_backfills WHERE id = :b", b=done["id"]
+        )
+        thunks = await rows(
+            engine,
+            "SELECT t.id, t.resolved_fact_id, t.salient, t.membership::text AS m, "
+            "p.name AS predicate FROM thunks t JOIN predicates p ON p.id = t.predicate_id "
+            "WHERE t.story_id = :s AND t.operation_id = :o ORDER BY t.id",
+            s=story,
+            o=operation,
+        )
+        by = {t.predicate: t for t in thunks}
+        assert set(by) == {"knocked_at", "rattles"}
+        assert {t.m for t in thunks} == {"active"}
+        assert by["knocked_at"].resolved_fact_id is not None
+        assert by["rattles"].resolved_fact_id is None
+        resolution = (
+            await rows(
+                engine,
+                "SELECT provenance::text AS p, subject_id FROM facts WHERE id = :f",
+                f=by["knocked_at"].resolved_fact_id,
+            )
+        )[0]
+        assert (resolution.p, str(resolution.subject_id)) == ("backfill", mailman)
+        entries = await scalar(
+            engine,
+            "SELECT count(*) FROM promissory_ledger WHERE story_id = :s AND thunk_id = :t",
+            s=story,
+            t=by["rattles"].id,
+        )
+        assert entries == 1
+        report = await _report(engine, done["id"])
+        assert (report["thunks"], report["settled"]) == (2, 1)
+
+
+@pytest.mark.part("M7", "FR-PROF-9")
+async def test_i_19__m7_state_changes(
+    stub_settings: Any, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#228 (#187, #188, #190): a story-owned number State the story's narration changes
+    ("Ada picks up 30 gold coins", "Ada spends 10 coins") gets inferred changes: ``source =
+    backfill``, ``inferred``, through ``apply_change``. Complement: a narrated change its
+    bounds refuse ("Ada spends 50 coins" with 30 held, the State non-negative) is not written
+    and is listed in ``report.skipped_state_changes`` with its reason; the value folds to
+    20."""
+    from epistrel.core.states import StateDefinition
+    from tests import state_support as ss
+
+    ss.deliver(monkeypatch)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        lines = {
+            2: ("Look!", "Ada picks up 30 gold coins."),
+            3: ("Let's shop.", "Ada spends 50 coins."),
+            4: ("Fine.", "Ada spends 10 coins."),
+        }
+        story, ids = await new_story(client, "Ada", "Bobby", "Cal")
+        await ss.set_level(engine, story, "on")
+        gold = await ss.define(
+            engine,
+            story,
+            StateDefinition.model_validate(
+                {
+                    "name": "gold",
+                    "type": "number",
+                    "scope": "story",
+                    "constraints": {"non_negative": True},
+                    "initial_value": 0,
+                    "aliases": ("coins",),
+                    "unit": "gp",
+                }
+            ),
+        )
+        await ss.set_level(engine, story, None)
+        await lls.long_lite_story(engine, story, ids["Ada"], 10, lines=lines)
+        backfill_job.bind(lib.models)
+        done = await _switch(client, engine, story)
+        changes = await rows(
+            engine,
+            "SELECT delta, source::text AS src, inferred, narrative_turn, membership::text AS m "
+            "FROM state_changes WHERE story_id = :s AND state_id = :g ORDER BY narrative_turn",
+            s=story,
+            g=gold.id,
+        )
+        assert [(int(c.delta), c.narrative_turn) for c in changes] == [(30, 2), (-10, 4)]
+        assert {(c.src, c.inferred, c.m) for c in changes} == {("backfill", True, "active")}
+        report = await _report(engine, done["id"])
+        assert report["state_changes"] == 2
+        assert report["skipped_state_changes"] == [
+            {"turn": 3, "state_id": gold.id, "reason_code": "non_negative"}
+        ]
+        assert int(await ss.value(engine, story, "gold")) == 20
+
+
+@pytest.mark.part("M7", "FR-PROF-9")
+async def test_i_19__m7_end_audit(
+    stub_settings: Any, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#228: a cancelled backfill writes a ``backfill_cancelled`` ``audit_log`` row (the
+    cancelling principal, the backfill's id, its progress counts; no story text), and one that
+    fails its last attempt a ``backfill_failed`` row naming the exception. Complement: a
+    completed backfill writes neither."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, _, _ = await _story(client, engine, lib, 120)
+        started = await ok(
+            await client.put(f"/stories/{story}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, story, 2)
+        await ok(
+            await client.delete(
+                f"/stories/{story}/backfill", headers={**WRITE, "X-Epistrel-Principal": "p-op"}
+            )
+        )
+        audit = await rows(
+            engine,
+            "SELECT kind, principal, details FROM audit_log WHERE story_id = :s "
+            "AND kind LIKE 'backfill_%'",
+            s=story,
+        )
+        assert [(a.kind, a.principal) for a in audit] == [("backfill_cancelled", "p-op")]
+        details = audit[0].details
+        assert details["backfill_id"] == started["backfill"]["id"]
+        assert details["chunks_done"] == 1
+        assert "error" not in details
+
+        failing, _, _ = await _story(client, engine, lib, 60)
+        await ok(
+            await client.put(f"/stories/{failing}/engine-profile", json=FULL, headers=WRITE), 202
+        )
+        await run_backfill(engine, failing, 1)  # begin
+
+        async def broken(*_: Any, **__: Any) -> None:
+            raise RuntimeError("extraction broke")
+
+        monkeypatch.setattr(backfill_job, "_extract", broken)
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE jobs SET attempt = :n WHERE kind = 'backfill' AND story_id = :s "
+                    "AND status = 'queued'"
+                ),
+                {"n": backfill_job.MAX_ATTEMPTS - 1, "s": failing},
+            )
+        await run_backfill(engine, failing, 1)
+        assert (
+            await scalar(
+                engine, "SELECT status FROM story_backfills WHERE story_id = :s", s=failing
+            )
+            == "failed"
+        )
+        failed = await rows(
+            engine,
+            "SELECT kind, details FROM audit_log WHERE story_id = :s AND kind LIKE 'backfill_%'",
+            s=failing,
+        )
+        assert [f.kind for f in failed] == ["backfill_failed"]
+        assert failed[0].details["error"] == "RuntimeError"
+        monkeypatch.undo()
+
+        completed, _, _ = await _story(client, engine, lib, 20)
+        await _switch(client, engine, completed)
+        assert (
+            await scalar(
+                engine,
+                "SELECT count(*) FROM audit_log WHERE story_id = :s AND kind LIKE 'backfill_%'",
+                s=completed,
+            )
+            == 0
+        )

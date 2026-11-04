@@ -237,6 +237,9 @@ state_changes = Table(
     Column("stopped_by_event_id", ulid_type(), nullable=True),
     Column("paused_for_event_id", ulid_type(), nullable=True),
     Column("settles_change_id", ulid_type(), nullable=True),
+    # #228: a change a backfill read from the transcript (#190's detector), not one a render
+    # declared.
+    Column("inferred", Boolean, nullable=False, server_default=text("false")),
     Column(
         "amendment_part_id",
         ulid_type(),

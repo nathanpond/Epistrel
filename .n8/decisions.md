@@ -12135,3 +12135,64 @@ Scope: the four `bug, confirmed` issues `/n8-verify M7 --auto` filed at 2e8bced 
 - **Decision:** the new tests' part markers name only requirement ids that docs/04 §15 already maps to their scenario (I-10: FR-STORE-7, FR-ADMIN-9; S-AUDIT-VIEW: FR-STORE-23), not the extra ids the plans listed (NFR-REL-1, FR-MEDIA-2, FR-ADMIN-7, FR-PROF-7,8, FR-EXT-19,22, FR-STORE-26). Found when CI's `check-traceability` failed.
   **Why:** the §15 table is the design doc's traceability matrix. Adding rows there is a docs change outside these bug fixes, and the behaviour is asserted either way.
   **Issue:** #721, #722, #723
+
+## /n8-exec M7 (retry 4: the open #228 items and #235's tooling) — 2026-11-03
+
+Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (five backfill items) and #235 (tooling, then the owner's run). Branch `milestone/m7-verify-fixes-4`.
+
+### #228 — the remaining record kinds
+
+- **Decision:** placements are inferred only for a turn whose text names a place (a place entity's name or alias). The last place named is the one used, since that is where the turn ends. Every character present is placed there by `commit_fact` (`located_at`, provenance `backfill`), before the turn's messages are routed. A character canon already places there is left as it is. A turn naming no place places no one (no carry-forward).
+  **Why:** `facts` has no `inferred` column, and `provenance = backfill` is already the record of an inference from the transcript. A new column on the bitemporal table would touch every history and bundle reader for no reader that needs it. Carrying a location forward with no evidence would invent a placement.
+  **Issue:** #228
+- **Decision (Rule 1):** the reconciliation's exposure and scheduled-time positions were built as `Position(turn, variant, index + 1)`. That third field is `slot_k`, so they sat in an inter-turn slot. They now use the beat (`exposure_position`; `Position(turn, variant, 0, beat)`).
+  **Issue:** #228
+- **Decision:** testimony uses #162's partition-touch salience rule only. A say's witness is salient when its partition already holds something about a claim's subject; never a minor or the player's character. A salient witness goes through the live writers (`consistency_of`, `trust`, the deterministic `testimony` default, `commit_testimony`, `nested_committed`), every transition `inferred`. Its exposures are recorded resolved by those transitions. No `belief_adjudication` call is made.
+  **Why:** a Lite turn declared no salience marks, and a model call per witness would multiply the backfill's cost for a decision the deterministic default already makes.
+  **Issue:** #228
+- **Decision:** commitments. Under `rules_and_model`, `salience_detection` runs in the extraction stage, once per turn, on the reply's beats (never the player's input). The rules mode's references (an extraction claim on narration that leaves an argument open) are kept under either mode, as a live turn keeps both.
+  - The checkpoint keeps each reference as a predicate id plus the **offsets** of its words in the message (`ReadReference`), never the words. Reconciliation reads them again from the transcript.
+  - Reconciliation introduces each thunk (`lifecycle.introduce(salient=True)`) before the message's claims. A claim that fills an open thunk settles it through `lifecycle.depend` (provenance `backfill`; the player's input on the `player` channel) instead of being written as a plain fact.
+  **Why:** the checkpoint tables are erasure-exempt because they hold no transcript text (#228's decision of 2026-11-02). A sketch's words would break that.
+  **Issue:** #228
+- **Decision:** narrated State changes are inferred only for story-owned, story-scoped `number` States, with a stated amount and direction, through #190's `completeness.diff` (no declared effects), #188's `authorize` for the `director` source and `states.apply_change` (#187's bounds). They are written with `source = backfill` and `inferred` (a `states.inferring()` context; `state_changes.inferred`, migration 0131).
+  - A cap is never applied (it would be a repair). A capped, unpermitted or out-of-bounds change, a character-scoped State (narration names no actor), a non-number State and a change with no amount are each listed in `report.skipped_state_changes` with a reason code.
+  - A turn with no `states` coverage gap (a `prompt_only` era) gets nothing (owner decision 2).
+  **Issue:** #228
+- **Decision:** a cancelled or failed backfill writes an `audit_log` row: kinds `backfill_cancelled` and `backfill_failed` (migration 0131). It holds the backfill's id, job, kind, capabilities, range, progress counts and, for a failure, the exception's name. The principal is whoever cancelled (`DELETE`'s principal), else the requester.
+  **Issue:** #228
+- **Decision:** the full-suite gate for this retry is CI's sharded suite, plus local runs of the touched areas (`test_i_19.py`, then 90 files on backfill, States, erasure, migrations, bundles and evals).
+  **Why:** a serial local run of the whole suite reached 3 % in 18 minutes, which puts it at hours; CI runs it in shards.
+  **Issue:** #228, #235
+
+### #235 — `epistrel evals certify`
+
+- **Decision:** the command computes each preset's fingerprint and models as a deployment computes a turn's: `certification_run.profile_configuration`, a public wrapper over the certification job's `_target`, under the scratch database's `runtime_facts`. `run_suites` gains `probed`, so the endpoint is probed once for every preset.
+  **Why:** a record certifies a fingerprint, and a fingerprint the deployment would not compute is a certification nobody can match. The stub test proves the match: the imported records make each preset's turn report `certified`.
+  **Issue:** #235
+- **Decision:** a record's `report_path` is relative to its own directory, not to the repository. The record also embeds the report (`report_md`).
+  **Why:** the start-up loader resolves `report_path` against the records directory (#233), and the installed wheel has no `docs/`. With the report embedded, the record validates in both places.
+  **Issue:** #235
+- **Decision:** `--out` writes the scratch `INDEX.md` into `reports/`, beside the reports, so the index's links and the runs table resolve.
+  **Issue:** #235
+- **Decision (CI):** the `evals` job's per-preset `evals (stub)` step now runs `certify --presets <preset> --adapter stub` with the same suites, sample, `--full e10` and `--fail-on-gate`. The artifact is renamed `evals-certify-stub-<preset>`. The plan was a separate step running all three presets after the existing one.
+  **Why:** one preset's stub run already takes most of the job's 30 minutes, and three in one process would take about 90. Running certify in place of the old step covers the whole path with no extra runner time.
+  **Issue:** #235
+- **Decision:** a record's `judge_calibrated` is the shared calibration's status, not just whether a judged suite ran.
+  **Why:** the calibration is shared by every preset and belongs to each record (#235's Discretion).
+  **Issue:** #235
+- **Decision:** a Presets row with no record shows the fingerprint of the preset's constants with the reference model (`REFERENCE_MODEL_ID = cydonia-24b-v4.3`, new in `evals.index`) for every story purpose. The fingerprint includes the prompt templates' hashes, so a template edit also changes a row and fails `index --check` until the index is regenerated, as a preset edit does.
+  **Issue:** #235
+- **Decision:** `certify` takes `--suite` to narrow the applicable suites (the test runs `smoke` only), and `--skip`/`--full` for CI's parity with `run`.
+  **Issue:** #235
+- **Decision:** #235 stays open, labelled `needs-owner-action`. The tooling, the INDEX table, the CI path and the tests are built. The owner's multi-hour run on `cydonia-24b-v4.3` (:1235), with an embedding model, still produces the committed evidence. `test_committed_certifications` is `xfail` until the records are committed.
+  **Issue:** #235
+
+## Ad-hoc — 2026-11-03
+
+- **Change:** docs/04 §8 no longer says the presets "are certified in CI". The presets on the reference model are certified by a hand run, with the committed reports and certification records as evidence, and CI runs the certification path against the stub adapter.
+  **Why:** owner decision 2 on #235: one hand-run script certifies the presets on the local reference model, and CI never calls a real model (#134).
+  **Affects:** M7 (#235); M9's performance and quality stories that read docs/04 §8.
+- **Decision:** the new #235 tests (`tests/evals/test_certify_presets.py`) carry no part marker. The plan named `part("M7", "NFR-QUAL-11; FR-PROF-15")`, but docs/04 §15 maps those requirements to C-16 and C-18. A part lives in one file, and C-18's M7 part is in `tests/integration/test_c_18_m7.py`. `check-traceability` refused the markers.
+  **Why:** the same reason as retry 3's #721–#723 decision: adding a §15 row is a docs change outside this story, and the behaviour is asserted either way.
+  **Issue:** #235

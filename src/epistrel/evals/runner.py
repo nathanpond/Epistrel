@@ -1016,6 +1016,7 @@ async def run_suites(
     calibration_flip: Collection[str] = (),
     profile: Preset | None = None,
     fingerprint_value: str | None = None,
+    probed: tuple[str | None, str | None] | None = None,
 ) -> Report:
     """One run of ``suites`` (module docstring); ``on_suite`` sees the report after each suite
     (the CLI writes the JSON incrementally).
@@ -1029,7 +1030,11 @@ async def run_suites(
     **A certification run** (#233) passes ``profile``: the scratch stories play that profile
     version (``Preset``, a deployment's profile in place of a seeded preset), and the report
     names ``fingerprint_value``, the configuration's fingerprint as the deployment computed it
-    when the run was requested."""
+    when the run was requested.
+
+    ``probed`` (#235: ``epistrel evals certify`` probes the endpoint once for all its presets):
+    the versions the run model and the judge already reported, so no preflight runs again.
+    ``config.preset`` names the preset the run plays (``profile`` aside)."""
     started = now or datetime.now(UTC)
     store = calibration_file or calibration_path(config)
     stored: judges.Calibration | None = None
@@ -1066,10 +1071,14 @@ async def run_suites(
         judge_layer_for(config, live) as judging,
     ):
         with routed(live, config):
-            report.model_version = await preflight(live, config)
-            judge_version = report.model_version
+            if probed is not None:
+                report.model_version, judge_version = probed
+            else:
+                report.model_version = await preflight(live, config)
+                judge_version = report.model_version
+                if config.judge_model is not None:
+                    judge_version = await judge_preflight(judging, config)
             if config.judge_model is not None:
-                judge_version = await judge_preflight(judging, config)
                 report.judge = JudgeModel(
                     model=config.judge_model,
                     model_version=judge_version,

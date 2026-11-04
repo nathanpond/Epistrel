@@ -659,17 +659,27 @@ async def complete(
             await apply_target(conn, story_id, dict(row.target), str(row.requested_by))
     current = await effective.effective_configuration(conn, story_id, validate=False)
     levels = coverage.capabilities_of(current.settings)
+    low, high = int(row.range_from_turn), int(row.range_to_turn)
     for capability in row.capabilities:
-        await coverage.add(
-            conn,
-            story_id,
-            capability,
-            int(row.range_from_turn),
-            int(row.range_to_turn),
-            source=coverage.BACKFILL,
-            level=levels.get(capability),
-            operation_id=None if row.operation_id is None else str(row.operation_id),
-        )
+        # #726: only the capability's own gaps inside the range, the turns this backfill
+        # derived for it: a turn already covered (another capability's gap widened the range,
+        # or the clock or States ran at ``prompt_only`` there, owner decision 2) keeps its
+        # coverage as it was.
+        for gap_low, gap_high in await coverage.gaps(
+            conn, story_id, capability, level=levels.get(capability)
+        ):
+            if gap_high < low or gap_low > high:
+                continue
+            await coverage.add(
+                conn,
+                story_id,
+                capability,
+                max(gap_low, low),
+                min(gap_high, high),
+                source=coverage.BACKFILL,
+                level=levels.get(capability),
+                operation_id=None if row.operation_id is None else str(row.operation_id),
+            )
     await conn.execute(
         update(story_backfills)
         .where(story_backfills.c.id == row.id)

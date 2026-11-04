@@ -12196,3 +12196,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the new #235 tests (`tests/evals/test_certify_presets.py`) carry no part marker. The plan named `part("M7", "NFR-QUAL-11; FR-PROF-15")`, but docs/04 §15 maps those requirements to C-16 and C-18. A part lives in one file, and C-18's M7 part is in `tests/integration/test_c_18_m7.py`. `check-traceability` refused the markers.
   **Why:** the same reason as retry 3's #721–#723 decision: adding a §15 row is a docs change outside this story, and the behaviour is asserted either way.
   **Issue:** #235
+
+## /n8-exec M7 (retry 5) — 2026-11-03
+
+- **Decision:** #726's test raises States to `prompt_only` through `PATCH /stories/{id}/profile-overrides` with `upgrade_mode: forward_only`, and drops it with a merge-patch `null`. It does not insert `capability_coverage` rows by hand.
+  **Why:** a backfill-mode raise queues a backfill of turn 1 and holds the change until that backfill completes. A forward-only raise records the `live` `prompt_only` interval through `coverage.extend_live`, the same way a real change does, so the test exercises the production path.
+  **Issue:** #726
+- **Decision (Rule 1):** `backfill.complete` records `backfill` coverage only over each capability's own gaps (`coverage.gaps`) inside the range. Before, it recorded the whole range for every capability.
+  **Why:** the range spans every capability's gaps, so it also took in turns where the clock or States ran at `prompt_only`, and turns that another capability's gap widened it over. Coverage then claimed `on`-level data that nothing derived (seen as `(1, 5, 'on', 'backfill')` over a 2-3 `prompt_only` range). #726's expected result says the range's coverage stays `live`. Regression test: `test_i_19__m7_state_changes_prompt_only`.
+  **Issue:** #726
+- **Decision (Rule 3):** PR #727's gate failed twice running on `test_i_10__m7_crash_resume`, with "the engine process exited during start-up". I filed the race as #728 and fixed it in this PR, instead of leaving the gate red. `EngineProcess.start` now returns when a child that has a crash plan ends with the crash's exit status before `/health` answers. The test's next step, `wait_exit`, sees that status. Without a plan, or with any other exit status, an early exit still raises.
+  **Why:** the test's child resumes a queued import at start-up, so the planned crash point can fire before the first health probe. Locally it failed 1 time in 5 file runs. `main`'s code passed it in the runs I made, and the timing shift in this branch is enough to lose the race. The harness was wrong to treat an intended crash as a start-up failure. Regression test: `tests/integration/test_engine_process_ports.py::test_start_accepts_a_planned_crash_before_health`. It fails on the old `start`.
+  **Issue:** #728 (discovered while working #726)

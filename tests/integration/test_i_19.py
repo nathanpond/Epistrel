@@ -1401,6 +1401,127 @@ async def test_i_19__m7_state_changes(
 
 
 @pytest.mark.part("M7", "FR-PROF-9")
+async def test_i_19__m7_state_changes_prompt_only(
+    stub_settings: Any, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#726 (#228's owner decision 2): over the turns a story ran States at ``prompt_only``,
+    the backfill keeps the recorded changes and infers nothing more. The story runs turn 1 with
+    States off, turns 2-3 at ``prompt_only`` (turn 2 narrates "Ada picks up 30 gold coins",
+    turn 3 records a consumer change of +20) and turns 4-5 off again (turn 4 narrates "Ada
+    spends 10 coins"). After the switch to Full and its backfill, no ``backfill`` change is
+    written for turn 2, the consumer change is unchanged, ``report.state_changes`` counts only
+    turn 4, and the ``prompt_only`` range's coverage stays ``live``. Complement: turn 4's
+    narrated change, outside the range, is inferred; the value folds to 10 (40 if turn 2 were
+    inferred too)."""
+    from epistrel.core import states
+    from epistrel.core.enums import StateChangeSource
+    from epistrel.core.states import StateDefinition
+    from tests import state_support as ss
+
+    ss.deliver(monkeypatch)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, ids = await new_story(client, "Ada", "Bobby", "Cal")
+        await ss.set_level(engine, story, "on")
+        gold = await ss.define(
+            engine,
+            story,
+            StateDefinition.model_validate(
+                {
+                    "name": "gold",
+                    "type": "number",
+                    "scope": "story",
+                    "constraints": {"non_negative": True},
+                    "initial_value": 0,
+                    "aliases": ("coins",),
+                    "unit": "gp",
+                }
+            ),
+        )
+        await ss.set_level(engine, story, None)
+        await lls.long_lite_story(engine, story, ids["Ada"], 2)  # turn 1, States off
+        raised = await ok(
+            await client.patch(
+                f"/stories/{story}/profile-overrides",
+                json={
+                    "settings": {"states": {"level": "prompt_only"}},
+                    "ignore_warnings": True,
+                    "upgrade_mode": "forward_only",
+                },
+                headers=WRITE,
+            )
+        )
+        assert raised["applied"] is True, raised
+        await lls.long_lite_story(
+            engine, story, ids["Ada"], 2, lines={1: ("Look!", "Ada picks up 30 gold coins.")}
+        )  # turn 2
+        api, applied = await ss.change(
+            engine,
+            story,
+            ss.delta("gold", 20, reason="a consumer grant", source=StateChangeSource.CONSUMER),
+        )  # turn 3
+        assert api.narrative_turn == 3
+        assert all(isinstance(a, states.Applied) for a in applied), applied
+        lowered = await ok(
+            await client.patch(
+                f"/stories/{story}/profile-overrides",
+                json={"settings": {"states": None}, "ignore_warnings": True},
+                headers=WRITE,
+            )
+        )
+        assert lowered["applied"] is True, lowered
+        await lls.long_lite_story(
+            engine, story, ids["Ada"], 4, lines={1: ("Fine.", "Ada spends 10 coins.")}
+        )  # turns 4-5
+        spans = await rows(
+            engine,
+            "SELECT from_turn, to_turn, level, source FROM capability_coverage "
+            "WHERE story_id = :s AND capability = 'states' ORDER BY from_turn",
+            s=story,
+        )
+        assert [tuple(r) for r in spans] == [(2, 3, "prompt_only", "live")]
+        recorded = await rows(
+            engine,
+            "SELECT id, delta, source::text AS src, inferred, membership::text AS m "
+            "FROM state_changes WHERE story_id = :s AND state_id = :g ORDER BY id",
+            s=story,
+            g=gold.id,
+        )
+        assert [(int(r.delta), r.src, r.inferred, r.m) for r in recorded] == [
+            (20, "consumer", False, "active")
+        ]
+
+        backfill_job.bind(lib.models)
+        done = await _switch(client, engine, story)
+        changes = await rows(
+            engine,
+            "SELECT id, delta, source::text AS src, inferred, narrative_turn, "
+            "membership::text AS m FROM state_changes WHERE story_id = :s AND state_id = :g "
+            "ORDER BY narrative_turn",
+            s=story,
+            g=gold.id,
+        )
+        assert [(int(c.delta), c.narrative_turn, c.src, c.inferred, c.m) for c in changes] == [
+            (20, 3, "consumer", False, "active"),
+            (-10, 4, "backfill", True, "active"),
+        ]
+        assert changes[0].id == recorded[0].id  # the recorded change is kept as it was
+        report = await _report(engine, done["id"])
+        assert report["state_changes"] == 1
+        assert not report.get("skipped_state_changes")
+        covered = await rows(
+            engine,
+            "SELECT from_turn, to_turn, level, source FROM capability_coverage "
+            "WHERE story_id = :s AND capability = 'states' AND from_turn <= 3 "
+            "AND (to_turn IS NULL OR to_turn >= 2) ORDER BY from_turn",
+            s=story,
+        )
+        # The range is covered by its live prompt_only interval and by nothing a backfill wrote.
+        assert ("prompt_only", "live") in {(r.level, r.source) for r in covered}
+        assert {r.source for r in covered} == {"live"}, [tuple(r) for r in covered]
+        assert int(await ss.value(engine, story, "gold")) == 10
+
+
+@pytest.mark.part("M7", "FR-PROF-9")
 async def test_i_19__m7_end_audit(
     stub_settings: Any, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:

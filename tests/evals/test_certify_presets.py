@@ -235,21 +235,22 @@ async def test_certify_presets__stub(
 
 @pytest.mark.xfail(not committed_records(), reason="awaiting owner run (#235's Demo)", strict=False)
 def test_committed_certifications() -> None:
-    """Every committed record validates and matches its committed report's SHA-256, was
-    measured on the reference model (``model_tier = reference``, #54's model) and, for a preset
-    with partitions, ran the zero-leak floors on at least 300 cases a seed.
-    Standard, Full and Max each have one."""
+    """Every committed record validates and matches its committed report's SHA-256 and, for a
+    preset with partitions, ran the zero-leak floors on at least 300 cases a seed. Standard,
+    Full and Max are each certified on at least one model, the same one (#235 as replanned
+    2026-11-04: certifications are kept per model, and the M7 evidence may be a hosted model's;
+    ``model_tier`` says whether it was the local reference model)."""
     found = committed_records()
     assert found, "no committed certification records yet"
-    presets: set[str] = set()
+    by_model: dict[str, set[str]] = {}
     for path in found:
         record = parse_record(json.loads(path.read_text("utf-8")))
         report = record.report_md
         if record.report_path is not None and (SEEDS_DIR / record.report_path).is_file():
             report = (SEEDS_DIR / record.report_path).read_text("utf-8")
         check_report(record, report)
-        assert record.model_tier == "reference", path.name
-        assert record.models["generation"]["id"] == REFERENCE_MODEL_ID, path.name
+        if record.model_tier == "reference":
+            assert record.models["generation"]["id"] == REFERENCE_MODEL_ID, path.name
         zero = [
             f
             for f in (*record.floors_passed, *record.floors_failed)
@@ -257,8 +258,9 @@ def test_committed_certifications() -> None:
         ]
         assert zero, f"{path.name}: NFR-QUAL-1 did not run"
         assert all(f.n >= 300 for f in zero), path.name
-        presets.add(str(record.preset))
-    assert {"standard", "full", "max"} <= presets
+        model = str(record.models["generation"]["id"])
+        by_model.setdefault(model, set()).add(str(record.preset))
+    assert any({"standard", "full", "max"} <= presets for presets in by_model.values()), by_model
 
 
 _EVALS_CALL = re.compile(r"epistrel[. ]evals\b(?P<rest>[^\n]*)")

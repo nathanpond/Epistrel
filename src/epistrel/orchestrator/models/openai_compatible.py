@@ -11,8 +11,11 @@ each old one is closed as soon as its in-flight calls finish (FR-MODEL-4).
 
 ``max_tokens`` is sent as ``max_completion_tokens``; an endpoint that answers that with a 400
 is retried once with the legacy ``max_tokens`` and remembered (a 400 about ``response_format``
-is the structured caller's, #53). SDK exceptions escape as themselves; the Model Access Layer
-maps them (``errors.map_provider_error``), and a 200 that is not a chat completion raises
+is the structured caller's, #53). A model that answers a 400 naming ``temperature`` or
+``top_p`` is retried once without both and remembered per endpoint and model (#235: Claude 4.7
+and later accept only their default sampling; the model's default then applies). SDK
+exceptions escape as themselves; the Model Access Layer maps them
+(``errors.map_provider_error``), and a 200 that is not a chat completion raises
 ``ProviderGarbage``.
 
 Logs carry the purpose, model, latency and the key's fingerprint only — never prompt or reply
@@ -21,6 +24,7 @@ text (invariant 3).
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -56,16 +60,18 @@ def request_body(
     response_schema: type[BaseModel] | None,
     *,
     legacy_max_tokens: bool = False,
+    sampling: bool = True,
 ) -> dict[str, Any]:
-    """The Chat Completions arguments (everything but the timeout)."""
+    """The Chat Completions arguments (everything but the timeout); without ``sampling``, no
+    ``temperature`` or ``top_p``."""
     body: dict[str, Any] = {
         "model": model,
         "messages": [m.model_dump() for m in messages],
         "stream": False,
     }
-    if params.temperature is not None:
+    if sampling and params.temperature is not None:
         body["temperature"] = params.temperature
-    if params.top_p is not None:
+    if sampling and params.top_p is not None:
         body["top_p"] = params.top_p
     if params.stop is not None:
         body["stop"] = list(params.stop)
@@ -82,6 +88,17 @@ def request_body(
             },
         }
     return body
+
+
+def rejects_sampling(exc: openai.BadRequestError) -> bool:
+    """Whether a 400 names ``temperature`` or ``top_p`` (a model that takes only its default
+    sampling)."""
+    try:
+        body = json.dumps(exc.body) if exc.body is not None else ""
+    except TypeError, ValueError:
+        body = ""
+    text = f"{exc.message} {body}"
+    return "temperature" in text or "top_p" in text
 
 
 def versions_of(models: Sequence[Any]) -> dict[str, str]:
@@ -125,6 +142,8 @@ class OpenAICompatibleAdapter:
         self._clients: dict[tuple[str, str], _Client] = {}
         self._revision: int | None = None
         self._legacy_max_tokens: set[str] = set()
+        self._default_sampling: set[tuple[str, str]] = set()
+        """``(base_url, model)`` pairs that refused ``temperature``/``top_p``."""
         self.closed_clients = 0
         """How many superseded clients have been closed (observable by tests)."""
 
@@ -199,16 +218,30 @@ class OpenAICompatibleAdapter:
         effective = config.params.merged(params)
         timeout = effective.timeout or DEFAULT_TIMEOUT_S
         legacy = base_url in self._legacy_max_tokens
+        sampling = (base_url, model) not in self._default_sampling
         started = time.perf_counter()
-        body = request_body(model, messages, effective, response_schema, legacy_max_tokens=legacy)
-        try:
-            completion = await client.chat.completions.create(**body, timeout=timeout)
-        except openai.BadRequestError as exc:
-            if legacy or effective.max_tokens is None or "response_format" in exc.message:
-                raise
-            self._legacy_max_tokens.add(base_url)
-            body = request_body(model, messages, effective, response_schema, legacy_max_tokens=True)
-            completion = await client.chat.completions.create(**body, timeout=timeout)
+        while True:
+            body = request_body(
+                model,
+                messages,
+                effective,
+                response_schema,
+                legacy_max_tokens=legacy,
+                sampling=sampling,
+            )
+            try:
+                completion = await client.chat.completions.create(**body, timeout=timeout)
+                break
+            except openai.BadRequestError as exc:
+                sent = "temperature" in body or "top_p" in body
+                if sampling and sent and rejects_sampling(exc):
+                    self._default_sampling.add((base_url, model))
+                    sampling = False
+                    continue
+                if legacy or effective.max_tokens is None or "response_format" in exc.message:
+                    raise
+                self._legacy_max_tokens.add(base_url)
+                legacy = True
         latency_ms = round((time.perf_counter() - started) * 1000)
         # A 200 whose body is not a chat completion (an HTML page, ``{}``, no choices) is
         # garbage, not an empty answer.
@@ -279,4 +312,4 @@ class OpenAICompatibleAdapter:
             await client.sdk.close()
 
 
-__all__ = ["OpenAICompatibleAdapter", "reported_cost", "request_body"]
+__all__ = ["OpenAICompatibleAdapter", "rejects_sampling", "reported_cost", "request_body"]

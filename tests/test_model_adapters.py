@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import openai
@@ -211,6 +212,9 @@ def test_request_body_shapes() -> None:
     assert legacy["max_tokens"] == 50
     assert "max_completion_tokens" not in legacy
     assert "response_format" not in legacy
+    plain = request_body("m", HELLO, ModelParams(temperature=0.0, top_p=0.9), None, sampling=False)
+    assert "temperature" not in plain
+    assert "top_p" not in plain
 
 
 # -- the openai SDK adapter -------------------------------------------------------------------
@@ -255,6 +259,58 @@ async def test_openai_adapter_honours_base_url_and_falls_back_to_max_tokens() ->
     assert server.requests[1].body["max_tokens"] == 20
     assert "max_completion_tokens" not in server.requests[2].body
     assert server.requests[0].authorization == "Bearer lm-studio"
+
+
+async def test_openai_adapter_drops_sampling_a_model_refuses() -> None:
+    """#235: a model that answers ``temperature`` with a 400 naming it (Claude 4.7 and later) is
+    asked again once without ``temperature``/``top_p``, and remembered: its next call sends
+    neither. Complement: the memory is per model, so another model on the same endpoint still
+    gets its temperature first."""
+    with mock_openai(reject_sampling=True) as server:
+        base = f"{server.root}/v1"
+        configs = {
+            "generation": configured(base, "claude-haiku-5-5", "sk-test"),
+            "lite_summary": replace(
+                configured(base, "local-model", "sk-test"), purpose="lite_summary"
+            ),
+        }
+
+        async def resolver(purpose: str) -> EffectiveConfig:
+            return configs[purpose]
+
+        adapter = OpenAICompatibleAdapter(resolver, KeyBox(config_key()))
+        try:
+            first = await adapter.complete("generation", HELLO, ModelParams(temperature=0.0))
+            again = await adapter.complete("generation", HELLO, ModelParams(temperature=0.0))
+            local = await adapter.complete("lite_summary", HELLO, ModelParams(temperature=0.0))
+        finally:
+            await adapter.aclose()
+    assert first.text == again.text == "[mock claude-haiku-5-5] Say hello"
+    assert local.text == "[mock local-model] Say hello"
+    sent = [("temperature" in r.body, r.body["model"]) for r in server.requests]
+    assert sent == [
+        (True, "claude-haiku-5-5"),  # refused
+        (False, "claude-haiku-5-5"),  # the retry
+        (False, "claude-haiku-5-5"),  # remembered
+        (True, "local-model"),  # another model: its own first try
+        (False, "local-model"),
+    ]
+
+
+async def test_openai_adapter_keeps_a_400_that_is_not_about_sampling() -> None:
+    """Complement: a 400 that names neither ``temperature`` nor ``top_p`` is not swallowed by
+    the sampling retry (here ``response_format``'s, which the structured caller handles)."""
+    with mock_openai(reject_response_format=True) as server:
+        adapter = fixed(configured(f"{server.root}/v1", "m", "sk-test"))
+        try:
+            with pytest.raises(openai.BadRequestError, match="response_format"):
+                await adapter.complete(
+                    "generation", HELLO, ModelParams(temperature=0.0), GuardrailVerdict
+                )
+        finally:
+            await adapter.aclose()
+    assert len(server.requests) == 1
+    assert server.requests[0].body["temperature"] == 0.0
 
 
 async def test_openai_adapter_does_not_retry_on_its_own() -> None:

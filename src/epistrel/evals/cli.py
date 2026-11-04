@@ -94,6 +94,9 @@ from epistrel.evals.suites import SUITES, MalformedCase, get_suites
 
 EX_FAILED = 1
 EX_USAGE = 2
+API_KEY_ENV = "EPISTREL_EVALS_API_KEY"
+"""The environment variable ``--api-key`` defaults to: a hosted model's key need not appear on
+the command line (or in the process list)."""
 
 
 def stub_markdown(preset: str) -> Path:
@@ -118,7 +121,11 @@ def _endpoint_options(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument("--base-url", help="the OpenAI-compatible endpoint, e.g. LM Studio's /v1")
     command.add_argument("--model", help="the model every purpose uses")
-    command.add_argument("--api-key", default="lm-studio", help="the endpoint's key (lm-studio)")
+    command.add_argument(
+        "--api-key",
+        default=os.environ.get(API_KEY_ENV) or "lm-studio",
+        help=f"the endpoint's key (default ${API_KEY_ENV} when set, else lm-studio)",
+    )
     command.add_argument("--database-url", help="a scratch database (default: a testcontainer)")
     command.add_argument("--sets-dir", type=Path, default=DEFAULT_SETS_DIR, help="labeled sets")
     command.add_argument("--hardware", default="", help="where the model ran, e.g. 'Apple M3 Max'")
@@ -131,6 +138,26 @@ def _endpoint_options(command: argparse.ArgumentParser) -> None:
     )
     command.add_argument("--judge-base-url", help="the judge model's endpoint (--base-url)")
     command.add_argument("--judge-api-key", help="the judge endpoint's key (--api-key)")
+
+
+def _embedding_options(command: argparse.ArgumentParser, *, required: bool = False) -> None:
+    """The embedding model and, when it is not at ``--base-url``, its own endpoint (#235)."""
+    command.add_argument(
+        "--embedding-model",
+        help="the embedding model (at --embedding-base-url, else --base-url)"
+        + (" (required)" if required else "")
+        + ": the retrieval suites embed their stories with it",
+    )
+    command.add_argument(
+        "--embedding-base-url",
+        help="the embedding model's endpoint when it is not --base-url (a hosted chat model "
+        "with no embeddings API: keep the embeddings on LM Studio)",
+    )
+    command.add_argument(
+        "--embedding-api-key",
+        help="the embedding endpoint's key (default --api-key, or lm-studio with "
+        "--embedding-base-url)",
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -159,10 +186,7 @@ def parser() -> argparse.ArgumentParser:
     )
     which.add_argument("--all", action="store_true", help="every registered suite")
     _endpoint_options(run)
-    run.add_argument(
-        "--embedding-model",
-        help="an embedding model at --base-url: the retrieval suites embed their stories with it",
-    )
+    _embedding_options(run)
     run.add_argument(
         "--real-purpose",
         action="append",
@@ -268,6 +292,8 @@ def _config(args: argparse.Namespace, adapter: AdapterName) -> AdapterConfig:
         model=args.model,
         api_key=args.api_key,
         embedding_model=getattr(args, "embedding_model", None),
+        embedding_base_url=(getattr(args, "embedding_base_url", None) or "").rstrip("/") or None,
+        embedding_api_key=getattr(args, "embedding_api_key", None),
         database_url=args.database_url,
         hardware=args.hardware,
         server_version=args.server_version,

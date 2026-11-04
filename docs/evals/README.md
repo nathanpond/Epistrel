@@ -32,8 +32,8 @@ No automated check spends money or calls a real model (the owner's decision, 202
    it never writes into a deployment's database. To use a database of your own, pass
    `--database-url` — it must be a **scratch** database, because the run writes the endpoint
    into its model configuration and plays its turns there.
-3. Run every suite with three seeds, one case at a time (the default `--concurrency 1`; a local
-   server answers one request at a time anyway):
+3. Run every suite with three seeds (`--concurrency N` plays N cases at once: LM Studio serves
+   several requests in parallel, 4 slots by default, and batching them raises its throughput):
 
    ```sh
    uv run epistrel evals run --all --base-url http://localhost:1234/v1 \
@@ -59,26 +59,50 @@ No automated check spends money or calls a real model (the owner's decision, 202
 
 ## Certify the presets (#235, NFR-QUAL-11)
 
-One command certifies Standard, Full and Max on the reference model, in that order, in one
-process (owner decision 2). The committed reports and certification records are M7's preset
-certification evidence; a deployment loads the records at start-up, so the presets on the
-reference model report `certified` with no run of their own.
+One command certifies Standard, Full and Max on one model, in that order, in one process (owner
+decision 2). The committed reports and certification records are the preset certification
+evidence; a deployment loads the records at start-up, so the presets on a certified model report
+`certified` with no run of their own, and on any other model `uncertified` (FR-PROF-16).
+Certifications are kept **per model**: records of several models sit side by side, and
+[INDEX.md](INDEX.md)'s **Presets** table has one row per preset and model (#730).
 
-**Prerequisites.** LM Studio serving the reference model named in the local row of
-[docs/model-matrix.md](../model-matrix.md) (`cydonia-24b-v4.3`) and an embedding model (every
-preset needs embeddings), Docker running (the harness starts its own scratch PostgreSQL), and
-nothing else using the model server.
+**Prerequisites.** An OpenAI-compatible endpoint serving the model, an embedding model (every
+preset needs embeddings), and Docker running (the harness starts its own scratch PostgreSQL).
+
+**On a hosted model** (M7's certification: Claude Haiku 5.5 through Anthropic's
+OpenAI-compatible endpoint, with the embeddings on LM Studio, since Anthropic has no embeddings
+API). Put the key in the environment, not on the command line:
+
+```sh
+export EPISTREL_EVALS_API_KEY=<Anthropic API key>
+uv run epistrel evals certify --presets standard,full,max \
+    --base-url https://api.anthropic.com/v1 --model claude-haiku-5-5 \
+    --embedding-model text-embedding-nomic-embed-text-v1.5 \
+    --embedding-base-url http://localhost:1234/v1 \
+    --seeds 3 --concurrency 8 \
+    --hardware "Anthropic API" --server-version "Claude API (OpenAI compatibility)"
+```
+
+Claude 4.7 and later models refuse `temperature`; the adapter drops it for them and retries
+once, remembered per model (#235). Anthropic ignores `seed`, so a hosted run's seeds vary the
+case order, not the sampling. Raise `--concurrency` as far as the account's rate limits allow:
+a rate-limited case is a model error and plays again on the next run (below).
+
+**On the local reference model** (the local row of [docs/model-matrix.md](../model-matrix.md),
+`cydonia-24b-v4.3`), add `--reference` so the records are `host.tier = reference`:
 
 ```sh
 uv run epistrel evals certify --presets standard,full,max \
     --base-url http://localhost:1234/v1 --model cydonia-24b-v4.3 \
-    --embedding-model <embedding model> --seeds 3 --reference \
+    --embedding-model <embedding model> --seeds 3 --reference --concurrency 4 \
     --hardware "<machine, memory>" --server-version "LM Studio <version>"
 ```
 
-It probes the endpoint once and calibrates the judge once, shared by the three presets. Each
-preset prints its fingerprint as it starts and a `metric_id | verdict | n | bound` table as it
-finishes. It writes, per preset:
+It probes the endpoint once and calibrates the judge once, shared by the presets; a stored
+calibration of the same judge model and reported version is reused (`--recalibrate` runs it
+again). Each preset prints its fingerprint and how many case runs it plans, progress lines with
+an ETA go to stderr, and a `metric_id | verdict | n | bound` table prints as it finishes. It
+writes, per preset:
 
 - `docs/evals/<preset>-<fingerprint[:12]>-<YYYY-MM-DD>.md`, the report;
 - `src/epistrel/core/seeds/certifications/<preset>-<fingerprint[:12]>.json`, the certification
@@ -86,37 +110,51 @@ finishes. It writes, per preset:
   embedded so the installed wheel validates it too). A preset with no floor passed gets its
   report and no record.
 
-Then it regenerates [INDEX.md](INDEX.md), whose **Presets** table shows each preset's
-certification, its floors per NFR-QUAL id and its report.
+Then it regenerates [INDEX.md](INDEX.md).
 
-**Expected duration**: the cases of every suite the preset enables × the seeds × the calls per
-case × the measured per-call latency, summed over the presets. On the reference tier a
-structured turn takes 114–126 s at p50 (docs/model-matrix.md), so the full sets run for several
-hours; most turns run past the presets' `deadline_ms` (Standard 45 s, Full 60 s, Max 120 s) and
-are degraded, which the report shows (#454, M9). The presets are certified as shipped: the run
-never overrides a deadline.
+**Stop and carry on** (#730). Every case's outcome goes to the results journal,
+`.evals-results/<model>/<preset>-<fingerprint[:12]>.jsonl` (ignored by git: it keeps the
+model's output), as the case ends. Running **the same command again** plays only the cases the
+journal lacks, on any later day and with any engine commit; the report then lists the commits
+its results came from (`**Resumed:**`). Press Ctrl-C once to stop: the cases in flight finish
+and are journalled, and the command exits 130 without a report. A second Ctrl-C stops at once
+(every finished case is still kept). A case a transient model error ended (a timeout, a rate
+limit, a provider 5xx) plays again on the next run; `--retry-errors all` replays every model
+error, `none` none. `--fresh` sets the journal aside (renamed, never deleted) and plays every
+case again. Journals are kept per model and configuration fingerprint, so the results of every
+model run are there for later comparison. `--journal-dir` moves them.
 
-**What to commit**, exactly: the three reports (`docs/evals/standard-*.md`, `full-*.md`,
-`max-*.md`), `docs/evals/INDEX.md`, `docs/evals/judge-calibration.json` and the three records
-(`src/epistrel/core/seeds/certifications/{standard,full,max}-*.json`). Then file one bug per
-floor the Presets table shows failed (`area:evals`, `sev:medium`, linking the report): a miss of
-a floor assigned to M9 (NFR-QUAL-2..4, 7, 14) goes to M9; any other follows ADR-164.
+**Expected duration.** About 3,400 case runs per preset at 3 seeds, each a few model calls (a
+structured turn is ~7). Measured: the local reference model on an M3 Max at `--concurrency 1`
+ran ~620 calls an hour, about 2.5–3 days for Standard and 8–10 days for all three; batching
+(`--concurrency 4`) cuts that by an estimated 2–3×. A hosted Haiku-class model answers in 1–3 s
+a call and serves many at once: hours, not days. The progress lines give the real ETA. Most
+local turns run past the presets' `deadline_ms` (Standard 45 s, Full 60 s, Max 120 s) and are
+degraded, which the report shows (#454, M9). The presets are certified as shipped: the run never
+overrides a deadline.
+
+**What to commit**, exactly: the reports (`docs/evals/standard-*.md`, `full-*.md`, `max-*.md`),
+`docs/evals/INDEX.md`, `docs/evals/judge-calibration.json` and the records
+(`src/epistrel/core/seeds/certifications/{standard,full,max}-*.json`). Never the journal. Then
+file one bug per floor the Presets table shows failed (`area:evals`, `sev:medium`, linking the
+report): a miss of a floor assigned to M9 (NFR-QUAL-2..4, 7, 14) goes to M9; any other follows
+ADR-164.
 
 Options: `--host`, `--hardware` and `--server-version` describe the run as `run` does;
-`--resume` skips a preset that already has today's record for the same fingerprint (after an
-interrupted run); `--force` certifies a preset again over its record (a new certification id;
-without it the command exits 2 before running anything); `--out <dir>` writes `reports/` (with a
-scratch `INDEX.md`) and `records/` there instead of the committed locations. `host.tier` is
+`--resume` skips a preset that already has a record for its fingerprint, whatever its date;
+`--force` certifies a preset again over its record (a new certification id; without it the
+command exits 2 before running anything); `--out <dir>` writes `reports/` (with a scratch
+`INDEX.md`), `records/` and the journal there instead of the committed locations. `host.tier` is
 `reference` only with `--reference`, a real model and the full sets: `--sample` forces `other`.
 Lite is not certified in M7 (its one floor gates from M9); `--presets lite` certifies it the
 same way. A preset edited after its certification, or a prompt template changed, turns its
-Presets row `uncertified (preset changed since certification <id>)`, and CI's
+Presets rows `uncertified (preset changed since certification <id>)`, and CI's
 `evals index --check` stays red until the index is regenerated: the claim never outlives the
 configuration it was measured on.
 
 Exit codes: 0 once every report is written, whatever the floors say; 1 on an endpoint or
 harness error (the presets finished so far keep their outputs, and the index is regenerated);
-2 on a usage error.
+2 on a usage error; 130 when stopped.
 
 ## Reading a report
 

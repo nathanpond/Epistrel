@@ -45,12 +45,15 @@ class MockOpenAI:
     or a guardrail verdict when ``response_format`` asks for JSON or the system message carries
     a JSON Schema. With ``legacy_max_tokens`` it answers ``max_completion_tokens`` with a 400,
     as older servers do; with ``reject_response_format`` it answers ``response_format`` with a
-    400 naming it; ``raw_body`` is served as an HTML page with status 200."""
+    400 naming it; with ``reject_sampling`` it answers ``temperature``/``top_p`` with a 400
+    naming the parameter, as Claude 4.7 and later do (#235); ``raw_body`` is served as an HTML
+    page with status 200."""
 
     port: int = 0
     requests: list[Recorded] = field(default_factory=list)
     legacy_max_tokens: bool = False
     reject_response_format: bool = False
+    reject_sampling: bool = False
     fail_with: int | None = None
     raw_body: bytes | None = None
     script: list[str] = field(default_factory=list)
@@ -95,6 +98,9 @@ class MockOpenAI:
             return self.fail_with, {"error": {"message": "mock failure"}}
         if self.legacy_max_tokens and "max_completion_tokens" in body:
             return 400, {"error": {"message": "Unrecognized request argument: max_completion"}}
+        if self.reject_sampling and ("temperature" in body or "top_p" in body):
+            message = "`temperature` is deprecated for this model; use the default sampling"
+            return 400, {"error": {"type": "invalid_request_error", "message": message}}
         if self.reject_response_format and "response_format" in body:
             return 400, {"error": {"message": "response_format json_schema is not supported"}}
         system = " ".join(m["content"] for m in body["messages"] if m["role"] == "system")

@@ -62,7 +62,9 @@ index regenerated. 2 on a usage error: an unknown or repeated preset, a real mod
 ``--base-url``, ``--model`` or ``--embedding-model``, no repository found without ``--out``, or
 a record that would be overwritten without ``--force`` (``--resume`` skips a preset that already
 has a record for the same fingerprint instead, whatever its date: #730). 130 when stopped. A
-model-output error on a case is that case's failure (#179's rule), never a harness error.
+model-output error on a case is that case's failure (#179's rule), never a harness error; so is
+the model's guardrail refusing a case's content, and a refused suite setup fails that suite
+(#738).
 """
 
 from __future__ import annotations

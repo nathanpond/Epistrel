@@ -17,7 +17,11 @@ from pydantic import ValidationError
 
 from epistrel.orchestrator.models.adapter import Message, ModelParams, ModelUnavailable
 from epistrel.orchestrator.models.config import ConfigRow, EffectiveConfig, KeyBox, resolve
-from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter, request_body
+from epistrel.orchestrator.models.openai_compatible import (
+    OpenAICompatibleAdapter,
+    provider_headers,
+    request_body,
+)
 from epistrel.orchestrator.models.registry import GuardrailVerdict
 from epistrel.orchestrator.models.stub import GARBAGE, StubAdapter
 from tests.model_support import config_key, mock_openai
@@ -295,6 +299,19 @@ async def test_openai_adapter_drops_sampling_a_model_refuses() -> None:
         (True, "local-model"),  # another model: its own first try
         (False, "local-model"),
     ]
+
+
+def test_anthropic_endpoint_gets_its_version_header() -> None:
+    """#235: Anthropic's ``GET /v1/models`` is its native API and answers a request without
+    ``anthropic-version`` with a 400, so a client for ``api.anthropic.com`` sends it.
+    Complement: no other endpoint gets the header, a lookalike host included."""
+    assert provider_headers("https://api.anthropic.com/v1") == {"anthropic-version": "2023-06-01"}
+    for other in (
+        "http://localhost:1235/v1",
+        "https://api.openai.com/v1",
+        "https://api.anthropic.com.example.net/v1",
+    ):
+        assert provider_headers(other) == {}
 
 
 async def test_openai_adapter_keeps_a_400_that_is_not_about_sampling() -> None:

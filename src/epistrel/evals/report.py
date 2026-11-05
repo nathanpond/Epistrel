@@ -195,6 +195,9 @@ class SuiteResult(BaseModel):
     """That configuration's fingerprint (#179); ``None``: the run's."""
     needs: list[str] = Field(default_factory=list)
     """For a ``not_applicable`` suite (#227): what the run's preset lacks."""
+    refusal: str | None = None
+    """For a suite whose setup the model's guardrail refused (#738): the refusal. The suite
+    fails with no cases; it is not a harness error, so the run goes on."""
 
     @classmethod
     def errored(cls, suite: Suite, errors: list[str], seeds: list[int]) -> SuiteResult:
@@ -208,6 +211,20 @@ class SuiteResult(BaseModel):
             errors=errors,
             verdict=Verdict.error,
             notes=list(suite.reading_notes),
+        )
+
+    @classmethod
+    def refused(cls, suite: Suite, refusal: str, seeds: list[int]) -> SuiteResult:
+        return cls(
+            name=suite.name,
+            title=suite.title,
+            ci_gate=suite.ci_gate,
+            guarantees=list(suite.guarantees),
+            cases=0,
+            seeds=seeds,
+            verdict=Verdict.failed,
+            notes=list(suite.reading_notes),
+            refusal=refusal,
         )
 
 
@@ -582,6 +599,8 @@ def render_markdown(report: Report) -> str:
             lines += ["", calibration_text(suite.calibration)]
         if suite.errors:
             lines += ["", "Harness errors:", ""] + [f"- {error}" for error in suite.errors]
+        if suite.refusal is not None:
+            lines += ["", f"Refused by the model's guardrail, so no case played: {suite.refusal}"]
         if suite.metrics:
             lines += [
                 "",

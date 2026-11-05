@@ -124,11 +124,13 @@ error, `none` none. `--fresh` sets the journal aside (renamed, never deleted) an
 case again. Journals are kept per model and configuration fingerprint, so the results of every
 model run are there for later comparison. `--journal-dir` moves them.
 
-**Expected duration.** About 3,400 case runs per preset at 3 seeds, each a few model calls (a
+**Expected duration.** Standard plans 8,718 case runs at 3 seeds; Full and Max run more
+suites, so more (each preset prints its count as it starts). A case is a few model calls (a
 structured turn is ~7). Measured: the local reference model on an M3 Max at `--concurrency 1`
-ran ~620 calls an hour, about 2.5–3 days for Standard and 8–10 days for all three; batching
-(`--concurrency 4`) cuts that by an estimated 2–3×. A hosted Haiku-class model answers in 1–3 s
-a call and serves many at once: hours, not days. The progress lines give the real ETA. Most
+ran ~620 calls an hour, well over a week for all three presets; batching (`--concurrency 4`)
+cuts that by an estimated 2–3×. Hosted `claude-haiku-5-5` at `--concurrency 8` ran ~120 cases a
+minute, Standard in about 75 minutes, at about $0.0007–0.0008 a case (2026-11-04, #235). The
+progress lines give the real ETA. Most
 local turns run past the presets' `deadline_ms` (Standard 45 s, Full 60 s, Max 120 s) and are
 degraded, which the report shows (#454, M9). The presets are certified as shipped: the run never
 overrides a deadline.

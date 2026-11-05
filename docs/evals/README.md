@@ -128,8 +128,9 @@ model run are there for later comparison. `--journal-dir` moves them.
 suites, so more (each preset prints its count as it starts). A case is a few model calls (a
 structured turn is ~7). Measured: the local reference model on an M3 Max at `--concurrency 1`
 ran ~620 calls an hour, well over a week for all three presets; batching (`--concurrency 4`)
-cuts that by an estimated 2–3×. Hosted `claude-haiku-5-5` at `--concurrency 8` ran ~120 cases a
-minute, Standard in about 75 minutes, at about $0.0007–0.0008 a case (2026-11-04, #235). The
+cuts that by an estimated 2–3×. Hosted `claude-haiku-5-5` at `--concurrency 8` ran Standard in about
+2 hours (~72 cases a minute; the judged quality suites are the slowest) for about $10, about
+$0.0011 a case (2026-11-04, #235). The
 progress lines give the real ETA. Most
 local turns run past the presets' `deadline_ms` (Standard 45 s, Full 60 s, Max 120 s) and are
 degraded, which the report shows (#454, M9). The presets are certified as shipped: the run never

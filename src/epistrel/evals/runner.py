@@ -71,8 +71,12 @@ rule's 300 cases are completed ones: a seed short of them because of model error
 decision of 2026-10-24: model-robustness floors belong to M9, ADR-164). Every other suite (M4's)
 observes the error as bad on every metric (#134). Either way the failure record's ``detail``
 carries the error's code and its content-free details (``ERROR_DETAILS``: the purpose, the
-reason, the attempts and the structural error codes). Any other exception, or a malformed
-labeled set, is a **harness error**: the suite's verdict is ``error``. Each failed case's inputs
+reason, the attempts and the structural error codes). A ``GuardrailViolation`` is the model's
+verdict too (a model-assisted policy check refused the content, FR-GUARD-10,11; #738): during a
+case it fails the case like a ``ModelError`` (``model_error`` ``guardrail_violation``), and
+during a suite's setup it fails the suite with no cases (``SuiteResult.refused``), the run going
+on. Any other exception, or a malformed labeled set, is a **harness error**: the suite's verdict
+is ``error``. Each failed case's inputs
 and output go to ``failures`` (JSON lines, never committed) when a path is given.
 """
 
@@ -109,6 +113,7 @@ import epistrel.evals.judging as judges
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.db import make_engine
+from epistrel.core.errors import GuardrailViolation
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.core.profiles.story import ProfileOverridesPatch
 from epistrel.core.seeds import profiles as seeded_profiles
@@ -781,7 +786,7 @@ async def _play(suite: Suite, job: SuiteRun, case: CaseModel, seed: int) -> _Pla
     try:
         with eval_scope(case.id, seed):
             outcome = await suite.evaluate(ctx, case)
-    except ModelError as exc:
+    except (ModelError, GuardrailViolation) as exc:
         outcome = model_error_outcome(suite, exc)
     except Exception as exc:
         error = f"case {case.id} seed {seed}: {type(exc).__name__}: {exc}"
@@ -802,10 +807,11 @@ ERROR_DETAILS = ("purpose", "reason", "provider_status", "attempts", "structural
 and counts, never the model's answer or the prompt (invariant 3)."""
 
 
-def model_error_outcome(suite: Suite, exc: ModelError) -> Outcome:
-    """A case that ended in ``exc`` (module docstring): with the suite's model-error row, that
-    row observes it as bad and nothing else is observed; without one, every metric is bad
-    (#134). ``detail`` names the error: its code, class and ``ERROR_DETAILS``."""
+def model_error_outcome(suite: Suite, exc: ModelError | GuardrailViolation) -> Outcome:
+    """A case that ended in ``exc``, a model error or a guardrail refusal (module docstring):
+    with the suite's model-error row, that row observes it as bad and nothing else is observed;
+    without one, every metric is bad (#134). ``detail`` names the error: its code, class and
+    ``ERROR_DETAILS``."""
     errored = suite.model_error_metric
     observations: dict[str, bool | None]
     if errored is None:
@@ -967,6 +973,11 @@ async def run_suite(suite: Suite, job: SuiteRun) -> SuiteResult:
     job.progress.suite_started(suite.name, len(cases), len(job.seeds))
     try:
         await suite.setup(job.engine, _ctx())
+    except GuardrailViolation as exc:
+        # The model's guardrail refused the fixture (#738): a verdict, not a harness error.
+        with contextlib.suppress(Exception):
+            await suite.teardown(job.engine, _ctx())
+        return SuiteResult.refused(suite, f"setup: {type(exc).__name__}: {exc}", list(job.seeds))
     except Exception as exc:
         return SuiteResult.errored(suite, [f"setup: {type(exc).__name__}: {exc}"], list(job.seeds))
     try:

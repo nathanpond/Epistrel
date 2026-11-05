@@ -1,4 +1,35 @@
 {
+  "claude-haiku-5-5": {
+    "agreed": 208,
+    "agreement": 0.9454545454545454,
+    "by_label": {
+      "a": {
+        "agreed": 87,
+        "pairs": 96
+      },
+      "b": {
+        "agreed": 81,
+        "pairs": 84
+      },
+      "tie": {
+        "agreed": 40,
+        "pairs": 40
+      }
+    },
+    "ci95": [
+      0.9070939994536631,
+      0.9685257406633978
+    ],
+    "date": "2026-11-05",
+    "engine_sha": "5a47486",
+    "excluded": 0,
+    "floor": 0.75,
+    "judge_model": "claude-haiku-5-5",
+    "min_pairs": 200,
+    "model_version": "claude-haiku-5-5",
+    "pairs": 220,
+    "status": "calibrated"
+  },
   "cydonia-24b-v4.3": {
     "agreed": 194,
     "agreement": 0.8818181818181818,

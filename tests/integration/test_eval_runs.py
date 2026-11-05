@@ -60,9 +60,7 @@ async def test_eval_runs(pg_url: str, engine: AsyncEngine) -> None:
             first = (
                 await client.get("/admin/evals/runs", params={"limit": 2}, headers=READ)
             ).json()
-            ids = [run["run_id"] for run in first["items"]]
-            assert run_id in ids
-            served: list[str] = list(ids)
+            served: list[str] = [run["run_id"] for run in first["items"]]
             cursor = first["next_cursor"]
             while cursor:
                 page = (
@@ -72,6 +70,7 @@ async def test_eval_runs(pg_url: str, engine: AsyncEngine) -> None:
                 ).json()
                 served += [run["run_id"] for run in page["items"]]
                 cursor = page["next_cursor"]
+            assert run_id in served  # not by page: committed reports may be newer (#235)
             assert NEWEST in served
             assert EARLIER in served
             assert served.index(NEWEST) < served.index(EARLIER)

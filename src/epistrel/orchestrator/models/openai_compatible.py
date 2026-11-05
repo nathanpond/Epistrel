@@ -13,7 +13,9 @@ each old one is closed as soon as its in-flight calls finish (FR-MODEL-4).
 is retried once with the legacy ``max_tokens`` and remembered (a 400 about ``response_format``
 is the structured caller's, #53). A model that answers a 400 naming ``temperature`` or
 ``top_p`` is retried once without both and remembered per endpoint and model (#235: Claude 4.7
-and later accept only their default sampling; the model's default then applies). SDK
+and later accept only their default sampling; the model's default then applies). A client for
+``api.anthropic.com`` also sends ``anthropic-version``: that endpoint's ``GET /models`` is the
+native Anthropic API, which answers a request without it with a 400 (#235). SDK
 exceptions escape as themselves; the Model Access Layer maps them
 (``errors.map_provider_error``), and a 200 that is not a chat completion raises
 ``ProviderGarbage``.
@@ -27,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import urllib.parse
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -88,6 +91,19 @@ def request_body(
             },
         }
     return body
+
+
+ANTHROPIC_VERSION = "2023-06-01"
+"""The ``anthropic-version`` header Anthropic's ``GET /v1/models`` requires."""
+
+
+def provider_headers(base_url: str) -> dict[str, str]:
+    """Extra headers a provider needs beyond the OpenAI protocol: ``anthropic-version`` for
+    ``api.anthropic.com`` (#235); none for any other endpoint."""
+    host = urllib.parse.urlsplit(base_url).hostname or ""
+    if host == "api.anthropic.com":
+        return {"anthropic-version": ANTHROPIC_VERSION}
+    return {}
 
 
 def rejects_sampling(exc: openai.BadRequestError) -> bool:
@@ -160,7 +176,12 @@ class OpenAICompatibleAdapter:
         key = (base_url, key_fingerprint(api_key))
         client = self._clients.get(key)
         if client is None:
-            sdk = openai.AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
+            sdk = openai.AsyncOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                max_retries=0,
+                default_headers=provider_headers(base_url),
+            )
             client = self._clients[key] = _Client(sdk)
         client.in_flight += 1
         return client
@@ -312,4 +333,10 @@ class OpenAICompatibleAdapter:
             await client.sdk.close()
 
 
-__all__ = ["OpenAICompatibleAdapter", "rejects_sampling", "reported_cost", "request_body"]
+__all__ = [
+    "OpenAICompatibleAdapter",
+    "provider_headers",
+    "rejects_sampling",
+    "reported_cost",
+    "request_body",
+]

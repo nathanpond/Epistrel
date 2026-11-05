@@ -1,6 +1,6 @@
 """S-TESTIMONY: hearing is not believing (docs/04 §7; FR-BELIEF-1,2,3,9; #162).
 
-Jenni (the rendered character) asserts "Olivia sent the text" to the parlor, played end to end
+Jenni (the rendered character) asserts "Olivia sent the parcel" to the parlor, played end to end
 through ``respond`` with the stub adapter under per-character partitions, perception ``full``
 and ``character_knowledge.testimony = model``:
 
@@ -59,9 +59,9 @@ def _assertion() -> str:
     return render(
         beat(
             "say",
-            ts.CLAIM_LINE,
+            ts.claim_line(ts.PARCEL),
             intent="sincere",
-            propositions=[claim("Olivia", "sent", "the text")],
+            propositions=[claim("Olivia", "sent", ts.PARCEL)],
         )
     )
 
@@ -69,7 +69,7 @@ def _assertion() -> str:
 async def _setup(
     client: Any, engine: AsyncEngine, **testify: Any
 ) -> tuple[str, dict[str, str], dict[str, str]]:
-    story, ids, things = await ts.room(client, engine, *NAMES, away=("Sarah",))
+    story, ids, things = await ts.room(client, engine, *NAMES, away=("Sarah",), item=ts.PARCEL)
     await ts.enable_testimony(engine, story, **testify)
     await ps._author(
         engine,
@@ -98,7 +98,7 @@ async def _play(
     if when is not None:
         stub.when(when[0], when[1], purpose="belief_adjudication")
     stub.script("generation", [_assertion()])
-    stub.script("salience_detection", [ts.salient_say(2)])
+    stub.script("salience_detection", [ts.salient_say(2, ts.claim_line(ts.PARCEL), ts.PARCEL)])
     response = await respond(client, story, body(ids["Wren"], "What happened?"))
     assert response.status_code == 200, response.text
 
@@ -151,7 +151,7 @@ async def test_s_testimony(
         (held,) = about_sending(ts.first_order(bobby))
         assert (held.subject_id, held.object_id, held.polarity) == (
             things["Olivia"],
-            things["the text"],
+            things["item"],
             "affirmed",
         )
         assert (held.cause, held.source_character_id, held.outcome) == (
@@ -213,7 +213,7 @@ async def test_s_testimony__rules_and_inert(
         report = (await turn_report(engine, story))["epistemic"]["testimony"]
         assert (report["adjudicated"], report["deferred"]) == (0, 2)
 
-        story, ids, _ = await ts.room(client, engine, *NAMES)
+        story, ids, _ = await ts.room(client, engine, *NAMES, item=ts.PARCEL)
         await ts.enable_testimony(engine, story, partitions=False)
         await _play(client, epistrel, story, ids)
         assert not [c for c in epistrel.models.stub.calls if c.purpose == "belief_adjudication"]
@@ -328,7 +328,7 @@ async def test_s_testimony__adjudication_sees_the_witness_only(
         # Marcus holds his own observation only: never Jenni's record or the canon only she reads.
         marcus = held("Marcus")
         assert marcus
-        assert all(lines == ["- [belief, known] Olivia not sent the text"] for lines in marcus)
+        assert all(lines == ["- [belief, known] Olivia not sent the parcel"] for lines in marcus)
         for call in calls:
             prompt = "\n".join(m.content for m in call.messages)
             assert "[canon" not in prompt

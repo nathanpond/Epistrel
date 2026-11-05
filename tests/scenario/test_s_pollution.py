@@ -5,7 +5,7 @@ Played end to end through ``respond`` with the stub adapter under per-character 
 perception ``full``, ``testimony = defaulted``, rule-based salience and lazy resolution, one turn
 per message scaled down from the spec (msg 10 → turn 1, msg 40 → turn 2, msg 50 → turn 3):
 
-- turn 1: Jenni says "Olivia sent the text" to the parlor. Bobby (``friend_of`` Jenni) is neither
+- turn 1: Jenni says "Olivia sent the parcel" to the parlor. Bobby (``friend_of`` Jenni) is neither
   salient nor addressed: he gets an exposure, and no belief;
 - turn 2: Jenni's ``latent`` beat establishes the truth in canon (Olivia did not send it), which
   only its renderer perceives, so Bobby does not;
@@ -62,9 +62,9 @@ def stub_settings(pg_url: str) -> Settings:
 def _says(**qualifiers: Any) -> dict[str, Any]:
     return beat(
         "say",
-        ts.CLAIM_LINE,
+        ts.claim_line(ts.PARCEL),
         intent="sincere",
-        propositions=[claim("Olivia", "sent", "the text")],
+        propositions=[claim("Olivia", "sent", ts.PARCEL)],
         **qualifiers,
     )
 
@@ -84,15 +84,15 @@ def _tells(whom: str) -> dict[str, Any]:
 
 def _truth() -> dict[str, Any]:
     """The truth into canon, perceived by its renderer alone (a ``latent``)."""
-    return beat("latent", TRUTH, propositions=[claim("Olivia", "sent", "the text", negated=True)])
+    return beat("latent", TRUTH, propositions=[claim("Olivia", "sent", ts.PARCEL, negated=True)])
 
 
 def _shown() -> dict[str, Any]:
     """The truth shown to the room (a ``do``: everyone co-located observes it)."""
     return beat(
         "do",
-        "She shows them the phone: the ex sent it.",
-        propositions=[claim("Olivia", "sent", "the text", negated=True)],
+        "She shows them the shipping label: the ex sent it.",
+        propositions=[claim("Olivia", "sent", ts.PARCEL, negated=True)],
     )
 
 
@@ -116,7 +116,7 @@ def _friends(ids: dict[str, str]) -> Proposition:
 async def _setup(
     client: Any, engine: AsyncEngine, *, friends: bool = True
 ) -> tuple[str, dict[str, str], dict[str, str]]:
-    story, ids, things = await ts.room(client, engine, *NAMES)
+    story, ids, things = await ts.room(client, engine, *NAMES, item=ts.PARCEL)
     async with engine.begin() as conn:
         things["the letter"] = await store.add_entity(conn, story, "item", "the letter")
     await ts.enable_testimony(engine, story, "defaulted", salience="rules")
@@ -141,7 +141,7 @@ def _spy(monkeypatch: pytest.MonkeyPatch) -> list[exposure.Resolution]:
 async def _sending(
     engine: AsyncEngine, story: str, holder: str, things: dict[str, str]
 ) -> list[Any]:
-    """``holder``'s first-order beliefs about Olivia's sending the text."""
+    """``holder``'s first-order beliefs about Olivia's sending the parcel."""
     return await rows(
         engine,
         "SELECT b.id, b.polarity, b.confidence_level, b.state, b.held_from_turn, "
@@ -154,7 +154,7 @@ async def _sending(
         s=story,
         h=holder,
         p=things["sent"],
-        o=things["the text"],
+        o=things["item"],
     )
 
 

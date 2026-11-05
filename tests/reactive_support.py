@@ -39,10 +39,11 @@ async def bar(
     names: tuple[str, ...] = CAST,
     away: tuple[str, ...] = (),
     model_calls: int | None = None,
+    item: str = ts.ITEM,
     **settings: Any,
 ) -> Bar:
-    """The bar (see the module docstring)."""
-    story, ids, things = await ts.room(client, engine, *names, away=away)
+    """The bar (see the module docstring); ``item`` is what Olivia sent (#611)."""
+    story, ids, things = await ts.room(client, engine, *names, away=away, item=item)
     await ts.enable_testimony(engine, story, "defaulted", level="full")
     await ms.per_character(engine, story, model_calls=model_calls, **settings)
     return Bar(story, ids, things)

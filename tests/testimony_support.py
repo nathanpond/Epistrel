@@ -23,7 +23,15 @@ from tests.event_support import rows
 from tests.structured_turn_support import structured_story
 
 TESTIMONY_LEVELS = frozenset({"model", "defaulted"})
+ITEM = "the text"
+PARCEL = "the parcel"
+"""#611: a sent message is no transfer, so a scenario that needs the detector's transfer
+reading beside the declared claim sends a physical item."""
 CLAIM_LINE = "Olivia sent the text."
+
+
+def claim_line(item: str = ITEM) -> str:
+    return f"Olivia sent {item}."
 
 
 async def enable_testimony(
@@ -77,11 +85,16 @@ async def forget(engine: AsyncEngine) -> None:
 
 
 async def room(
-    client: Any, engine: AsyncEngine, *names: str, away: tuple[str, ...] = ()
+    client: Any,
+    engine: AsyncEngine,
+    *names: str,
+    away: tuple[str, ...] = (),
+    item: str = ITEM,
 ) -> tuple[str, dict[str, str], dict[str, str]]:
     """A structured story (the first name the player, the second the rendered character) with
     everyone in the parlor except ``away`` (in the kitchen, not adjoining), plus the claim's
-    entities: Olivia, the ex and the text, and the story predicate ``sent``."""
+    entities: Olivia, the ex and the sent ``item`` (the text unless given; ``things["item"]``
+    names it too), and the story predicate ``sent``."""
     story, ids = await structured_story(client, *names)
     parlor = await ps.place_entity(engine, story, "parlor")
     kitchen = await ps.place_entity(engine, story, "kitchen")
@@ -90,18 +103,19 @@ async def room(
     async with engine.begin() as conn:
         things = {
             "Olivia": await store.add_entity(conn, story, "person", "Olivia"),
-            "the text": await store.add_entity(conn, story, "item", "the text"),
+            item: await store.add_entity(conn, story, "item", item),
         }
+    things["item"] = things[item]
     things["sent"] = await auto_predicate(engine, story, "sent")
     return story, ids, things
 
 
 def sent(things: dict[str, str], polarity: Polarity = Polarity.AFFIRMED) -> Proposition:
-    """Olivia sent the text (or did not)."""
+    """Olivia sent the room's item (or did not)."""
     return Proposition(
         subject_id=things["Olivia"],
         predicate_id=things["sent"],
-        object_id=things["the text"],
+        object_id=things["item"],
         polarity=polarity,
         valid_time=Interval.of(None, None),
     )
@@ -130,7 +144,7 @@ async def make_minor(engine: AsyncEngine, character_id: str, age: int = 12) -> N
         )
 
 
-def salient_say(beat: int, words: str = CLAIM_LINE) -> str:
+def salient_say(beat: int, words: str = CLAIM_LINE, item: str = ITEM) -> str:
     """A scripted ``salience_detection`` answer marking the say at ``beat`` salient (a plain
     claim: nothing is owed)."""
     return json.dumps(
@@ -142,7 +156,7 @@ def salient_say(beat: int, words: str = CLAIM_LINE) -> str:
                     "proposition_sketch": {
                         "subject": "Olivia",
                         "relation": "sent",
-                        "object": "the text",
+                        "object": item,
                     },
                 }
             ],

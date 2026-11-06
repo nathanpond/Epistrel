@@ -179,12 +179,13 @@ async def test_new_epistemic_records_delete_no_references(
     assert not tables & {"beliefs", "belief_transitions", "exposures"}, tables
 
 
-FIRST_TURN_COMMIT_MAX = 2_250
+FIRST_TURN_COMMIT_MAX = 600
 """#620: the ceiling on the commit statements of a story's first two-primary turn over P-04's
-per-character knowledge (200 beliefs and 50 unresolved exposures a character, 12 characters):
-measured after #620's per-transaction reads, 2,193 measured, with room for noise; 4,017 before."""
+per-character knowledge (200 beliefs and 50 unresolved exposures a character, 12 characters).
+It is #620's acceptance figure. 473 measured with the per-transaction reads and the lazy
+resolutions' statement budget; 2,193 with the reads alone; 4,017 before either."""
 SECOND_TURN_COMMIT_MAX = 360
-"""#620: the same story's second turn (340 measured; 569 before)."""
+"""#620: the same story's second turn (307 measured; 569 before)."""
 
 
 def _in_commit() -> bool:

@@ -49,21 +49,23 @@ written and resolved at once, in the writing turn, by the default.
 
 A needing turn resolves only the witness's unresolved exposures whose proposition shares the
 claim's functional key (subject and predicate), oldest first, each later frame seeing the earlier
-resolutions of the same pass, at most ``MAX_LAZY_RESOLUTIONS_PER_TURN`` a turn (the rest stay
-unresolved: ``lazy_resolution_capped``). ``turn_report.epistemic`` counts ``exposures_written``
-and ``resolutions = {defaulted, adjudicated}``. Log lines carry identifiers and counts only
-(invariant 3).
+resolutions of the same pass, at most ``MAX_LAZY_RESOLUTIONS_PER_TURN`` a turn, and none started
+once the turn's commit has spent ``MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN`` statements on them
+(#620; the rest stay unresolved: ``lazy_resolution_capped``). ``turn_report.epistemic`` counts
+``exposures_written`` and ``resolutions = {defaulted, adjudicated}``. Log lines carry identifiers
+and counts only (invariant 3).
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import weakref
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import exists, or_, select, update
+from sqlalchemy import event, exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import (
@@ -107,8 +109,20 @@ MAX_LAZY_RESOLUTIONS_PER_TURN = 20
 """The default of the profile dial ``character_knowledge.max_lazy_resolutions_per_turn`` (#181):
 the most exposures one narrative turn resolves; the rest wait for a later need."""
 
+MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN = 250
+"""#620 (the owner's decision of 2026-11-05, "(b) now, (a) later"): the SQL statements one
+transaction's lazy resolutions may spend before no further resolution starts. The check runs
+before each resolution, so the last one can overrun the budget by its own cost, about 100
+statements on P-04's knowledge. Statements are counted, not timed, so a regenerated turn
+resolves the same exposures however loaded the host is. #754's batched writes are to make
+each resolution cheaper, so more fit."""
+
 DEFAULTED = "defaulted"
 ADJUDICATED = "adjudicated"
+
+_SPENT: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+"""The statements each open transaction's lazy resolutions have spent (#620), keyed by the root
+transaction, so every pass in one commit shares the budget and a retried attempt starts afresh."""
 
 
 def max_lazy_resolutions(settings: Any) -> int:
@@ -868,10 +882,12 @@ def _key(proposition: Proposition, registry: Registry) -> tuple[str, str]:
 
 @dataclass(slots=True)
 class Pass:
-    """One narrative turn's lazy resolutions: how many it made (by how), and whether the cap
-    left any (``capped``)."""
+    """One narrative turn's lazy resolutions: how many it made (by how), and whether the cap on
+    their number or on the statements their transaction spends (``statements``, #620) left any
+    (``capped``)."""
 
     cap: int = MAX_LAZY_RESOLUTIONS_PER_TURN
+    statements: int = MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN
     made: list[Resolution] = field(default_factory=list)
     capped: bool = False
 
@@ -909,16 +925,19 @@ async def resolve_needed(
     ]
     made: list[Resolution] = []
     for exposure in waiting:
-        if len(budget.made) >= budget.cap:
+        if len(budget.made) >= budget.cap or resolution_statements(conn) >= budget.statements:
             budget.capped = True
             break
-        resolution = await resolve_exposure(
+        resolution = await _counted(
             conn,
-            exposure,
-            op,
-            settings=settings,
-            registry=found,
-            adjudicated=(decisions or {}).get(exposure.id),
+            resolve_exposure(
+                conn,
+                exposure,
+                op,
+                settings=settings,
+                registry=found,
+                adjudicated=(decisions or {}).get(exposure.id),
+            ),
         )
         made.append(resolution)
         budget.made.append(resolution)
@@ -948,6 +967,36 @@ async def resolve_written(
     return made
 
 
+def resolution_statements(conn: AsyncConnection) -> int:
+    """The statements ``conn``'s open transaction has spent on lazy resolutions (#620)."""
+    tx = _root(conn)
+    return 0 if tx is None else _SPENT.get(tx, 0)
+
+
+async def _counted(conn: AsyncConnection, resolving: Awaitable[Resolution]) -> Resolution:
+    """``resolving``'s resolution, its statements added to the transaction's spend (#620)."""
+    sync = conn.sync_connection
+    tx = _root(conn)
+    if sync is None or tx is None:
+        return await resolving
+    counted = [0]
+
+    def count(*_: Any) -> None:
+        counted[0] += 1
+
+    event.listen(sync, "before_cursor_execute", count)
+    try:
+        return await resolving
+    finally:
+        event.remove(sync, "before_cursor_execute", count)
+        _SPENT[tx] = _SPENT.get(tx, 0) + counted[0]
+
+
+def _root(conn: AsyncConnection) -> Any:
+    sync = conn.sync_connection
+    return None if sync is None else sync.get_transaction()
+
+
 def report(written: int, budget: Pass) -> dict[str, Any]:
     """``turn_report.epistemic``'s exposure counts."""
     return {"exposures_written": written, "resolutions": budget.report()}
@@ -960,6 +1009,7 @@ __all__ = [
     "EXPOSURE_RECORDED",
     "LAZY_RESOLUTION_CAPPED",
     "MAX_LAZY_RESOLUTIONS_PER_TURN",
+    "MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN",
     "Exposed",
     "Exposure",
     "Framed",
@@ -975,6 +1025,7 @@ __all__ = [
     "max_lazy_resolutions",
     "record_exposures",
     "report",
+    "resolution_statements",
     "resolve_exposure",
     "resolve_needed",
     "resolve_written",

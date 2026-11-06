@@ -83,6 +83,13 @@ uv run epistrel evals certify --presets standard,full,max \
     --hardware "Anthropic API" --server-version "Claude API (OpenAI compatibility)"
 ```
 
+A run against an endpoint off this network records the host kind `hosted` (#757), and `certify`
+refuses one without `--hardware` and `--server-version`. The four Claude Haiku 5.5 reports of
+2026-11-05 were run without them and said `local`. They were corrected offline on 2026-11-06
+with the strings above, and their records' `report_sha256` was recomputed. The same pass
+re-rendered the Full report's refused `q01` section, so its NFR-QUAL-6 floor reads failed with
+n=0 instead of being left out (#756). No case result changed.
+
 Claude 4.7 and later models refuse `temperature`; the adapter drops it for them and retries
 once, remembered per model (#235). Anthropic ignores `seed`, so a hosted run's seeds vary the
 case order, not the sampling. Raise `--concurrency` as far as the account's rate limits allow:

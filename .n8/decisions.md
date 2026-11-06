@@ -12267,3 +12267,26 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 
   Cost if wrong: a deployment that wants more catch-up per turn can't tune it. Promoting the constant to a dial later is additive.
   **Issue:** #620
+
+## /n8-exec M7 (retry 8: verify bugs #756, #757) — 2026-11-06
+
+- **Decision:** a suite refused at setup (#738) fails each of its floors. `SuiteResult.refused` carries every floored metric as a row with no observations: n=0 and verdict `fail`. It does not use `insufficient_evidence`. `floors_of`, `requirement_verdicts`, the summary, INDEX and the rendered table then all list the floor, with no special case in any reader. A refused E-12 records its NFR-QUAL-14 types as failed whatever the judge's calibration.
+  **Why:** #738 already makes the suite's verdict `fail`, and the issue allows either reading. With `fail`, the requirement's verdict agrees with the suite's. The model refused the work, so this is not a question of sample size. Cost if wrong: one verdict string per refused floor.
+  **Issue:** #756
+- **Decision:** a refused suite's section reads "Guarantee rows measured: —". Its guarantees stay on the result.
+  **Issue:** #756
+- **Decision:** `Host.kind` gains `hosted`. `runner.is_hosted` decides it from the endpoint: not `localhost`, not `*.local`, and not a loopback, private or link-local address. An explicit `--host` still wins. `certify` exits 2 for a hosted endpoint run without `--hardware` and `--server-version`. A plain `run` does not.
+  **Why:** the issue asks for a hosted kind and both strings in the record. A record is the claim the Engine serves, so `certify` enforces the strings. `run` writes exploratory reports only. Records keep `host` as a free JSON object, so the admin API shape does not change.
+  **Issue:** #757
+- **Decision:** the four committed Claude Haiku 5.5 reports of 2026-11-05 and their three records were corrected offline by a script. No live run was needed. Changes:
+  - host: `hosted; Anthropic API; Claude API (OpenAI compatibility)`, the strings `docs/evals/README.md` prescribes
+  - Full's `q01` section was re-rendered by the new renderer, and its summary gained `NFR-QUAL-6: fail`
+  - Full's record gained `NFR-QUAL-6.recall_at_10` in `floors_failed` (n=0)
+  - each record's `report_md` and `report_sha256` were recomputed
+  - INDEX was regenerated, and README notes the correction
+
+  Before writing, the script checked that each original summary and record round-trips byte for byte. No case result changed.
+  **Why:** #756 and #757 both ask for this, or for a note in INDEX. The endpoint the reports already state (`https://api.anthropic.com/v1`) makes the hosted strings a fact, not a guess.
+  **Issue:** #756, #757
+- **Decision:** `test_committed_certifications` now also asserts two things. Every requirement a record's report gated (anything but `report_only`) appears among that record's floors, with E-12's types standing for NFR-QUAL-14. Each record's host kind matches its report's, and a hosted record names its hardware and server version.
+  **Issue:** #756, #757

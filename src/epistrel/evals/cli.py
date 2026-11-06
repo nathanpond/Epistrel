@@ -225,8 +225,9 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--new-run", action="store_true", help="never merge into an earlier run")
     run.add_argument(
         "--host",
-        choices=("ci", "local"),
-        help="the host's kind (default: ci under CI, else local); never a machine name",
+        choices=("ci", "local", "hosted"),
+        help="the host's kind (default: hosted for an endpoint off this network, else ci "
+        "under CI, else local); never a machine name",
     )
     run.add_argument(
         "--fail-on-gate",

@@ -22,6 +22,7 @@ import httpx2 as httpx
 import pytest
 
 from epistrel.core.profiles.certification import (
+    QUALITY_14,
     SEEDS_DIR,
     check_report,
     committed_records,
@@ -37,7 +38,7 @@ from epistrel.evals import cli
 from epistrel.evals import presets as preset_constants
 from epistrel.evals.certify_cli import UsageError, parse_presets
 from epistrel.evals.index import REFERENCE_MODEL_ID
-from epistrel.evals.report import INDEX_NAME, index_text, write_index
+from epistrel.evals.report import INDEX_NAME, SUMMARY_RE, index_text, write_index
 from epistrel.tools.generated import REPO_ROOT
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
@@ -81,6 +82,11 @@ def test_certify_usage_errors(tmp_path: Path) -> None:
     ]
     assert cli.main([*base, "--presets", "full"]) == 2
     assert cli.main([*base, "--presets", "fulll", "--embedding-model", "e"]) == 2
+    # #757: a hosted endpoint needs the hardware and server version its record will name.
+    hosted = [*base, "--presets", "full", "--embedding-model", "e"]
+    hosted[2] = "https://api.anthropic.com/v1"
+    assert cli.main(hosted) == 2
+    assert cli.main([*hosted, "--hardware", "Anthropic API"]) == 2
     assert not any(tmp_path.iterdir())
 
 
@@ -249,6 +255,24 @@ def test_committed_certifications() -> None:
         if record.report_path is not None and (SEEDS_DIR / record.report_path).is_file():
             report = (SEEDS_DIR / record.report_path).read_text("utf-8")
         check_report(record, report)
+        # #756: every requirement the report measured is a floor of the record, never dropped.
+        assert report is not None, path.name
+        embedded = SUMMARY_RE.search(report)
+        assert embedded is not None, path.name
+        measured = json.loads(embedded.group("json"))
+        floors = {
+            f.metric_id.split(".", 1)[0]
+            for f in (*record.floors_passed, *record.floors_failed, *record.floors_insufficient)
+        }
+        if record.intervention_types_covered or record.intervention_types_insufficient:
+            floors.add(QUALITY_14)  # E-12's types: covered or insufficient, by type
+        gated = {r for r, v in measured["requirements"].items() if v != "report_only"}
+        assert gated <= floors, (path.name, gated - floors)
+        # #757: the record states the host the report states, and a hosted one says where.
+        assert record.host["kind"] == measured["host"], path.name
+        if record.host["kind"] == "hosted":
+            assert record.host["hardware"], path.name
+            assert record.host["server_version"], path.name
         if record.model_tier == "reference":
             assert record.models["generation"]["id"] == REFERENCE_MODEL_ID, path.name
         zero = [

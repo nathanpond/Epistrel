@@ -24,8 +24,10 @@ plays a run through it.
   with ``insufficient_evidence``; NFR-QUAL-14 is passed when at least one type is covered, and
   a type that fails is a floor failed (``{metric_id: NFR-QUAL-14, intervention_type}``). An
   uncalibrated judge makes every judge row ``report_only``: NFR-QUAL-14 is not passed, both
-  lists are empty and ``judge_calibrated`` is false. No floor passed: no record (the run is
-  recorded, and the configuration stays ``uncertified``).
+  lists are empty and ``judge_calibrated`` is false. A suite the model's guardrail refused at
+  setup (#738) carries each floored metric as failed with n=0 (``SuiteResult.refused``), so its
+  floors are failed, never left out (#756); a refused E-12's types fail whatever the judge. No
+  floor passed: no record (the run is recorded, and the configuration stays ``uncertified``).
 """
 
 from __future__ import annotations
@@ -122,7 +124,7 @@ def floors_of(
                     covered.append(kind)
                 elif metric.verdict is Verdict.insufficient_evidence and calibrated:
                     lacking.append(kind)
-                elif metric.verdict is Verdict.failed and calibrated:
+                elif metric.verdict is Verdict.failed and (calibrated or suite.refusal):
                     failed.append(_floor(metric, QUALITY_14, kind))
                 continue
             target = {

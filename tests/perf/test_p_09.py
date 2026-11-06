@@ -5,8 +5,9 @@ planned (one generation plus the reserved model-assisted guardrail calls G) and 
 that minimum before any model call; a stub that is slow, hangs or fails never makes a turn
 exceed its cap or outlive its deadline (plus the P-09 tolerance); and every response reports
 ``model_calls`` (one entry per attempt, with tokens), ``call_counts``, ``elapsed_ms``, the budget
-it spent and its degradation steps, the calls the budget counted equal the calls recorded, and
-the same report is stored on the turn's operation."""
+it spent and its degradation steps, the calls the budget counted equal the calls recorded less
+the refunded ``response_format`` probes, which are marked ``probe`` (ADR-180), and the same
+report is stored on the turn's operation."""
 
 from __future__ import annotations
 
@@ -79,9 +80,10 @@ async def _turn_reports(engine: AsyncEngine, story: str) -> list[dict[str, Any]]
 
 
 def _accounted(turn: dict[str, Any]) -> None:
-    """The report is whole: counted == recorded, within the cap, counts by purpose."""
+    """The report is whole: counted == recorded less refunded format probes (ADR-180), within
+    the cap, counts by purpose."""
     calls = turn["model_calls"]
-    assert turn["budget"]["used"] == len(calls)
+    assert turn["budget"]["used"] == sum(not c.get("probe") for c in calls)
     assert turn["budget"]["used"] <= turn["budget"]["max_calls"]
     counts: dict[str, int] = {}
     for call in calls:
@@ -265,6 +267,43 @@ async def test_p_09__degradation(stub_settings: Settings, engine: AsyncEngine) -
         stub.fault("generation", "empty")
         turn = (await respond(client, story, body(actor, "Hello."))).json()
         assert turn["call_counts"] == {"generation": 2}
+        _accounted(turn)
+
+
+@pytest.mark.part("M2", "NFR-PERF-6,7; FR-OBS-3")
+async def test_p_09__format_probe(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """A turn against an endpoint that rejects ``response_format`` (ADR-180, #764): with one
+    model-assisted output policy and a cap of exactly 2 (the generation and its check), the
+    check's ``json_schema`` probe is answered with a 400, refunded, and asked again in the prompt.
+    The turn records three calls, the probe marked ``probe``, and counts two.
+
+    Complement asserted: the next turn goes straight to the prompt-schema path, so it records
+    two calls and none is a probe."""
+    async with respond_client(stub_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        story, ids = await new_story(client, PLAYER, FIRST)
+        actor = ids[PLAYER]
+        await _policies(lib, story, story_item(ASSISTED, name="owls-out"))
+        await _settings(client, story, max_model_calls_per_turn=2)
+        stub.fault("guardrail_check", "response_format_400")
+
+        answer = await respond(client, story, body(actor, "Hello."))
+        assert answer.status_code == 200, answer.text
+        turn = answer.json()
+        assert turn["guardrail"]["fallback_used"] is False
+        calls = [(c["purpose"], c["outcome"], c.get("probe")) for c in turn["model_calls"]]
+        assert calls == [
+            ("generation", "ok", None),
+            ("guardrail_check", "http_error", True),
+            ("guardrail_check", "ok", None),
+        ]
+        assert turn["budget"]["used"] == 2 == turn["budget"]["max_calls"]
+        _accounted(turn)
+        assert (await _turn_reports(engine, story))[-1]["model_calls"] == turn["model_calls"]
+
+        turn = (await respond(client, story, body(actor, "Hello again."))).json()
+        assert [c.get("probe") for c in turn["model_calls"]] == [None, None]
+        assert turn["budget"]["used"] == 2
         _accounted(turn)
 
 

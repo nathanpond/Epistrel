@@ -100,6 +100,15 @@ class ModelCall(BaseModel):
         "`director_tiebreak`, `age_repair`, or the call's purpose for a call no stage "
         "names. Absent for a call made outside a turn's budget.",
     )
+    probe: bool = Field(
+        default=False,
+        exclude_if=lambda value: not value,
+        description="`true` on a `response_format` probe the endpoint rejected with a 400 "
+        "(ADR-180, #764): the call was sent and failed, but it decided nothing, so the turn "
+        "budget refunds it and the call is asked again in the prompt as its first attempt. "
+        "`turn_report.budget.used` equals the number of `model_calls` entries without it. "
+        "Absent on every other call.",
+    )
 
 
 class CallLog:

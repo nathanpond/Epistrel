@@ -83,6 +83,7 @@ from epistrel.orchestrator.models.errors import (
     EmptyCompletion,
     ModelError,
     ModelUnavailable,
+    ResponseFormatRejected,
     map_provider_error,
 )
 from epistrel.orchestrator.models.held import HELD_CALLS
@@ -351,6 +352,7 @@ class ModelAccessLayer:
         budget: TurnBudget | None = None,
         attempt: int = 1,
         usable: Callable[[ModelResult], bool] | None = None,
+        format_probe: bool = False,
     ) -> ModelResult:
         """One adapter call, exactly as given (``response_schema`` ``None`` sends no
         ``response_format``), bounded by the call's timeout and the budget's deadline and
@@ -358,7 +360,10 @@ class ModelAccessLayer:
 
         The attempt is recorded once (``metrics.record``: counters and the operation's
         ``model_calls``), as ``attempt`` of its caller's sequence; an answer ``usable`` rejects
-        is recorded as ``invalid_output`` and still returned for the caller to handle."""
+        is recorded as ``invalid_output`` and still returned for the caller to handle.
+        ``format_probe``: the caller refunds this call's budget slot if the endpoint rejects its
+        ``response_format`` (``structured_call``, #759), so that rejection is recorded with
+        ``probe`` set (ADR-180, #764)."""
         get_delivered(purpose)
         messages, params = _in_scope(messages, params or ModelParams())
         first = attempt == 1
@@ -404,7 +409,8 @@ class ModelAccessLayer:
             if mapped is None:
                 raise
             if _attempted(mapped):
-                self._record_failure(purpose, model, attempt, started, mapped, stage)
+                probe = format_probe and isinstance(mapped, ResponseFormatRejected)
+                self._record_failure(purpose, model, attempt, started, mapped, stage, probe=probe)
             elif budget is not None:
                 # Nothing was sent, so nothing is recorded or charged. (A rejected
                 # ``response_format`` probe was sent: it is recorded here, and
@@ -474,6 +480,8 @@ class ModelAccessLayer:
         started: float,
         error: BaseException,
         stage: str | None = None,
+        *,
+        probe: bool = False,
     ) -> None:
         record(
             ModelCall(
@@ -485,6 +493,7 @@ class ModelAccessLayer:
                 tokens_in=0,
                 tokens_out=0,
                 stage=stage,
+                probe=probe,
             )
         )
 

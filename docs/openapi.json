@@ -19811,6 +19811,12 @@
             "title": "Outcome",
             "type": "string"
           },
+          "probe": {
+            "default": false,
+            "description": "`true` on a `response_format` probe the endpoint rejected with a 400 (ADR-180, #764): the call was sent and failed, but it decided nothing, so the turn budget refunds it and the call is asked again in the prompt as its first attempt. `turn_report.budget.used` equals the number of `model_calls` entries without it. Absent on every other call.",
+            "title": "Probe",
+            "type": "boolean"
+          },
           "purpose": {
             "title": "Purpose",
             "type": "string"

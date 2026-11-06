@@ -46,8 +46,9 @@ def stub_settings(pg_url: str) -> Settings:
 
 
 def _accounted(turn: dict[str, Any]) -> None:
-    """P-09's M2 invariant: counted == recorded, within the cap."""
-    assert turn["budget"]["used"] == len(turn["model_calls"])
+    """P-09's M2 invariant: counted == recorded less refunded format probes (ADR-180), within
+    the cap."""
+    assert turn["budget"]["used"] == sum(not c.get("probe") for c in turn["model_calls"])
     if turn["budget"]["max_calls"] is not None:
         assert turn["budget"]["used"] <= turn["budget"]["max_calls"]
 

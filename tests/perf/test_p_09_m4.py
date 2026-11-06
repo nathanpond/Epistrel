@@ -63,9 +63,10 @@ async def _policies(lib: Engine, story: str, *items: Any) -> None:
 
 
 def _accounted(turn: dict[str, Any]) -> None:
-    """P-09's M2 invariant on a structured turn: counted == recorded, within the cap."""
+    """P-09's M2 invariant on a structured turn: counted == recorded less refunded format probes
+    (ADR-180), within the cap."""
     calls = turn["model_calls"]
-    assert turn["budget"]["used"] == len(calls)
+    assert turn["budget"]["used"] == sum(not c.get("probe") for c in calls)
     assert turn["budget"]["used"] <= turn["budget"]["max_calls"]
     counts: dict[str, int] = {}
     for call in calls:

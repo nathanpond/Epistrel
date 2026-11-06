@@ -33,10 +33,17 @@ class CensusTurn:
     reserved: int
     used: int
     max_calls: int | None
+    probes: int = 0
+    """Recorded ``response_format`` probes the budget refunded (``probe: true``, ADR-180)."""
 
     @property
     def calls(self) -> int:
         return sum(self.call_counts.values())
+
+    @property
+    def counted(self) -> int:
+        """The recorded calls the budget counts: every call but a refunded probe."""
+        return self.calls - self.probes
 
     @property
     def clean(self) -> bool:
@@ -69,8 +76,11 @@ class Census:
                 call_counts=dict(result.call_counts),
                 outcomes=tuple(call.outcome for call in result.model_calls),
                 reserved=sum(budget.reserved.values()) if budget is not None else 0,
-                used=budget.used if budget is not None else len(result.model_calls),
+                used=budget.used
+                if budget is not None
+                else sum(not call.probe for call in result.model_calls),
                 max_calls=budget.max_calls if budget is not None else None,
+                probes=sum(call.probe for call in result.model_calls),
             )
         )
 

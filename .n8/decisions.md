@@ -12331,3 +12331,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #764
 - **Decision:** the full suite gates in CI's shards, not locally. The memory note from retry 8 says a full local run takes ~75 min and trips #701's stored Hypothesis example. Locally I ran the six affected files (134 passed) and every static gate CI runs.
   **Issue:** #763, #765
+- **Decision:** PR #766's CI was still pending at 30 minutes. I didn't call it a blocker: the four pending jobs (`integration-i-z` and `evals-zero-leak` × 3) were `IN_PROGRESS`, and the same jobs took 28 to 45 minutes on PR #762. I extended the wait by 25 minutes. The skill's 30-minute budget is shorter than this repo's normal CI run.
+  **Issue:** #763, #765
+- **Decision (owner, 2026-11-06):** #764 is resolved with option (a): P-09 is amended to "counted equal recorded, less the rejected `response_format` probes", and a refunded probe is marked `probe: true` in `model_calls`. Recorded as ADR-180.
+  **Issue:** #764
+
+## /n8-exec M7 (retry 11: #764 option a) — 2026-11-06
+
+- **Decision:** the probe mark is set by the Model Access Layer only when the caller passes `send(..., format_probe=True)`, and only on a `ResponseFormatRejected`. `structured_call` passes `json_mode`, the exact condition under which it refunds.
+  **Why:** marking by error type alone would also mark a rejection no one refunds. The capability check (`capability.py`) sends schemas outside any budget and doesn't refund, so it doesn't pass the flag.
+  **Issue:** #764
+- **Decision:** `ModelCall.probe` is excluded from serialization when false (like `cost` and `stage`), so existing turn reports and stored `model_calls` are unchanged. This adds one optional field to the response schema; `docs/openapi.json` is regenerated. That is an API addition, done under the owner's choice of option (a), which named the field.
+  **Issue:** #764
+- **Decision:** docs/03 is not amended. NFR-PERF-6 says "Retries and repairs count against the budget", and a probe is neither. FR-OBS-3 does not mention the counted/recorded equality. Only docs/04 P-09's M2 clause changes. The P-09 assertions in the M4–M6 parts get the same "less probes" count, because they assert the same M2 invariant.
+  **Issue:** #764
+- **Decision:** the CI-wait entry from retry 10 (above) rides in this PR.
+  **Issue:** #763, #765
+- **Decision (Rule 1):** CI on PR #767 failed P-05 (`test (scenario-perf)`). P-05's session turn census applies the same counted==recorded gate to every Lite turn played, and the new P-09 probing turn records one call more than it counts. `CensusTurn` now carries `probes` (from `ModelCall.probe`), and the gate is `used == counted` (calls less probes). The census's no-budget fallback counts the same way. docs/04 P-05 doesn't state this invariant; it is P-09's (ADR-180), so the spec needs no change. Reproduced locally (P-09 + P-05: 1 failed with the old gate, 6 passed with the new one).
+  **Issue:** #764

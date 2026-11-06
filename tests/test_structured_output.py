@@ -238,14 +238,17 @@ async def test_the_refund_never_lets_the_call_pass_its_budget() -> None:
 
 
 async def test_the_refunded_probe_is_still_recorded_as_a_failed_call() -> None:
-    """#763: the probe costs no budget slot, yet it was sent, so ``model_calls`` keeps it."""
+    """#763: the probe costs no budget slot, yet it was sent, so ``model_calls`` keeps it,
+    marked ``probe`` (#764) so that the calls counted equal the calls recorded without it."""
     mal = models()
     mal.stub.fault("guardrail_check", "response_format_400")
     budget = TurnBudget()
     with recording() as log:
         assert await check(mal, budget) == GuardrailVerdict(violation=False, confidence=1.0)
-    assert [c.outcome for c in log.calls] == ["http_error", "ok"]
-    assert budget.used == 1
+    assert [(c.outcome, c.probe) for c in log.calls] == [("http_error", True), ("ok", False)]
+    assert budget.used == 1 == sum(not c.probe for c in log.calls)
+    assert log.calls[0].model_dump()["probe"] is True
+    assert "probe" not in log.calls[1].model_dump()  # absent on every other call
 
 
 async def test_the_fallback_is_the_calls_first_attempt() -> None:

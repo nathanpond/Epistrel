@@ -46,7 +46,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179 |
@@ -242,6 +242,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 177 | A character may state what an author_fiat acquisition made it know | Current | — |
 | 178 | A Lite turn handles narrated time skips | Current | — |
 | 179 | M9's quality floors are met on a certified model, on any host tier | Current | — |
+| 180 | A rejected `response_format` probe is recorded as a probe and not counted | Current | — |
 
 ---
 
@@ -1888,6 +1889,17 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - docs/03 §22's M9 row and docs/04's M9 parts of E-01, E-03, E-05, E-06 and E-12 say "on a certified model". Invariant 7 holds: no requirement or part moves milestone.
 - M9's quality stories that named the reference model (#474, #528, #529, #540) now name a certified model. The latency and capacity stories (#502, #588, #602, #603, #685) are about the local tier itself and keep it.
 - A floor met on one certified model is evidence for that model only. A report on another model is a separate measurement, kept beside it.
+
+---
+
+### ADR-180 — A rejected `response_format` probe is recorded as a probe and not counted
+**Status:** Accepted.
+**Context:** A structured call first asks for `response_format: json_schema`. An endpoint that does not support it answers with a 400; the engine remembers that per endpoint and configuration revision, and asks again with the schema in the prompt. #759 (2026-11-06) found that this probe was charged to the turn budget. Every budget sized at exactly its minimum (story creation's input gate, a turn's reserved guardrail calls) then could not afford its last check, and a fail-closed policy refused harmless text. #759 made `structured_call` refund the probe and number the fallback as the call's first attempt; the probe stays recorded as a failed call in `model_calls`. That broke docs/04 P-09's M2 clause, "the calls the budget counted equal the calls recorded" (#764): a turn that probes records one call more than it counts. api.anthropic.com rejects `json_schema` today, so every hosted Anthropic deployment hits this once per process and configuration revision.
+**Decision:** The owner's decision on #764 (2026-11-06), option (a). P-09 reads "counted equals recorded, less the rejected `response_format` probes". A refunded probe's `model_calls` entry carries `probe: true`; the field is absent on every other call. The Model Access Layer marks a rejection as a probe only when its caller declares that it refunds one (`send(..., format_probe=True)`, which `structured_call` passes in `json_schema` mode), so a rejection nobody refunds is never marked.
+**Alternatives considered:** (b) counting the probe and granting the call one extra slot outside its cap kept P-09's wording, but it put a protocol-negotiation slot outside `max_model_calls_per_turn`, so the cap would no longer bound what a turn may send. Dropping the probe from `model_calls` was rejected: the call was sent, and the record is where an operator sees why a structured call took two requests.
+**Consequences:**
+- docs/04 P-09's M2 clause is amended (2026-11-06). NFR-PERF-6 is unchanged: a probe is neither a retry nor a repair.
+- `ModelCall.probe` is in the turn report and the OpenAPI schema. The P-09 assertions in `tests/perf/test_p_09*.py` count the entries without it. Test: `tests/perf/test_p_09.py::test_p_09__format_probe`.
 
 ---
 

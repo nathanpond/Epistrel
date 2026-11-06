@@ -289,6 +289,7 @@ async def structured_call[T: BaseModel](
                     budget=budget,
                     attempt=attempts,
                     usable=lambda answer: usable(answer, schema),
+                    format_probe=json_mode,
                 )
             except ResponseFormatRejected as exc:
                 if not json_mode:
@@ -297,7 +298,8 @@ async def structured_call[T: BaseModel](
                 json_mode = False
                 messages = with_schema(base, schema)
                 # #759: the probe decided nothing. Its slot goes back, and the fallback claims it
-                # as the call's first attempt.
+                # as the call's first attempt. It stays in ``model_calls``, marked ``probe``
+                # (ADR-180, #764).
                 budget.refund(purpose)
                 attempts -= 1
                 continue

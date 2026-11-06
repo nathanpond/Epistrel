@@ -90,6 +90,13 @@ with the strings above, and their records' `report_sha256` was recomputed. The s
 re-rendered the Full report's refused `q01` section, so its NFR-QUAL-6 floor reads failed with
 n=0 instead of being left out (#756). No case result changed.
 
+That refusal was the engine's, not the model's (#759): the endpoint's 400 to `json_schema` was
+charged to story creation's guardrail budget, which is exactly one call per text, so the last
+definition's check could not run and the minors policy failed closed. With the probe refunded,
+Full was resumed on 2026-11-06 with `--retry-errors none --force`. Only `q01` played (300 case
+runs), and NFR-QUAL-6 now passes. Every other suite's results came from the same journal, so they
+are unchanged. The record now points to `full-4710ae26cb73-2026-11-06.md`.
+
 Claude 4.7 and later models refuse `temperature`; the adapter drops it for them and retries
 once, remembered per model (#235). Anthropic ignores `seed`, so a hosted run's seeds vary the
 case order, not the sampling. Raise `--concurrency` as far as the account's rate limits allow:

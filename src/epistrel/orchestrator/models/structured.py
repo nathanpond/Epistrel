@@ -17,8 +17,10 @@ never the model's raw text.
    ``PROSE_STRIKES`` (2) such answers in a row, across calls to the same ``(base_url, model)``,
    prove the endpoint ignores it; any JSON answer in ``json_schema`` mode resets the run
    (#482). Either proof is remembered per ``(base_url, model)`` until the deployment's
-   ``config_revision`` moves (``ResponseFormatMemo``). The 400 probe costs one call of the turn
-   budget but no retry.
+   ``config_revision`` moves (``ResponseFormatMemo``). The 400 probe is recorded as a failed
+   attempt but costs neither a retry nor a call of the turn budget: it decided nothing, and the
+   fallback is the call's first attempt (#759: a gate budgeted at exactly G calls spent a slot
+   on the probe, starved its last check, and its fail-closed policy refused a harmless text).
 3. **Parse-validate-retry** otherwise. The JSON Schema goes into the system message. A fenced
    ```` ```json ```` block is unwrapped; the text must parse as JSON (else ``parse_error``) and
    validate strictly against the schema, which forbids extra keys (else ``schema_error``). A
@@ -294,6 +296,10 @@ async def structured_call[T: BaseModel](
                 mal.response_format.reject(key, revision)
                 json_mode = False
                 messages = with_schema(base, schema)
+                # #759: the probe decided nothing. Its slot goes back, and the fallback claims it
+                # as the call's first attempt.
+                budget.refund(purpose)
+                attempts -= 1
                 continue
             except ModelUnavailable as exc:
                 raise exc.with_attempts(attempts) from None

@@ -1202,9 +1202,10 @@ async def _transition(
         BELIEF_TRANSITION,
         step=position.step,
     )
-    now = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
-    await conn.execute(
-        insert(belief_transitions).values(
+    now = await partitions.tx_now(conn)
+    inserted = await conn.execute(
+        insert(belief_transitions)
+        .values(
             id=transition_id,
             story_id=story_id,
             holder_character_id=holder,
@@ -1231,7 +1232,9 @@ async def _transition(
             membership_tx=func.transaction_timestamp(),
             inferred=INFERRED.get(),
         )
+        .returning(*belief_transitions.c)
     )
+    written = inserted.one()
     await index_records(
         conn,
         [
@@ -1316,12 +1319,8 @@ async def _transition(
         position=position,
         event_id=event_id,
     )
-    row = (
-        await conn.execute(
-            select(belief_transitions).where(belief_transitions.c.id == transition_id)
-        )
-    ).one()
-    return TransitionResult(_transition_of(row), belief, created=created, closed=prior_ids)
+    # #620: the row as inserted (nothing later in the transition writes it).
+    return TransitionResult(_transition_of(written), belief, created=created, closed=prior_ids)
 
 
 _OUTCOMES = frozenset({"accept", "reject", "suspend", "speech_act_only"})

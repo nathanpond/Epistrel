@@ -56,10 +56,40 @@ def forget(prefix: Hashable) -> None:
             del found[key]
 
 
+def in_transaction(conn: Any, key: Hashable) -> Any:
+    """``get`` for a read that is constant only within one database transaction (#620): the
+    value remembered under ``key`` by ``put_in_transaction`` on ``conn``'s current transaction,
+    or ``MISSING`` (none, or another transaction's)."""
+    found = get(key)
+    if found is MISSING or found[0] is not _transaction(conn):
+        return MISSING
+    return found[1]
+
+
+def put_in_transaction(conn: Any, key: Hashable, value: Any) -> None:
+    """Remember ``value`` under ``key`` for ``conn``'s current transaction only."""
+    put(key, (_transaction(conn), value))
+
+
+def _transaction(conn: Any) -> Any:
+    sync = getattr(conn, "sync_connection", None) or conn
+    return sync.get_transaction()
+
+
 def clear() -> None:
     found = _MEMO.get()
     if found is not None:
         found.clear()
 
 
-__all__ = ["MISSING", "active", "clear", "forget", "get", "put", "scope"]
+__all__ = [
+    "MISSING",
+    "active",
+    "clear",
+    "forget",
+    "get",
+    "in_transaction",
+    "put",
+    "put_in_transaction",
+    "scope",
+]

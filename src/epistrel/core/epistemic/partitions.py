@@ -1179,7 +1179,13 @@ BELIEF_SHAPE_COLUMNS: frozenset[str] = frozenset(
 
 
 async def _holder_ok(conn: AsyncConnection, story_id: str, holder: str) -> None:
-    """422 ``holder_has_no_partition`` for the player's character or a non-character."""
+    """422 ``holder_has_no_partition`` for the player's character or a non-character. #620: a
+    holder found once is not read again in the turn (``core.turn_memo``)."""
+    from epistrel.core import turn_memo
+
+    key = ("holder_ok", story_id, holder)
+    if turn_memo.get(key) is True:
+        return
     row = (
         await conn.execute(
             select(characters.c.is_player).where(
@@ -1194,6 +1200,20 @@ async def _holder_ok(conn: AsyncConnection, story_id: str, holder: str) -> None:
             else "a belief's holder is a character of the story",
             {"story_id": story_id, "holder": holder, "field": "holder"},
         )
+    turn_memo.put(key, True)
+
+
+async def tx_now(conn: AsyncConnection) -> Any:
+    """The transaction's ``transaction_timestamp()``, read once per transaction in a turn
+    (#620: it is constant within one)."""
+    from epistrel.core import turn_memo
+
+    key = ("transaction_timestamp",)
+    found = turn_memo.in_transaction(conn, key)
+    if found is turn_memo.MISSING:
+        found = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
+        turn_memo.put_in_transaction(conn, key, found)
+    return found
 
 
 async def is_player(conn: AsyncConnection, story_id: str, character_id: str) -> bool:
@@ -1217,16 +1237,29 @@ async def is_player(conn: AsyncConnection, story_id: str, character_id: str) -> 
 async def _subject_characters(
     conn: AsyncConnection, story_id: str, stored: Proposition
 ) -> tuple[str | None, str | None]:
-    """The characters the proposition's subject and object entities are (``None``: none)."""
+    """The characters the proposition's subject and object entities are (``None``: none).
+    #620: each entity's is read once per turn (``core.turn_memo``; an entity adopted as a
+    character forgets it)."""
+    from epistrel.core import turn_memo
+
     wanted = [i for i in (stored.subject_id, stored.object_id) if i is not None]
-    found = {
-        str(r.id): None if r.character_id is None else str(r.character_id)
+    found: dict[str, str | None] = {}
+    missing = []
+    for entity in wanted:
+        memo = turn_memo.get(("entity_character", story_id, entity))
+        if memo is turn_memo.MISSING:
+            missing.append(entity)
+        else:
+            found[entity] = memo
+    if missing:
         for r in await conn.execute(
             select(entities.c.id, entities.c.character_id).where(
-                entities.c.story_id == story_id, entities.c.id.in_(wanted)
+                entities.c.story_id == story_id, entities.c.id.in_(missing)
             )
-        )
-    }
+        ):
+            value = None if r.character_id is None else str(r.character_id)
+            found[str(r.id)] = value
+            turn_memo.put(("entity_character", story_id, str(r.id)), value)
     return found.get(stored.subject_id), (
         None if stored.object_id is None else found.get(stored.object_id)
     )
@@ -1250,15 +1283,18 @@ async def _append_event(
     story lock: a commit step), at ``beat`` and ``step`` (FR-STORE-31: the belief's or the
     transition's own; 0 outside declared steps)."""
     body = validate(type_, payload).model_dump(mode="json")
-    last = await conn.scalar(
-        select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == story_id)
-    )
     event_id = new_ulid()
+    # #620: the next seq in the insert itself (the caller holds the story lock).
+    following = (
+        select(func.coalesce(func.max(events.c.seq), 0) + 1)
+        .where(events.c.story_id == story_id)
+        .scalar_subquery()
+    )
     await conn.execute(
         insert(events).values(
             id=event_id,
             story_id=story_id,
-            seq=int(last or 0) + 1,
+            seq=following,
             operation_id=operation.operation_id,
             category=EventCategory.DERIVED.value,
             narrative_turn=operation.narrative_turn,
@@ -1424,7 +1460,7 @@ async def _insert_belief(
         await conn.execute(
             update(beliefs).where(b.id == closed.id).values(**start.columns("held_to"))
         )
-    now = (await conn.execute(select(func.transaction_timestamp()))).scalar_one()
+    now = await tx_now(conn)
     row: dict[str, Any] = {
         "id": belief_id,
         "story_id": story_id,

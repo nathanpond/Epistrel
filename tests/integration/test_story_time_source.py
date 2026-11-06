@@ -21,7 +21,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from epistrel.core import world_clock
+from epistrel.core import turn_memo, world_clock
+from epistrel.core.enums import StateChangeSource
 from epistrel.core.epistemic.transitions import _story_time
 from epistrel.core.membership import Position
 from epistrel.core.resolution.context import load_time_basis
@@ -114,3 +115,57 @@ async def test_story_time_source(engine: AsyncEngine, clock_delivered: None) -> 
         "AND valid_time_minutes IS NOT NULL",
     )
     assert deployment[0].n == 0
+
+
+@pytest.mark.integration
+async def test_story_time_basis_is_read_once_per_transaction(
+    engine: AsyncEngine, clock_delivered: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#620: in a turn attempt (``core.turn_memo``), a commit reads the clock's basis once and
+    every later ``story_time_at`` reuses it, so a commit writing many transitions reads it once.
+
+    Complement asserted: an advance in the same transaction forgets it, so the next read sees
+    the clock moved; outside a turn attempt each call reads it again."""
+    story = (await c.world(engine)).story_id
+    await ck.set_level(engine, story, "prompt_only")
+    stored: list[str] = []
+    original = world_clock._stored_basis
+
+    async def counted(conn: object, story_id: str) -> object:
+        stored.append(story_id)
+        return await original(conn, story_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(world_clock, "_stored_basis", counted)
+    seen: dict[str, object] = {}
+    minutes: list[int] = []
+
+    async def write(conn: object, op: object) -> None:
+        turn = int(op.narrative_turn)  # type: ignore[attr-defined]
+        later = Position(turn, 0, 0, 3, 0)
+        first = await world_clock.story_time_at(conn, story, later)  # type: ignore[arg-type]
+        again = await world_clock.story_time_at(conn, story, later)  # type: ignore[arg-type]
+        seen["reads"] = len(stored)
+        await world_clock.advance(
+            conn,  # type: ignore[arg-type]
+            op,  # type: ignore[arg-type]
+            story,
+            minutes=30,
+            source=StateChangeSource.PACING,
+            position=Position(turn, 0, 0, 1, 0),
+            reason="time passes",
+        )
+        moved = await world_clock.story_time_at(conn, story, later)  # type: ignore[arg-type]
+        minutes.extend((first, again, moved))
+
+    with turn_memo.scope():
+        await c.run(engine, story, write)
+    before, repeated, after = minutes
+    assert seen["reads"] == 1
+    assert before == repeated
+    assert after == before + 30
+
+    stored.clear()
+    async with engine.connect() as conn:
+        await world_clock.time_basis(conn, story)
+        await world_clock.time_basis(conn, story)
+    assert len(stored) == 2

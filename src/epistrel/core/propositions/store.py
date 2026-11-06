@@ -262,7 +262,7 @@ async def write_proposition(
     record = proposition_record(SimpleNamespace(**row))
     await _guarded(conn, story_id, [record], base_revision=base_revision, consumer=consumer)
     await conn.execute(insert(propositions).values(**row))
-    await index_records(conn, [record])
+    await index_records(conn, [record], fresh=True)  # #620: the row was just inserted
     return proposition_id
 
 

@@ -1003,6 +1003,32 @@ class Change:
         return CANON if self.speaker_id is None else "utterance"
 
 
+async def _stamp(conn: AsyncConnection, story_id: str) -> Any:
+    """The revision a change written now is stamped with (see ``record_change``). #620: read
+    once per transaction inside an operation's commit, where ``COMMIT_REVISION_SETTING`` fixes
+    it; outside one the story's next revision is read each time."""
+    from epistrel.core import turn_memo
+
+    key = ("readset.stamp", story_id)
+    found = turn_memo.in_transaction(conn, key)
+    if found is not turn_memo.MISSING:
+        return found
+    setting, following = (
+        await conn.execute(
+            select(
+                func.nullif(func.current_setting(COMMIT_REVISION_SETTING, True), "").cast(
+                    stories.c.timeline_revision.type
+                ),
+                stories.c.timeline_revision + 1,
+            ).where(stories.c.id == story_id)
+        )
+    ).one_or_none() or (None, None)
+    if setting is not None:
+        turn_memo.put_in_transaction(conn, key, setting)
+        return setting
+    return following
+
+
 async def record_change(
     conn: AsyncConnection, story_id: str, operation_id: str, changes: Sequence[Change]
 ) -> None:
@@ -1012,16 +1038,7 @@ async def record_change(
     implications are never indexed. #150's utterance writes call it with ``speaker_id``."""
     if not changes:
         return
-    stamped = await conn.scalar(
-        select(
-            func.coalesce(
-                func.nullif(func.current_setting(COMMIT_REVISION_SETTING, True), "").cast(
-                    stories.c.timeline_revision.type
-                ),
-                stories.c.timeline_revision + 1,
-            )
-        ).where(stories.c.id == story_id)
-    )
+    stamped = await _stamp(conn, story_id)
     if stamped is None:
         return
     await conn.execute(

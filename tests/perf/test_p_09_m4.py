@@ -145,6 +145,8 @@ async def test_p_09__structured(
       salience goes last (``salience_skipped``: every beat is texture, the ledger stays
       empty). A slow stub whose render leaves no time for the reserved extraction replaces the
       render by the safe fallback (``beat_replaced_safe_fallback``).
+    - A salience call failing with a 500 degrades the turn (``salience_failed``); the failed
+      call is counted and recorded, and not marked a probe (ADR-180, #769).
     - An output-policy violation whose repair cannot reserve its re-render and re-check takes
       the stored safe fallback.
 
@@ -303,6 +305,22 @@ async def test_p_09__structured(
                 assert report["commit"]["salience"]["entries"] == 0
                 assert counts == {"generation": 1, "extraction_backstop": 1}
             await _detected(engine, edu.story_id)
+
+        # -- a provider failure the turn survives: counted, recorded and never a probe -----
+        # #769 (ADR-180): only a refunded format probe is excused from the count.
+        edu = await camp_story(client, engine)
+        stub.reset()
+        stub.script("generation", [_camp_render()])
+        stub.script("entailment", [entailment("contradicted")])
+        stub.script("regeneration", [regenerated()])
+        stub.fault("salience_detection", "http_500")
+        answer = await respond(client, edu.story_id, body(edu.cal, "Where did you learn?"))
+        assert answer.status_code == 200, answer.text
+        turn = answer.json()
+        assert "salience_failed" in turn["degradation"]
+        failed = [c for c in turn["model_calls"] if c["outcome"] == "http_error"]
+        assert [(c["purpose"], c.get("probe")) for c in failed] == [("salience_detection", None)]
+        _accounted(turn)
 
         # -- a slow stub: the render leaves no time for its reserved extraction ------------
         monkeypatch.setattr(planner, "DEFAULT_LATENCY_ESTIMATE_S", 9.5)

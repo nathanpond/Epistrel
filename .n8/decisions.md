@@ -12349,3 +12349,14 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #763, #765
 - **Decision (Rule 1):** CI on PR #767 failed P-05 (`test (scenario-perf)`). P-05's session turn census applies the same counted==recorded gate to every Lite turn played, and the new P-09 probing turn records one call more than it counts. `CensusTurn` now carries `probes` (from `ModelCall.probe`), and the gate is `used == counted` (calls less probes). The census's no-budget fallback counts the same way. docs/04 P-05 doesn't state this invariant; it is P-09's (ADR-180), so the spec needs no change. Reproduced locally (P-09 + P-05: 1 failed with the old gate, 6 passed with the new one).
   **Issue:** #764
+
+## /n8-exec M7 (retry 12: #768, #769, #770) — 2026-11-06
+
+- **Decision:** #768 and #769 get tests only, with no production change. The guard at `structured.py:295-296` and the `format_probe` gate at `access.py:412` are both correct; the verify pass found them untested. Each new test was mutation-checked: removing the guard fails `test_a_second_format_rejection_on_the_fallback_is_charged`; `probe = True` (D1) fails all four new unit tests and the new P-09 case; dropping the `format_probe` gate (D2) fails the fallback test and `test_a_format_rejection_nobody_refunds_is_never_marked`. No requirement IDs went into the docstrings, so the tests stay parts of no new milestone.
+  **Issue:** #768, #769
+- **Decision:** #769 D1's "`_accounted` on a degraded turn containing a real failure" is asserted in `tests/perf/test_p_09_m4.py`, not `test_p_09.py`. An M2 Lite turn ends every provider failure with a 503, so there is no 200 turn to account (tried: a guardrail 500 gives 503 `model_unavailable`). A structured camp turn whose `salience_detection` fails with a 500 degrades to `salience_failed` and returns 200; the failed call is asserted unmarked and `_accounted` runs on the turn. The issue allowed "a P-09 (or unit) test".
+  **Issue:** #769
+- **Decision:** #770 uses #765's pattern: `reported_version.forget()` at `test_c_04__runtime`'s start, and `_completions(mock)` for the openai request list. The case passes alone and in file order (16 passed).
+  **Issue:** #770
+- **Decision:** as in retries 8–11, the full suite gates in CI's shards, not locally (a local run takes ~75 min and trips #701's stored Hypothesis example). Locally: the eight affected files (106 passed), ruff, ruff format, mypy, and the parts, lexicon, traceability and assignment gates.
+  **Issue:** #768, #769, #770

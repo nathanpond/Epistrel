@@ -182,6 +182,7 @@ async def test_c_04__runtime(
     ``/admin/model-config`` and the very next call uses each change, in the same process with
     the same Engine (no restart). Complement asserted: a call made before a change used the
     old value, so the test would see a stale cache."""
+    reported_version.forget()  # #770: no listing cached by an earlier case
     pid = os.getpid()
     async with admin_client(adapter_settings, model_engine) as client:
         await put(client, "default", {"base_url": f"{mock.root}/v1", "model": "model-a"})
@@ -205,7 +206,7 @@ async def test_c_04__runtime(
 
     assert os.getpid() == pid
     if adapter_settings.model_adapter == "openai":
-        calls = [(r.path, r.authorization, r.body["model"]) for r in mock.requests]
+        calls = [(r.path, r.authorization, r.body["model"]) for r in _completions(mock)]
         assert calls == [
             ("/v1/chat/completions", "Bearer sk-runtime-key-a", "model-a"),
             ("/v1/chat/completions", "Bearer sk-runtime-key-a", "model-b"),

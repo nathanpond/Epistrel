@@ -11,7 +11,10 @@ from epistrel.core.context import RequestContext
 from epistrel.core.errors import GuardrailViolation
 from epistrel.engine import Engine
 from epistrel.evals import AdapterConfig, CaseModel, Outcome, Report, Verdict, run, seeds_from
-from epistrel.evals.report import render_markdown
+from epistrel.evals.certify import floors_of
+from epistrel.evals.report import (
+    render_markdown,
+)
 from epistrel.evals.runner import CaseContext
 from tests.evals.support import ZERO_METRIC, SyntheticZeroSuite, stub_engine, synthetic_cases
 
@@ -90,6 +93,8 @@ async def test_a_refused_setup_fails_the_suite_not_the_harness(
     assert suite.refusal == f"setup: GuardrailViolation: {MINORS}"
     assert refusing.torn_down
     assert "Refused by the model's guardrail, so no case played" in render_markdown(report)
+    _, failed, _, _, _, _ = floors_of(report)  # #756: the refused floor is failed, not dropped
+    assert [f.metric_id for f in failed] == [ZERO_METRIC]
 
     broken = await _run(pg_url, engine, BrokenSetupSuite())
     assert broken.harness_errors == ["setup: RuntimeError: fixture bug"]

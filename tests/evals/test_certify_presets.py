@@ -22,6 +22,7 @@ import httpx2 as httpx
 import pytest
 
 from epistrel.core.profiles.certification import (
+    QUALITY_14,
     SEEDS_DIR,
     check_report,
     committed_records,
@@ -35,9 +36,24 @@ from epistrel.core.seeds.profiles import (
 )
 from epistrel.evals import cli
 from epistrel.evals import presets as preset_constants
+from epistrel.evals.certify import floors_of
 from epistrel.evals.certify_cli import UsageError, parse_presets
 from epistrel.evals.index import REFERENCE_MODEL_ID
-from epistrel.evals.report import INDEX_NAME, index_text, write_index
+from epistrel.evals.report import (
+    INDEX_NAME,
+    SUMMARY_RE,
+    Host,
+    Report,
+    SuiteResult,
+    index_text,
+    render_index,
+    render_markdown,
+    requirement_verdicts,
+    summary,
+    write_index,
+)
+from epistrel.evals.runner import seeds_from
+from epistrel.evals.suites import SUITES
 from epistrel.tools.generated import REPO_ROOT
 from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
@@ -81,6 +97,11 @@ def test_certify_usage_errors(tmp_path: Path) -> None:
     ]
     assert cli.main([*base, "--presets", "full"]) == 2
     assert cli.main([*base, "--presets", "fulll", "--embedding-model", "e"]) == 2
+    # #757: a hosted endpoint needs the hardware and server version its record will name.
+    hosted = [*base, "--presets", "full", "--embedding-model", "e"]
+    hosted[2] = "https://api.anthropic.com/v1"
+    assert cli.main(hosted) == 2
+    assert cli.main([*hosted, "--hardware", "Anthropic API"]) == 2
     assert not any(tmp_path.iterdir())
 
 
@@ -249,6 +270,24 @@ def test_committed_certifications() -> None:
         if record.report_path is not None and (SEEDS_DIR / record.report_path).is_file():
             report = (SEEDS_DIR / record.report_path).read_text("utf-8")
         check_report(record, report)
+        # #756: every requirement the report measured is a floor of the record, never dropped.
+        assert report is not None, path.name
+        embedded = SUMMARY_RE.search(report)
+        assert embedded is not None, path.name
+        measured = json.loads(embedded.group("json"))
+        floors = {
+            f.metric_id.split(".", 1)[0]
+            for f in (*record.floors_passed, *record.floors_failed, *record.floors_insufficient)
+        }
+        if record.intervention_types_covered or record.intervention_types_insufficient:
+            floors.add(QUALITY_14)  # E-12's types: covered or insufficient, by type
+        gated = {r for r, v in measured["requirements"].items() if v != "report_only"}
+        assert gated <= floors, (path.name, gated - floors)
+        # #757: the record states the host the report states, and a hosted one says where.
+        assert record.host["kind"] == measured["host"], path.name
+        if record.host["kind"] == "hosted":
+            assert record.host["hardware"], path.name
+            assert record.host["server_version"], path.name
         if record.model_tier == "reference":
             assert record.models["generation"]["id"] == REFERENCE_MODEL_ID, path.name
         zero = [
@@ -261,6 +300,44 @@ def test_committed_certifications() -> None:
         model = str(record.models["generation"]["id"])
         by_model.setdefault(model, set()).add(str(record.preset))
     assert any({"standard", "full", "max"} <= presets for presets in by_model.values()), by_model
+
+
+def test_a_refused_suite_s_floors_are_failed_never_left_out() -> None:
+    """#756: q01 refused at setup (the committed Full run's case) still names its recall row as a
+    floor failed with n=0, in the record's floors, the requirements map and INDEX.
+
+    Complement asserted: no floor of the refused suite is passed or missing, and its
+    informational rows are not floors."""
+    q01 = SUITES["q01"]
+    seeds = seeds_from(3)
+    floored = {m.id for m in q01.metrics if m.floor is not None and m.rule.value != "informational"}
+    assert floored
+    report = Report(
+        run_id="refused",
+        started_at="2026-11-05T00:00:00+00:00",
+        model="m",
+        fingerprint="sha256:" + "a" * 64,
+        fingerprint_profile="Full v1",
+        adapter="openai",
+        engine_sha="abc",
+        host=Host(kind="local"),
+        seed_base=seeds[0],
+        seeds=seeds,
+    )
+    report.merge(
+        SuiteResult.refused(q01, "setup: GuardrailViolation: Input violates 1 policy.", seeds)
+    )
+
+    passed, failed, insufficient, _, _, _ = floors_of(report)
+    assert passed == []
+    assert insufficient == []
+    assert {f.metric_id for f in failed} == {f"NFR-QUAL-6.{m.split('.', 1)[1]}" for m in floored}
+    assert all((f.n, f.verdict, f.mean) == (0, "fail", None) for f in failed)
+    assert requirement_verdicts(report) == {"NFR-QUAL-6": "fail"}
+    assert "| NFR-QUAL-6 |" in render_index([("r.md", summary(report))])
+    markdown = render_markdown(report)
+    assert "Guarantee rows measured: —." in markdown
+    assert "no observations" in markdown
 
 
 _EVALS_CALL = re.compile(r"epistrel[. ]evals\b(?P<rest>[^\n]*)")

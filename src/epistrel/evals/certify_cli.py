@@ -59,7 +59,8 @@ command never refuses for the 300-case rule: a floor short of it is ``insufficie
 ``--fail-on-gate``, CI's stub run, 1 when a suite marked ``ci_gate`` failed). 1 on an endpoint
 or harness error: the remaining presets are not run, the finished ones' outputs are kept and the
 index regenerated. 2 on a usage error: an unknown or repeated preset, a real model without
-``--base-url``, ``--model`` or ``--embedding-model``, no repository found without ``--out``, or
+``--base-url``, ``--model`` or ``--embedding-model``, a hosted endpoint (``runner.is_hosted``)
+without ``--hardware`` and ``--server-version`` (#757), no repository found without ``--out``, or
 a record that would be overwritten without ``--force`` (``--resume`` skips a preset that already
 has a record for the same fingerprint instead, whatever its date: #730). 130 when stopped. A
 model-output error on a case is that case's failure (#179's rule), never a harness error; so is
@@ -103,6 +104,7 @@ from epistrel.evals.runner import (
     calibrate_judge,
     default_run_id,
     engine_for,
+    is_hosted,
     judge_layer_for,
     judge_preflight,
     planned_cases,
@@ -265,6 +267,12 @@ async def certify(args: argparse.Namespace, adapter: str) -> int:
     if adapter != "stub" and not (args.base_url and args.model and args.embedding_model):
         raise UsageError(
             "a real-model certification needs --base-url, --model and --embedding-model"
+        )
+    hosted = adapter != "stub" and is_hosted(args.base_url)
+    if hosted and not (args.hardware and args.server_version):
+        raise UsageError(
+            "a hosted endpoint's certification needs --hardware and --server-version "
+            '(e.g. "Anthropic API" and "Claude API (OpenAI compatibility)"; #757)'
         )
     where = layout(args.out, adapter)
     journals = _journal_root(args)
@@ -566,8 +574,9 @@ def add_parser(sub: Any) -> argparse.ArgumentParser:
     command.add_argument("--concurrency", type=_positive, default=1, help="cases at once (1)")
     command.add_argument(
         "--host",
-        choices=("ci", "local"),
-        help="the host's kind (default: ci under CI, else local); never a machine name",
+        choices=("ci", "local", "hosted"),
+        help="the host's kind (default: hosted for an endpoint off this network, else ci "
+        "under CI, else local); never a machine name",
     )
     command.add_argument(
         "--reference",

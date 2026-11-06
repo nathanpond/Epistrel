@@ -85,6 +85,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import ipaddress
 import json
 import os
 import random
@@ -104,6 +105,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet
 from sqlalchemy import text
@@ -232,8 +234,9 @@ class AdapterConfig:
     database_url: str | None = None
     hardware: str = ""
     server_version: str = ""
-    host: Literal["ci", "local"] | None = None
-    """``ci`` or ``local``; ``None``: ``ci`` under CI, else ``local``. Never the machine's
+    host: Literal["ci", "local", "hosted"] | None = None
+    """``ci``, ``local`` or ``hosted``; ``None``: ``hosted`` for an endpoint off this network
+    (``is_hosted``, #757), else ``ci`` under CI, else ``local``. Never the machine's
     name: reports are committed to a public repository, so a host is described only by its
     kind and #54's hardware and server-version fields."""
     judge_model: str | None = None
@@ -575,8 +578,24 @@ def isolation_problems(before: Mapping[str, int], after: Mapping[str, int]) -> l
 # -- the run ----------------------------------------------------------------------------------
 
 
+def is_hosted(base_url: str | None) -> bool:
+    """Whether ``base_url`` is a provider's endpoint (#757): a host name that is not
+    ``localhost`` or ``*.local``, or an address that is not loopback, private or link-local."""
+    if not base_url:
+        return False
+    name = (urlsplit(base_url).hostname or "").lower()
+    if not name or name == "localhost" or name.endswith((".localhost", ".local")):
+        return False
+    try:
+        address = ipaddress.ip_address(name)
+    except ValueError:
+        return True
+    return not (address.is_loopback or address.is_private or address.is_link_local)
+
+
 def host_of(config: AdapterConfig) -> Host:
-    kind = config.host or ("ci" if os.environ.get("CI") else "local")
+    hosted = config.adapter == "openai" and is_hosted(config.base_url)
+    kind = config.host or ("hosted" if hosted else "ci" if os.environ.get("CI") else "local")
     return Host(
         kind=kind,
         hardware=config.hardware,

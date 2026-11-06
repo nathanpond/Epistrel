@@ -4,8 +4,9 @@ person reads, and the index of the committed ones.
 **JSON** (``version: 1``, one file per run under ``build/evals/``, never committed): the run's
 ``sample_size`` (cases per seed, every suite's together), ``seed_count`` and seeds, ``model``
 and ``model_version`` (the completion's own ``model`` field; ``null`` when it reported none),
-``fingerprint`` (FR-PROF-16, #109), ``host`` (``ci`` or ``local``, with #54's hardware and
-server-version fields and the endpoint; never the machine's name), and per suite, per metric:
+``fingerprint`` (FR-PROF-16, #109), ``host`` (``ci``, ``local`` or ``hosted``, with #54's
+hardware and server-version fields and the endpoint; never the machine's name), and per suite,
+per metric:
 ``mean``, ``stdev``, ``floor``, ``rule``, ``direction``, ``sample_size``, ``seed_count``,
 ``verdict``, and for a zero-tolerance metric its ``violations`` and ``upper_bound_95``; per
 suite, its ``notes`` (the suite's scoring notes, rendered under "How to read"; #437).
@@ -76,7 +77,8 @@ class Host(BaseModel):
     """Where a run ran: its kind and #54's hardware and server-version description, and the
     endpoint. No machine name: reports are committed to a public repository (#134)."""
 
-    kind: Literal["ci", "local"]
+    kind: Literal["ci", "local", "hosted"]
+    """``hosted``: a provider's endpoint, not a machine of the owner's (#757)."""
     hardware: str = ""
     server_version: str = ""
     endpoint: str | None = None
@@ -215,6 +217,8 @@ class SuiteResult(BaseModel):
 
     @classmethod
     def refused(cls, suite: Suite, refusal: str, seeds: list[int]) -> SuiteResult:
+        """Each floored metric of ``suite`` is a failed row with no observations (#756), so a
+        certification records the floor failed rather than leaving it out."""
         return cls(
             name=suite.name,
             title=suite.title,
@@ -222,6 +226,24 @@ class SuiteResult(BaseModel):
             guarantees=list(suite.guarantees),
             cases=0,
             seeds=seeds,
+            metrics=[
+                MetricResult(
+                    id=metric.id,
+                    description=metric.description,
+                    rule=metric.rule,
+                    direction=metric.direction,
+                    floor=metric.floor,
+                    mean=None,
+                    stdev=None,
+                    sample_size=0,
+                    seed_count=0,
+                    per_seed=[],
+                    verdict=Verdict.failed,
+                    judge_based=metric.id in suite.judge_metrics,
+                )
+                for metric in suite.metrics
+                if metric.rule is not Rule.informational and metric.floor is not None
+            ],
             verdict=Verdict.failed,
             notes=list(suite.reading_notes),
             refusal=refusal,
@@ -581,10 +603,11 @@ def render_markdown(report: Report) -> str:
             else ""
         )
         gated = "gated in CI on the stub" if suite.ci_gate else "not gated in CI"
+        measured = suite.guarantees if suite.refusal is None else []
         lines.append(
             f"Suite verdict: {VERDICT_TEXT[suite.verdict]}. {suite.cases} cases x "
             f"{len(suite.seeds)} seeds{timing}; {gated}. Guarantee rows measured: "
-            f"{', '.join(f'`{g}`' for g in suite.guarantees) or EM_DASH}."
+            f"{', '.join(f'`{g}`' for g in measured) or EM_DASH}."
         )
         if suite.profile is not None:
             lines += [

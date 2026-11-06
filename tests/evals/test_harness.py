@@ -53,6 +53,7 @@ from epistrel.evals.runner import (
     NotScratch,
     Scratch,
     host_of,
+    is_hosted,
     run_fingerprint,
     sample_for,
     scratch_story_ids,
@@ -362,6 +363,38 @@ def test_a_report_never_names_the_machine() -> None:
     committed = sorted(checks.REPORTS_DIR.glob("*.md"))
     assert committed
     assert_no_machine_name(*(path.read_text(encoding="utf-8") for path in committed))
+
+
+def test_a_provider_endpoint_is_a_hosted_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#757: a run against a provider's endpoint is ``hosted``, under CI or not, and keeps the
+    hardware and server version given. Complement: a loopback, private, link-local or
+    ``.local`` endpoint, the stub, and an explicit ``--host`` are not."""
+    monkeypatch.setenv("CI", "1")
+    hosted = host_of(
+        AdapterConfig(
+            adapter="openai",
+            base_url="https://api.anthropic.com/v1",
+            hardware="Anthropic API",
+            server_version="Claude API (OpenAI compatibility)",
+        )
+    )
+    assert (hosted.kind, hosted.hardware) == ("hosted", "Anthropic API")
+    assert "hosted; Anthropic API; Claude API (OpenAI compatibility)" in render_markdown(
+        _report("m", "2026-11-05", {"x.rate": Verdict.passed}).model_copy(update={"host": hosted})
+    )
+    for url in (
+        "http://localhost:1234/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://192.168.1.20:1234/v1",
+        "http://[::1]:1234/v1",
+        "http://169.254.0.5/v1",
+        "http://studio.local:1234/v1",
+    ):
+        assert not is_hosted(url), url
+        assert host_of(AdapterConfig(adapter="openai", base_url=url)).kind == "ci", url
+    assert host_of(AdapterConfig(adapter="stub", base_url="https://api.x.ai/v1")).kind == "ci"
+    explicit = AdapterConfig(adapter="openai", base_url="https://api.x.ai/v1", host="local")
+    assert host_of(explicit).kind == "local"
 
 
 def _index_dir(tmp_path: Path) -> Path:

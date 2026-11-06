@@ -12292,3 +12292,25 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #756, #757
 - **Decision (Rule 3):** #756's unit test went into `test_certify_presets.py`, not `test_guardrail_refusal.py`. CI's `check-lexicon` refused it there: its docstring named NFR-QUAL-6, which made it an M4 part, and it used the M7 term "certification". Its docstring now names "its recall row" rather than the requirement ID, keeping that file's convention that its tests are no parts. Locally the gate had passed only because the parts file was stale. `check-parts --json` has to run first, as it does in CI.
   **Issue:** #756
+
+## /n8-exec M7 (retry 9: verify bug #759) — 2026-11-06
+
+- **Finding:** #759's "guardrail refusal" was not Haiku's judgement and not the fixture. It was the engine's seeded minors policy (`on_uncertain: violation`) failing closed on `Uncertain("budget_exhausted")`.
+  - Story creation's input gate is budgeted at exactly G (one `guardrail_check` per text).
+  - api.anthropic.com answers `response_format: json_schema` with a 400 (`strict: Field required`), and that probe was charged to the budget, so the third definition's check could not be afforded.
+  - A live probe (60 calls, the engine's own rendered prompt) passed all three definitions every time, at confidence 0.90–0.98. The offline repro is through the real `check_text`, `structured_call` and `TurnBudget`.
+  - Full alone refused because the json_schema-rejection memo is per process and per `config_revision`: Full's resumed run made q01 its first structured call.
+  **Issue:** #759
+- **Decision (owner, 2026-11-06):** route 1 in its code form. Fix the engine in M7 and re-run Full's q01 only. No ADR, and the fixture keeps its 12-year-old, who is what exposed the bug.
+  **Issue:** #759
+- **Decision (Rule 1):** a 400 on `response_format` is refunded in `structured_call`: `budget.refund`, and the fallback is the call's first attempt. It stays recorded as a failed attempt in `model_calls`. This reverses the docstring's "the 400 probe costs one call of the turn budget", which #284 wrote and two tests pinned (`test_structured_output`, conformance C-04). Both now assert one call.
+  **Why:**
+  - The probe decides nothing and costs no tokens.
+  - Charging it broke every budget sized at exactly G, at story creation and ingest, and in a turn's reserved guardrail slots. A fail-closed policy then refused harmless text.
+  - The alternative, headroom in each gate's budget, would put a protocol-negotiation slot into NFR-PERF-6's budget arithmetic everywhere.
+  **Cost if wrong:** one extra 400 per (endpoint, revision) goes uncounted against the call cap.
+  **Issue:** #759
+- **Decision:** the template whitespace bug (#760) and the missing `json_schema.strict` (#761) are filed, not fixed. Each changes a certified prompt or request mid-milestone; both are `needs-triage`.
+  **Issue:** #760, #761
+- **Decision:** the Full re-run is `certify --presets full … --retry-errors none --force`, against the existing journal (same fingerprint `4710ae26cb73`). Only q01's cases play live; every other suite's results are reused from the journal unchanged. The embeddings are on LM Studio's port 1235, because 1234 is another service on this host.
+  **Issue:** #759

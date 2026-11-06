@@ -12221,3 +12221,22 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** a hosted run at high concurrency hits rate limits; a passing condition should not stand as the model's measured result, while a deterministic failure is the model's.
 - **Decision:** dropping `temperature` for a model that refuses it is not part of the configuration fingerprint.
   **Why:** the fingerprint names the model, so a model that refuses sampling parameters always runs at its default; the drop is a property of the model, not a setting. Cost if wrong: two deployments of the same model and settings could differ in sampling only if one endpoint accepted the parameter, which the model id already pins.
+
+## /n8-exec M7 (retry 6) — 2026-11-05
+
+- **Decision:** #611, following the owner's decision of 2026-11-03 (option 1, message nouns). dc297d7 is re-applied: the `send` lemma's `messages` list, its unit test and the S-WHISPER update. S-TESTIMONY, S-POLLUTION and S-REACTIVE now send "the parcel", so their line still carries a declared claim plus the detector's transfer reading. `tests/testimony_support.room` (and `reactive_support.bar`) take an `item` instead of the shared fixture being renamed.
+  **Why:** S-WHISPER shares the fixture and must keep "the text", because its point is that a message is no transfer. A parameter keeps every other user of the fixture exercising exactly what it did before.
+  **Issue:** #611
+- **Decision:** #620's per-transition reads become reads once per turn or once per transaction, through `core.turn_memo`:
+  - the clock's `time_basis` (forgotten by `world_clock.advance` and `commit_anchor`, its only writers within a turn), and `_stamped_at` per position
+  - `transaction_timestamp()`, and the change index's commit revision (`readset._stamp`)
+  - each holder's `_holder_ok`, and each entity's character (forgotten when `modeling` adopts an entity as a character)
+
+  Writes save statements too: an event's `seq` is computed inside its insert; a transition row comes back by `RETURNING`; a new proposition is indexed `fresh`.
+  **Why:** a first multi-character turn spent about 7 statements per transition re-reading the clock, plus one each for the other reads, on values that cannot change in the transaction. Transaction-scoped keys (`turn_memo.in_transaction`) keep a render-stage read from standing in for the commit's own.
+  **Issue:** #620
+- **Blocker:** #620's AC (≤ 600 statements and ≤ 1 s) is not met by these reads. The remaining cost is the per-belief write path itself, about 12 statements for each of about 84 beliefs and 170 transitions. Reaching 600 means writing a commit's beliefs, events, transitions and projections in bulk: a rework of `core.epistemic.transitions`, `partitions` and `exposure`. The other route the issue offers, a lazy-resolution cap counted in statements or time, changes the degradation behaviour. Both are the owner's call (see the comment on #620).
+  **Issue:** #620
+- **Decision (Rule 1):** `testing.fixtures.knowledge._draw` gives up with a `ValueError` after 50 × the pool's size in draws, where it used to loop until it found an unused key. #620's ceiling test runs at P-04's `scaled(1_000)`.
+  **Why:** at `scaled(200)` a holder's pool has fewer distinct keys than the 250 records the default `KnowledgeSpec` asks of it, so `_draw` never returned. The first ceiling run spun at 100% CPU for 2h19m with no output before it was stopped. A spec too large for its story is now an error that names the cause.
+  **Issue:** #620

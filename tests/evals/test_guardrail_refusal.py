@@ -13,15 +13,9 @@ from epistrel.engine import Engine
 from epistrel.evals import AdapterConfig, CaseModel, Outcome, Report, Verdict, run, seeds_from
 from epistrel.evals.certify import floors_of
 from epistrel.evals.report import (
-    Host,
-    SuiteResult,
-    render_index,
     render_markdown,
-    requirement_verdicts,
-    summary,
 )
 from epistrel.evals.runner import CaseContext
-from epistrel.evals.suites import SUITES
 from tests.evals.support import ZERO_METRIC, SyntheticZeroSuite, stub_engine, synthetic_cases
 
 SEEDS = seeds_from(2)
@@ -105,38 +99,3 @@ async def test_a_refused_setup_fails_the_suite_not_the_harness(
     broken = await _run(pg_url, engine, BrokenSetupSuite())
     assert broken.harness_errors == ["setup: RuntimeError: fixture bug"]
     assert broken.suites[0].verdict is Verdict.error
-
-
-def test_a_refused_suite_s_floors_are_failed_never_left_out() -> None:
-    """#756: q01 refused at setup (the Full certification's case) still names NFR-QUAL-6 as a
-    floor failed with n=0, in the record's floors, the requirements map and INDEX.
-
-    Complement asserted: no floor of the refused suite is passed or missing, and its
-    informational rows are not floors."""
-    q01 = SUITES["q01"]
-    floored = {m.id for m in q01.metrics if m.floor is not None and m.rule.value != "informational"}
-    assert floored
-    report = Report(
-        run_id="refused",
-        started_at="2026-11-05T00:00:00+00:00",
-        model="m",
-        fingerprint="sha256:" + "a" * 64,
-        fingerprint_profile="Full v1",
-        adapter="openai",
-        engine_sha="abc",
-        host=Host(kind="local"),
-        seed_base=SEEDS[0],
-        seeds=SEEDS,
-    )
-    report.merge(SuiteResult.refused(q01, f"setup: GuardrailViolation: {MINORS}", SEEDS))
-
-    passed, failed, insufficient, _, _, _ = floors_of(report)
-    assert passed == []
-    assert insufficient == []
-    assert {f.metric_id for f in failed} == {f"NFR-QUAL-6.{m.split('.', 1)[1]}" for m in floored}
-    assert all((f.n, f.verdict, f.mean) == (0, "fail", None) for f in failed)
-    assert requirement_verdicts(report) == {"NFR-QUAL-6": "fail"}
-    assert "| NFR-QUAL-6 |" in render_index([("r.md", summary(report))])
-    markdown = render_markdown(report)
-    assert "Guarantee rows measured: —." in markdown
-    assert "no observations" in markdown

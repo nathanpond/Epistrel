@@ -29,6 +29,7 @@ from epistrel.orchestrator.models.errors import (
     ResponseFormatRejected,
     map_provider_error,
 )
+from epistrel.orchestrator.models.metrics import recording
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
 from epistrel.orchestrator.models.prompts import example_instance
 from epistrel.orchestrator.models.registry import (
@@ -221,6 +222,58 @@ async def test_a_probe_on_a_one_call_budget_still_gets_its_answer() -> None:
     budget = TurnBudget(max_calls=1)
     assert await check(mal, budget) == GuardrailVerdict(violation=False, confidence=1.0)
     assert budget.used == 1
+
+
+async def test_the_refund_never_lets_the_call_pass_its_budget() -> None:
+    """#763: the refund returns the probe's one slot and no more. With the turn's other slot
+    already spent, the fallback takes the last one and its garbage answer gets no retry."""
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400")
+    mal.stub.fault("guardrail_check", "garbage")
+    budget = TurnBudget(max_calls=2)
+    budget.debit()  # an earlier call of the turn
+    assert await check(mal, budget) == Uncertain("budget_exhausted", 1)
+    assert budget.used == 2
+    assert len(mal.stub.calls) == 2  # the probe and the fallback
+
+
+async def test_the_refunded_probe_is_still_recorded_as_a_failed_call() -> None:
+    """#763: the probe costs no budget slot, yet it was sent, so ``model_calls`` keeps it."""
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400")
+    budget = TurnBudget()
+    with recording() as log:
+        assert await check(mal, budget) == GuardrailVerdict(violation=False, confidence=1.0)
+    assert [c.outcome for c in log.calls] == ["http_error", "ok"]
+    assert budget.used == 1
+
+
+async def test_the_fallback_is_the_calls_first_attempt() -> None:
+    mal = models(retries=0)
+    mal.stub.fault("guardrail_check", "response_format_400")
+    mal.stub.fault("guardrail_check", "garbage")
+    with recording() as log:
+        assert await check(mal) == Uncertain("parse_error", 1)
+    assert [(c.attempt, c.outcome) for c in log.calls] == [
+        (1, "http_error"),
+        (1, "invalid_output"),
+    ]
+
+
+@pytest.mark.parametrize("probed", [False, True])
+async def test_a_real_failure_is_charged_with_or_without_a_probe(probed: bool) -> None:
+    """#763: only the rejected probe is refunded. A provider failure on the call itself (here
+    a 500, on its own or on the fallback after a probe) keeps its budget slot."""
+    mal = models()
+    if probed:
+        mal.stub.fault("guardrail_check", "response_format_400")
+    mal.stub.fault("guardrail_check", "http_500")
+    budget = TurnBudget()
+    with pytest.raises(ModelUnavailable) as failed:
+        await check(mal, budget)
+    assert failed.value.details["attempts"] == 1
+    assert budget.used == 1
+    assert len(mal.stub.calls) == 1 + probed
 
 
 PROSE = "Sure! The text looks fine to me."

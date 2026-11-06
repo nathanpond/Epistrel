@@ -12290,3 +12290,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #756, #757
 - **Decision:** `test_committed_certifications` now also asserts two things. Every requirement a record's report gated (anything but `report_only`) appears among that record's floors, with E-12's types standing for NFR-QUAL-14. Each record's host kind matches its report's, and a hosted record names its hardware and server version.
   **Issue:** #756, #757
+- **Decision (Rule 3):** #756's unit test went into `test_certify_presets.py`, not `test_guardrail_refusal.py`. CI's `check-lexicon` refused it there: its docstring named NFR-QUAL-6, which made it an M4 part, and it used the M7 term "certification". Its docstring now names "its recall row" rather than the requirement ID, keeping that file's convention that its tests are no parts. Locally the gate had passed only because the parts file was stale. `check-parts --json` has to run first, as it does in CI.
+  **Issue:** #756

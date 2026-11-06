@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 
 import httpx2
 import openai
 import pytest
 
 from epistrel.core.errors import Unauthenticated
+from epistrel.core.policies.model import Target
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.access import ModelAccessLayer
@@ -46,6 +48,19 @@ from epistrel.orchestrator.models.structured import (
     unfence,
 )
 from epistrel.orchestrator.models.stub import GARBAGE, RETRY_AFTER
+from epistrel.orchestrator.policies.age import CastMember
+from epistrel.orchestrator.policies.input_gate import (
+    GateText,
+    input_budget,
+    input_gate,
+    input_policies,
+)
+from epistrel.orchestrator.policies.seeds.policies import (
+    MINOR_AGE_CONDITION,
+    MINORS_POLICY,
+    MINORS_POLICY_ID,
+)
+from epistrel.orchestrator.policies.store import GuardContext
 from tests.auth_support import auth_settings
 from tests.conftest import DUMMY_DSN
 from tests.model_support import config_key, mock_openai
@@ -145,7 +160,7 @@ async def test_a_schema_error_retry_keeps_the_calls_temperature_a_prose_one_does
 # -- the fallback: 400 or prose ---------------------------------------------------------------
 
 
-async def test_provider_400_falls_back_and_succeeds_on_attempt_two() -> None:
+async def test_provider_400_falls_back_and_succeeds_on_the_fallback() -> None:
     mal = models()
     mal.stub.fault("guardrail_check", "response_format_400")
     budget = TurnBudget()
@@ -157,7 +172,7 @@ async def test_provider_400_falls_back_and_succeeds_on_attempt_two() -> None:
     assert json.dumps(GuardrailVerdict.model_json_schema(), sort_keys=True, separators=(",", ":"))[
         :40
     ] in (fallback.messages[0].content)
-    assert budget.used == 2  # the probe debits the turn budget
+    assert budget.used == 1  # #759: the probe decided nothing, so it costs no budget call
 
     # Remembered per (base_url, model): the next call goes straight to the fallback.
     await check(mal)
@@ -170,6 +185,42 @@ async def test_the_probe_does_not_spend_a_retry() -> None:
     mal.stub.fault("guardrail_check", "response_format_400")
     assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
     assert len(mal.stub.calls) == 2
+
+
+async def test_the_probe_leaves_a_gate_budgeted_at_g_its_every_check() -> None:
+    """#759: story creation gates each character definition against the seeded minors policy
+    under a budget of exactly one call per text. On an endpoint that refuses ``json_schema``, the
+    probe spent a slot, the last definition's check could not be afforded, and the policy's
+    ``on_uncertain`` refused three harmless definitions. Every check now runs, and all pass."""
+    minors = replace(
+        policy(MINORS_POLICY["rule"], policy_id=MINORS_POLICY_ID),
+        applies_to=(Target.TEXT_INPUT, Target.TEXT_OUTPUT),
+        age_condition=MINOR_AGE_CONDITION,
+    )
+    cast = tuple(
+        CastMember(character_id=f"new:{n}", ordinal=n, true_age=age)
+        for n, age in enumerate((30, 12, 40))
+    )
+    context = GuardContext(policies=(minors,), cast=cast, threshold=18)
+    texts = [
+        GateText(f"characters[{n}].definition", text)
+        for n, text in enumerate(("The player.", "A boy.", "His aunt."))
+    ]
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400")
+    budget = input_budget(input_policies(context), texts)
+    assert budget.max_calls == 3
+    assert await input_gate(mal, context, texts, budget=budget) is None
+    assert [c.response_schema for c in mal.stub.calls] == ["GuardrailVerdict", None, None, None]
+    assert budget.used == 3
+
+
+async def test_a_probe_on_a_one_call_budget_still_gets_its_answer() -> None:
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400")
+    budget = TurnBudget(max_calls=1)
+    assert await check(mal, budget) == GuardrailVerdict(violation=False, confidence=1.0)
+    assert budget.used == 1
 
 
 PROSE = "Sure! The text looks fine to me."

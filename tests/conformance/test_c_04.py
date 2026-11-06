@@ -272,7 +272,7 @@ async def test_c_04__structured_output(
             budget=budget,
         )
         assert verdict == GuardrailVerdict(violation=False, confidence=1.0)
-        assert budget.used == 2  # the 400 probe, then the fallback that succeeded
+        assert budget.used == 1  # #759: the 400 probe is refunded; the fallback is the call
         if openai_kind:
             sent = ["response_format" in r.body for r in mock.requests]
             assert sent == [True, True, False]

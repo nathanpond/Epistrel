@@ -903,6 +903,7 @@ async def maybe_model(
         await conn.execute(
             update(entities).where(entities.c.id == character_id).values(character_id=character_id)
         )
+        turn_memo.forget("entity_character")  # #620: the entity is a character now
         await index_records(
             conn,
             [

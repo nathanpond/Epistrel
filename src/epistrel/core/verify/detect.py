@@ -700,6 +700,12 @@ def _actor(beat: _Beat) -> str | None:
     return beat.speaker
 
 
+def _head(beat: _Beat, mention: Mention) -> str:
+    """#611: a mention's last word, lowercased (``the text`` → ``text``)."""
+    words = beat.text[mention.span[0] : mention.span[1]].lower().split()
+    return words[-1].strip(".,;:!?\"'") if words else ""
+
+
 def _kind_of(beat: _Beat, entity_id: str) -> str | None:
     entry = beat.context.index.get(entity_id)
     return None if entry is None else entry.kind
@@ -1012,6 +1018,10 @@ def _transfer(
     items = [
         m for m in people if item_kinds is None or _kind_of(beat, str(m.entity_id)) in item_kinds
     ]
+    messages = lemma.options.get("messages", ())
+    if messages and any(_head(beat, m) in messages for m in items):
+        # #611: "Olivia sent the text": a communication, not an item changing hands.
+        return False
     recipient = None if recipient_m is None else str(recipient_m.entity_id)
     if recipient is None:
         others = [m for m in people if m not in items]

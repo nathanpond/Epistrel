@@ -82,7 +82,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from epistrel.core import states
+from epistrel.core import states, turn_memo
 from epistrel.core.enums import StateChangeKind, StateChangeSource, StateChangeStatus
 from epistrel.core.errors import ClockBackward, InvalidRequest, ModuleOff, StoryNotFound
 from epistrel.core.membership import Position, active_only
@@ -416,6 +416,7 @@ async def commit_anchor(
         beat=beat,
         slot_k=slot_k,
     )
+    turn_memo.forget(_BASIS)  # #620: the anchor changed
     # #197: the refinement re-plans the events held at a time of day (FR-CLOCK-18).
     from epistrel.core.world_clock import stops  # here: stops imports this package
 
@@ -485,6 +486,24 @@ async def time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
     """The story's time basis (see the module docstring): the clock's active advances, its
     anchor and bands when the story runs the clock (and a committing turn's in-turn times), the
     stand-in otherwise."""
+    key = (_BASIS, story_id)
+    found = turn_memo.in_transaction(conn, key)
+    basis: TimeBasis
+    if found is turn_memo.MISSING:
+        basis = await _stored_basis(conn, story_id)
+        turn_memo.put_in_transaction(conn, key, basis)
+    else:
+        basis = found
+    return basis if basis.advances is None else replace(basis, in_turn=_in_turn(story_id))
+
+
+_BASIS = "world_clock.time_basis"
+"""#620: ``time_basis``'s ``core.turn_memo`` key prefix. Within a turn attempt's transaction
+the basis changes only by ``advance`` and ``commit_anchor``, which forget it."""
+
+
+async def _stored_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
+    """``time_basis`` without its in-turn times: what the database holds."""
     row = await _story_row(conn, story_id)
     zero, epoch = int(row.story_minute_zero), row.story_epoch
     if await clock_level(conn, story_id) is None:
@@ -498,7 +517,6 @@ async def time_basis(conn: AsyncConnection, story_id: str) -> TimeBasis:
         advances=advances,
         anchor=None if anchor.is_unanchored else anchor,
         bands=tuple(found.bands),
-        in_turn=_in_turn(story_id),
     )
 
 
@@ -573,7 +591,17 @@ async def story_time_at(conn: AsyncConnection, story_id: str, position: AnyPosit
 
 async def _stamped_at(conn: AsyncConnection, story_id: str, at: Position) -> int | None:
     """The story-minute the turn stamped on an event at exactly ``at`` (its turn, variant,
-    slot, beat and step; a pre-0082 ``NULL`` step is 0), if any."""
+    slot, beat and step; a pre-0082 ``NULL`` step is 0), if any. #620: once per position per
+    transaction (an earlier turn's events do not change in it)."""
+    key = ("world_clock.stamped_at", story_id, at.turn, at.variant, at.slot_k, at.beat, at.step)
+    found = turn_memo.in_transaction(conn, key)
+    if found is turn_memo.MISSING:
+        found = await _read_stamped_at(conn, story_id, at)
+        turn_memo.put_in_transaction(conn, key, found)
+    return None if found is None else int(found)
+
+
+async def _read_stamped_at(conn: AsyncConnection, story_id: str, at: Position) -> int | None:
     from sqlalchemy import func
 
     from epistrel.core.tables.events import events
@@ -665,6 +693,7 @@ async def advance(
             paused_for_event_id=paused_for_event_id,
         ),
     )
+    turn_memo.forget(_BASIS)  # #620: the clock's advances changed
     if isinstance(applied, Violation):  # pragma: no cover - a forward advance breaks nothing
         raise ClockBackward(
             "the world clock never moves backward",

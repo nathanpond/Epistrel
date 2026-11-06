@@ -1,7 +1,7 @@
 {
   "category": "transfer",
   "language": "en",
-  "description": "Transfer language: an item changes hands. give-like verbs: holds(recipient, item) and not holds(giver, item); the recipient follows 'to' or is the first of two mentions after the verb, the giver precedes the verb. take-like verbs: holds(taker, item) and not holds(giver, item); the giver follows 'from'.",
+  "description": "Transfer language: an item changes hands. give-like verbs: holds(recipient, item) and not holds(giver, item); the recipient follows 'to' or is the first of two mentions after the verb, the giver precedes the verb. take-like verbs: holds(taker, item) and not holds(giver, item); the giver follows 'from'. #611: a send-like verb's 'messages' (a text, a message, word) are communications, not items: no transfer.",
   "predicate": "holds",
   "recipient_cues": [
     "to",
@@ -71,7 +71,18 @@
         "sent",
         "sending"
       ],
-      "direction": "give"
+      "direction": "give",
+      "messages": [
+        "text",
+        "message",
+        "email",
+        "e-mail",
+        "sms",
+        "reply",
+        "word",
+        "signal",
+        "wire"
+      ]
     },
     {
       "lemma": "toss",

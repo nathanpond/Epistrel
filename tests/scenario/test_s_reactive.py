@@ -50,6 +50,7 @@ from tests import multi_support as ms
 from tests import perception_support as ps
 from tests import reactive_support as rs
 from tests import state_support as ss
+from tests import testimony_support as ts
 from tests.auth_support import auth_settings
 from tests.event_support import rows, scalar
 from tests.respond_support import body, respond, respond_client
@@ -89,14 +90,14 @@ async def test_s_reactive(
     """See the module docstring (two renders, the narrated reactions, the bounds, caught)."""
     async with respond_client(stub_settings, engine) as (client, epistrel):
         stub = epistrel.models.stub
-        b = await rs.bar(client, engine)
+        b = await rs.bar(client, engine, item=ts.PARCEL)
         stub.reset()
         ms.renders_for(
             stub,
             "Bobby",
             rs.render(
                 beat("think", BOBBY_THINKS),
-                beat("say", "Olivia sent the text.", intent="sincere"),
+                beat("say", ts.claim_line(ts.PARCEL), intent="sincere"),
                 reactions=[
                     rs.reaction(b["Ada"], GLANCE),
                     # Ada reacts to Bobby's thought: she never perceived it.

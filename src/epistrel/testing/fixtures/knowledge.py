@@ -132,12 +132,16 @@ def key_of(planned: Planned) -> tuple[str, str, str]:
 
 
 def _draw(rng: random.Random, pool: Sequence[Planned], used: set[tuple[str, str, str]]) -> Planned:
-    """A planned record from ``pool`` whose key the holder has no record of yet."""
-    while True:
+    """A planned record from ``pool`` whose key the holder has no record of yet.
+
+    Raises ``ValueError`` when the draws run out (a spec asking more of a holder than the
+    story's pool holds) rather than spinning."""
+    for _ in range(50 * len(pool)):
         found = rng.choice(pool)
         if key_of(found) not in used:
             used.add(key_of(found))
             return found
+    raise ValueError(f"no unused record in a pool of {len(pool)}: the story is too small")
 
 
 def _gap(planned: Planned) -> Planned:

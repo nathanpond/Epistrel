@@ -7,7 +7,10 @@
   turn attempt (``core.turn_memo``; ~35 whole-partition reads a turn at P-04 scale before);
 - #619: the commit's story-constant reads (the erasure index's story subjects, the erasure
   ledger, each character's ``is_player``) once per turn, and the whole turn's statement count
-  under a recorded ceiling."""
+  under a recorded ceiling;
+- #620: a story's first multi-character turn, with P-04's per-character knowledge, commits
+  under a recorded statement ceiling (the clock's basis, the transaction's timestamp, each
+  holder and entity read once, not once per transition)."""
 
 from __future__ import annotations
 
@@ -174,3 +177,82 @@ async def test_new_epistemic_records_delete_no_references(
             await st._play(client, epistrel, story, ids)
     tables = {table for (keys,) in deletes for table, _ in keys}
     assert not tables & {"beliefs", "belief_transitions", "exposures"}, tables
+
+
+FIRST_TURN_COMMIT_MAX = 2_250
+"""#620: the ceiling on the commit statements of a story's first two-primary turn over P-04's
+per-character knowledge (200 beliefs and 50 unresolved exposures a character, 12 characters):
+measured after #620's per-transaction reads, 2,193 measured, with room for noise; 4,017 before."""
+SECOND_TURN_COMMIT_MAX = 360
+"""#620: the same story's second turn (340 measured; 569 before)."""
+
+
+def _in_commit() -> bool:
+    """Whether the statement being executed is the structured commit's (``write_turn_body`` is
+    on the awaiting stack: SQLAlchemy runs it in a greenlet whose parent holds the coroutine
+    frames)."""
+    import greenlet  # type: ignore[import-untyped]
+
+    parent = greenlet.getcurrent().parent
+    frame = parent.gr_frame if parent is not None else None
+    while frame is not None:
+        if frame.f_code.co_name == "write_turn_body":
+            return True
+        frame = frame.f_back
+    return False
+
+
+async def test_a_first_multi_character_turn_commits_under_its_ceiling(pg_url: str) -> None:
+    """#620: the first two-primary turn of a P-04 multi-character story (its knowledge layer,
+    its room, its stub render claims) commits under ``FIRST_TURN_COMMIT_MAX`` statements, and the
+    second under ``SECOND_TURN_COMMIT_MAX``.
+
+    Complement asserted: the first turn is the one with the lazy resolutions (it reports
+    ``lazy_resolution_capped``), so the ceiling measures the work the issue names."""
+    from perf.lite_smoke import multi
+    from sqlalchemy import event
+
+    from epistrel.core.context import RequestContext
+    from epistrel.testing.fixtures import knowledge, scale
+    from tests.perf.scale_support import scale_database
+
+    spec = scale.ScaleSpec.scaled(1_000)  # P-04's scale; a smaller story has too few records
+    async with scale_database(pg_url, spec) as run:
+        await knowledge.apply(run.db, spec, run.fixture.story, knowledge.KnowledgeSpec())
+        ref = await multi.prepare(run.lib, RequestContext(principal="p"), run.fixture.story, 0)
+        settings = auth_settings(
+            run.url,
+            model_adapter="stub",
+            stub_embedding_dimension=spec.dimension,
+            stub_render_claims=multi.render_claims(scale.person_names(spec.characters)[1]),
+        )
+        counts: list[int] = []
+        degradations: list[list[str]] = []
+        async with respond_client(settings, run.db) as (client, _):
+            found = [0]
+
+            def count(*_: Any) -> None:
+                if _in_commit():
+                    found[0] += 1
+
+            for _turn in range(2):
+                found[0] = 0
+                event.listen(run.db.sync_engine, "before_cursor_execute", count)
+                try:
+                    answer = await respond(
+                        client,
+                        ref.story_id,
+                        body(
+                            ref.player_id,
+                            "What now?",
+                            render_character_ids=list(ref.primary_ids),
+                        ),
+                    )
+                finally:
+                    event.remove(run.db.sync_engine, "before_cursor_execute", count)
+                assert answer.status_code == 200, answer.text
+                counts.append(found[0])
+                degradations.append(answer.json().get("degradation") or [])
+    assert "lazy_resolution_capped" in degradations[0], degradations
+    assert counts[0] <= FIRST_TURN_COMMIT_MAX, counts
+    assert counts[1] <= SECOND_TURN_COMMIT_MAX, counts

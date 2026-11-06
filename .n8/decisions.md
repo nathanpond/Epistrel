@@ -12253,3 +12253,17 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 1):** `testing.fixtures.knowledge._draw` gives up with a `ValueError` after 50 × the pool's size in draws, where it used to loop until it found an unused key. #620's ceiling test runs at P-04's `scaled(1_000)`.
   **Why:** at `scaled(200)` a holder's pool has fewer distinct keys than the 250 records the default `KnowledgeSpec` asks of it, so `_draw` never returned. The first ceiling run spun at 100% CPU for 2h19m with no output before it was stopped. A spec too large for its story is now an error that names the cause.
   **Issue:** #620
+
+## /n8-exec M7 (retry 7) — 2026-11-05
+
+- **Decision (owner):** #620's blocker is answered "(b) now, (a) later". A turn's lazy resolutions are capped by the statements their transaction spends as well as by their count. Batching the epistemic writes moves to #754 in M9. #620's first AC box is re-scoped to (b), with a comment and a "Replanned 2026-11-05" note in the box.
+  **Why:** on the P-04-scale fixture, each lazy resolution costs about 100 commit statements. The first turn's commit at a catch-up cap of 0 / 5 / 20 is 174 / 683 / 2,193 statements, so bounding the resolutions alone reaches the AC.
+  **Issue:** #620, #754
+- **Decision:** the budget is an engine constant, `exposure.MAX_LAZY_RESOLUTION_STATEMENTS_PER_TURN = 250`, not a new `character_knowledge` profile dial. It is counted per root transaction (a weak-keyed ledger), so the testimony, context-need and speech passes of one commit share it and a retried attempt starts afresh. The check runs before each resolution, so the last one can overrun by its own cost. Statements are counted, not timed.
+  **Why:**
+  - A dial means a profile-schema field, seeded presets and a backfill migration, which changes the profile API that Console reads. #754 is to raise or retire the budget once each resolution is cheap, so that cost buys little.
+  - A count is deterministic for a given story state, so a regenerated turn resolves the same exposures.
+  - A time budget would make what a character believes depend on how loaded the host is.
+
+  Cost if wrong: a deployment that wants more catch-up per turn can't tune it. Promoting the constant to a dial later is additive.
+  **Issue:** #620

@@ -315,7 +315,9 @@ class TurnBudget:
         self._claims.append(spent)
 
     def refund(self, purpose: str | None = None) -> None:
-        """Undo a debit for a call the adapter refused before sending anything."""
+        """Undo the latest debit: for a call the adapter refused before sending anything, or
+        for a ``response_format`` probe the endpoint rejected (#759). The probe was sent and
+        is recorded, but it decided nothing, so its slot goes to the fallback."""
         self.used = max(0, self.used - 1)
         kind = self.kind_of(purpose)
         if kind is not None and self.used_by_kind.get(kind, 0) > 0:

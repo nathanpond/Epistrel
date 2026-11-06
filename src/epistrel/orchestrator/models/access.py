@@ -406,7 +406,10 @@ class ModelAccessLayer:
             if _attempted(mapped):
                 self._record_failure(purpose, model, attempt, started, mapped, stage)
             elif budget is not None:
-                budget.refund(purpose)  # nothing was sent: the budget counts recorded calls only
+                # Nothing was sent, so nothing is recorded or charged. (A rejected
+                # ``response_format`` probe was sent: it is recorded here, and
+                # ``structured_call`` refunds it, #759.)
+                budget.refund(purpose)
             # ``from None``: the provider's message can echo the prompt (invariant 3).
             raise mapped from None
         result = _without_nul(purpose, result)

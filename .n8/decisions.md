@@ -12314,3 +12314,20 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #760, #761
 - **Decision:** the Full re-run is `certify --presets full … --retry-errors none --force`, against the existing journal (same fingerprint `4710ae26cb73`). Only q01's cases play live; every other suite's results are reused from the journal unchanged. The embeddings are on LM Studio's port 1235, because 1234 is another service on this host.
   **Issue:** #759
+
+## /n8-exec M7 (retry 10: verify bugs #763, #765; #764 blocked) — 2026-11-06
+
+- **Decision:** #763's complement tests all live in `tests/test_structured_output.py`, one per row of the issue's table:
+  - `test_the_refund_never_lets_the_call_pass_its_budget` (b)
+  - `test_the_refunded_probe_is_still_recorded_as_a_failed_call` (c)
+  - `test_a_real_failure_is_charged_with_or_without_a_probe` (d), parametrized with and without a probe
+  - `test_the_fallback_is_the_calls_first_attempt` (e)
+
+  Each test was confirmed to fail under its mutation. Mutation (c) also trips (b), because skipping the record sends the probe into `access.py`'s refund branch, which refunds it twice. No requirement IDs went into the docstrings, so the tests stay parts of no milestone.
+  **Issue:** #763
+- **Finding / Decision:** #765's order dependence came from #710's per-process `/models` listing cache (`reported_version._LISTINGS`), not from `ResponseFormatMemo` as the issue guessed. Run alone, the first completion triggers `GET /v1/models`, and that request was counted with the chat requests. The fix is in the test only. C-04 now counts `/chat/completions` requests only, and it calls `reported_version.forget()` at its start. The listing probe is C-18's to test.
+  **Issue:** #765
+- **Blocker:** #764 (P-09's "counted == recorded" vs the refunded probe) is labelled `blocked` + `needs-owner-action`. The two options are: (a) amend docs/04 P-09 and mark the probe in `model_calls`, or (b) count the probe outside the cap. Either one changes a docs/04 requirement or the budget contract, so it is the owner's call. #763's tests pin today's behaviour; option (b) would change it deliberately.
+  **Issue:** #764
+- **Decision:** the full suite gates in CI's shards, not locally. The memory note from retry 8 says a full local run takes ~75 min and trips #701's stored Hypothesis example. Locally I ran the six affected files (134 passed) and every static gate CI runs.
+  **Issue:** #763, #765

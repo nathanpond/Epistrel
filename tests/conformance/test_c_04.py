@@ -27,7 +27,7 @@ from epistrel.core.profiles import schema as profile_schema
 from epistrel.core.profiles.guarantees import GUARANTEE, Kind
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
-from epistrel.orchestrator.models import metrics, registry
+from epistrel.orchestrator.models import metrics, registry, reported_version
 from epistrel.orchestrator.models.access import build_inputs
 from epistrel.orchestrator.models.config import ConfigRow, KeyBox, describe
 from epistrel.orchestrator.models.errors import ModelUnavailable
@@ -61,6 +61,7 @@ from tests.conformance.suite import (
 from tests.event_support import new_story
 from tests.model_support import (
     MockOpenAI,
+    Recorded,
     admin_client,
     config_key,
     mock_openai,
@@ -223,9 +224,16 @@ async def _point_default_at(client: httpx.AsyncClient, mock: MockOpenAI) -> None
     await put_key(client, "default", DEFAULT_KEY)
 
 
+def _completions(mock: MockOpenAI) -> list[Recorded]:
+    """The mock's chat completion requests: not #710's ``GET /models`` version listing, which
+    runs at most once an hour per purpose per process, so whether a case sees it depends on the
+    cases before it (#765)."""
+    return [r for r in mock.requests if r.path.endswith("/chat/completions")]
+
+
 def _adapter_calls(engine: Engine, mock: MockOpenAI) -> int:
     if engine.models.adapter.name == "openai":
-        return len(mock.requests)
+        return len(_completions(mock))
     return len(engine.models.stub.calls)
 
 
@@ -235,13 +243,15 @@ async def test_c_04__structured_output(
     model_engine: Engine, adapter_settings: Settings, mock: MockOpenAI, engine: AsyncEngine
 ) -> None:
     """Structured results under both adapters: the ``json_schema`` path validates; an endpoint
-    that answers ``response_format`` with a 400 is served by parse-validate-retry on attempt 2;
+    that answers ``response_format`` with a 400 is served by parse-validate-retry, whose first
+    attempt is the call (#759: the rejected probe is refunded and costs no budget call);
     garbage on every attempt is ``Uncertain`` and the caller's conservative default decides.
 
     Complement asserted: the garbage text appears nowhere in the story's events, while the
     reply ``generation`` produced on a clean run does (so the search can find payload text)."""
     models = model_engine.models
     openai_kind = adapter_settings.model_adapter == "openai"
+    reported_version.forget()  # #765: no listing cached by an earlier case
     async with admin_client(adapter_settings, model_engine) as client:
         await _point_default_at(client, mock)
 
@@ -274,7 +284,7 @@ async def test_c_04__structured_output(
         assert verdict == GuardrailVerdict(violation=False, confidence=1.0)
         assert budget.used == 1  # #759: the 400 probe is refunded; the fallback is the call
         if openai_kind:
-            sent = ["response_format" in r.body for r in mock.requests]
+            sent = ["response_format" in r.body for r in _completions(mock)]
             assert sent == [True, True, False]
             mock.reject_response_format = False
         else:

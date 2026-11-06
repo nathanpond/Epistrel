@@ -48,7 +48,7 @@ from epistrel.orchestrator.models.structured import (
     uncertain_verdict,
     unfence,
 )
-from epistrel.orchestrator.models.stub import GARBAGE, RETRY_AFTER
+from epistrel.orchestrator.models.stub import GARBAGE, RETRY_AFTER, FaultKind
 from epistrel.orchestrator.policies.age import CastMember
 from epistrel.orchestrator.policies.input_gate import (
     GateText,
@@ -277,6 +277,51 @@ async def test_a_real_failure_is_charged_with_or_without_a_probe(probed: bool) -
     assert failed.value.details["attempts"] == 1
     assert budget.used == 1
     assert len(mal.stub.calls) == 1 + probed
+
+
+async def test_a_second_format_rejection_on_the_fallback_is_charged() -> None:
+    """#768: the fallback sends no ``response_format``, yet a misbehaving endpoint can still
+    answer it with a 400 naming one. That rejection is the call's own failure: it raises, keeps
+    its budget slot and is recorded unmarked, so no third, uncharged call is sent."""
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400", n=2)
+    budget = TurnBudget()
+    with recording() as log, pytest.raises(ModelUnavailable) as failed:
+        await check(mal, budget)
+    assert failed.value.details["attempts"] == 1
+    assert budget.used == 1
+    assert [c.response_schema for c in mal.stub.calls] == ["GuardrailVerdict", None]
+    assert [(c.outcome, c.probe) for c in log.calls] == [
+        ("http_error", True),
+        ("http_error", False),
+    ]
+
+
+@pytest.mark.parametrize("fault", ["http_500", "timeout"])
+async def test_a_real_failure_is_recorded_unmarked(fault: FaultKind) -> None:
+    """#769: only a refunded format probe carries ``probe`` (ADR-180). A provider failure,
+    after a probe or not, is counted and recorded, so it must not be marked."""
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400")
+    mal.stub.fault("guardrail_check", fault)
+    budget = TurnBudget()
+    with recording() as log, pytest.raises(ModelUnavailable):
+        await check(mal, budget)
+    assert [c.probe for c in log.calls] == [True, False]
+    assert budget.used == 1 == sum(not c.probe for c in log.calls)
+
+
+async def test_a_format_rejection_nobody_refunds_is_never_marked() -> None:
+    """#769: ``complete()`` sends the purpose's declared schema without ``format_probe``, so
+    nothing refunds its rejection. The call is charged, and recorded as an ordinary failure."""
+    mal = models()
+    mal.stub.fault("guardrail_check", "response_format_400")
+    budget = TurnBudget()
+    with recording() as log, pytest.raises(ResponseFormatRejected):
+        await mal.call("guardrail_check", CHECK, budget=budget)
+    assert mal.stub.calls[0].response_schema == "GuardrailVerdict"
+    assert [(c.outcome, c.probe) for c in log.calls] == [("http_error", False)]
+    assert budget.used == 1
 
 
 PROSE = "Sure! The text looks fine to me."

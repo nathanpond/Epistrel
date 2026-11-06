@@ -6,7 +6,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14"
 dependencies = [
-    "alembic>=1.14",
+    "alembic>=1.20.1",
     "boto3>=1.43.112",
     "cryptography>=50.0.2",
     "fastapi>=0.162.0",

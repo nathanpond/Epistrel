@@ -48,8 +48,9 @@ def stub_settings(pg_url: str) -> Settings:
 
 
 def _gated(turn: CensusTurn) -> None:
-    """The per-turn gate: counted == recorded, within the cap, and a clean turn is 1 + G."""
-    assert turn.used == turn.calls, turn
+    """The per-turn gate: counted == recorded less refunded format probes (ADR-180), within the
+    cap, and a clean turn is 1 + G."""
+    assert turn.used == turn.counted, turn
     assert turn.max_calls is None or turn.used <= turn.max_calls, turn
     if turn.clean:
         assert turn.calls == 1 + turn.reserved, turn

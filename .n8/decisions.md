@@ -12347,3 +12347,5 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #764
 - **Decision:** the CI-wait entry from retry 10 (above) rides in this PR.
   **Issue:** #763, #765
+- **Decision (Rule 1):** CI on PR #767 failed P-05 (`test (scenario-perf)`). P-05's session turn census applies the same counted==recorded gate to every Lite turn played, and the new P-09 probing turn records one call more than it counts. `CensusTurn` now carries `probes` (from `ModelCall.probe`), and the gate is `used == counted` (calls less probes). The census's no-budget fallback counts the same way. docs/04 P-05 doesn't state this invariant; it is P-09's (ADR-180), so the spec needs no change. Reproduced locally (P-09 + P-05: 1 failed with the old gate, 6 passed with the new one).
+  **Issue:** #764

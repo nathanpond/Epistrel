@@ -49,7 +49,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
@@ -226,7 +226,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 161 | A pending catalog-scope erasure withholds a policy naming its subject from a story's settings, and refuses a violation of it | Current | — |
 | 162 | An approximate-bounds residual takes the safe disposition with no entailment call | Current | — |
 | 163 | An extraction claim whose weak relation names something untracked is surfaced, not repaired | Partly superseded | 165 |
-| 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Amended | 166 |
+| 164 | Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning | Partly superseded | 166, 179 |
 | 165 | The render's own declared claims surface like extraction claims, and an unknown name or a pronoun with no antecedent counts as untracked | Current | — |
 | 166 | NFR-QUAL-7 (generation conformance) also moves to M9 | Current | — |
 | 167 | Visibility is decided by scope alone, and beliefs are a derived table with a rebuildable projection | Current | — |
@@ -241,6 +241,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 176 | A story character is erased from the catalog with its story named | Current | — |
 | 177 | A character may state what an author_fiat acquisition made it know | Current | — |
 | 178 | A Lite turn handles narrated time skips | Current | — |
+| 179 | M9's quality floors are met on a certified model, on any host tier | Current | — |
 
 ---
 
@@ -1667,14 +1668,14 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 
 ### ADR-164 — Model-bound quality floors that miss on the reference model after M4's engine fixes move to M9: Performance tuning
 **Status:** Accepted. Amends ADR-139 (the milestone sequence: M9 follows M8, and M9's gate is the full release gate).
-**Amended by:** ADR-166 — NFR-QUAL-7 (generation conformance) also moves to M9.
+**Amended by:** ADR-166 — NFR-QUAL-7 (generation conformance) also moves to M9; ADR-179 — M9's exit evidence is the floors met on a certified model, on any host tier.
 **Context:** M4's first live exit report on the reference model tier (`cydonia-24b-v4.3` on LM Studio; `docs/evals/775d2c4f43f3-2026-10-20.md`) missed several NFR-QUAL floors. On 2026-10-20 the owner decided that every engine-side cause is fixed in M4, and that quality or speed that depends on the model is deferred to a new milestone, **M9: Performance tuning**, placed after M8 (the GitHub milestones for bug fixes and the audit became M10 and M11; neither carries requirements, so §22 does not list them). A floor that still misses on the reference model after the engine fixes is reassigned to M9: its §22 assignment, its §15 rows and its test part markers move, so M4 can close with its engine work done. The re-run after the fixes (`docs/evals/2c61ec2dbc6c-2026-10-21.md`) leaves four such requirements. Each miss is the model's own judgment or output on a path the engine already handles as specified:
 - **NFR-QUAL-2** (E-01): false-contradiction rate 5.0 % ± 0.0 % against ≤ 2 % (false support 0.0 %, which passes). Every miss is a `residual-weak` case in which the entailment model commits to `contradicted` on an escalated weak predicate, the world-knowledge judgment FR-VERIFY-3 (b) sends to the model by design.
 - **NFR-QUAL-3** (E-03): faithfulness 90 % ± 5 % against ≥ 98 %. The consolidation model writes generalizations its source records do not entail; the engine already drops hedged statements (#462).
 - **NFR-QUAL-4** (E-05): recall 96.67 % ± 2.94 % against ≥ 95 %, precision 72.68 % ± 5.29 % against ≥ 70 %. Both means clear their floors, but the seed variance puts mean − SD below them, so the rate rule (NFR-QUAL-8) fails them.
 - **NFR-QUAL-14** (E-12, C-25): `insufficient_evidence` on every intervention type. The run produced at most 3 non-tied pairs for any type, against the 300 a type needs before it can pass, so the floor cannot be established on the reference tier yet. The owner moved its certification to M9 (#158, #474).
 
-**Decision:** NFR-QUAL-2, NFR-QUAL-3, NFR-QUAL-4 and NFR-QUAL-14 are assigned to **M9 — Performance tuning** (03 §22), which depends on M8 and delivers no new capability: it receives the model-bound quality floors and performance targets that still miss on the reference model tier after the engine work of the milestone that delivered their capability. Its exit evidence is those floors met on the reference model tier. The requirements' text and floors are unchanged, as are the labeled sets, their labels, the scorers and the gate rule. In the testing plan, each affected test is split into milestone parts (04 §13): the part that covers the capability stays in M4 (E-01 [M4: FR-VERIFY-1,3], E-03 [M4: FR-MEM-3,6], E-05 [M4: FR-COMMIT-3], E-12 [M4: NFR-QUAL-8], C-25 [M4: NFR-QUAL-13,15, FR-SCN-2]); the floor becomes an M9 part (E-01, E-03, E-05, E-12 and C-25 [M9: …]). E-01's M5 part keeps FR-VERIFY-2,5, and its viewpoint cases join NFR-QUAL-2's M9 part. E-12's M7 part keeps FR-PROF-15. A requirement that misses later in the same way moves by the same route: an ADR amending this one, its §22 and §15 rows, and an M9 part marker beside its test's M4 part.
+**Decision:** NFR-QUAL-2, NFR-QUAL-3, NFR-QUAL-4 and NFR-QUAL-14 are assigned to **M9 — Performance tuning** (03 §22), which depends on M8 and delivers no new capability: it receives the model-bound quality floors and performance targets that still miss on the reference model tier after the engine work of the milestone that delivered their capability. Its exit evidence is those floors met on the reference model tier *[superseded by ADR-179: on a certified model, on any host tier]*. The requirements' text and floors are unchanged, as are the labeled sets, their labels, the scorers and the gate rule. In the testing plan, each affected test is split into milestone parts (04 §13): the part that covers the capability stays in M4 (E-01 [M4: FR-VERIFY-1,3], E-03 [M4: FR-MEM-3,6], E-05 [M4: FR-COMMIT-3], E-12 [M4: NFR-QUAL-8], C-25 [M4: NFR-QUAL-13,15, FR-SCN-2]); the floor becomes an M9 part (E-01, E-03, E-05, E-12 and C-25 [M9: …]). E-01's M5 part keeps FR-VERIFY-2,5, and its viewpoint cases join NFR-QUAL-2's M9 part. E-12's M7 part keeps FR-PROF-15. A requirement that misses later in the same way moves by the same route: an ADR amending this one, its §22 and §15 rows, and an M9 part marker beside its test's M4 part.
 **Consequences:**
 - Invariant 7 holds: each requirement is still assigned to exactly one milestone, and each test part gates from exactly one. `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass with the new M9 row.
 - M4 closes on its engine work. Its exit evidence is the remaining evals (NFR-QUAL-5..8, 10, 13, 15) on the reference model tier.
@@ -1875,6 +1876,18 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 **Decision:** The owner's decision on #632 (2026-11-01). With the clock at `prompt_only` and `paced`, a Lite turn reads a narrated skip in its reply deterministically (a stated amount, or an activity of #199's lexicon with a word that has it elapse), classifies it with #199's rules (the player's input or the author's Lite notes invite it, else the model started it) and bounds it (`max_unprompted_skip_minutes`, an established activity from the verbatim window). A skip with no stated amount is estimated by at most one `time_estimation` call (#201), within the turn's budget, before the commit. An accepted skip replaces the turn's pacing advance; a refused or unestimated one is not applied, because Lite has no repair: the reply stands, the clock moves by pacing only, and the turn report lists why. A Lite skip that passes an open scheduled event is applied in full: due-event stops (FR-CLOCK-9) stay structured-only, since Lite cannot regenerate a reply to end at the interruption, and #196's lifecycle evaluates the events it passes as for any advance.
 **Alternatives considered:** Repairing a refused skip as the structured pipeline does was rejected: Lite has no repair loop, and adding one would break FR-LITE-7's one-generation-call contract. Estimating every activity mention was rejected: the lexicon names common words ("show", "watch"), so the detector also needs a word that has the activity elapse.
 **Consequences:** docs/03 FR-LITE-5 and FR-LITE-7 are amended (2026-11-01). docs/04 I-18 gains an M7 part (FR-CLOCK-7,8, FR-LITE-5,7). `core.world_clock.skips.narrates_elapsing` is the Lite detector (`DURATIVE`). Test: `tests/integration/test_i_18.py::test_i_18__m7_skips`.
+
+---
+
+### ADR-179 — M9's quality floors are met on a certified model, on any host tier
+**Status:** Accepted. Amends ADR-164 (M9's exit evidence; NFR-QUAL-7 joined it by ADR-166).
+**Context:** ADR-164 made M9's exit evidence the floors NFR-QUAL-2..4, 7 and 14 met on the reference model tier, the local `cydonia-24b-v4.3` on LM Studio. On 2026-11-04 the owner moved M7's preset certification (#235) to a hosted model, `claude-haiku-5-5` through Anthropic's OpenAI-compatible endpoint, and chose to keep certification records for several models side by side. A local run measured about 620 model calls an hour, 8 to 10 days for the three presets; the hosted run took hours. Standard, Full and Max were certified on Haiku on 2026-11-05 (PR #746, host tier `other`), and the floor misses there were filed in M9 (#735, #747 to #750, and #540 for NFR-QUAL-1). Under ADR-164, those misses could not close M9 and could not hold it open.
+**Decision:** The owner's decision of 2026-11-05 (`/n8-replan M9`). M9's exit evidence is NFR-QUAL-2..4, 7 and 14 met on a **certified model**: a model with committed certification records for Standard, Full and Max (`src/epistrel/core/seeds/certifications/`), on any host tier, in committed live reports on that model. The reference model tier is no longer required. The requirements, floors, labeled sets, scorers and gate rule (NFR-QUAL-8) are unchanged, and so is the stub CI gate.
+**Alternatives considered:** Keeping the reference tier made the hosted evidence advisory and left M9 on a machine-days run per attempt. Requiring both tiers made M9 strictly larger with no change in what the floors measure.
+**Consequences:**
+- docs/03 §22's M9 row and docs/04's M9 parts of E-01, E-03, E-05, E-06 and E-12 say "on a certified model". Invariant 7 holds: no requirement or part moves milestone.
+- M9's quality stories that named the reference model (#474, #528, #529, #540) now name a certified model. The latency and capacity stories (#502, #588, #602, #603, #685) are about the local tier itself and keep it.
+- A floor met on one certified model is evidence for that model only. A report on another model is a separate measurement, kept beside it.
 
 ---
 

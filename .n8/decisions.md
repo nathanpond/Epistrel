@@ -12188,7 +12188,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #235 stays open, labelled `needs-owner-action`. The tooling, the INDEX table, the CI path and the tests are built. The owner's multi-hour run on `cydonia-24b-v4.3` (:1235), with an embedding model, still produces the committed evidence. `test_committed_certifications` is `xfail` until the records are committed.
   **Issue:** #235
 
-## Ad-hoc — 2026-11-03
+## Ad-hoc — 2026-11-03 — reconciled by /n8-replan 2026-11-05 (M9)
 
 - **Change:** docs/04 §8 no longer says the presets "are certified in CI". The presets on the reference model are certified by a hand run, with the committed reports and certification records as evidence, and CI runs the certification path against the stub adapter.
   **Why:** owner decision 2 on #235: one hand-run script certifies the presets on the local reference model, and CI never calls a real model (#134).
@@ -12209,7 +12209,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the test's child resumes a queued import at start-up, so the planned crash point can fire before the first health probe. Locally it failed 1 time in 5 file runs. `main`'s code passed it in the runs I made, and the timing shift in this branch is enough to lose the race. The harness was wrong to treat an intended crash as a start-up failure. Regression test: `tests/integration/test_engine_process_ports.py::test_start_accepts_a_planned_crash_before_health`. It fails on the old `start`.
   **Issue:** #728 (discovered while working #726)
 
-## Ad-hoc — 2026-11-04 (#235's certification model; incremental eval runs)
+## Ad-hoc — 2026-11-04 (#235's certification model; incremental eval runs) — reconciled by /n8-replan 2026-11-05 (M9)
 
 - **Change:** M7's preset certification (#235) is run on a hosted model, Claude Haiku 5.5 (`claude-haiku-5-5`) through Anthropic's OpenAI-compatible endpoint, with the embeddings on LM Studio. It is no longer required on the local reference model `cydonia-24b-v4.3`. Certification records are kept per model: `INDEX.md`'s Presets table has one row per preset and model, `test_committed_certifications` asks for Standard, Full and Max on one common model (not necessarily `host.tier = reference`), and docs/04 §8 now says the presets are certified by hand runs, each on one model, with the records of several models side by side.
   **Why:** the owner's decision of 2026-11-04. The local run measured ~620 model calls an hour at `--concurrency 1`: 8–10 days for the three presets, longer than the owner can leave a machine running. A hosted Haiku-class model runs the same sets in hours for an estimated $25–75. The owner also wants results for every model kept for later analysis, to build quality profiles of several models over time, rather than one reference model's.
@@ -12221,6 +12221,19 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** a hosted run at high concurrency hits rate limits; a passing condition should not stand as the model's measured result, while a deterministic failure is the model's.
 - **Decision:** dropping `temperature` for a model that refuses it is not part of the configuration fingerprint.
   **Why:** the fingerprint names the model, so a model that refuses sampling parameters always runs at its default; the drop is a property of the model, not a setting. Cost if wrong: two deployments of the same model and settings could differ in sampling only if one endpoint accepted the parameter, which the model id already pins.
+
+## /n8-replan M9 — 2026-11-05
+
+- **Cause:** the ad-hoc entries of 2026-11-03 (#235 is a hand run) and 2026-11-04 (#235 is certified on a hosted model, with records kept per model), plus the findings of the `claude-haiku-5-5` certification (PR #746).
+- **Decision (owner):** M9's floors (NFR-QUAL-2..4, 7, 14) are met on a **certified model**, meaning any model with committed Standard, Full and Max records, on any host tier, instead of the local reference tier. ADR-179 amends ADR-164. docs/03 §22's M9 row and docs/04's M9 parts of E-01, E-03, E-05, E-06 and E-12 are reworded. No requirement or part moves milestone, so invariant 7 holds. `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass.
+  **Why:** the owner's choice at this replan. Hosted runs take hours where the local tier takes days, and the owner keeps profiles of several models.
+- **Issues touched:**
+  - #735: title, root cause (hidden reasoning tokens use up `max_tokens`), fix options and acceptance criteria rewritten; `sev:medium` added
+  - #737: a token-breakdown criterion added
+  - #474 (title too), #528, #529, #540: "reference model" became "a certified model"
+  - the M9 description: goal, definition of done, and a new "Replan 2026-11-05" section
+  - nothing closed or created by the replan itself; #747–#750 were filed earlier the same day from the run
+- **Not changed:** #502, #588, #602, #603 and #685 are about the local tier's latency and capacity, and keep it. M9 is still planned in full when M8 closes.
 
 ## /n8-exec M7 (retry 6) — 2026-11-05
 

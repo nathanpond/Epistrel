@@ -12440,6 +12440,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #692's pinned cases are built with `time_belief.derive` and go in as `@example`s: `WRAPPED`, approximate anchored at 23:00 and read at once, and `WRAPPED_HERE`, anchored at 00:00 and read 23 hours later, which is #693/#701's "about 23 hours" shape. The complement is objective 21:37. The mutation check is a plain unit test that injects the objective into the section and expects the oracle to raise. The two new unit tests carry no part marker. The property keeps `part("M6", "FR-CLOCK-11")`.
   **Why:** the stored `.hypothesis` blobs print an empty repr, so the case was rebuilt from the AC's description and confirmed against the old oracle, which fails it. A new M6 part would add M6-gated tests in M8, and invariant 7 asks for no such move.
   **Issue:** #692
+- **Decision:** #706's cap is `HNSW_MAX_SCAN_TUPLES = 100_000`, five times pgvector's default of 20,000. It is set by a third `SET LOCAL` beside `ef_search` and `iterative_scan` in `pipeline.py`.
+  **Why:** 100,000 covers one story's hot-vector bound (50,000 budget plus 2,000 pins) nearly twice. A story with fewer than `k` vectors reads up to the cap on every retrieval, so the cap is also that read's cost bound. A higher cap buys little at hobby scale and costs latency for small stories. Every story makes the same extra statement, so `test_retrieval_cost_is_fixed_and_indexed` is unchanged and passes.
+  **Issue:** #706
+- **Decision:** #706's repro test runs on a database of its own. It plants 1,000 *distinct* crowd vectors (a deterministic ring near `Q_VECTOR`) before the story, with the sole vector on the far side, `(-0.6, 0.8, 0, 0)`. Lowered to a cap of 100, the scan misses the vector; at the constant it finds it. Locally it passed 25 of 25 runs.
+  **Why:** the first attempts were flaky or failed outright. With identical crowd vectors, the scan missed the sole vector at every cap. When the sole vector was inserted first, it was the index's entry point and was found even at a cap of 100. Near the crowd, at distance 0.4, it was found at a cap of 100 in about half the runs. The module's shared database fails the high-cap half too, through its 5,000 identical `long_story` vectors (#784).
+  **Issue:** #706, #784
+- **Decision:** a discovered problem is filed as #784 (needs-triage, no milestone). #706's observed CI flake is most likely not the scan cap. The module's database holds about 6,000 to 10,000 vectors, below 20,000, and the song's vector `NEAR` is identical to 5,000 others. pgvector misses a sole vector beside thousands of identical ones at any cap: 100,000 and 1,000,000 tried, `scan_mem_multiplier` up to 100. The fixture fix (distinct vectors in `set_vectors`) is outside #706's AC and was not made, so `test_equal_scores_rank_by_story_position_not_id` can still flake.
+  **Why:** the owner chose the cap on the issue's suspected, unverified cause. Changing every fixture's vectors is a different fix from the one chosen, so it goes to triage.
+  **Issue:** #706, #784
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

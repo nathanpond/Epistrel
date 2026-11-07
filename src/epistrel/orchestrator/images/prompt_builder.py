@@ -38,7 +38,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.errors import EpistrelError, InvalidRequest
@@ -115,8 +115,8 @@ class ImagePromptTarget(BaseModel):
 
     kind: Literal["character", "scenario"]
     id: Ulid
-    draft: bool = False
-    version: int | None = Field(default=None, ge=1, le=2**31 - 1)
+    draft: StrictBool = False
+    version: StrictInt | None = Field(default=None, ge=1, le=2**31 - 1)
 
     @model_validator(mode="after")
     def _one_source(self) -> ImagePromptTarget:
@@ -178,7 +178,7 @@ class BaseAppearanceRequest(BaseModel):
         extra="forbid", frozen=True, json_schema_extra={"examples": [{"draft_revision": 3}, {}]}
     )
 
-    draft_revision: int | None = Field(default=None, ge=1)
+    draft_revision: StrictInt | None = Field(default=None, ge=1)
 
 
 class DraftedBaseAppearance(BaseModel):

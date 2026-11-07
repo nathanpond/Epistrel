@@ -32,6 +32,7 @@ from epistrel.orchestrator.models.registry import (
     DirectiveParseResult,
     GuardrailVerdict,
     ImageCheckVerdict,
+    ImagePromptResult,
     TimeEstimate,
 )
 from epistrel.orchestrator.models.stub import GARBAGE, StubAdapter
@@ -286,7 +287,9 @@ def test_strict_wire_schema_for_every_response_schema() -> None:
         assert wire is not None, schema.__name__
         body = {"response_format": {"json_schema": {"strict": True, "schema": wire}}}
         assert strict_refusal(body) is None, schema.__name__
-    assert strict_refusal({"response_format": {"json_schema": {"strict": True, "schema": full}}})
+    # The emulation bites on a full schema with bounds (a fixed one: the set's order varies).
+    bounded = ImagePromptResult.model_json_schema()
+    assert strict_refusal({"response_format": {"json_schema": {"strict": True, "schema": bounded}}})
     time_schema = strict_wire_schema(TimeEstimate.model_json_schema())
     assert time_schema is not None
     assert '"pattern"' in json.dumps(time_schema)

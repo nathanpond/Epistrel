@@ -12704,6 +12704,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `ImagePromptUnavailable` (503 `image_prompt_unavailable`) joins `api/openapi.py`'s `ERROR_STATUS`. `build_image_prompt` and `draft_base_appearance_prompt` get `OPERATION_ERRORS` rows. A discovered C-01 flake, `GET /stories/{id}/operations` accepting an integer `until`, is filed as #788 (needs-triage, no milestone).
   **Why:** C-01 refused the undocumented 404 and 409 statuses. #788 is a route #259 does not touch.
   **Issue:** #259, #788
+- **Decision (Rule 1):** CI run 42386620591 on `7d90e17` failed `test (rest)` on two tests. `test_library_strict_inputs` requires strict scalars in library input models, so `ImagePromptTarget.draft`/`.version` and `BaseAppearanceRequest.draft_revision` are now `StrictBool`/`StrictInt`. `test_strict_wire_schema_for_every_response_schema` (#761) asserted the emulation refuses "the last schema of the loop", which depends on set order: a schema bounded only by floats (`GuardrailVerdict`) or one with no wire form can come last, so it flaked. It now asserts the refusal on a fixed bounded schema (`ImagePromptResult`).
+  **Why:** the strict-inputs rule is the library's. The #761 test's set-order dependence surfaced on this commit.
+  **Issue:** #259, #761
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

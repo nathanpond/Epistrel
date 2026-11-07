@@ -26,6 +26,7 @@ from epistrel.api.routes import (
     health,
     history,
     image_jobs,
+    image_prompts,
     inspect,
     media,
     memories,
@@ -71,6 +72,7 @@ router.include_router(catalog_characters.router)
 router.include_router(catalog_scenarios.router)
 router.include_router(media.router)
 router.include_router(image_jobs.router)
+router.include_router(image_prompts.router)
 router.include_router(engine_profiles.router)
 router.include_router(certifications.router)
 router.include_router(personas.router)

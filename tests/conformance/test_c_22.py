@@ -9,8 +9,10 @@
   afresh each attempt.
 
 #257 adds ``test_c_22__m8_prompt`` (the prompt check before any generation); #258 adds
-``test_c_22__m8_output`` (the output check on generated and uploaded images). Every C-22 M8
-part lives in this file (the traceability gate takes one file per test ID and milestone)."""
+``test_c_22__m8_output`` (the output check on generated and uploaded images); #259 adds
+``test_c_22__m8_image_prompt_policy`` (a built catalog prompt refused by a rating policy).
+Every C-22 M8 part lives in this file (the traceability gate takes one file per test ID and
+milestone)."""
 
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ from epistrel.testing.images import (
     installed_checks,
     registered_target,
 )
+from tests import image_prompt_support as ip
 from tests.image_job_support import (
     CTX,
     MINORS,
@@ -573,3 +576,52 @@ async def test_c_22__m8_output(
         assert clip["check_status"] == "unchecked", "the image check judges images only"
         poster = (await client.get(f"/media/{clip['poster_media_id']}", headers=WRITE)).json()
         assert (poster["source"], poster["check_status"]) == ("uploaded", "passed")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-3")
+async def test_c_22__m8_image_prompt_policy(image_settings: Settings, engine: AsyncEngine) -> None:
+    """#259: a built catalog prompt goes through the same prompt check. A character draft
+    under a rating whose own policy forbids a word in image prompts, whose built prompt holds
+    that word: ``POST /image-prompts`` answers 422 ``guardrail_violation`` naming the policy,
+    the body holds no prompt, an ``image_prompt_rejected`` audit row records it, and no job is
+    created.
+
+    Complement: the same draft, with a prompt that does not hold the word, answers 200 with
+    the prompt."""
+    word = unique("wyvern").replace("-", "")
+    async with ip.prompt_app(image_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        rating, policy_id = await _rating_with_image_policy(lib, engine, word)
+        seen, hidden = await ip.references(client)
+        body = ip.character_body(seen, hidden)
+        body["metadata"]["content_rating_id"] = rating
+        created = await ip.create_character(client, body)
+        before = await ip.image_rows(engine)
+
+        ip.answer(stub, f"a tall woman feeding a {word} on a pier")
+        refused = await ip.build(client, "character", created["id"], "primary", draft=True)
+        assert refused.status_code == 422, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "guardrail_violation"
+        assert [v["policy_id"] for v in error["details"]["violations"]] == [policy_id]
+        assert word not in refused.text
+        assert "prompt" not in refused.json()
+        async with engine.connect() as conn:
+            audited = (
+                await conn.execute(
+                    text(
+                        "SELECT details FROM audit_log WHERE kind = 'image_prompt_rejected' "
+                        "AND details->>'target_id' = :id"
+                    ),
+                    {"id": created["id"]},
+                )
+            ).all()
+        assert len(audited) == 1
+        assert audited[0].details["entry_point"] == "image_prompt"
+        assert await ip.image_rows(engine) == before
+
+        ip.answer(stub, "a tall woman on a pier")
+        passed = await ip.built(client, "character", created["id"], "primary", draft=True)
+        assert passed["prompt"].startswith("a tall woman on a pier")
+        assert await ip.image_rows(engine) == before

@@ -82,12 +82,15 @@ DETERMINISTIC_FIRST_EXEMPT = frozenset(
         "directive_parse",
         "lite_rewrite_reach",
         "lite_rewrite_parse",
+        "image_prompt",
     }
 )
 """Purposes with no deterministic path (FR-MODEL-5's residual is the whole call).
 ``rewrite_parse`` (#223) reads the author's free-text instruction; everything after it
 (normalization, the questions, the plan) is deterministic code. ``rewrite_record`` (#224) is
-called only for a record the deterministic substitution cannot repair."""
+called only for a record the deterministic substitution cannot repair. ``image_prompt`` (#259)
+writes prose from the perceived inputs; the negative prompt, seed, references and size are
+deterministic and never pass through it."""
 
 SCHEMA_INSTRUCTION = (
     "Respond with only a JSON object, and nothing else, that validates against this JSON Schema:"

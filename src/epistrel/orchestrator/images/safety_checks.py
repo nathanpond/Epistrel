@@ -191,12 +191,14 @@ def safety_request(check: PromptCheck) -> tuple[SafetyRequest, Position | None]:
     )
     if check.kind is ImageJobKind.CATALOG:
         entry_kind, entry_id = check.origin.get("entry_kind"), check.origin.get("entry_id")
+        version = check.origin.get("version")
         return (
             replace(
                 base,
                 kind="catalog",
                 entry_kind=None if entry_kind is None else str(entry_kind),
                 entry_id=None if entry_id is None else str(entry_id),
+                entry_version=version if isinstance(version, int) else None,
             ),
             None,
         )

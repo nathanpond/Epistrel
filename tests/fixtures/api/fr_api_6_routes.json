@@ -614,7 +614,7 @@
       "item": "images — build an image prompt without generating",
       "method": "POST",
       "path": "/image-prompts",
-      "status": "not_yet",
+      "status": "present",
       "milestone": "M8"
     },
     {
@@ -1058,6 +1058,11 @@
       "method": "GET",
       "path": "/admin/stories/imports/{job_id}",
       "why": "FR-STORE-7/FR-ADMIN-4: story import (#250)"
+    },
+    {
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/draft/visual-identity/draft-base-prompt",
+      "why": "FR-CAT-4: a base appearance prompt drafted from the draft's appearance, not saved (#259)"
     }
   ],
   "outside": [

@@ -52,7 +52,7 @@ caption, MIME type, dimensions and generation metadata, exactly as the upload st
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Final
@@ -591,6 +591,44 @@ def audience_errors(draft: CharacterDraft) -> list[dict[str, Any]]:
     ]
 
 
+ADDONS_MAX: Final = 10
+"""The most add-ons a visual identity's ``adapter_params.addons`` may list (FR-CAT-4; #259)."""
+ADDON_AUDIENCE_RULE = (
+    "an add-on declares its audience (perceivable or restricted); there is no default"
+)
+
+
+def addon_errors(document: Mapping[str, Any] | CharacterDraft | None) -> list[dict[str, Any]]:
+    """The refusals of ``visual_identity.adapter_params.addons`` (FR-CAT-4; #259): a list of at
+    most ``ADDONS_MAX`` objects, each with a required ``audience`` of ``perceivable`` or
+    ``restricted`` (its other keys stay opaque), as a reference image needs one. Every other
+    ``adapter_params`` key is not looked at."""
+    if isinstance(document, CharacterDraft):
+        identity = document.visual_identity
+        params = None if identity is None else identity.adapter_params
+    else:
+        found = (document or {}).get("visual_identity")
+        params = found.get("adapter_params") if isinstance(found, Mapping) else None
+    if not isinstance(params, Mapping) or "addons" not in params:
+        return []
+    addons = params["addons"]
+    loc: Loc = ("visual_identity", "adapter_params", "addons")
+    if not isinstance(addons, list):
+        return [_error(loc, "list_type", "add-ons are a list of objects")]
+    if len(addons) > ADDONS_MAX:
+        return [_error(loc, "too_long", f"lists more than {ADDONS_MAX} add-ons")]
+    found_errors: list[dict[str, Any]] = []
+    audiences = {a.value for a in Audience}
+    for index, addon in enumerate(addons):
+        if not isinstance(addon, Mapping):
+            found_errors.append(_error((*loc, index), "dict_type", "an add-on is an object"))
+        elif "audience" not in addon:
+            found_errors.append(_error((*loc, index, "audience"), "missing", ADDON_AUDIENCE_RULE))
+        elif addon["audience"] not in audiences:
+            found_errors.append(_error((*loc, index, "audience"), "enum", ADDON_AUDIENCE_RULE))
+    return found_errors
+
+
 # -- what a publish requires --------------------------------------------------------------------
 
 PUBLISH_REQUIRED: Final = (
@@ -930,6 +968,7 @@ class CharacterPatch(CharacterModel):
 
 __all__ = [
     "ADAPTER_PARAMS_MAX_BYTES",
+    "ADDONS_MAX",
     "AUDIENCE_RULE",
     "BACKGROUND_FLAVOR_MAX",
     "DISPOSITION_AXES",
@@ -984,6 +1023,7 @@ __all__ = [
     "VisualIdentityPatch",
     "Warmth",
     "WarmthDisposition",
+    "addon_errors",
     "audience_errors",
     "character_rules",
     "missing_audiences",

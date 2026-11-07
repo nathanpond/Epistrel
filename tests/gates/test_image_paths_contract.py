@@ -1,11 +1,13 @@
-"""FR-IMG-12 (#257): the image generation path never imports the safety context or the image
-path's canonical-age reader.
+"""FR-IMG-12 (#257, #259): the image generation path never imports the safety context or the
+image path's canonical-age reader.
 
 The import-linter contract ``images-generation-path-has-no-ages`` forbids
-``orchestrator.images.adapters`` and ``orchestrator.images.port`` from importing
-``core.images.safety`` and ``core.catalog.ages`` (direct imports). These tests check that the
-contract exists as written, that the real tree keeps it, and that it bites: a temporary copy of
-the package whose OpenRouter adapter imports the age reader breaks it.
+``orchestrator.images.adapters``, ``orchestrator.images.port`` and
+``orchestrator.images.prompt_builder`` (#259) from importing ``core.images.safety`` and
+``core.catalog.ages`` (direct imports). These tests check that the contract exists as written,
+that the real tree keeps it, and that it bites: a temporary copy of the package whose OpenRouter
+adapter imports the age reader breaks it, and so does one whose prompt builder imports the safety
+context.
 """
 
 from __future__ import annotations
@@ -20,7 +22,11 @@ from tests.conftest import REPO_ROOT
 
 LINT_IMPORTS = Path(sys.executable).parent / "lint-imports"
 CONTRACT = "images-generation-path-has-no-ages"
-SOURCES = ["epistrel.orchestrator.images.adapters", "epistrel.orchestrator.images.port"]
+SOURCES = [
+    "epistrel.orchestrator.images.adapters",
+    "epistrel.orchestrator.images.port",
+    "epistrel.orchestrator.images.prompt_builder",
+]
 FORBIDDEN = ["epistrel.core.images.safety", "epistrel.core.catalog.ages"]
 SRC = REPO_ROOT / "src" / "epistrel"
 
@@ -86,3 +92,28 @@ def test_the_contract_bites_on_a_copy_with_a_forbidden_import(tmp_path: Path) ->
     assert broken.returncode == 1, broken.stdout + broken.stderr
     assert f"{CONTRACT} BROKEN" in broken.stdout
     assert "epistrel.core.catalog.ages" in broken.stdout
+
+
+def test_the_contract_bites_on_the_prompt_builder(tmp_path: Path) -> None:
+    """#259: a copy whose prompt builder imports the safety context breaks the contract."""
+    package = tmp_path / "epistrel"
+    shutil.copytree(SRC, package, ignore=shutil.ignore_patterns("__pycache__"))
+    (tmp_path / "importlinter.toml").write_text(
+        "[tool.importlinter]\n"
+        'root_package = "epistrel"\n\n'
+        "[[tool.importlinter.contracts]]\n"
+        f'name = "{CONTRACT}"\n'
+        'type = "forbidden"\n'
+        f"source_modules = [{', '.join(repr(m) for m in SOURCES)}]\n"
+        f"forbidden_modules = [{', '.join(repr(m) for m in FORBIDDEN)}]\n"
+        "allow_indirect_imports = true\n"
+    )
+    builder = package / "orchestrator" / "images" / "prompt_builder.py"
+    builder.write_text(
+        builder.read_text(encoding="utf-8") + "\nfrom epistrel.core.images import safety  # noqa\n",
+        encoding="utf-8",
+    )
+    broken = _lint(tmp_path, "--config", "importlinter.toml", "--no-cache")
+    assert broken.returncode == 1, broken.stdout + broken.stderr
+    assert f"{CONTRACT} BROKEN" in broken.stdout
+    assert "epistrel.core.images.safety" in broken.stdout

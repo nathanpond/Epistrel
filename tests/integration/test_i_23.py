@@ -6,6 +6,9 @@
 - #255: the bundled OpenRouter adapter's contract, against a stdlib replay of its image API
   (``tests/openrouter_support.py``) serving the synthetic fixtures and, once the owner has
   recorded them, the recorded ones.
+- #259: a catalog character's image prompt built from perceivable inputs and returned without
+  generating (``POST /image-prompts``), and its base appearance prompt drafted
+  (``tests/image_prompt_support.py``).
 
 Every I-23 M8 part lives in this file (the traceability gate takes one file per test ID and
 milestone)."""
@@ -33,8 +36,10 @@ from epistrel.api.deps import ImageAdapterDep
 from epistrel.config import Settings
 from epistrel.core import clock
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.tables.images import ImageJobKind, ImageJobStatus
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import errors as image_errors
+from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images import registry as images
 from epistrel.orchestrator.images.adapters import openrouter
 from epistrel.orchestrator.images.adapters.openrouter import (
@@ -47,6 +52,7 @@ from epistrel.orchestrator.images.errors import (
     ImageProviderTimeout,
     ImageProviderUnavailable,
 )
+from epistrel.orchestrator.images.jobs import ImageJobRequest, PreparedImageJob
 from epistrel.orchestrator.images.port import (
     AppliedParameters,
     Capabilities,
@@ -58,9 +64,18 @@ from epistrel.orchestrator.images.port import (
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.adapter import ModelParams
+from epistrel.testing.images import (
+    ScriptedChecks,
+    TestImageTarget,
+    installed_checks,
+    registered_target,
+)
+from tests import image_prompt_support as ip
 from tests.auth_support import auth_settings, bearer
+from tests.catalog_support import BASE, read, save
 from tests.conformance.test_c_09 import log_text
-from tests.image_support import Outputs, StubImageGenerator, registered
+from tests.image_prompt_support import prompt_app
+from tests.image_support import Outputs, StubImageGenerator, catalog_origin, registered
 from tests.media_support import png, set_media, upload
 from tests.model_support import (
     OPERATOR_HEADERS,
@@ -903,3 +918,186 @@ async def test_openrouter_reference_urls(lib: Engine, image_settings: Settings) 
     with pytest.raises(image_errors.ImageRequestInvalid) as missing:
         await references.resolve("01JZZZZZZZZZZZZZZZZZZZZZZZ")
     assert missing.value.reason == "reference_not_found"
+
+
+# -- the catalog prompt builder (#259) ------------------------------------------------------
+
+
+class _CandidateTarget(TestImageTarget):
+    """The test target as a catalog job's (#260 delivers the real one)."""
+
+    success_status = ImageJobStatus.CANDIDATES_READY
+
+    async def result_ids(self, conn: Any, job: Any) -> tuple[str, list[str]]:
+        return "candidate_ids", list(job.asset_ids)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-2; FR-CAT-4; FR-RATE-4")
+async def test_i_23__m8_catalog_prompt(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A 34-year-old character draft with a visual identity (a ``perceivable`` and a
+    ``restricted`` reference image, a restricted-details prompt, an add-on of each audience)
+    and a companion visual style. ``POST /image-prompts`` for its primary image answers the
+    prompt and its parameters. The prompt states the band ("mid thirties"), never the age, and
+    holds the style. The reference ids list only the perceivable image. The seed is the
+    identity's, the negative prompt is the identity's terms then the style's (deduplicated),
+    and the ratio is the primary image's 1:1 with no adapter configured. The rendered
+    ``image_prompt`` input carries the band, the style and the rating's image guidance as
+    fixed sections. Nothing is generated: no job, reservation, cost or media row.
+
+    Complement: the restricted reference, the restricted-details prompt, the restricted add-on
+    and the true age reach neither the captured rendered input nor the answer. The same
+    prompt and parameters, sent through an image job, reach the stub image adapter with the
+    identity's seed and the perceivable reference only."""
+    async with prompt_app(image_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        seen, hidden = await ip.references(client)
+        created = await ip.create_character(client, ip.character_body(seen, hidden))
+        character_id = created["id"]
+        await ip.style_companion(client, character_id)
+        before = await ip.image_rows(engine)
+
+        found = await ip.built(client, "character", character_id, "primary", draft=True)
+        assert found["target"] == {
+            "kind": "character",
+            "id": character_id,
+            "version": None,
+            "draft_revision": created["draft_revision"],
+        }
+        assert ip.BAND in found["prompt"]
+        assert ip.STYLE in found["prompt"]
+        assert ip.NEVER.search(found["prompt"]) is None
+        assert found["reference_image_ids"] == [seen]
+        assert found["seed"] == ip.SEED
+        assert found["negative_prompt"] == "text, watermark, Blurry, lens flare"
+        assert (found["size"], found["aspect_ratio"]) == (None, "1:1")
+        assert set(found) == {
+            "prompt",
+            "negative_prompt",
+            "seed",
+            "reference_image_ids",
+            "size",
+            "aspect_ratio",
+            "target",
+        }
+        assert await ip.image_rows(engine) == before
+
+        [call] = ip.prompt_calls(stub)
+        sent = ip.rendered(call)
+        for section in ("## Purpose", "## Subjects", "## Scene", "## Visual style"):
+            assert section in sent
+        assert "## Rating image guidance\nAll-ages imagery only." in sent
+        assert f"apparent age: {ip.BAND}" in sent
+        assert ip.STYLE in sent
+        assert ip.BASE_PROMPT in sent
+        assert "copper braid" in sent
+        assert ip.NEVER.search(sent) is None
+        for absent in (seen, hidden, str(ip.SEED), "watermark", "harbour-light-lora"):
+            assert absent not in sent
+
+        # The same prompt and parameters through a job: the adapter receives the identity's
+        # seed and the perceivable reference only.
+        generator = StubImageGenerator(script=[Outputs()])
+        with (
+            registered("stub_sync", generator),
+            registered_target(_CandidateTarget(), ImageJobKind.CATALOG),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            async with admin_client(image_settings, lib) as admin:
+                await put(
+                    admin,
+                    "image_generation",
+                    {"model": "img-1", "params": {"adapter": "stub_sync"}},
+                )
+                await put_key(admin, "image_generation", "sk-image-test-0001")
+            job = PreparedImageJob(
+                ImageJobKind.CATALOG,
+                {},
+                catalog_origin(character_id),
+                ImageJobRequest(
+                    prompt=found["prompt"],
+                    negative_prompt=found["negative_prompt"],
+                    seed=found["seed"],
+                    aspect_ratio=found["aspect_ratio"],
+                    reference_image_ids=tuple(found["reference_image_ids"]),
+                ),
+                "p-catalog",
+            )
+            async with engine.begin() as conn:
+                job_id = (await image_jobs.insert_image_job(conn, job, None)).job_id
+            done = await image_jobs.run_image_job(lib.image_runtime(), job_id, 0)
+            assert done["image_job"] == "candidates_ready", done
+        [received] = generator.requests
+        assert received.request.seed == ip.SEED
+        assert received.request.reference_images == (seen,)
+        assert received.request.prompt == found["prompt"]
+        assert ip.NEVER.search(received.request.model_dump_json(exclude={"seed"})) is None
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-CAT-4")
+async def test_i_23__m8_draft_base_prompt(image_settings: Settings, engine: AsyncEngine) -> None:
+    """``POST …/draft/visual-identity/draft-base-prompt`` drafts a base appearance prompt from
+    the draft's appearance (its authored age left out) and answers it with the draft's
+    revision, saving nothing: the draft is unchanged until an ordinary draft save stores the
+    (edited) text, which a ``full`` read then shows. A drafted text that states the true age or
+    uses a restricted-details term is regenerated once; a second such text is 503
+    ``image_prompt_unavailable``. A stale ``draft_revision`` is 409 ``draft_stale``; a draft
+    with no appearance is 422 at ``definition.appearance``.
+
+    Complement: the drafting call's input holds no age, no band, no style, no guidance and
+    no restricted detail."""
+    async with prompt_app(image_settings, engine) as (client, lib):
+        stub = lib.models.stub
+        seen, hidden = await ip.references(client)
+        body = ip.character_body(seen, hidden)
+        body["definition"]["appearance"] = "A 34-year-old woman with a copper braid."
+        created = await ip.create_character(client, body)
+        character_id, revision = created["id"], created["draft_revision"]
+        await ip.style_companion(client, character_id)
+        url = f"{BASE}/{character_id}/draft/visual-identity/draft-base-prompt"
+
+        ip.answer(stub, "tall woman, copper braid, 34", "tall woman, copper braid, sailcloth")
+        drafted = await client.post(url, json={"draft_revision": revision}, headers=ip.HEADERS)
+        assert drafted.status_code == 200, drafted.text
+        assert drafted.json() == {
+            "base_appearance_prompt": "tall woman, copper braid, sailcloth",
+            "draft_revision": revision,
+        }
+        calls = ip.prompt_calls(stub)
+        assert len(calls) == 2
+        for call in calls:
+            sent = ip.rendered(call)
+            assert "A woman with a copper braid." in sent
+            assert ip.NEVER.search(sent) is None
+            for absent in (ip.BAND, ip.STYLE, "All-ages imagery", "Visual style"):
+                assert absent not in sent
+        unchanged = await read(client, character_id, draft="true", projection="full")
+        assert unchanged.json()["draft_revision"] == revision
+        assert unchanged.json()["visual_identity"]["base_appearance_prompt"] == ip.BASE_PROMPT
+
+        edited = "tall woman, copper braid, sailcloth, salt-stained boots"
+        saved = await save(
+            client, character_id, revision, visual_identity={"base_appearance_prompt": edited}
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["visual_identity"]["base_appearance_prompt"] == edited
+
+        ip.answer(stub, f"tall woman, {ip.RESTRICTED_TERM} tattoo", "a 34 year old woman")
+        refused = await client.post(url, headers=ip.HEADERS)
+        assert refused.status_code == 503, refused.text
+        assert refused.json()["error"]["code"] == "image_prompt_unavailable"
+        assert refused.json()["error"]["details"] == {
+            "purpose": "image_prompt",
+            "reason": "invalid_output",
+        }
+        stale = await client.post(url, json={"draft_revision": revision}, headers=ip.HEADERS)
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "draft_stale"
+
+        bare = await ip.create_character(client, {"public_card": {"name": "Nobody"}})
+        missing = await client.post(
+            f"{BASE}/{bare['id']}/draft/visual-identity/draft-base-prompt", headers=ip.HEADERS
+        )
+        assert missing.status_code == 422
+        assert missing.json()["error"]["details"]["field"] == "definition.appearance"

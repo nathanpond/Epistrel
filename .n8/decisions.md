@@ -12668,6 +12668,42 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 1):** `test_i_24__m8_two_paths` (#257) asserted that "34" appears nowhere in the generator's request JSON. That JSON holds a random engine seed, and one local run failed on seed `1315043446`. The assertion now dumps the request without `seed`, and #258's `_checker_true_ages` does the same. The prompt and every other field are still checked.
   **Why:** a 10-digit random seed contains "34" in about a quarter of runs, so the test was a flake. The seed is never derived from an age.
   **Issue:** #258, #257
+- **Decision:** #259's canon half is `core/images/perceived.py`. It does more than the planner's `catalog_perceived_inputs`: it also holds `resolve_target` (draft, version or latest; 404 and `not_published`), `entry_document`, `read_perceived`, and the base-prompt inputs `base_appearance_inputs`/`BaseAppearanceInputs`, which keeps the true age and the restricted terms inside its `leaks` check. `orchestrator/images/prompt_builder.py` imports only `perceived`, so the import contract `images-generation-path-has-no-ages` holds with `prompt_builder` added. Its gate test checks the new source and adds a copy whose builder imports `core.images.safety`. The band is #170's `age_band` over `catalog_true_age`, unchanged. The "unknown third → mid" rule can never apply to a catalog entry's own true age, so it is left to #263's perceived ages.
+  **Why:** the planner's pass-2 split. Keeping the true age in Core, even for the drafted-text check, means no age value ever enters the Orchestrator's image path.
+  **Issue:** #259, #263
+- **Decision:** the route's body and answer models (`ImagePromptRequest`, `ImagePromptTarget`, `BuiltImagePrompt`, `ResolvedTarget`, `BaseAppearanceRequest`, `DraftedBaseAppearance`) live in `orchestrator/images/prompt_builder.py`, not in `api/routes/image_prompts.py`. The route module imports them.
+  **Why:** the planner wants `Engine.build_image_prompt` to take the route's shape, and the Engine imports nothing from `epistrel.api`.
+  **Issue:** #259
+- **Decision:** a version build's safety context reads that version. `SafetyRequest` gains `entry_version`, and `_catalog_candidates` reads `character_versions`/`scenario_versions` content when it is set. `safety_request` takes it from a catalog origin's `version`. Before this change, a catalog context always read the draft.
+  **Why:** Rule 1. #257's module docstring already says "a catalog image uses the version's age as written". A prompt built from version 1 must be judged by version 1's age and rating, not by a later draft's.
+  **Issue:** #259, #257, #260
+- **Decision:** the output schema `ImagePromptResult` is now `{prompt}` only (1 to 2,000 characters, never blank). #254's `negative_prompt` output field is gone, since the negative prompt is deterministic and never passes through the model. `ImagePromptSubject.description` widens to 4,000 characters (a catalog appearance's own bound) and `visual_style` to 2,000 (the scenario's style bound). `image_prompt` is not story-scoped, so no preset fingerprint moves, and `evals --check` and `evals index --check` pass. `docs/models.md` is regenerated.
+  **Why:** the AC (output `{prompt}`) and the planner's output line. The input bounds had been set before the catalog bounds were known.
+  **Issue:** #259, #254
+- **Decision:** the base-prompt variant uses the same `ImagePromptResult` schema. The second attempt, after a leaking draft, runs at the purpose's own temperature rather than at temperature 0.
+  **Why:** at temperature 0 a regeneration from the same input would usually return the same text. The AC asks for one regeneration, not a deterministic one.
+  **Issue:** #259
+- **Decision:** a draft with no appearance answers 422 at `definition.appearance` on both routes. The draft-base-prompt AC wrote `details.field: appearance`.
+  **Why:** the same missing field gets one path everywhere, and every other catalog error names the document path (`definition.true_age`, `metadata.content_rating_id`).
+  **Issue:** #259
+- **Decision:** authored ages are redacted (the planner's gate default) by `perceived.redact_ages`. It removes "N-year-old", "N years (old|of age)", "aged/age N", "N yo|y/o", their spelled-out forms (one to one hundred and ninety-nine), and the true age as a standalone number, then tidies the spacing and punctuation left behind. It applies to the appearance and to the base appearance prompt before either enters the view or the drafting call. A number that is no age ("Twenty-two freckles") is kept.
+  **Why:** the gate default, and the AC's "never the age". The base appearance prompt is author text that enters the prompt too.
+  **Issue:** #259
+- **Decision:** a scenario cover's scene is the cover constant followed by the public description ("establishing view of the setting; no people as subjects. <description>"). The Subjects section renders "(none)".
+  **Why:** the planner's fixed sections leave the public description no section of its own. It describes the setting the cover depicts.
+  **Issue:** #259
+- **Decision:** the add-on rule. A save refuses an add-on through `_validated` (`models.addon_errors`), at `body.visual_identity.adapter_params.addons[i].audience` with type `missing` or `enum`, beside the reference-image rule. A non-list `addons` and more than 10 are refused at `…addons`. A publish refuses a stored draft whose add-on is bad before the companion publish starts. That 422 is at `visual_identity.adapter_params.addons[i].audience`, with no `body.` prefix, because the publish body does not hold the draft.
+  **Why:** the AC ("a save or publish … 422 validation_error"). The planner says stored versions are not rewritten, and a save can no longer store a bad add-on, so the race between the publish's unlocked read and its locked one cannot let one through.
+  **Issue:** #259
+- **Decision:** the test names follow docs/04 IDs. The planned `test_draft_base_prompt` becomes `test_i_23__m8_draft_base_prompt` and `test_i_23__m8_catalog_prompt` keeps its name, both in `tests/integration/test_i_23.py`. `test_image_prompt_policy` becomes `test_c_22__m8_image_prompt_policy` in `tests/conformance/test_c_22.py`. `test_c_23__m8_visual_identity` and `test_addon_audience_required` (now `test_c_23__m8_addon_audience`) go in the new `tests/conformance/test_c_23.py`. `test_i_27__m8_style` goes in the new `tests/integration/test_i_27_m8.py`. The unit tests in `tests/test_prompt_builder.py`, including the `PerceivedView` structural test, carry no marker. I-27's story-image clause ("every image prompt for the story") is covered here by the scenario's cover prompt. #263's story variant adds story image prompts to the same file.
+  **Why:** a part named with no docs/04 ID is unmappable, and there is one file per test ID and milestone. No story-image prompt exists before #263.
+  **Issue:** #259, #263
+- **Decision:** the registries. The FR-API-6 `/image-prompts` row is now `present` and leaves `PENDING`. The draft-base-prompt route is an `extras` row. Both routes are `route_flags(mutating=False)` and are named in `replay_support.UNKEYED_READS`. C-03 gains three steps: the latest version, a version the character lacks (404 on both surfaces), and the base-prompt draft. I-21 gains the draft-base-prompt `Call(200)`. `docs/openapi.json` is regenerated.
+  **Why:** the replan's M3 #128 line.
+  **Issue:** #259
+- **Decision:** `ImagePromptUnavailable` (503 `image_prompt_unavailable`) joins `api/openapi.py`'s `ERROR_STATUS`. `build_image_prompt` and `draft_base_appearance_prompt` get `OPERATION_ERRORS` rows. A discovered C-01 flake, `GET /stories/{id}/operations` accepting an integer `until`, is filed as #788 (needs-triage, no milestone).
+  **Why:** C-01 refused the undocumented 404 and 409 statuses. #788 is a route #259 does not touch.
+  **Issue:** #259, #788
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

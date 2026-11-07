@@ -265,6 +265,7 @@ from epistrel.core.world_clock.service import ClockAdvanceRequest
 from epistrel.engine import Engine, operations
 from epistrel.evals.certify import install
 from epistrel.orchestrator.directives import DirectiveRequest
+from epistrel.orchestrator.images.prompt_builder import ImagePromptRequest
 from epistrel.orchestrator.jobs.handlers.certification_run import CertificationRunRequest
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
 from epistrel.orchestrator.lite.schemas import (
@@ -2384,6 +2385,33 @@ def _steps() -> list[Step]:
             ),
             group=SUGGESTION_GROUP,
         ),
+        # -- the image prompt builder (#259): the character's latest version, a version it does
+        # not have (404 on both), and a base appearance prompt drafted from its draft
+        Step(
+            "build_image_prompt",
+            lambda ids: Rest("POST", "/image-prompts", _image_prompt_body(ids)),
+            lambda e, ids: _validated(
+                e.build_image_prompt(
+                    CTX, ImagePromptRequest.model_validate(_image_prompt_body(ids))
+                )
+            ),
+        ),
+        Step(
+            "build_image_prompt",
+            lambda ids: Rest("POST", "/image-prompts", _image_prompt_body(ids, version=9)),
+            lambda e, ids: _validated(
+                e.build_image_prompt(
+                    CTX, ImagePromptRequest.model_validate(_image_prompt_body(ids, version=9))
+                )
+            ),
+        ),
+        Step(
+            "draft_base_appearance_prompt",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/draft/visual-identity/draft-base-prompt"
+            ),
+            lambda e, ids: _validated(e.draft_base_appearance_prompt(CTX, ids["character"])),
+        ),
         Step(
             "get_scenario",
             lambda ids: Rest("GET", "/catalog/scenarios/{scenario}"),
@@ -3521,6 +3549,11 @@ async def _scenario_published(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _scenario_status(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ScenarioStatusBody.of(await call))
+
+
+def _image_prompt_body(ids: Ids, **target: Any) -> dict[str, Any]:
+    """``POST /image-prompts`` for the surface's character's primary image (#259)."""
+    return {"target": {"kind": "character", "id": ids["character"], **target}, "purpose": "primary"}
 
 
 async def _validated(call: Awaitable[Any]) -> dict[str, Any]:

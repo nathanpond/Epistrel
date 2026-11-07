@@ -58,7 +58,12 @@ from epistrel.core.erasure.matcher import matcher, nfc
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.membership import POSITION_MAX, Position
 from epistrel.core.tables import characters, personas
-from epistrel.core.tables.catalog import character_catalog, character_versions, scenario_catalog
+from epistrel.core.tables.catalog import (
+    character_catalog,
+    character_versions,
+    scenario_catalog,
+    scenario_versions,
+)
 
 type Classification = Literal["adult", "minor", "indeterminate"]
 type Source = Literal["declared", "depicted", "named", "present", "figure"]
@@ -99,6 +104,9 @@ class SafetyRequest:
     viewpoint: str | None = None
     entry_kind: str | None = None
     entry_id: str | None = None
+    entry_version: int | None = None
+    """A catalog image built from a published version (#259): its document gives the ages and
+    the rating; ``None`` reads the draft."""
 
     def texts(self) -> tuple[str, ...]:
         """The texts names are looked for in, the prompt first (empty ones as ``""``)."""
@@ -422,21 +430,35 @@ def _catalog_candidate(
 
 
 async def _catalog_candidates(
-    conn: AsyncConnection, entry_kind: str | None, entry_id: str | None
+    conn: AsyncConnection,
+    entry_kind: str | None,
+    entry_id: str | None,
+    entry_version: int | None = None,
 ) -> tuple[list[_Candidate], str | None, bool]:
     """The entry's character(s), its rating, and whether the entry's own character is always a
-    subject (a character entry's images always depict it, FR-IMG-9)."""
+    subject (a character entry's images always depict it, FR-IMG-9). ``entry_version`` reads
+    that published version's document instead of the draft (#259)."""
     if entry_id is None:
         return [], None, False
     if entry_kind == "character":
         draft = await conn.scalar(
             select(character_catalog.c.draft).where(character_catalog.c.id == entry_id)
+            if entry_version is None
+            else select(character_versions.c.content).where(
+                character_versions.c.catalog_id == entry_id,
+                character_versions.c.version == entry_version,
+            )
         )
         if draft is None:
             return [], None, False
         return [_catalog_candidate(0, entry_id, draft)], rating_id_of(draft), True
     draft = await conn.scalar(
         select(scenario_catalog.c.draft).where(scenario_catalog.c.id == entry_id)
+        if entry_version is None
+        else select(scenario_versions.c.content).where(
+            scenario_versions.c.catalog_id == entry_id,
+            scenario_versions.c.version == entry_version,
+        )
     )
     if not isinstance(draft, Mapping):
         return [], None, False
@@ -481,7 +503,7 @@ async def build_safety_context(
     texts = request.texts()
     if request.kind == "catalog":
         candidates, rating_id, own = await _catalog_candidates(
-            conn, request.entry_kind, request.entry_id
+            conn, request.entry_kind, request.entry_id, request.entry_version
         )
         if own:
             for candidate in candidates:

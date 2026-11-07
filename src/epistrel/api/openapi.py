@@ -395,6 +395,7 @@ ERROR_STATUS: dict[str, int] = {
     "config_missing": 503,
     "database_unavailable": 503,
     "erasure_pending": 503,
+    "image_prompt_unavailable": 503,
     "ledger_unavailable": 503,
     "media_store_unavailable": 503,
     "model_unavailable": 503,
@@ -958,6 +959,23 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # A character's publish makes its companion's version too (#116): each refusal may be the
     # companion's (``details.entity``).
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    # The image prompt builder (#259): the entry, its version and its draft; the prompt the model
+    # writes and #257's prompt check on it.
+    "build_image_prompt": (
+        "not_found",
+        "not_published",
+        "draft_stale",
+        "guardrail_violation",
+        "image_prompt_unavailable",
+        "model_unavailable",
+        "erasure_pending",
+    ),
+    "draft_base_appearance_prompt": (
+        "not_found",
+        "draft_stale",
+        "image_prompt_unavailable",
+        "erasure_pending",
+    ),
     "get_character": ("not_published",),
     "create_scenario_draft": _SCENARIO_SAVE,
     # A companion scenario (#116): its slots are fixed, and it is archived, unarchived and

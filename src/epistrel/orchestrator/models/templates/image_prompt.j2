@@ -1,31 +1,30 @@
-{#- Image prompt (FR-IMG-2; #254, called by #259 and #263): writes the prompt the image adapter
-    generates from, using only what the image's audience perceived. -#}
+{#- Image prompt (FR-IMG-2; #254, built by #259 and #263): writes the prompt the image adapter
+    generates from, using only what the image's audience perceived. Every section is always
+    present ("(none)" when empty); the visual style and the rating's image guidance are fixed
+    sections (FR-SCN-11, FR-RATE-4). -#}
 {% block system %}
 You write prompts for an image-generation model. Describe only what is listed: the subjects
-as they appear, the scene, and the visual style. Never invent names, ages or story events.
-Answer only with a JSON object {"prompt": "...", "negative_prompt": "..."}.
-{% if rating_image_guidance %}
-
-## Image guidance
-{{ rating_image_guidance }}
-{% endif %}
-{% if visual_style %}
-
-## Visual style
-{{ visual_style }}
-{% endif %}
+as they appear, the scene, and the visual style. Follow the rating's image guidance. State each
+subject's apparent age as its band, never a number. Never invent names, ages or story events.
+Answer only with a JSON object {"prompt": "..."}.
 {% endblock %}
 {% block user %}
-{% if purpose %}
-Image for: {{ purpose }}
-{% endif %}
-{% if subjects %}
-Subjects:
+## Purpose
+{{ purpose or "(none)" }}
+
+## Subjects
 {% for subject in subjects %}
-- {{ subject.description }}{% if subject.age_band %} ({{ subject.age_band }}){% endif %}{% if subject.base_appearance_prompt %}; {{ subject.base_appearance_prompt }}{% endif +%}
+- {{ subject.description or "(no description)" }}; apparent age: {{ subject.age_band or "(none)" }}{% if subject.base_appearance_prompt %}; base appearance: {{ subject.base_appearance_prompt }}{% endif +%}
+{% else %}
+(none)
 {% endfor %}
-{% endif %}
-{% if scene %}
-Scene: {{ scene }}
-{% endif %}
+
+## Scene
+{{ scene or "(none)" }}
+
+## Visual style
+{{ visual_style or "(none)" }}
+
+## Rating image guidance
+{{ rating_image_guidance or "(none)" }}
 {% endblock %}

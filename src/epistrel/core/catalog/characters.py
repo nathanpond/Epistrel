@@ -86,6 +86,7 @@ from epistrel.core.catalog.models import (
     Name,
     ReferenceImageDetail,
     VisualIdentityDetail,
+    addon_errors,
     audience_errors,
     character_rules,
 )
@@ -139,7 +140,7 @@ def _validated(document: Any) -> dict[str, Any]:
         draft = CharacterDraft.model_validate(document)
     except ValidationError as exc:
         raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
-    refused = [*character_rules(draft), *audience_errors(draft)]
+    refused = [*character_rules(draft), *audience_errors(draft), *addon_errors(draft)]
     if refused:
         raise InvalidRequest.from_errors(refused, prefix=("body",))
     return draft.document()
@@ -445,7 +446,16 @@ class CharacterCatalog(CatalogService):
         with_companion: bool = False,
     ) -> CharacterPublished:
         """Publish the draft, and a companion version with it (FR-CAT-10;
-        ``core.catalog.companion``)."""
+        ``core.catalog.companion``). A stored draft whose add-on lacks an audience (saved before
+        #259 refused it) is refused first: 422 ``validation_error`` at
+        ``visual_identity.adapter_params.addons[i].audience``."""
+        async with db.connect() as conn:
+            draft = await conn.scalar(
+                select(character_catalog.c.draft).where(character_catalog.c.id == entry_id)
+            )
+        refused = addon_errors(draft if isinstance(draft, Mapping) else None)
+        if refused:
+            raise InvalidRequest.from_errors(refused)
         return await companion.publish(
             self,
             db,

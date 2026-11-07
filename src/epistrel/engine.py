@@ -120,6 +120,7 @@ from epistrel.core.idempotency import (
 )
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
+from epistrel.core.images import perceived as image_perceived
 from epistrel.core.media import assets as media
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.media import uploads as media_uploads
@@ -153,6 +154,7 @@ from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
 from epistrel.core.tables import events
 from epistrel.core.tables import stories as stories_table
+from epistrel.core.tables.images import ImageJobKind
 from epistrel.core.tables.media import MediaKind, MediaState
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.turn_gate import Concurrency, QueueItem
@@ -181,7 +183,10 @@ from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.images import jobs as image_jobs
-from epistrel.orchestrator.images import output_check
+from epistrel.orchestrator.images import output_check, prompt_builder
+from epistrel.orchestrator.images import registry as image_registry
+from epistrel.orchestrator.images import safety_checks as image_safety
+from epistrel.orchestrator.images.params import ImageGenerationParams
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
@@ -5567,6 +5572,98 @@ class Engine:
         await image_jobs.cancel_job(self.image_runtime(), job_id)
         async with self.db.connect() as conn:
             return await image_jobs.read_view(conn, job_id)
+
+    # -- image prompts (FR-IMG-2, FR-CAT-4; #259) ----------------------------------------------
+
+    async def _image_deployment(self) -> ImageGenerationParams | None:
+        """The configured image adapter's params, or ``None`` when none is configured."""
+        config = await self.models.images.config()
+        if image_registry.missing_of(config) is not None:
+            return None
+        return config.image_params or ImageGenerationParams()
+
+    async def build_image_prompt(
+        self, ctx: RequestContext, request: prompt_builder.ImagePromptRequest
+    ) -> prompt_builder.BuiltImagePrompt:
+        """Build a catalog image's prompt and its parameters without generating (FR-IMG-2):
+        from the entry's draft (``target.draft``), a published ``target.version``, or its latest
+        published version, using only what anyone browsing could see (the appearance, the
+        apparent age band and never the age, the ``perceivable`` references, the visual style
+        and the rating's image guidance). Then #257's prompt check runs on it. It creates no
+        job, reservation or cost row, and needs no image adapter. 404 for an unknown entry or
+        version; 422 ``not_published``, ``validation_error`` (a purpose the kind's images
+        cannot have, a missing true age, rating or appearance) or ``guardrail_violation`` (the
+        refused prompt is never returned); 503 ``image_prompt_unavailable``,
+        ``model_unavailable`` or ``erasure_pending``."""
+        target = request.target
+        await self._catalog_gate(target.kind, target.id)
+        deployment = await self._image_deployment()
+        async with self.db.connect() as conn, conn.begin():
+            resolved = await image_perceived.resolve_target(
+                conn, target.kind, target.id, draft=target.draft, version=target.version
+            )
+            view = await prompt_builder.build_catalog_image_inputs(
+                conn,
+                target.kind,
+                target.id,
+                version=resolved.version,
+                draft_revision=resolved.draft_revision,
+                purpose=request.purpose,
+                deployment=deployment,
+            )
+        built = await prompt_builder.write_image_prompt(self.models, view)
+        origin: dict[str, Any] = {
+            "entry_kind": target.kind,
+            "entry_id": target.id,
+            "version": resolved.version,
+            "draft_revision": resolved.draft_revision,
+        }
+        await image_safety.check_image_prompt(
+            self.image_runtime(),
+            image_jobs.PromptCheck(
+                kind=ImageJobKind.CATALOG,
+                target={"entry_kind": target.kind, "entry_id": target.id},
+                origin=origin,
+                request=image_jobs.ImageJobRequest(
+                    prompt=built.prompt, negative_prompt=built.negative_prompt
+                ),
+                principal=ctx.principal or SYSTEM_PRINCIPAL,
+            ),
+        )
+        return prompt_builder.BuiltImagePrompt(
+            prompt=built.prompt,
+            negative_prompt=built.negative_prompt,
+            seed=built.seed,
+            reference_image_ids=list(built.reference_image_ids),
+            size=built.size,
+            aspect_ratio=built.aspect_ratio,
+            target=prompt_builder.ResolvedTarget(
+                kind=target.kind,
+                id=target.id,
+                version=resolved.version,
+                draft_revision=resolved.draft_revision,
+            ),
+        )
+
+    async def draft_base_appearance_prompt(
+        self, ctx: RequestContext, character_id: str, draft_revision: int | None = None
+    ) -> prompt_builder.DraftedBaseAppearance:
+        """Draft a catalog character's ``visual_identity.base_appearance_prompt`` from its
+        draft's appearance (FR-CAT-4), with the ``image_prompt`` purpose, and return it with the
+        draft's revision without saving it. The author saves it, and may edit it, through an
+        ordinary draft save. The text states no exact age, no age band and no restricted
+        detail: a drafted text that does is regenerated once, then 503
+        ``image_prompt_unavailable``. 404 for an unknown character; 409 ``draft_stale`` for a
+        stale ``draft_revision``; 422 ``validation_error`` (``definition.appearance``) without
+        an appearance."""
+        async with self.db.connect() as conn:
+            inputs = await image_perceived.base_appearance_inputs(
+                conn, character_id, draft_revision
+            )
+        drafted = await prompt_builder.draft_base_appearance_prompt(self.models, inputs)
+        return prompt_builder.DraftedBaseAppearance(
+            base_appearance_prompt=drafted, draft_revision=inputs.draft_revision
+        )
 
     # -- erasure (FR-ADMIN-2,6, NFR-PRIV-2; #124) -------------------------------------------------
 

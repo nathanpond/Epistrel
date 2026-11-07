@@ -611,9 +611,9 @@ Writes an image prompt from what the image's audience has perceived: the subject
 
 - **Hot path:** no
 - **Default model:** the `generation` row of `model_config`, then the `default` row, per field, unless the purpose has its own
-- **Template:** `image_prompt.j2`
+- **Template:** `image_prompt.j2`; variants: base_appearance `image_prompt_base_appearance.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
-- **Returns:** `ImagePromptResult` (`prompt`, `negative_prompt`), validated strictly; its free text is author-facing
+- **Returns:** `ImagePromptResult` (`prompt`), validated strictly; its free text is author-facing
 
 **Receives**
 

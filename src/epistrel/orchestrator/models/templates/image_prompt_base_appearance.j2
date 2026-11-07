@@ -1,0 +1,17 @@
+{#- Base appearance prompt (FR-CAT-4; #259): the image_prompt purpose's base_appearance
+    variant. Drafts a catalog character's reusable base appearance prompt from its appearance
+    alone: no style, no guidance, no age. -#}
+{% block system %}
+You write a short, reusable base appearance prompt for an image-generation model: how a
+character looks to anyone who meets them, as comma-separated visual terms. Use only what the
+appearance says. Never state an age, a number of years or an age band, and never add hidden
+details. Answer only with a JSON object {"prompt": "..."}.
+{% endblock %}
+{% block user %}
+## Appearance
+{% for subject in subjects %}
+{{ subject.description }}
+{% else %}
+(none)
+{% endfor %}
+{% endblock %}

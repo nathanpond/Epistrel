@@ -1007,6 +1007,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{C}/listing-status"): Call(200, {"value": "public"}),
     # the advisory rating table (#121), of the draft: a read that writes nothing
     ("POST", f"{C}/rating-suggestion"): Call(200),
+    # a base appearance prompt drafted from the draft, not saved (#259)
+    ("POST", f"{C}/draft/visual-identity/draft-base-prompt"): Call(200),
     # -- catalog characters: reads of a `private` entry: the latest version as the card (the
     # default) and in full, version 1, and the draft in both projections
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),

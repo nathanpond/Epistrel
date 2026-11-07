@@ -35,7 +35,6 @@ PENDING: dict[tuple[str, str], str] = {
     ("GET", "/catalog/{type}/{id}/images/candidates/{cid}/content"): "#260",
     ("GET", "/catalog/{type}/{id}/images/candidates/{cid}/url"): "#260",
     ("POST", "/catalog/{type}/{id}/images/candidates/{cid}/attach"): "#260",
-    ("POST", "/image-prompts"): "#259",
     ("POST", "/stories/{id}/images"): "#261, #263",
     ("DELETE", "/stories/{id}/images/{image_id}"): "#261",
 }

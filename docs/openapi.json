@@ -1171,6 +1171,32 @@
         "title": "BackfillStartedBody",
         "type": "object"
       },
+      "BaseAppearanceRequest": {
+        "additionalProperties": false,
+        "description": "``POST …/draft/visual-identity/draft-base-prompt``'s optional body: the draft revision\nthe caller holds (409 ``draft_stale`` when the draft has moved on).",
+        "examples": [
+          {
+            "draft_revision": 3
+          },
+          {}
+        ],
+        "properties": {
+          "draft_revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Revision"
+          }
+        },
+        "title": "BaseAppearanceRequest",
+        "type": "object"
+      },
       "BeatPropositionModel": {
         "description": "A proposition a structured beat asserts, with its verdict (#150).",
         "properties": {
@@ -1905,6 +1931,80 @@
           }
         },
         "title": "BudgetOverride",
+        "type": "object"
+      },
+      "BuiltImagePrompt": {
+        "description": "A built image prompt and its parameters, for a consumer that generates its own images\n(FR-IMG-2): the prompt, the negative prompt, the seed, the ``perceivable`` reference image\nids, and exactly one of ``size`` and ``aspect_ratio``; and the resolved ``target``. No\nmodel, fingerprint or add-on.",
+        "properties": {
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aspect Ratio"
+          },
+          "negative_prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Negative Prompt"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "type": "string"
+          },
+          "reference_image_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reference Image Ids",
+            "type": "array"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "target": {
+            "$ref": "#/components/schemas/ResolvedTarget"
+          }
+        },
+        "required": [
+          "prompt",
+          "negative_prompt",
+          "seed",
+          "reference_image_ids",
+          "size",
+          "aspect_ratio",
+          "target"
+        ],
+        "title": "BuiltImagePrompt",
         "type": "object"
       },
       "Calendar": {
@@ -7809,6 +7909,25 @@
           "truncate_operation_id"
         ],
         "title": "DormantChainBody",
+        "type": "object"
+      },
+      "DraftedBaseAppearance": {
+        "description": "A drafted ``base_appearance_prompt``, not saved: the author saves it (and may edit it)\nthrough an ordinary draft save at ``draft_revision``.",
+        "properties": {
+          "base_appearance_prompt": {
+            "title": "Base Appearance Prompt",
+            "type": "string"
+          },
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "base_appearance_prompt",
+          "draft_revision"
+        ],
+        "title": "DraftedBaseAppearance",
         "type": "object"
       },
       "DroppedBody": {
@@ -15825,6 +15944,90 @@
           "updated_at"
         ],
         "title": "ImageJobBody",
+        "type": "object"
+      },
+      "ImagePromptRequest": {
+        "additionalProperties": false,
+        "description": "``POST /image-prompts``'s body: the target and the image's purpose (``primary`` or\n``gallery`` for a character, ``cover`` for a scenario).",
+        "examples": [
+          {
+            "purpose": "primary",
+            "target": {
+              "id": "01J8ZQ6T7Y3K5V9W2X4N6P8R0S",
+              "kind": "character"
+            }
+          },
+          {
+            "purpose": "cover",
+            "target": {
+              "draft": true,
+              "id": "01J8ZQ6T7Y3K5V9W2X4N6P8R0T",
+              "kind": "scenario"
+            }
+          }
+        ],
+        "properties": {
+          "purpose": {
+            "enum": [
+              "primary",
+              "gallery",
+              "cover"
+            ],
+            "title": "Purpose",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/ImagePromptTarget"
+          }
+        },
+        "required": [
+          "target",
+          "purpose"
+        ],
+        "title": "ImagePromptRequest",
+        "type": "object"
+      },
+      "ImagePromptTarget": {
+        "additionalProperties": false,
+        "description": "What the prompt is for: a catalog character or scenario, at its draft (``draft: true``,\nits current revision), a published ``version``, or with neither its latest published\nversion. #263 adds ``kind: story``.",
+        "properties": {
+          "draft": {
+            "default": false,
+            "title": "Draft",
+            "type": "boolean"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "character",
+              "scenario"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "ImagePromptTarget",
         "type": "object"
       },
       "ImpactPreviewRequest": {
@@ -34536,6 +34739,53 @@
           "time_reason"
         ],
         "title": "ResolutionBody",
+        "type": "object"
+      },
+      "ResolvedTarget": {
+        "description": "The target as it was built: the version used, or the draft revision.",
+        "properties": {
+          "draft_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Revision"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "character",
+              "scenario"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "version",
+          "draft_revision"
+        ],
+        "title": "ResolvedTarget",
         "type": "object"
       },
       "RespondRequest": {
@@ -64652,6 +64902,154 @@
         ]
       }
     },
+    "/catalog/characters/{character_id}/draft/visual-identity/draft-base-prompt": {
+      "post": {
+        "description": "Drafts the character's `visual_identity.base_appearance_prompt` from its draft's `definition.appearance` with the `image_prompt` model (FR-CAT-4), and answers it with the draft's `draft_revision` **without saving it**. Save it, edited or not, through an ordinary draft save (`PATCH /catalog/characters/{character_id}`). The text uses only the appearance: no style, no rating guidance, no exact age, no age band and no restricted detail (authored ages are left out before the model sees the appearance). A drafted text that states the true age, a number of years or a word of the restricted-details prompt is regenerated once, then 503 `image_prompt_unavailable`. The optional body's `draft_revision` is the revision the caller holds: 409 `draft_stale` when the draft has moved on. 404 for an unknown character; 422 `validation_error` (`definition.appearance`) without an appearance. Writes nothing and stores nothing under an `Idempotency-Key`.",
+        "operationId": "draft_base_appearance_prompt",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BaseAppearanceRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftedBaseAppearance"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `draft_stale`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Draft a base appearance prompt (not saved)",
+        "tags": [
+          "catalog"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
     "/catalog/characters/{character_id}/listing-status": {
       "put": {
         "description": "Set the entry's listing status (FR-CAT-11): `value` must be one of the deployment's `listing_status_values` (`GET /admin/settings`; default `private`, `in_review`, `public`), else 422 `invalid_listing_status` (`details.value`, `details.allowed_values`). Values are case-sensitive; surrounding spaces and tabs are trimmed. The change is recorded with the acting principal and time; setting the current value changes and records nothing (200). Allowed whatever the entry's status. The value is the consumer's own publishing workflow: Epistrel restricts no read, no story creation and no transition because of it (FR-AUTH-8). The character's companion scenarios change with it.",
@@ -72085,6 +72483,132 @@
         "tags": [
           "images"
         ]
+      }
+    },
+    "/image-prompts": {
+      "post": {
+        "description": "Builds the prompt and parameters Epistrel would generate a catalog image from, and returns them without generating (FR-IMG-2): for a consumer that makes its own images. The `target` is a catalog `character` (purpose `primary` or `gallery`) or `scenario` (purpose `cover`): its draft (`draft: true`, at its current revision), a published `version`, or with neither its latest published version. Archived and unlisted entries work.\n\nA catalog image is public-card content, so its prompt uses only what anyone browsing could see: the character's appearance (with authored exact ages left out), its **apparent age band** (\"mid thirties\"), never its age, its base appearance prompt, and its `perceivable` reference images. A scenario cover uses the public description only and depicts no slot characters. `restricted` reference images and add-ons and the restricted-details prompt never reach it. The visual style (a character's companion scenario's, or the scenario's own) and the entry's rating image guidance shape every image prompt and no text prompt. The `image_prompt` model writes the prompt. The `negative_prompt` (the identity's terms, then the style's, deduplicated), the `seed`, the `reference_image_ids` and the size never pass through the model. Exactly one of `size` and `aspect_ratio` is set: the identity's, else the configured image adapter's default size, else its default aspect ratio, else `1:1` (`primary`, `gallery`) or `16:9` (`cover`). `target` answers the version or draft revision used.\n\nThen the prompt is checked against every image-prompt policy, judged by true ages (#257). A violation is 422 `guardrail_violation` with `violations: [{policy_id, name, message}]`, and the refused prompt is never returned. It needs no image adapter or image checker, creates no job, reservation or cost row, and stores nothing under an `Idempotency-Key`. Two calls may answer different prompts: a generation job builds its prompt once and stores it.\n\n404 for an unknown entry or version. 422 `not_published` (never published, and neither `draft` nor `version` given), and 422 `validation_error` for `draft` with `version`, a purpose the kind's images cannot have (`body.purpose`), or a character without a true age (`definition.true_age`), a content rating (`metadata.content_rating_id`) or an appearance (`definition.appearance`). 503 `image_prompt_unavailable` (`details: {purpose: image_prompt, reason: model_unavailable | invalid_output}`) when the prompt cannot be written, 503 `model_unavailable` when the prompt check cannot reach its model, and 503 `erasure_pending` while a pending catalog-scope erasure reaches the entry.",
+        "operationId": "build_image_prompt",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImagePromptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuiltImagePrompt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `draft_stale`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `guardrail_violation`, `not_published`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `model_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Build an image prompt without generating",
+        "tags": [
+          "images"
+        ],
+        "x-epistrel-mutating": false
       }
     },
     "/media": {

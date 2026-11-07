@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.json_schema import SkipJsonSchema
 
 
@@ -1402,7 +1402,7 @@ class ImagePromptSubject(InputSchema):
     apparent age band and its catalog base appearance. Never a true age or a restricted
     reference."""
 
-    description: Annotated[str, StringConstraints(max_length=2_000), C.VISUAL_DESCRIPTOR]
+    description: Annotated[str, StringConstraints(max_length=4_000), C.VISUAL_DESCRIPTOR]
     age_band: Annotated[str, StringConstraints(max_length=64), C.VISUAL_DESCRIPTOR] = ""
     base_appearance_prompt: Annotated[
         str, StringConstraints(max_length=2_000), C.VISUAL_DESCRIPTOR
@@ -1412,11 +1412,13 @@ class ImagePromptSubject(InputSchema):
 class ImagePromptInputs(InputSchema):
     """One ``image_prompt`` call (FR-IMG-2; #254, built by #259 and #263): what the audience
     perceived of the subjects and the scene, the visual style, the rating's image guidance and
-    what the image is for. #257 to #259 may add fields."""
+    what the image is for (#259's ``orchestrator.images.prompt_builder`` builds it). The
+    ``base_appearance`` variant (``image_prompt_base_appearance.j2``) drafts a character's base
+    appearance prompt from ``subjects[0].description`` alone (FR-CAT-4)."""
 
     subjects: list[ImagePromptSubject] = Field(default_factory=list, max_length=16)
     scene: Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX), C.SCENE] = ""
-    visual_style: Annotated[str, StringConstraints(max_length=1_000), C.VISUAL_DESCRIPTOR] = ""
+    visual_style: Annotated[str, StringConstraints(max_length=2_000), C.VISUAL_DESCRIPTOR] = ""
     rating_image_guidance: Annotated[
         str, StringConstraints(max_length=4_000), C.RATING_GUIDANCE
     ] = ""
@@ -1424,18 +1426,31 @@ class ImagePromptInputs(InputSchema):
     """What the image is for (a catalog portrait, a story image at a position)."""
 
 
+IMAGE_PROMPT_MAX = 2_000
+"""The longest prompt ``image_prompt`` may answer (#259)."""
+
+
+def _not_blank_prompt(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
 class ImagePromptResult(BaseModel):
-    """``image_prompt``'s answer: the prompt the adapter generates from, and what to avoid."""
+    """``image_prompt``'s answer: the prompt the adapter generates from (1 to 2,000
+    characters, never blank). The negative prompt, seed and references never pass through the
+    model (#259)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt: str = Field(min_length=1, max_length=IMAGE_TEXT_MAX)
-    negative_prompt: str = Field(default="", max_length=IMAGE_TEXT_MAX)
+    prompt: Annotated[
+        str, Field(min_length=1, max_length=IMAGE_PROMPT_MAX), AfterValidator(_not_blank_prompt)
+    ]
 
     @classmethod
     def stub_example(cls, digest: str, messages: Sequence[Any]) -> dict[str, Any]:
         """The stub's default answer: a prompt named by the request's hash (#254)."""
-        return {"prompt": f"stub image {digest[:12]}", "negative_prompt": ""}
+        return {"prompt": f"stub image {digest[:12]}"}
 
 
 class ImageGenerationInputs(InputSchema):
@@ -2005,6 +2020,7 @@ IMAGE_PROMPT = Purpose(
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
     input_schema=ImagePromptInputs,
     template="image_prompt.j2",
+    variants=types.MappingProxyType({"base_appearance": "image_prompt_base_appearance.j2"}),
     hot_path=False,
     # What the audience perceived, visually: never a true age, a policy, a belief or story text.
     never_receives=_EVERYTHING - {C.VISUAL_DESCRIPTOR, C.SCENE, C.RATING_GUIDANCE, C.CONSTRAINT},
@@ -2012,7 +2028,8 @@ IMAGE_PROMPT = Purpose(
     story_scoped=False,
 )
 """``image_prompt`` (#254): defaults to ``generation``'s row (then the ``default`` row). It runs
-for catalog entries outside any story, so no engine profile routes it (#121's rule)."""
+for catalog entries outside any story, so no engine profile routes it (#121's rule). Its
+``base_appearance`` variant drafts a character's base appearance prompt (#259)."""
 
 IMAGE_CHECK = Purpose(
     name="image_check",
@@ -2299,6 +2316,7 @@ __all__ = [
     "IMAGE_CHECK",
     "IMAGE_GENERATION",
     "IMAGE_PROMPT",
+    "IMAGE_PROMPT_MAX",
     "IMPORTANCE_SCORING",
     "LITE_PARSE_FACTS_MAX",
     "LITE_PARSE_RECENT_MAX",

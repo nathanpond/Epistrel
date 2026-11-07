@@ -82,6 +82,8 @@ UNKEYED_READS = {
     "validate_profile": "an engine profile validation (FR-PROF-2): a dry run of an edit",
     "suggest_ratings_character": "an advisory rating suggestion (#111): writes nothing",
     "suggest_ratings_scenario": "an advisory rating suggestion (#111): writes nothing",
+    "build_image_prompt": "an image prompt built without generating (#259): writes nothing",
+    "draft_base_appearance_prompt": "a base appearance prompt drafted, not saved (#259)",
 }
 """Routes with a mutating method flagged ``mutating=False`` that write nothing. They are sent twice
 without a key as well: the repeat must answer the same and add no row."""

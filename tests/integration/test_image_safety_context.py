@@ -115,7 +115,7 @@ async def test_true_ages_agree_with_current_age(engine: AsyncEngine, clock_deliv
     assert ages.catalog_true_age({"definition": {"true_age": "17"}}) is None
 
 
-def _request(story: str, prompt: str, *subjects: DeclaredSubject, **texts: str) -> SafetyRequest:
+def _request(story: str, prompt: str, *subjects: DeclaredSubject, **texts: Any) -> SafetyRequest:
     return SafetyRequest(kind="story", story_id=story, prompt=prompt, subjects=subjects, **texts)
 
 

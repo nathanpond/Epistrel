@@ -853,6 +853,10 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "rebuild and a fork), which are indexed",
     "turn_queue": "transient: a queued turn's request until it runs (its input is then an event)",
     "jobs": "transient work items, deleted by the retention sweep",
+    "image_jobs": "an image job's prompt, request and outcome (#256); indexing and redacting "
+    "what names a subject is #266's, with the images themselves",
+    "image_reservations": "one provider attempt per row (#256): tokens, send states, provider "
+    "references, applied parameters and counts, no prompt",
     "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "
     "counts (#249); the archive's own lines are not indexed",
     "timers": "transient: a timer's kind and target id",

@@ -12,6 +12,7 @@ from epistrel.core.errors import InvalidRequest
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, validate_key
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.engine import Engine
+from epistrel.orchestrator.images.registry import ImageGeneratorHandle, require_image_adapter
 from epistrel.orchestrator.policies.schemas import POLICY_ID_PATTERN
 
 EXPECTED_REVISION_HEADER = "X-Epistrel-Expected-Revision"
@@ -104,6 +105,16 @@ def prefers_async(request: Request) -> bool:
 EngineDep = Annotated[Engine, Depends(get_engine)]
 ContextDep = Annotated[RequestContext, Depends(get_request_context)]
 RespondAsyncDep = Annotated[bool, Depends(prefers_async)]
+
+
+async def get_image_adapter(engine: Annotated[Engine, Depends(get_engine)]) -> ImageGeneratorHandle:
+    """The configured image adapter (#254), or 409 ``not_configured`` before the handler runs.
+    A generation route (#260, #263) declares it after its auth and target lookups and before
+    its body, as the engine's error order puts them."""
+    return await require_image_adapter(engine.models)
+
+
+ImageAdapterDep = Annotated[ImageGeneratorHandle, Depends(get_image_adapter)]
 
 
 # -- path parameters: a malformed id is 422 at ``path.<name>`` before anything runs (FR-API-4) --

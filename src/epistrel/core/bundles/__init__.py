@@ -107,6 +107,7 @@ REBUILD: frozenset[str] = frozenset(
 NEVER: frozenset[str] = frozenset(
     {
         "jobs",
+        "image_jobs",
         "turn_queue",
         "timers",
         "audit_log",

@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -159,10 +159,17 @@ def _claimed(row: Row[Any]) -> ClaimedJob:
     )
 
 
-async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJob | None:
+async def claim(
+    db: AsyncEngine,
+    worker_id: str,
+    *,
+    lease_s: float,
+    exclude_kinds: Collection[str] = (),
+) -> ClaimedJob | None:
     """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due.
     A job of a story the erasure reconciler blocked stays queued, unclaimed, until the story is
-    unblocked (#125); so does a job of a story being imported (#250)."""
+    unblocked (#125); so does a job of a story being imported (#250). Jobs of
+    ``exclude_kinds`` are left for another claim (a kind at its per-process cap, #256)."""
     now = clock.now()
     blocked = exists().where(
         stories.c.id == jobs.c.story_id,
@@ -175,6 +182,7 @@ async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJo
             jobs.c.status == QUEUED,
             jobs.c.due_at <= now,
             or_(jobs.c.story_id.is_(None), ~blocked),
+            *([jobs.c.kind.not_in(list(exclude_kinds))] if exclude_kinds else []),
         )
         .order_by(jobs.c.due_at, jobs.c.id)
         .limit(1)

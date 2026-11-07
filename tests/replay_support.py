@@ -61,6 +61,10 @@ UNKEYED_WRITES = {
         "an export file's deletion (#126): 204 also when the file is already gone; the export's "
         "record stays, so a repeat adds nothing"
     ),
+    "cancel_image_job": (
+        "an image job's cancel (#256, docs/02 §9): a job that already ended is answered "
+        "unchanged, so a repeat answers the same state and records nothing more"
+    ),
     "reconcile_erasure": (
         "the erasure ledger's reconciliation (#125, FR-ADMIN-7): it reapplies only what the "
         "ledger already records and records no operation, so a repeat is harmless; each run has "

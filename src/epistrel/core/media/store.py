@@ -15,6 +15,10 @@ Both adapters work from the **media root** on the local filesystem (``LocalStagi
   same filesystem, or one upload to the bucket; when the blob already exists, the staged copy is
   simply dropped). Until then the bytes are addressable by no asset. The media sweep removes
   staged files a crashed upload left behind.
+- Generated images (#256) are staged under ``<root>/tmp/images/<job id>/<attempt token>/<k>``
+  (``image_staging_dir``): private staging no asset, URL or read can reach (``open`` takes only
+  a checksum). Only the image staging sweep removes these directories (``staged_image_dirs``);
+  the media sweep's staging step lists files only, so it never sees them.
 - A resumable upload session (#107) receives each part into ``<root>/uploads/<upload id>/``:
   the local adapter keeps part ``n`` there as ``<n>``, the S3 adapter sends it to the bucket's
   native multipart upload under ``uploads/<upload id>`` and keeps nothing. ``assemble`` writes
@@ -55,6 +59,12 @@ from pathlib import Path
 from typing import BinaryIO, Protocol
 
 STAGING_DIR = "tmp"
+IMAGE_STAGING_DIR = "images"
+"""The generated images' private staging, under the staging area (#256)."""
+ATTEMPT_TOKEN_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+"""An image job attempt's token (a canonical lowercase uuid)."""
 UPLOADS_DIR = "uploads"
 """The local directory of the resumable upload sessions' parts (and the S3 key prefix of their
 multipart uploads)."""
@@ -181,6 +191,12 @@ class BlobStore(Protocol):
     def open_staging(self, name: str) -> BinaryIO: ...
 
     def staged_files(self) -> Iterator[tuple[Path, float]]: ...
+
+    def image_staging_dir(self, job_id: str, attempt_token: str | None = None) -> Path: ...
+
+    def staged_image_dirs(self) -> Iterator[tuple[str, Path, float]]: ...
+
+    def remove_image_staging(self, job_id: str, attempt_token: str | None = None) -> bool: ...
 
     # -- blobs --------------------------------------------------------------------------------
 
@@ -349,14 +365,67 @@ class LocalStaging:
         return self.staging_path(name).open("xb")
 
     def staged_files(self) -> Iterator[tuple[Path, float]]:
-        """``(path, age in seconds)`` of every file in the staging area."""
+        """``(path, age in seconds)`` of every staged upload: the files directly in the staging
+        area (never the generated images' directory, ``tmp/images/``, which only the image
+        staging sweep owns)."""
         if not self.staging.is_dir():
             return
         now = time.time()
         for entry in os.scandir(self.staging):
+            if entry.name == IMAGE_STAGING_DIR:
+                continue
             if entry.is_file(follow_symlinks=False) and not entry.name.startswith(PROBE_PREFIX):
                 with contextlib.suppress(FileNotFoundError):
                     yield Path(entry.path), now - entry.stat(follow_symlinks=False).st_mtime
+
+    # -- generated images' private staging (#256) ---------------------------------------------
+
+    @property
+    def image_staging(self) -> Path:
+        return self.staging / IMAGE_STAGING_DIR
+
+    def image_staging_dir(self, job_id: str, attempt_token: str | None = None) -> Path:
+        """Where image job ``job_id`` (a ULID) stages its outputs: the job's directory, or the
+        directory of its attempt ``attempt_token`` (a uuid) inside it. Neither is created."""
+        if not STAGED_NAME_PATTERN.fullmatch(job_id):
+            raise ValueError("an image job's staging is named by its job id")
+        directory = self.image_staging / job_id
+        if attempt_token is None:
+            return directory
+        if not ATTEMPT_TOKEN_PATTERN.fullmatch(attempt_token):
+            raise ValueError("an attempt's staging is named by its attempt token")
+        return directory / attempt_token
+
+    def staged_image_dirs(self) -> Iterator[tuple[str, Path, float]]:
+        """``(job id, directory, age in seconds)`` of every image job's staging directory, its
+        age counted from the latest change to it or to one of its attempts' directories."""
+        if not self.image_staging.is_dir():
+            return
+        now = time.time()
+        with os.scandir(self.image_staging) as entries:
+            found = sorted(
+                (entry.name, Path(entry.path))
+                for entry in entries
+                if entry.is_dir(follow_symlinks=False) and STAGED_NAME_PATTERN.fullmatch(entry.name)
+            )
+        for job_id, path in found:
+            try:
+                latest = path.stat().st_mtime
+                with os.scandir(path) as attempts:
+                    for attempt in attempts:
+                        if attempt.is_dir(follow_symlinks=False):
+                            latest = max(latest, attempt.stat(follow_symlinks=False).st_mtime)
+            except FileNotFoundError:
+                continue
+            yield job_id, path, now - latest
+
+    def remove_image_staging(self, job_id: str, attempt_token: str | None = None) -> bool:
+        """Remove a job's staging directory (or one attempt's); ``False`` when it was gone."""
+        directory = self.image_staging_dir(job_id, attempt_token)
+        if not directory.exists():
+            return False
+        shutil.rmtree(directory)
+        return True
 
     # -- the upload sessions' local directories ---------------------------------------------
 
@@ -576,8 +645,10 @@ class LocalFilesystemStore(LocalStaging):
 
 
 __all__ = [
+    "ATTEMPT_TOKEN_PATTERN",
     "CACHE_CONTROL",
     "CHECKSUM_PATTERN",
+    "IMAGE_STAGING_DIR",
     "STAGING_DIR",
     "SWEEP_CURSOR",
     "UPLOADS_DIR",

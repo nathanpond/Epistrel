@@ -10,7 +10,9 @@ one interval.
 **A loop iteration** reaps lapsed leases (``queue.reap``), claims one due job (earliest
 ``due_at`` first) and runs it: the handler for its kind (an unknown kind or a payload that no
 longer validates fails the job at once), with the lease renewed every third of
-``job_lease_seconds``. A heartbeat that finds the claim fenced cancels the handler. A handler
+``job_lease_seconds``. A heartbeat that finds the claim fenced cancels the handler. A kind with a
+per-process cap (``WorkerConfig.kind_caps``; #256: ``image_job`` at ``image_worker_concurrency``)
+is not claimed while that many of its jobs run in this process. A handler
 running past ``MAX_RUNTIME_S`` is a failed attempt. A finished handler's output goes through
 ``queue.commit_job`` (fenced, input versions rechecked).
 
@@ -44,7 +46,8 @@ import contextlib
 import logging
 import os
 import socket
-from collections.abc import Awaitable, Callable
+from collections import Counter
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -57,6 +60,10 @@ from epistrel.core import clock, orphans
 from epistrel.observability import instrument
 from epistrel.orchestrator.jobs import handlers, health, queue, timers
 from epistrel.orchestrator.jobs.types import ClaimedJob, JobContext, JobHandler, JobOutput
+
+IMAGE_JOB_KIND = "image_job"
+"""The image generation job's kind (#256; ``orchestrator.jobs.handlers.image_job``), capped per
+process by ``image_worker_concurrency``."""
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +154,9 @@ class WorkerConfig:
     """The process mode the heartbeats name (``all`` or ``worker``)."""
     timers: bool = True
     """Fire due timers and recurring tasks in the loop (tests of the bare queue turn it off)."""
+    kind_caps: Mapping[str, int] = field(default_factory=dict)
+    """At most this many jobs of a kind run at once in this process (#256: ``image_job`` at
+    ``image_worker_concurrency``, so turn jobs never wait behind image generation; 0: none)."""
 
     @classmethod
     def from_settings(
@@ -159,6 +169,7 @@ class WorkerConfig:
             listen=settings.worker_listen_enabled,
             concurrency=concurrency or settings.worker_concurrency,
             mode=mode or settings.mode,
+            kind_caps={IMAGE_JOB_KIND: settings.image_worker_concurrency},
         )
 
 
@@ -186,6 +197,7 @@ class Worker:
     _stopped: asyncio.Event = field(default_factory=asyncio.Event)
     _recovered: bool = False
     _started_at: datetime | None = None
+    _running: Counter[str] = field(default_factory=Counter)
 
     async def recovery_pass(self) -> RecoveryReport | None:
         """The start-up recovery pass, once per worker (``None`` when it already ran)."""
@@ -307,11 +319,30 @@ class Worker:
         return timeout
 
     async def run_one(self, worker_id: str) -> bool:
-        """Claim one due job and run it to its end; ``False`` when none was due."""
-        job = await queue.claim(self.db, worker_id, lease_s=self.config.lease_s)
+        """Claim one due job and run it to its end; ``False`` when none was due. A kind at its
+        cap (``kind_caps``) is not claimed; a capped kind's slot is taken before the claim (no
+        ``await`` between the count and the take), so loops racing for it never exceed it."""
+        taken = [k for k, cap in self.config.kind_caps.items() if self._running[k] < cap]
+        excluded = [k for k in self.config.kind_caps if k not in taken]
+        for kind in taken:
+            self._running[kind] += 1
+        try:
+            job = await queue.claim(
+                self.db, worker_id, lease_s=self.config.lease_s, exclude_kinds=excluded
+            )
+        finally:
+            for kind in taken:
+                self._running[kind] -= 1
         if job is None:
             return False
-        await self.execute(job)
+        capped = job.kind in self.config.kind_caps
+        if capped:
+            self._running[job.kind] += 1
+        try:
+            await self.execute(job)
+        finally:
+            if capped:
+                self._running[job.kind] -= 1
         return True
 
     async def execute(self, job: ClaimedJob) -> queue.CommitOutcome | str | None:

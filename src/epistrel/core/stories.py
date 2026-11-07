@@ -143,6 +143,7 @@ from epistrel.core.tables import (
     genesis_deferred,
     guardrail_check_results,
     idempotency_keys,
+    image_jobs,
     jobs,
     lite_summary_segments,
     media_assets,
@@ -245,6 +246,8 @@ STORY_TABLES: tuple[Table, ...] = (
     characters,
     turn_queue,
     jobs,
+    # Image jobs (#256): transient work, deleted with the story; not copied by a fork.
+    image_jobs,
     rating_check_jobs,
     guardrail_check_results,
     timers,
@@ -333,6 +336,7 @@ goes with that operation."""
 STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
     {
         jobs.name,
+        image_jobs.name,
         turn_queue.name,
         timers.name,
         audit_log.name,
@@ -373,7 +377,8 @@ source's renders, which ``GET /admin/evals/extraction-shadow`` counts once), and
 records (#155: the source's turns' entailment calls, which ``GET /admin/evals/escalation-yield``
 counts once), and the engine's State proposals (#192: the source's review queue, whose evidence
 may point past the fork point; the fork's own analysis proposes again), and the reconciliation
-marks (#211: the source's listings; the fork's outbox copies are records, never listed). Every
+marks (#211: the source's listings; the fork's outbox copies are records, never listed), and the
+image jobs (#256: work in progress, like ``jobs``). Every
 other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""

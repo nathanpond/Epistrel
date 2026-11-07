@@ -1,0 +1,41 @@
+{
+  "meta": {
+    "note": "no usage.cost; one entry without b64_json",
+    "true_height": [
+      16
+    ],
+    "true_width": [
+      16
+    ]
+  },
+  "request": {
+    "body": {
+      "model": "synthetic-author/synthetic-image",
+      "prompt": "a lighthouse at dusk"
+    },
+    "headers": {
+      "Authorization": "REDACTED",
+      "Content-Type": "application/json",
+      "X-Title": "Epistrel"
+    },
+    "method": "POST",
+    "url": "/api/v1/images"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "b64_json": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFElEQVR4nGNoIBEwjGoY1TB8NQAAJYSAEGy7FvQAAAAASUVORK5CYII="
+        },
+        {
+          "url": "https://example.invalid/x.png"
+        }
+      ],
+      "id": "REDACTED-3"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

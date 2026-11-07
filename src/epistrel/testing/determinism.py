@@ -39,6 +39,7 @@ from epistrel.core.ids import CROCKFORD, ULID_LENGTH
 OPERATIONAL_TABLES = frozenset(
     {
         "jobs",
+        "image_jobs",
         "timers",
         "recurring_tasks",
         "worker_heartbeats",
@@ -48,7 +49,8 @@ OPERATIONAL_TABLES = frozenset(
         "guardrail_check_results",
     }
 )
-"""Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping,
+"""Excluded: background work (image jobs too, #256: their attempt tokens are random), timers,
+heartbeats, the turn queue and idempotency bookkeeping,
 and a rating change's check and its verdict cache (#118)."""
 
 VOLATILE_KEYS = frozenset(

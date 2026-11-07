@@ -74,6 +74,11 @@ def library_input_models() -> dict[type[BaseModel], str]:
         for field in model.model_fields.values():
             for nested in _models_in(field.annotation):
                 visit(nested, via)
+            # A field checked later against one of several models (#254: a model-config PUT's
+            # ``params``, per purpose) names them as its ``json_schema_input_type``.
+            for item in field.metadata:
+                for nested in _models_in(getattr(item, "json_schema_input_type", None)):
+                    visit(nested, via)
 
     for name, member in vars(Engine).items():
         if name.startswith("_") or not inspect.iscoroutinefunction(member):

@@ -18,6 +18,7 @@ from epistrel.core.errors import Unauthenticated
 from epistrel.core.policies.model import Target
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.models import provider_schema
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.orchestrator.models.config import structured_settings
@@ -34,8 +35,10 @@ from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapt
 from epistrel.orchestrator.models.prompts import example_instance
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    DirectiveParseResult,
     GuardrailCheckInputs,
     GuardrailVerdict,
+    RewriteParseInputs,
 )
 from epistrel.orchestrator.models.structured import (
     SCHEMA_INSTRUCTION,
@@ -116,7 +119,7 @@ async def test_json_schema_path_validates_in_one_call() -> None:
     (call,) = mal.stub.calls
     assert call.response_schema == "GuardrailVerdict"
     assert all(SCHEMA_INSTRUCTION not in m.content for m in call.messages)  # not in the prompt
-    assert call.fields == ("external_data", "policy_prompt", "subjects", "text")
+    assert call.fields == ("external_data", "image_subjects", "policy_prompt", "subjects", "text")
     assert budget.used == 1
 
 
@@ -765,6 +768,97 @@ async def test_openai_endpoint_rejecting_response_format_falls_back() -> None:
     bodies = [r.body for r in server.requests]
     assert ["response_format" in b for b in bodies] == [True, False, False]
     assert len(server.requests) == 3  # no legacy max_tokens retry for a response_format 400
+
+
+def _as_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The local mock server (127.0.0.1) is api.anthropic.com for this test."""
+    monkeypatch.setattr(provider_schema, "ANTHROPIC_HOST", "127.0.0.1")
+
+
+async def test_anthropic_style_strict_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#761 (the owner's option 2): an endpoint that refuses a ``json_schema`` unless it is
+    ``strict: true`` with no bounds keywords (api.anthropic.com, emulated from its live 400s)
+    accepts the structured call in ``json_schema`` mode: one request, ``strict: true``, and no
+    ``probe`` call recorded. The reply is still validated against the full schema: a
+    ``confidence`` of 1.5, which the wire schema no longer bounds, is invalid output and is
+    retried. The ADR-180 probe of an endpoint that rejects ``json_schema`` outright is unchanged
+    (``test_openai_endpoint_rejecting_response_format_falls_back``)."""
+    _as_anthropic(monkeypatch)
+    with mock_openai(require_strict=True, script=[verdict(False, 1.5)]) as server:
+        mal = ModelAccessLayer(
+            auth_settings(DUMMY_DSN, model_adapter="openai", config_key=config_key()),
+            adapter=_fixed(f"{server.root}/v1"),
+        )
+        try:
+            with recording() as log:
+                assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
+        finally:
+            await mal.aclose()
+    first, retry = server.requests
+    for request in (first, retry):
+        json_schema = request.body["response_format"]["json_schema"]
+        assert json_schema["strict"] is True
+        assert "maximum" not in json_schema["schema"]["properties"]["confidence"]
+    assert [(c.outcome, c.probe) for c in log.calls] == [("invalid_output", False), ("ok", False)]
+
+
+async def test_strict_required_endpoint_not_anthropic_still_probes() -> None:
+    """#761 complement: the same endpoint behind any other host gets today's request (no
+    ``strict``), so it 400s, probes once and falls back (ADR-180): other endpoints are
+    unchanged, and the emulation does refuse the pre-#761 request."""
+    with mock_openai(require_strict=True) as server:
+        mal = ModelAccessLayer(
+            auth_settings(DUMMY_DSN, model_adapter="openai", config_key=config_key()),
+            adapter=_fixed(f"{server.root}/v1"),
+        )
+        try:
+            with recording() as log:
+                assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
+        finally:
+            await mal.aclose()
+    assert ["response_format" in r.body for r in server.requests] == [True, False]
+    assert "strict" not in server.requests[0].body["response_format"]["json_schema"]
+    assert [(c.outcome, c.probe) for c in log.calls] == [("http_error", True), ("ok", False)]
+
+
+async def test_anthropic_schema_without_wire_form_skips_json_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#761: on api.anthropic.com a schema with no strict wire form (``DirectiveParseResult``'s
+    free-form ``qualifiers`` dict) is sent as parse-validate-retry at once: no
+    ``response_format``, no probe, and nothing remembered, so the next guardrail check on the
+    same endpoint and model still goes in ``json_schema`` mode."""
+    _as_anthropic(monkeypatch)
+    answer = '{"classification": "durable", "steer_text": ""}'
+    with mock_openai(require_strict=True, script=[answer]) as server:
+        mal = ModelAccessLayer(
+            auth_settings(DUMMY_DSN, model_adapter="openai", config_key=config_key()),
+            adapter=_fixed(f"{server.root}/v1"),
+        )
+
+        async def endpoint(_: str) -> tuple[str, str, int]:
+            return f"{server.root}/v1", "m", 0  # what a configured deployment resolves
+
+        # Without a database ``endpoint`` names the adapter, not the URL the call goes to.
+        monkeypatch.setattr(mal, "endpoint", endpoint)
+        try:
+            with recording() as log:
+                result = await mal.structured_call(
+                    "directive_parse",
+                    DirectiveParseResult,
+                    RewriteParseInputs(instruction="Bobby holds a BA."),
+                    deterministic_first=lambda: None,
+                    budget=TurnBudget(),
+                )
+                assert await check(mal) == GuardrailVerdict(violation=False, confidence=1.0)
+        finally:
+            await mal.aclose()
+    assert result == DirectiveParseResult(classification="durable")
+    directive, guardrail = server.requests
+    assert "response_format" not in directive.body
+    assert '"title":"DirectiveParseResult"' in directive.body["messages"][0]["content"]
+    assert guardrail.body["response_format"]["json_schema"]["strict"] is True
+    assert [(c.outcome, c.probe) for c in log.calls] == [("ok", False), ("ok", False)]
 
 
 async def test_openai_html_body_is_garbage() -> None:

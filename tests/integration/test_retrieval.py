@@ -20,6 +20,7 @@ size, and every ``memories`` read served by an index.
 
 from __future__ import annotations
 
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
@@ -494,6 +495,84 @@ async def test_equal_scores_rank_by_story_position_not_id(scratch: Scratch) -> N
     assert [i for i in _ids(found.memories) if i in (earlier, later)] == [earlier, later]
     memory_items = [i.item_id for i in found.context.items if i.kind == "memory"]
     assert [i for i in memory_items if i in (earlier, later)] == [earlier, later]
+
+
+CAP = 100
+"""The lowered ``hnsw.max_scan_tuples`` of #706's repro (above ``ef_search``'s 40)."""
+CROWD = 1_000
+"""Another story's memories planted nearer the query than the sole vector: more than ``CAP``,
+fewer than the engine's ``HNSW_MAX_SCAN_TUPLES``."""
+ASIDE = (-0.6, 0.8, 0.0, 0.0)
+"""The sole vector: cosine distance 1.6 from ``Q_VECTOR``, on the far side of the space from
+the crowd (every crowd vector is under 0.03), so the scan reaches it only past the crowd."""
+
+
+async def _crowd(db: AsyncEngine, story_id: str) -> int:
+    """Stamp each of the story's memories with its own vector near ``Q_VECTOR``, all distinct
+    (thousands of identical vectors make a poor HNSW graph, one an iterative scan can fail to
+    cross at any cap)."""
+    async with db.begin() as conn:
+        ids = (
+            await conn.scalars(
+                text("SELECT id FROM memories WHERE story_id = :s ORDER BY id"), {"s": story_id}
+            )
+        ).all()
+        for n, memory_id in enumerate(ids):
+            turn = 2 * math.pi * n / len(ids)
+            vector = [1.0, 0.2 * math.cos(turn), 0.2 * math.sin(turn), 0.05 * (n % 7) / 7]
+            await conn.execute(
+                text(
+                    "UPDATE memories SET embedding = CAST(:v AS vector), "
+                    "embedding_model_version = :version WHERE id = :id"
+                ),
+                {"v": str(vector), "version": r.VERSION, "id": memory_id},
+            )
+    return len(ids)
+
+
+async def test_vector_arm_finds_sole_vector_past_scan_cap(
+    pg_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#706: the HNSW index is global, so the iterative scan reads every other story's nearer
+    vectors before it reaches a story's own. In one database, another story plants ``CROWD``
+    vectors nearer the query than a story's only one. With the scan capped below the crowd
+    (``CAP``, as pgvector's default 20,000 is below a large deployment's), the vector arm
+    misses it: the miss #706 suspected, made deterministic. At the engine's
+    ``HNSW_MAX_SCAN_TUPLES`` it comes back from the vector arm alone. Complement: a story with
+    no stamped vector gets no vector hit at either cap.
+
+    The database is the test's own: the module's holds the 5,000-turn fixture's identical
+    vectors, and past those the scan misses the sole vector at any cap (#784)."""
+    assert CAP < CROWD < pipeline.HNSW_MAX_SCAN_TUPLES
+    async with embedding_db(pg_url, stub_embedding_dimension=r.DIMENSION) as own:
+        await reset(own.db)
+        await r.pin(own.db)
+        await _past_the_cap(own.db, monkeypatch)
+
+
+async def _past_the_cap(db: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The crowd first: the index's first vector is its entry point, and a sole vector there
+    # would be read before any other.
+    crowd = await r.build_story(db, fillers=CROWD)
+    assert await _crowd(db, crowd.story_id) >= CROWD
+    story = await r.build_story(db)
+    sole = await r.memory(
+        db, story, "song", "Ann hums an old song.", turn=900, importance=0.5, vector=ASIDE
+    )
+    await r.set_vectors(db, story.story_id, ASIDE)  # the story's pinned version
+    bare = await r.build_story(db)
+    await r.memory(db, bare, "song", "Ann hums an old song.", turn=900, importance=0.5)
+
+    async def vector_hits(s: r.Story) -> dict[str, tuple[str, ...]]:
+        found = await _retrieve(db, s.story_id, "the brass lantern", embed=_vector(), touch=False)
+        return {m.id: m.arms for m in found.memories if "vector" in m.arms}
+
+    monkeypatch.setattr(pipeline, "HNSW_MAX_SCAN_TUPLES", CAP)
+    assert sole not in await vector_hits(story)  # the repro: capped below the crowd, missed
+    assert await vector_hits(bare) == {}
+    monkeypatch.undo()
+    assert await vector_hits(story) == {sole: ("vector",)}
+    assert await vector_hits(bare) == {}
 
 
 async def test_a_lite_story_retrieves_nothing(scratch: Scratch) -> None:

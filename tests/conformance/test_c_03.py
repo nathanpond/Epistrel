@@ -103,6 +103,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.image_jobs import ImageJobBody
 from epistrel.api.routes.inspect import (
     BeliefsBody,
     DivergencesBody,
@@ -255,6 +256,7 @@ from epistrel.core.stories import (
     StorySpec,
 )
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
+from epistrel.core.tables.images import ImageJobKind
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
@@ -808,6 +810,11 @@ LISTING_GROUP = "listing"
 NEW_OWNER = {"principal": "p-parity-owner"}
 RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
+IMAGE_OVERRIDE = {
+    "model": "parity-image",
+    "params": {"adapter": None, "default_aspect_ratio": "16:9", "default_quality": "high"},
+}
+CHECKER_OVERRIDE = {"base_url": "http://vision.parity/v1", "model": "parity-vision"}
 MEDIA_BYTES = png(nonce="c-03 parity")
 MEDIA = metadata(
     alt_text="The lighthouse door",
@@ -2632,6 +2639,24 @@ def _steps() -> list[Step]:
             lambda e, ids: _offboarding(e, ids["offboarding"]),
             group=PRINCIPAL_GROUP,
         ),
+        # -- image jobs (#256): a story job (written as an enqueue would: no route creates one
+        # before #260/#263), read, cancelled, and read again.
+        Step(
+            "get_image_job",
+            lambda ids: Rest("GET", "/image-jobs/{image_job}"),
+            lambda e, ids: _image_job(e, ids["image_job"]),
+            prepare=_queue_image_job,
+        ),
+        Step(
+            "cancel_image_job",
+            lambda ids: Rest("DELETE", "/image-jobs/{image_job}"),
+            lambda e, ids: _cancel_image_job(e, ids["image_job"]),
+        ),
+        Step(
+            "get_image_job",
+            lambda ids: Rest("GET", "/image-jobs/{image_job}"),
+            lambda e, ids: _image_job(e, ids["image_job"]),
+        ),
         # -- erasure (#124): a dry run of the story's second character (it writes nothing)
         Step(
             "erase",
@@ -3128,6 +3153,33 @@ def _steps() -> list[Step]:
             "remove_model_override",
             lambda ids: Rest("DELETE", "/admin/model-config/generation"),
             lambda e, ids: _model_remove(e),
+        ),
+        # #254: the image adapter is the image_generation port, its image fields in params;
+        # image_check reads its own row only (unset, then set, then unset again).
+        Step(
+            "replace_model_config",
+            lambda ids: Rest("PUT", "/admin/model-config/image_generation", IMAGE_OVERRIDE),
+            lambda e, ids: _model_replace(e, "image_generation", IMAGE_OVERRIDE),
+        ),
+        Step(
+            "model_config_entry",
+            lambda ids: Rest("GET", "/admin/model-config/image_generation"),
+            lambda e, ids: _model_entry(e, "image_generation"),
+        ),
+        Step(
+            "model_config_entry",
+            lambda ids: Rest("GET", "/admin/model-config/image_check"),
+            lambda e, ids: _model_entry(e, "image_check"),
+        ),
+        Step(
+            "replace_model_config",
+            lambda ids: Rest("PUT", "/admin/model-config/image_check", CHECKER_OVERRIDE),
+            lambda e, ids: _model_replace(e, "image_check", CHECKER_OVERRIDE),
+        ),
+        Step(
+            "remove_model_override",
+            lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
+            lambda e, ids: _model_remove(e, "image_check"),
         ),
         # -- external-data providers (#204): registration and a story's binding
         Step(
@@ -3765,6 +3817,29 @@ async def _erasure_boundary(engine: Engine) -> dict[str, Any]:
     return dump(ErasureBoundaryBody.of(await engine.erasure_boundary(CTX)))
 
 
+async def _queue_image_job(engine: Engine, ids: Ids) -> None:
+    """A queued story image job of the story, as ``insert_image_job`` writes it (#256)."""
+    from epistrel.orchestrator.images import jobs as image_jobs
+
+    job = image_jobs.PreparedImageJob(
+        ImageJobKind.STORY,
+        {},
+        {"story_id": ids["story"], "turn": 1, "variant": 1},
+        image_jobs.ImageJobRequest(prompt="a lighthouse at dusk"),
+        PRINCIPAL,
+    )
+    async with engine.db.begin() as conn:
+        ids["image_job"] = (await image_jobs.insert_image_job(conn, job, None)).job_id
+
+
+async def _image_job(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(ImageJobBody.of(await engine.get_image_job(CTX, job_id)))
+
+
+async def _cancel_image_job(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(ImageJobBody.of(await engine.cancel_image_job(CTX, job_id)))
+
+
 async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:
     return dump(await engine.get_offboarding(CTX, job_id))
 
@@ -4126,15 +4201,17 @@ async def _model_entry(engine: Engine, purpose: str) -> dict[str, Any]:
     return dump(ModelConfigItem(purpose=purpose, config_revision=revision, **fields))
 
 
-async def _model_replace(engine: Engine) -> dict[str, Any]:
-    body = ConfigReplacement.model_validate(MODEL_OVERRIDE)
-    write = await engine.replace_model_config(CTX, "generation", body)
-    return await _model_config_write(engine, "generation", write)
+async def _model_replace(
+    engine: Engine, purpose: str = "generation", override: dict[str, Any] = MODEL_OVERRIDE
+) -> dict[str, Any]:
+    body = ConfigReplacement.model_validate(override)
+    write = await engine.replace_model_config(CTX, purpose, body)
+    return await _model_config_write(engine, purpose, write)
 
 
-async def _model_remove(engine: Engine) -> dict[str, Any]:
-    write = await engine.remove_model_override(CTX, "generation")
-    return await _model_config_write(engine, "generation", write)
+async def _model_remove(engine: Engine, purpose: str = "generation") -> dict[str, Any]:
+    write = await engine.remove_model_override(CTX, purpose)
+    return await _model_config_write(engine, purpose, write)
 
 
 PROVIDER_NAME = "parity-ledger"

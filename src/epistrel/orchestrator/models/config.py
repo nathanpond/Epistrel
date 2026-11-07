@@ -7,9 +7,20 @@ per field: a purpose's ``base_url``, ``model`` and API key are its own when set,
 the purpose it defaults to when the registry names one (``rating_suggestion`` defaults to
 ``guardrail_check``, FR-MODEL-2; #121), else the ``default`` row's; ``params`` inherit per key
 the same way. A purpose with no row is its parent's row, then the ``default`` row. A **port**
-(``embedding``, #138) is its own row only: nothing falls back to ``default`` (a chat model is
-never an embedding model), so an unset field stays unset, and its ``params`` may set only
-``timeout`` (``PORT_PARAMS``; any chat parameter is 422).
+(``embedding``, #138; ``image_generation``, #254) is its own row only: nothing falls back to
+``default`` (a chat model is never an embedding or an image model), so an unset field stays
+unset and reads ``source: own``. Its ``params`` take only that port's keys (``PORT_PARAMS``):
+``embedding``'s ``timeout``; ``image_generation``'s image fields, validated by
+``images.params.ImageGenerationParams`` (adapter, default size, aspect ratio and quality,
+capability TTL, request timeout), where a non-null ``adapter`` must be registered in this
+process and needs a ``model`` (422 naming the field). ``image_check`` (#254) reads its own row
+only too (``registry.OWN_ROW_ONLY``), but as a purpose: while a field is unset it reads
+``source: unset``, and it has no default model.
+
+Every entry also names its ``endpoint``: the host of its effective ``base_url`` (``None`` when
+unset), which is how an operator sees where each purpose's data goes (FR-MODEL-1, FR-IMG-13).
+For the image port with a null ``base_url`` it is the configured adapter's default host
+(``openrouter.ai``, #255).
 
 **Writes** (FR-MODEL-4) follow every deployment-scoped configuration write (#48): take
 ``lock_deployment``, move ``deployment_state.config_revision`` by exactly one, and record one
@@ -48,6 +59,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    PlainValidator,
     SecretStr,
     ValidationError,
     field_validator,
@@ -70,8 +82,13 @@ from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.trimmed import trim_as_sent
+from epistrel.orchestrator.images.params import (
+    IMAGE_GENERATION_PORT,
+    ImageGenerationParams,
+    default_base_url,
+)
 from epistrel.orchestrator.models.adapter import ModelParams, ModelUnavailable
-from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED, PORTS
+from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED, OWN_ROW_ONLY, PORTS
 
 FINGERPRINT_HEX = 8
 MAX_API_KEY_CHARS = 512
@@ -80,7 +97,14 @@ MAX_BASE_URL_CHARS = 2048
 UNREADABLE_KEY = "unreadable"
 """What a change row records for a stored key that cannot be decrypted (no fingerprint)."""
 
-type Source = Literal["own", "inherited", "default"]
+type Source = Literal["own", "inherited", "default", "unset"]
+"""Where an effective value came from: the purpose's ``own`` row, the purpose it defaults to
+(``inherited``), the ``default`` row, or nowhere (``unset``: ``image_check`` before it is
+configured, #254)."""
+
+type AnyParams = ModelParams | ImageGenerationParams
+"""A row's ``params``: a chat purpose's (and ``embedding``'s) ``ModelParams``, or the
+``image_generation`` port's ``ImageGenerationParams``."""
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +188,9 @@ class EffectiveConfig:
     api_key_ciphertext: str | None
     params: ModelParams
     revision: int
+    image_params: ImageGenerationParams | None = None
+    """The ``image_generation`` port's own ``params`` (``params`` is then empty); ``None`` for
+    every other purpose."""
 
     @property
     def has_api_key(self) -> bool:
@@ -215,6 +242,15 @@ class ConfigEntry:
     has_api_key: bool
     api_key_fingerprint: str | None
     sources: dict[str, Any]
+    endpoint: str | None = None
+    """The host of the effective ``base_url``; ``None`` when it is unset (FR-IMG-13)."""
+
+
+def endpoint_of(base_url: str | None) -> str | None:
+    """The host ``base_url`` points at (``api.openai.com``), or ``None``."""
+    if base_url is None:
+        return None
+    return urlsplit(base_url).hostname
 
 
 def _params(raw: Mapping[str, Any], purpose: str) -> ModelParams:
@@ -225,12 +261,25 @@ def _params(raw: Mapping[str, Any], purpose: str) -> ModelParams:
         raise ModelUnavailable(purpose, "not_configured", "stored params are invalid") from None
 
 
+def _image_params(raw: Mapping[str, Any], purpose: str) -> ImageGenerationParams:
+    try:
+        return ImageGenerationParams.model_validate(dict(raw))
+    except ValidationError:
+        raise ModelUnavailable(purpose, "not_configured", "stored params are invalid") from None
+
+
+def _wire_params(raw: Mapping[str, Any], purpose: str) -> dict[str, Any]:
+    if purpose == IMAGE_GENERATION_PORT:
+        return _image_params(raw, purpose).wire()
+    return _params(raw, purpose).wire()
+
+
 def parent_of(purpose: str) -> str | None:
     """The purpose whose row ``purpose`` inherits from before ``default`` (its registry
     ``default_model_key``: ``rating_suggestion`` → ``guardrail_check``, FR-MODEL-2), or
     ``None`` when it inherits from ``default`` directly."""
     declared = DELIVERED.get(purpose)
-    if declared is None or declared.default_model_key == DEFAULT_MODEL_KEY:
+    if declared is None or declared.default_model_key in (DEFAULT_MODEL_KEY, purpose):
         return None
     return declared.default_model_key
 
@@ -254,6 +303,17 @@ def resolve(
                 return value
         return getattr(default, name)
 
+    if purpose == IMAGE_GENERATION_PORT:
+        # The image port's params are its own image fields, never the chat parameters.
+        return EffectiveConfig(
+            purpose=purpose,
+            base_url=pick("base_url"),
+            model=pick("model"),
+            api_key_ciphertext=pick("api_key_ciphertext"),
+            params=ModelParams(),
+            revision=revision,
+            image_params=_image_params(own.params if own is not None else {}, purpose),
+        )
     params = _params(default.params, purpose)
     for row in reversed(chain):
         params = params.merged(_params(row.params, purpose))
@@ -274,8 +334,9 @@ def _parent_row(rows: Mapping[str, ConfigRow], purpose: str) -> ConfigRow | None
 
 def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> ConfigEntry:
     """``purpose``'s effective configuration with a ``source`` per field: ``own``,
-    ``inherited`` (from the purpose it defaults to, ``parent_of``) or ``default``; ``params``
-    carry a source per key. Every field of ``default`` is its own."""
+    ``inherited`` (from the purpose it defaults to, ``parent_of``), ``default``, or ``unset``
+    (an own-row-only purpose's field it has not set: ``image_check``, #254); ``params`` carry a
+    source per key. Every field of ``default`` and of a port is its own."""
     default = _default_row(rows, purpose)
     own = rows.get(purpose) if purpose != DEFAULT_MODEL_KEY else None
     parent = _parent_row(rows, purpose)
@@ -286,19 +347,22 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
             return "own"
         if own is not None and getattr(own, name) is not None:
             return "own"
+        if purpose in OWN_ROW_ONLY:
+            return "unset"
         if parent is not None and getattr(parent, name) is not None:
             return "inherited"
         return "default"
 
-    own_params = _params(own.params, purpose).wire() if own is not None else {}
+    own_params = _wire_params(own.params, purpose) if own is not None else {}
     parent_params = _params(parent.params, purpose).wire() if parent is not None else {}
 
     def param_source(key: str) -> Source:
-        if purpose == DEFAULT_MODEL_KEY or purpose in PORTS or key in own_params:
+        if purpose == DEFAULT_MODEL_KEY or purpose in OWN_ROW_ONLY or key in own_params:
             return "own"
         return "inherited" if key in parent_params else "default"
 
-    params = effective.params.wire()
+    image = effective.image_params
+    params = image.wire() if image is not None else effective.params.wire()
     return ConfigEntry(
         purpose=purpose,
         base_url=effective.base_url,
@@ -312,6 +376,7 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
             "api_key": source("api_key_ciphertext"),
             "params": {key: param_source(key) for key in params},
         },
+        endpoint=endpoint_of(effective.base_url or default_base_url(image)),
     )
 
 
@@ -326,8 +391,12 @@ def _row(mapping: RowMapping) -> ConfigRow:
     )
 
 
-PORT_PARAMS = frozenset({"timeout"})
-"""The params a port's row may set (#138): the chat parameters mean nothing to ``/embeddings``."""
+PORT_PARAMS: Mapping[str, frozenset[str]] = {
+    "embedding": frozenset({"timeout"}),
+    IMAGE_GENERATION_PORT: frozenset(ImageGenerationParams.model_fields),
+}
+"""The params each port's row may set: ``embedding`` only ``timeout`` (#138: the chat
+parameters mean nothing to ``/embeddings``); ``image_generation`` its image fields (#254)."""
 
 
 def _empty_row(purpose: str) -> ConfigRow:
@@ -342,7 +411,7 @@ def _empty_row(purpose: str) -> ConfigRow:
 
 
 def _default_row(rows: Mapping[str, ConfigRow], purpose: str) -> ConfigRow:
-    if purpose in PORTS:  # a port never falls back to the default row
+    if purpose in OWN_ROW_ONLY:  # a port (or image_check) never falls back to the default row
         return _empty_row(purpose)
     default = rows.get(DEFAULT_MODEL_KEY)
     if default is None:  # the migration seeds it; a missing row is a broken deployment
@@ -460,11 +529,61 @@ def check_purpose(purpose: str) -> None:
         )
 
 
-def check_port_params(purpose: str, params: ModelParams) -> None:
-    """422 when a port's params set anything but ``PORT_PARAMS`` (a chat parameter)."""
-    if purpose not in PORTS:
+def check_image_adapter(adapter: str | None) -> None:
+    """422 at ``body.params.adapter`` when ``adapter`` is not registered in this process."""
+    if adapter is None:
         return
-    refused = sorted(set(params.model_dump(exclude_none=True)) - PORT_PARAMS)
+    # Imported here: the image registry builds adapters from this module's configuration.
+    from epistrel.orchestrator.images.registry import registered_adapters
+
+    known = registered_adapters()
+    if adapter not in known:
+        raise InvalidRequest(
+            f"image adapter {adapter!r} is not registered",
+            details={
+                "field": "body.params.adapter",
+                "adapter": adapter,
+                "registered": sorted(known),
+                "reason": "unregistered_adapter",
+            },
+        )
+
+
+def check_port_params(purpose: str, params: AnyParams) -> None:
+    """422 when ``params`` are not ``purpose``'s kind: image fields anywhere but the
+    ``image_generation`` port, anything else there, or a port key outside ``PORT_PARAMS``
+    (a chat parameter on ``embedding``). An image port's ``adapter`` must be registered."""
+    if purpose == IMAGE_GENERATION_PORT:
+        if not isinstance(params, ImageGenerationParams):
+            keys = sorted(params.model_dump(exclude_none=True))
+            if keys:
+                raise InvalidRequest(
+                    f"{purpose} takes no chat parameters: {', '.join(keys)}",
+                    details={
+                        "field": f"body.params.{keys[0]}",
+                        "purpose": purpose,
+                        "params": keys,
+                        "reason": "not_a_port_param",
+                    },
+                )
+            return
+        check_image_adapter(params.adapter)
+        return
+    if isinstance(params, ImageGenerationParams):
+        keys = sorted(params.wire()) or ["adapter"]
+        raise InvalidRequest(
+            f"{purpose} takes no image parameters: {', '.join(keys)}",
+            details={
+                "field": f"body.params.{keys[0]}",
+                "purpose": purpose,
+                "params": keys,
+                "reason": "not_a_port_param",
+            },
+        )
+    allowed = PORT_PARAMS.get(purpose)
+    if allowed is None:
+        return
+    refused = sorted(set(params.model_dump(exclude_none=True)) - allowed)
     if refused:
         raise InvalidRequest(
             f"{purpose} takes no chat parameters: {', '.join(refused)}",
@@ -486,10 +605,25 @@ def normalise_base_url(base_url: str) -> str:
     return value.rstrip("/")
 
 
+def _params_object(value: Any) -> dict[str, Any] | None:
+    """``params`` as sent: a JSON object, checked against the purpose's own params schema once
+    the purpose is known (``ConfigReplacement.params_for``)."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("params must be an object")
+    return dict(value)
+
+
 class ConfigReplacement(BaseModel):
     """``PUT /admin/model-config/{purpose}``: the purpose's own ``base_url``, ``model`` and
     ``params``, replaced in full. An omitted or ``null`` field inherits from ``default``
-    (``params`` per key). The API key is never part of this body (``extra=forbid``)."""
+    (``params`` per key). The API key is never part of this body (``extra=forbid``).
+
+    ``params`` are the chat parameters (``ModelParams``) for every purpose and ``embedding``,
+    and the image fields (``ImageGenerationParams``) for the ``image_generation`` port (owner
+    decision 11, #254). Which one applies depends on the path's purpose, so they are checked by
+    ``params_for`` (422 at ``body.params.<field>``, as the body's own validation reports)."""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -512,12 +646,30 @@ class ConfigReplacement(BaseModel):
     model: Annotated[str | None, BeforeValidator(trim_as_sent(MAX_MODEL_CHARS))] = Field(
         default=None, min_length=1, max_length=MAX_MODEL_CHARS
     )
-    params: ModelParams | None = None
+    params: Annotated[
+        dict[str, Any] | None,
+        PlainValidator(
+            _params_object, json_schema_input_type=ModelParams | ImageGenerationParams | None
+        ),
+    ] = None
 
     @field_validator("base_url")
     @classmethod
     def _base_url(cls, value: str | None) -> str | None:
         return None if value is None else normalise_base_url(value)
+
+    def params_for(self, purpose: str) -> AnyParams | None:
+        """``params`` as ``purpose``'s own schema (``ImageGenerationParams`` for the
+        ``image_generation`` port, ``ModelParams`` otherwise); 422 naming the field."""
+        if self.params is None:
+            return None
+        schema: type[ModelParams] | type[ImageGenerationParams] = (
+            ImageGenerationParams if purpose == IMAGE_GENERATION_PORT else ModelParams
+        )
+        try:
+            return schema.model_validate(self.params)
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("body", "params")) from None
 
 
 class ApiKeyBody(BaseModel):
@@ -643,7 +795,7 @@ async def write_config(
     principal: str,
     base_url: str | None = UNSET,
     model: str | None = UNSET,
-    params: ModelParams | None = UNSET,
+    params: AnyParams | None = UNSET,
     api_key: str | None = UNSET,
 ) -> ConfigWrite:
     """Change only the given fields of ``purpose``'s row (``None`` clears a field).
@@ -685,9 +837,22 @@ async def write_config(
             columns["api_key_ciphertext"] = (
                 _encrypted(keybox, stored, api_key) if api_key is not None else None
             )
+        if purpose == IMAGE_GENERATION_PORT:
+            _check_image_row(columns)
         return columns
 
     return await _store(db, purpose, change, keybox=keybox, principal=principal)
+
+
+def _check_image_row(columns: Mapping[str, Any]) -> None:
+    """422 at ``body.model`` when the ``image_generation`` row would name an adapter without a
+    model (nothing is written: the write's transaction rolls back)."""
+    adapter = (columns.get("params") or {}).get("adapter")
+    if adapter is not None and columns.get("model") is None:
+        raise InvalidRequest(
+            "an image adapter needs a model",
+            details={"field": "body.model", "adapter": adapter, "reason": "model_required"},
+        )
 
 
 async def replace_config(
@@ -706,7 +871,7 @@ async def replace_config(
         principal=principal,
         base_url=body.base_url,
         model=body.model,
-        params=body.params,
+        params=body.params_for(purpose),
     )
 
 

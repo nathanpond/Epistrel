@@ -1,0 +1,39 @@
+{
+  "meta": {
+    "note": "seed and references only on disjoint endpoints: references win"
+  },
+  "request": {
+    "body": null,
+    "headers": {
+      "Authorization": "REDACTED",
+      "X-Title": "Epistrel"
+    },
+    "method": "GET",
+    "url": "/api/v1/images/models/synthetic-author/synthetic-image/endpoints"
+  },
+  "response": {
+    "body": {
+      "data": {
+        "endpoints": [
+          {
+            "supported_parameters": [
+              "seed"
+            ],
+            "tag": "alpha"
+          },
+          {
+            "supported_parameters": [
+              "input_references"
+            ],
+            "tag": "gamma"
+          }
+        ],
+        "id": "synthetic-author/synthetic-image"
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

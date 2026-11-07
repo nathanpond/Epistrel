@@ -1,0 +1,174 @@
+{
+  "note": "each status, the exception it maps to; {prompt} is replaced by the request's prompt, which no error string may carry",
+  "cases": [
+    {
+      "status": 400,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": "invalid_prompt"
+        }
+      },
+      "raises": "ImageRequestInvalid",
+      "retryable": false
+    },
+    {
+      "status": 404,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": 404
+        }
+      },
+      "raises": "ImageRequestInvalid",
+      "retryable": false
+    },
+    {
+      "status": 413,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": "payload_too_large"
+        }
+      },
+      "raises": "ImageRequestInvalid",
+      "retryable": false
+    },
+    {
+      "status": 422,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageRequestInvalid",
+      "retryable": false
+    },
+    {
+      "status": 401,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": 401
+        }
+      },
+      "raises": "ImageAdapterAuth",
+      "retryable": false
+    },
+    {
+      "status": 403,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": "forbidden"
+        }
+      },
+      "raises": "ImageAdapterAuth",
+      "retryable": false
+    },
+    {
+      "status": 402,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": 402
+        }
+      },
+      "raises": "ImageAdapterCredits",
+      "retryable": false
+    },
+    {
+      "status": 408,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageProviderTimeout",
+      "retryable": true
+    },
+    {
+      "status": 409,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 429,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": "rate_limited"
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 500,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 502,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": 502
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 503,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 524,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 529,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}",
+          "code": "overloaded"
+        }
+      },
+      "raises": "ImageProviderUnavailable",
+      "retryable": true
+    },
+    {
+      "status": 302,
+      "body": {
+        "error": {
+          "message": "the provider echoed the request: {prompt}"
+        }
+      },
+      "raises": "ImageProviderMalformed",
+      "retryable": true
+    }
+  ]
+}

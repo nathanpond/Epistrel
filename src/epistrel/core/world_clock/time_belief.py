@@ -211,23 +211,38 @@ class TimeBelief:
 
     # -- the context's text --------------------------------------------------------------
 
+    def told(self) -> tuple[bool, tuple[int, ...]]:
+        """What the character's context names as the believed time: whether it tells the
+        minute (every admissible interval one minute wide: a range wrapping midnight such as
+        ``((0, 1), (1320, 1440))`` is not) and the minutes of the day it names: each minute
+        when exact, else about the middle of the range (the hour, for awareness or a gap:
+        never a minute the character cannot tell). ``(False, ())`` when it has no sense of the
+        time. ``time_text`` says exactly these; tests read them so they cannot drift (#692)."""
+        day = self.clockwork.day_minutes
+        if self.times is None or self.times == ((0, day),):
+            return False, ()
+        if all(hi - lo == 1 for lo, hi in self.times):
+            return True, tuple(lo for lo, _ in self.times)
+        middle = self.estimate()
+        if middle is None:
+            return False, ()
+        if self.basis in (AWARENESS, GAP):
+            middle = (round(middle / 60.0) * 60) % day
+        return False, (middle,)
+
     def time_text(self) -> str:
         """The believed time as the character's context says it (never the clock's)."""
         cw = self.clockwork
         day = cw.day_minutes
         if self.times is None or self.times == ((0, day),):
             return "you have no clear sense of what time it is"
-        exact = all(hi - lo == 1 for lo, hi in self.times)
+        exact, minutes = self.told()
         if exact:
-            said = " or ".join(cw.clock(lo) for lo, _ in self.times)
-            bands = sorted({b for lo, _ in self.times for b in cw.bands_of(lo, lo + 1)})
+            said = " or ".join(cw.clock(m) for m in minutes)
+            bands = sorted({b for m in minutes for b in cw.bands_of(m, m + 1)})
         else:
-            middle = self.estimate()
-            if middle is not None and self.basis in (AWARENESS, GAP):
-                # The band and the hour: never a minute the character cannot tell.
-                middle = (round(middle / 60.0) * 60) % day
-            said = "about " + ("?" if middle is None else cw.clock(middle))
-            bands = [] if middle is None else cw.bands_of(middle, middle + 1)
+            said = "about " + (cw.clock(minutes[0]) if minutes else "?")
+            bands = cw.bands_of(minutes[0], minutes[0] + 1) if minutes else []
         band = f" ({', '.join(bands)})" if bands else ""
         how = {
             AWARENESS: "",

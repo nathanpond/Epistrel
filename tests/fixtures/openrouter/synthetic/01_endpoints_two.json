@@ -1,0 +1,73 @@
+{
+  "meta": {
+    "note": "two endpoints; only alpha supports seed; neither supports input_references"
+  },
+  "request": {
+    "body": null,
+    "headers": {
+      "Authorization": "REDACTED",
+      "X-Title": "Epistrel"
+    },
+    "method": "GET",
+    "url": "/api/v1/images/models/synthetic-author/synthetic-image/endpoints"
+  },
+  "response": {
+    "body": {
+      "data": {
+        "endpoints": [
+          {
+            "pricing": [
+              {
+                "billable": "output_image",
+                "cost_usd": 0.04,
+                "unit": "image"
+              }
+            ],
+            "provider_name": "Alpha",
+            "supported_parameters": {
+              "n": {
+                "max": 4,
+                "min": 1,
+                "type": "range"
+              },
+              "quality": {
+                "type": "enum"
+              },
+              "seed": {
+                "max": 4294967295,
+                "min": 0,
+                "type": "range"
+              },
+              "size": {
+                "type": "enum"
+              }
+            },
+            "supports_streaming": false,
+            "tag": "alpha"
+          },
+          {
+            "pricing": [
+              {
+                "billable": "output_image",
+                "cost_usd": 0.02,
+                "unit": "image"
+              }
+            ],
+            "provider_name": "Beta",
+            "supported_parameters": [
+              "aspect_ratio",
+              "size"
+            ],
+            "supports_streaming": true,
+            "tag": "beta"
+          }
+        ],
+        "id": "synthetic-author/synthetic-image"
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

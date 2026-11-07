@@ -6,8 +6,9 @@ catalog entry deletion (``catalog_entry_deleted``, #103), a persona deletion
 (``persona_deleted``, #114) and a refused tightening of a story's rating
 (``rating_change_refused``, #118: the job id, the target rating and the violation count) and an
 erasure (``erasure``, #124: the ledger entry's id, the subject's kind and id, the scope and the
-counts). A row holds policy ids, the story, the principal and small
-structured details, and **never** the text that was rejected (NFR-SEC-4).
+counts), and an image output rejected or an image job ended without an image
+(``image_output_rejected``, ``image_job_ended``, #256). A row holds policy ids, the story, the
+principal and small structured details, and **never** the text that was rejected (NFR-SEC-4).
 
 The table is append-only (trigger ``audit_log_append_only``). Two changes are allowed:
 deleting a story nulls ``story_id`` on that story's rows, which is the only update the trigger
@@ -40,6 +41,13 @@ class AuditKind(StrEnum):
     BACKFILL_FAILED = "backfill_failed"
     """#228: a backfill ended ``failed`` after its last attempt (the same, and the error's
     exception name)."""
+    IMAGE_OUTPUT_REJECTED = "image_output_rejected"
+    """#256: a generated image failed an output check (job id, attempt token, the output's
+    index, ``outcome: rejected``; the policy ids). Never the image or its prompt."""
+    IMAGE_JOB_ENDED = "image_job_ended"
+    """#256: an image job ended without an image: failed closed, cancelled, stale or its target
+    gone (job id, attempt token, ``outcome``: the status, and its ``reason`` code; the policy
+    ids). Never the image or its prompt."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

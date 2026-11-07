@@ -22,9 +22,20 @@ from epistrel.orchestrator.models.openai_compatible import (
     provider_headers,
     request_body,
 )
-from epistrel.orchestrator.models.registry import GuardrailVerdict
+from epistrel.orchestrator.models.provider_schema import (
+    is_anthropic,
+    json_schema_mode,
+    strict_wire_schema,
+)
+from epistrel.orchestrator.models.registry import (
+    DELIVERED,
+    DirectiveParseResult,
+    GuardrailVerdict,
+    ImageCheckVerdict,
+    TimeEstimate,
+)
 from epistrel.orchestrator.models.stub import GARBAGE, StubAdapter
-from tests.model_support import config_key, mock_openai
+from tests.model_support import config_key, mock_openai, strict_refusal
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 HELLO = (Message(role="system", content="Be brief."), Message(role="user", content="Say hello"))
@@ -219,6 +230,78 @@ def test_request_body_shapes() -> None:
     plain = request_body("m", HELLO, ModelParams(temperature=0.0, top_p=0.9), None, sampling=False)
     assert "temperature" not in plain
     assert "top_p" not in plain
+
+
+def test_json_schema_strict_true_on_anthropic_only() -> None:
+    """#761 (the owner's option 2): for api.anthropic.com the ``json_schema`` carries
+    ``strict: true`` and the strict wire schema (``minimum``/``maximum`` dropped from
+    ``confidence``), which that endpoint's emulation accepts. Complements: without ``strict``
+    (every other endpoint) the body is byte for byte what it was before #761, with no ``strict``
+    key, which the emulation refuses as api.anthropic.com did; no schema, no
+    ``response_format``."""
+    full = GuardrailVerdict.model_json_schema()
+    strict = request_body("m", HELLO, ModelParams(), GuardrailVerdict, strict=True)
+    assert strict["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "GuardrailVerdict",
+            "strict": True,
+            "schema": strict_wire_schema(full),
+        },
+    }
+    confidence = strict["response_format"]["json_schema"]["schema"]["properties"]["confidence"]
+    assert "minimum" not in confidence
+    assert "maximum" not in confidence
+    assert strict_refusal(strict) is None
+    plain = request_body("m", HELLO, ModelParams(), GuardrailVerdict)
+    before_761 = {
+        "type": "json_schema",
+        "json_schema": {"name": "GuardrailVerdict", "schema": full},
+    }
+    assert json.dumps(plain["response_format"]) == json.dumps(before_761)
+    assert strict_refusal(plain) == "response_format.json_schema.strict: Field required"
+    assert "response_format" not in request_body("m", HELLO, ModelParams(), None, strict=True)
+
+
+def test_strict_wire_schema_for_every_response_schema() -> None:
+    """#761: every registry response schema's strict wire form is one the api.anthropic.com
+    emulation accepts, and drops only bounds (``pattern`` and ``enum`` survive), without
+    touching the schema it was given; the full schema is still the one replies are validated
+    against. The exception: ``DirectiveParseResult``'s free-form ``qualifiers`` dict has no wire
+    form (live, ``additionalProperties`` absent, ``true`` and a schema were each a 400), so it is
+    ``None`` and that call is not sent in ``json_schema`` mode there. So is #254's
+    ``ImageCheckVerdict``, whose ``verdicts`` map is keyed by policy id."""
+    schemas = {p.response_schema for p in DELIVERED.values() if p.response_schema is not None}
+    no_wire_form = {DirectiveParseResult, ImageCheckVerdict}
+    assert no_wire_form <= schemas
+    assert len(schemas) >= 15
+    for schema in schemas:
+        full = schema.model_json_schema()
+        snapshot = json.dumps(full)
+        wire = strict_wire_schema(full)
+        assert json.dumps(full) == snapshot, schema.__name__
+        if schema in no_wire_form:
+            assert wire is None
+            continue
+        assert wire is not None, schema.__name__
+        body = {"response_format": {"json_schema": {"strict": True, "schema": wire}}}
+        assert strict_refusal(body) is None, schema.__name__
+    assert strict_refusal({"response_format": {"json_schema": {"strict": True, "schema": full}}})
+    time_schema = strict_wire_schema(TimeEstimate.model_json_schema())
+    assert time_schema is not None
+    assert '"pattern"' in json.dumps(time_schema)
+
+
+def test_json_schema_mode_by_endpoint() -> None:
+    """#761: only api.anthropic.com, and only for a schema with no wire form, loses
+    ``json_schema`` mode. Complement: a lookalike host is not Anthropic."""
+    anthropic = "https://api.anthropic.com/v1"
+    assert is_anthropic(anthropic)
+    assert json_schema_mode(anthropic, GuardrailVerdict)
+    assert not json_schema_mode(anthropic, DirectiveParseResult)
+    for other in ("http://localhost:1235/v1", "https://api.anthropic.com.example.net/v1"):
+        assert not is_anthropic(other)
+        assert json_schema_mode(other, DirectiveParseResult)
 
 
 # -- the openai SDK adapter -------------------------------------------------------------------

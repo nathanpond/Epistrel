@@ -10,8 +10,13 @@ never the model's raw text.
    (``MissingDeterministicStep`` at call time otherwise); for guardrails it is
    ``guardrail_deterministic_first``, built on ``core.policies.evaluate``.
 2. **Constrained decoding first** (FR-MODEL-7). The request carries ``response_format:
-   {"type": "json_schema", ...}`` (``json_schema.name`` is the schema's class name, ``strict``
-   false; the schema is not repeated in the prompt). An endpoint that answers it with a 400
+   {"type": "json_schema", ...}`` (``json_schema.name`` is the schema's class name; the schema
+   is not repeated in the prompt). No ``strict`` key is sent, except to api.anthropic.com, which
+   refuses a ``json_schema`` without ``strict: true``: there the schema is its strict wire form,
+   with the bounds strict mode refuses dropped (``provider_schema``, #761). The reply is still
+   validated against the full schema. A schema with no wire form there (a free-form ``dict``
+   field) goes straight to parse-validate-retry for that call, and nothing is remembered.
+   An endpoint that answers it with a 400
    whose body names ``response_format`` does not support it, at once. A 200 with text that is
    not JSON at all is one strike: the call retries still in ``json_schema`` mode, and only
    ``PROSE_STRIKES`` (2) such answers in a row, across calls to the same ``(base_url, model)``,
@@ -59,6 +64,7 @@ from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.models.adapter import REQUEST_FIELDS, Message, ModelParams, ModelResult
 from epistrel.orchestrator.models.errors import ModelUnavailable, ResponseFormatRejected
 from epistrel.orchestrator.models.prompts import payload_fields
+from epistrel.orchestrator.models.provider_schema import json_schema_mode
 from epistrel.orchestrator.models.registry import GuardrailVerdict, InputSchema
 
 if TYPE_CHECKING:
@@ -265,7 +271,7 @@ async def structured_call[T: BaseModel](
     settings = await mal.structured_settings()
     base_url, model, revision = await mal.endpoint(purpose)
     key = (base_url, model)
-    json_mode = mal.response_format.supported(key, revision)
+    json_mode = mal.response_format.supported(key, revision) and json_schema_mode(base_url, schema)
     messages = list(base) if json_mode else with_schema(base, schema)
     call_params = params
     retries_left = settings.structured_retry_budget

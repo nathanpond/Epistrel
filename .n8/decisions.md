@@ -12407,3 +12407,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - **Multi-arch publish:** success. `ghcr.io/nathanpond/epistrel` is tagged `0.2.0`, `0.2`, `0` and `latest`. All four point to `sha256:89051309a88c4d8c5c41468210b34d73832f32bd4ec470f39d2ea5b536216573` (amd64 and arm64).
   - **GitHub release:** the workflow created it, and a human summary was added on top with `gh release edit`.
 - **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.2.0
+
+## /n8-exec M8 — 2026-11-07
+
+- **Decision:** Each story is built by its own fresh subagent, one story at a time, all on `milestone/m8-images` in the worktree `.claude/worktrees/m8`. The orchestrating session reviews each result before starting the next story.
+  **Why:** M8 has 19 feature stories and 5 bugs. A single context would not hold them, and the n8-exec rules travel with each agent's prompt.
+  **Issue:** M8 (all)
+- **Decision:** The full-suite gate for each story is CI's sharded run on the milestone's draft PR, against that story's pushed commit. Before pushing, the agent runs locally: the story's own tests, the touched area's tests, `ruff`, `mypy` and the `tools.gates` checks. A story's completion comment cites the CI run for its commit. The next story may start while that run is pending. A red run is fixed before any later completion comment, and the PR is marked ready and merged only when CI is fully green on the final commit.
+  **Why:** The local full suite takes about 75 minutes for roughly 1,600 tests, and CI's shards are the established gate (M7, retry 8). CI takes about 50 minutes, so gating each story sequentially would cost about 20 hours of waiting.
+  **Issue:** M8 (all)
+- **Decision:** `current_milestone` stays at 7 in the M8 PR. It is bumped to 8 only in the PR that lands #271's report, the last M8 work.
+  **Why:** The bump turns on M8's stricter gate, including NFR-QUAL-12's exit evidence, and that evidence is #271's owner-run report. The M8 PR merges with #271 still open (#271's planner note).
+  **Issue:** #271

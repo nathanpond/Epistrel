@@ -12434,6 +12434,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** a discovered problem is filed as #782 (needs-triage, no milestone): a stale Presets row in INDEX.md drops its Model cell, so per-model rows can't be told apart.
   **Why:** it is outside #760's scope. `evals/index.py` is not part of the story.
   **Issue:** #760, #782
+- **Decision:** #692's shared helper is `TimeBelief.told() -> (exact, minutes)`, and both `time_text` and the S-CLOCK-BELIEF no-leak oracle read it. Exact means every interval is one minute wide, as `time_text` already decided. The oracle used to treat any one-minute piece as exact, so the approximate 23:00 range `((0, 1), (1320, 1440))` read as 00:00. The prompt text is unchanged: old and new `derive(...).text()` were compared over 19,776 beliefs (every awareness, start minutes in steps of 7, readings, gaps), and all were byte-identical.
+  **Why:** the AC prefers one helper so the oracle and the prompt can't drift. A bool-and-minutes pair keeps `time_text`'s "or"-joined exact form and its "about HH:MM" form.
+  **Issue:** #692
+- **Decision:** #692's pinned cases are built with `time_belief.derive` and go in as `@example`s: `WRAPPED`, approximate anchored at 23:00 and read at once, and `WRAPPED_HERE`, anchored at 00:00 and read 23 hours later, which is #693/#701's "about 23 hours" shape. The complement is objective 21:37. The mutation check is a plain unit test that injects the objective into the section and expects the oracle to raise. The two new unit tests carry no part marker. The property keeps `part("M6", "FR-CLOCK-11")`.
+  **Why:** the stored `.hypothesis` blobs print an empty repr, so the case was rebuilt from the AC's description and confirmed against the old oracle, which fails it. A new M6 part would add M6-gated tests in M8, and invariant 7 asks for no such move.
+  **Issue:** #692
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

@@ -12464,6 +12464,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the live check was run against api.anthropic.com (`claude-haiku-5-5`, key `EPISTREL_EVALS_API_KEY`). The shipped `request_body` was sent for all 15 registry response schemas: 14 answered 200 with `strict: true` and a reply valid against the full schema, and `DirectiveParseResult` was skipped by design. Scoping probes beforehand found the dict 400s. LM Studio :1235 (`cydonia-24b-v4.3`) answered the unchanged, non-strict `GuardrailVerdict` request with a valid verdict. Spend was about 27k input and 0.6k output tokens on Haiku, a few cents. One scoping call (`RewriteParseResult`, first sight of that schema) timed out at 120 s client-side, and the identical retry answered in about 2 s. Anthropic compiles a grammar on a schema's first use, and that first call can be slow.
   **Why:** AC 4, with the owner's decision in place of `strict: false`.
   **Issue:** #761
+- **Decision:** the slow first call is filed as #785 (needs-triage, no milestone). With strict mode, a schema's first use on Anthropic may run past the 60 s default call timeout.
+  **Why:** it was observed once and not measured, so it is outside #761's AC.
+  **Issue:** #761, #785
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

@@ -12820,6 +12820,10 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** I-23 stated the removed rule too, and an operator needs the limits, the refusal codes and the reconcile CLI in one place.
   **Issue:** #262
 
+- **Decision (Rule 3):** CI run 42409424556 on `ab0a90b` failed `test (integration-a-h)` in `test_health_db`, whose exact `/health` body lacked the new `checks.image_counters` (null with no database). Added there. `tests/test_health.py` had the same gap, and the local batch caught it before the push.
+  **Why:** `test_health_db` was not among the touched-area tests.
+  **Issue:** #262
+
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.

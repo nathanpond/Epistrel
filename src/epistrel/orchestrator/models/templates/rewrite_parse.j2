@@ -30,7 +30,7 @@ out.
 {% block user %}
 ## Entities
 {% for entity in entities %}
-- {{ entity.name }} ({{ entity.kind }}){% if entity.aliases %}, also {{ entity.aliases | join(", ") }}{% endif %}
+- {{ entity.name }} ({{ entity.kind }}){% if entity.aliases %}, also {{ entity.aliases | join(", ") }}{% endif +%}
 {% else %}
 - (none)
 {% endfor %}
@@ -40,7 +40,7 @@ out.
 
 ## States
 {% for state in states %}
-- {{ state.name }}: {{ state.type }}, per {{ state.scope }}{% if state.unit %}, in {{ state.unit }}{% endif %}{% if state.owner != "story" %}, owned by a provider{% endif %}
+- {{ state.name }}: {{ state.type }}, per {{ state.scope }}{% if state.unit %}, in {{ state.unit }}{% endif %}{% if state.owner != "story" %}, owned by a provider{% endif +%}
 {% else %}
 - (none)
 {% endfor %}

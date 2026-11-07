@@ -12419,3 +12419,24 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `current_milestone` stays at 7 in the M8 PR. It is bumped to 8 only in the PR that lands #271's report, the last M8 work.
   **Why:** The bump turns on M8's stricter gate, including NFR-QUAL-12's exit evidence, and that evidence is #271's owner-run report. The M8 PR merges with #271 still open (#271's planner note).
   **Issue:** #271
+- **Decision:** #760 fixes the run-on list items with Jinja's `{% endif +%}`, which turns `trim_blocks` off for that one tag. The alternatives were a blank line after the item (the workaround `age_repair.j2` and `director_order.j2` already used) or `{{ "\n" }}`. Those two templates move to the same form. Their render is byte-identical before and after, checked over every delivered template with two-item fixtures. The render changes only in `guardrail_check`, `directive_parse` and `rewrite_parse`.
+  **Why:** a single tag-level marker can be seen at the line it fixes, and an editor can't drop it the way they can drop a blank line. All five are story templates, so the fingerprint moves either way.
+  **Issue:** #760
+- **Decision:** #760's lint test (`test_list_items_one_per_line`) runs over every delivered template and variant. It requires list items to be present only for the five templates #760 fixed. The other templates either have no `- ` list (`consolidation`, `lite_summary`, `quality_judge`, `quality_judge:score`, `importance_scoring`) or render theirs correctly already.
+  **Why:** a template with no list can't run its items together. Requiring items everywhere would fail for no reason, and requiring them nowhere would let the check pass on an empty render.
+  **Issue:** #760
+- **Decision:** `docs/evals/INDEX.md` is regenerated. Standard (`76bbd270ae62`), Full (`e87c4c040592`) and Max (`18979dc23806`) read `uncertified (preset changed since certification <id>)`. Lite's fingerprint also moves (`8e5fbbe0e56a`), and it was already uncertified. The committed records and reports are not edited. `evals --check` and `evals index --check` pass.
+  **Why:** #760's AC. `TEMPLATE_HASHES` hashes every story template's bytes into every preset's fingerprint.
+  **Issue:** #760
+- **Decision (blocker):** #761 is blocked and nothing of it is committed. The live check disproved the AC's premise. On 2026-11-07, api.anthropic.com's OpenAI-compatible endpoint (`claude-haiku-5-5`) answered `strict: false` with a 400, `response_format.json_schema.strict: Input should be True`. It answered `strict: true` with `GuardrailVerdict`'s schema with a 400, `For 'number' type, properties maximum, minimum are not supported`. It answered `strict: true` with `minimum`/`maximum` stripped with a 200 and a valid verdict. LM Studio on :1235 (`cydonia-24b-v4.3`) accepted both `strict: false` and `strict: true` and answered validly. So sending `strict: false` changes nothing on Anthropic, where every structured call still probes and falls back. The work-in-progress patch (strict false plus the stub and tests) was kept out of the branch.
+  **Why:** the fix needs one of these: (a) `strict: true` with a provider-safe schema, meaning unsupported keywords stripped and engine-side strict validation kept; (b) (a) only for api.anthropic.com; (c) `strict: false` as planned, accepting that Anthropic stays on parse-validate-retry. Each changes the request shape a certified preset sends, and (a) and (b) change the schema contract. That is an owner call (Rule 4) that affects M9's re-certification.
+  **Issue:** #761
+- **Decision:** a discovered problem is filed as #782 (needs-triage, no milestone): a stale Presets row in INDEX.md drops its Model cell, so per-model rows can't be told apart.
+  **Why:** it is outside #760's scope. `evals/index.py` is not part of the story.
+  **Issue:** #760, #782
+
+## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
+
+- **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.
+  **Why:** the minors policy's subject list rendered on one line (#760). Per the owner's 2026-11-06 triage, this lands before M9's re-certification.
+  **Affects:** M9 (re-certification, floor work #735 and #747–#750), #257 (its template edit moves the fingerprints again; it follows #760), and #271 (if hosted on Anthropic, it depends on #761, which is blocked on the owner's `strict` decision).

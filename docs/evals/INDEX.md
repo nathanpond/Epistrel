@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `48157377a4b9` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
-| Standard | `ff7c9b16e499` | `01M6MRZKZPYJCWJXVKANAV4F12` | NFR-QUAL-2, NFR-QUAL-5, NFR-QUAL-6, NFR-QUAL-9, NFR-QUAL-10 | NFR-QUAL-1, NFR-QUAL-3, NFR-QUAL-7, smoke | — | — | age_repair, composition_fallback, composition_polished, repair_rung_1, repair_rung_2, repair_rung_3, repair_rung_4 | `claude-haiku-5-5` | 3 | 2026-11-05 | [standard-ff7c9b16e499-2026-11-05.md](standard-ff7c9b16e499-2026-11-05.md) |
-| Full | `4710ae26cb73` | `01M6RG1VX91P04T98PK7Z7EXBJ` | NFR-QUAL-2, NFR-QUAL-4, NFR-QUAL-5, NFR-QUAL-6, NFR-QUAL-9, NFR-QUAL-10 | NFR-QUAL-1, NFR-QUAL-3, NFR-QUAL-7, smoke | — | — | age_repair, composition_fallback, composition_polished, repair_rung_1, repair_rung_2, repair_rung_3, repair_rung_4 | `claude-haiku-5-5` | 3 | 2026-11-06 | [full-4710ae26cb73-2026-11-06.md](full-4710ae26cb73-2026-11-06.md) |
-| Max | `f7f66a6e7930` | `01M6P9X2PV6WTJMN7YN81M6GYM` | NFR-QUAL-2, NFR-QUAL-5, NFR-QUAL-6, NFR-QUAL-9, NFR-QUAL-10 | NFR-QUAL-1, NFR-QUAL-3, NFR-QUAL-4, NFR-QUAL-7, smoke | — | — | age_repair, composition_fallback, composition_polished, repair_rung_1, repair_rung_2, repair_rung_3, repair_rung_4 | `claude-haiku-5-5` | 3 | 2026-11-05 | [max-f7f66a6e7930-2026-11-05.md](max-f7f66a6e7930-2026-11-05.md) |
+| Lite | `8e5fbbe0e56a` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
+| Standard | `76bbd270ae62` | uncertified (preset changed since certification 01M6MRZKZPYJCWJXVKANAV4F12) | — | — | — | — | — | — | — | — | — |
+| Full | `e87c4c040592` | uncertified (preset changed since certification 01M6RG1VX91P04T98PK7Z7EXBJ) | — | — | — | — | — | — | — | — | — |
+| Max | `18979dc23806` | uncertified (preset changed since certification 01M6P9X2PV6WTJMN7YN81M6GYM) | — | — | — | — | — | — | — | — | — |
 
 ## Runs
 

@@ -124,6 +124,7 @@ from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.images import candidates as image_candidates
 from epistrel.core.images import perceived as image_perceived
+from epistrel.core.images import story_images
 from epistrel.core.media import assets as media
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.media import uploads as media_uploads
@@ -160,6 +161,7 @@ from epistrel.core.settings_schema import (
 from epistrel.core.states import api as state_api
 from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
+from epistrel.core.tables import characters as characters_table
 from epistrel.core.tables import events
 from epistrel.core.tables import stories as stories_table
 from epistrel.core.tables.images import ImageJobKind
@@ -360,6 +362,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
     # #196: a scheduled event created, rescheduled or cancelled between turns.
     "create_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten, status=201),
+    # #261: a story image uploaded at a position (201) and deleted (204).
+    "upload_story_image": ResultCodec.of(story_images.StoryImagePlaced, status=201),
+    "delete_story_image": ResultCodec.of(story_images.StoryImageDeletion, status=204),
     "reschedule_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
     "cancel_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
     # #186: a State set and a State declared between turns, and a definition changed.
@@ -6172,6 +6177,168 @@ class Engine:
         """What an erasure covers and what it cannot reach (FR-ADMIN-8), as data: the same
         text as ``docs/OPERATIONS.md`` and the API description."""
         return erasure_boundary.ERASURE_BOUNDARY
+
+    # -- story images (FR-IMG-5, FR-IMG-10; #261) -----------------------------------------------
+
+    async def upload_story_image(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: story_images.StoryImageUpload,
+        content: bytes | AsyncIterable[bytes],
+        *,
+        content_type: str | None = None,
+        body_size: int | None = None,
+    ) -> story_images.StoryImagePlaced:
+        """Place an uploaded image in the story (FR-IMG-5; REST 201): ``request`` is its
+        metadata (``position`` ``{turn, beat}`` or ``{slot_after_turn}``, ``audience_viewpoint``,
+        ``camera_pov``, ``depicted_subjects``, optional caption, alt text and rating),
+        ``content`` its bytes. 422 ``position_invalid`` (an inactive position, or a slot after
+        any turn but the last completed one), ``viewpoint_invalid``, ``camera_pov_invalid``,
+        ``camera_pov_not_present``, ``subjects_required``, in that order, before the bytes are
+        checked; then #258's upload path (415, 413, ``rating_retired``, with an ``image_check``
+        model 422 ``guardrail_violation`` or 503 ``image_check_unavailable``, the moderation
+        hook's refusals); 409 ``story_archived``, ``story_paused`` or ``revision_conflict``. The
+        asset is stored ``source = uploaded`` and ``viewpoint_basis = none``, owned by the
+        story's owner; a looser rating than the story's answers a ``rating_looser`` warning. The
+        key's request hash covers the metadata and the bytes' SHA-256."""
+        principal = self.require_principal(ctx)
+        await stories.require_writable(self.db, story_id)
+        settings = await media.read_media_settings(self.db)
+        staged = await media.stage(
+            self.media,
+            new_ulid(),
+            media.content_of(content),
+            settings=settings,
+            kind=MediaKind.IMAGE,
+            content_type=content_type,
+            body_size=body_size,
+            threshold=settings.media_multipart_threshold,
+        )
+        try:
+
+            async def run(ctx: RequestContext) -> story_images.StoryImagePlaced:
+                await self.check_expected_revision(ctx, story_id)
+                async with self.db.connect() as conn:
+                    placement = await story_images.place(conn, story_id, request)
+                asset = story_images.media_request(request, placement)
+                prepared = await media.prepare(
+                    self.db,
+                    self.media,
+                    staged,
+                    asset,
+                    principal=principal,
+                    settings=settings,
+                    signer=self.signer,
+                    posters=self.posters,
+                    image_check=self.upload_check(),
+                )
+
+                async def store(conn: AsyncConnection) -> str:
+                    return await media.commit(
+                        conn,
+                        self.media,
+                        prepared,
+                        principal=principal,
+                        viewpoint_basis="none",
+                        record_control=False,
+                    )
+
+                return await story_images.upload(
+                    self.db,
+                    placement,
+                    staged.asset_id,
+                    store,
+                    principal=principal,
+                    idempotency_key=ctx.idempotency_key,
+                )
+
+            return await self._keyed(
+                ctx,
+                "upload_story_image",
+                run,
+                story_id=story_id,
+                material={
+                    "story_id": story_id,
+                    "body": _body(request),
+                    "sha256": staged.sha256,
+                    "size": staged.size,
+                    "mime_type": staged.mime_type,
+                },
+            )
+        finally:
+            await media.discard(staged)
+
+    @refuses_nul()
+    async def get_story_image(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        image_id: str,
+        *,
+        viewpoint: str | None = None,
+        include_audit: bool = False,
+    ) -> story_images.StoryImageItem:
+        """One story image for a viewpoint (FR-IMG-5): ``viewpoint`` (or ``ctx.viewpoint``),
+        else the story's default, resolved as the history read resolves it (422
+        ``viewpoint_unresolved``); 404 ``not_found`` for an image of another story or audience,
+        or one discarded with its turn or deleted. ``include_audit`` (``omniscient`` only, 403
+        ``omniscient_required``) adds ``operation_id``, ``job_id`` and ``prompt``."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        async with self.db.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(stories_table.c.settings).where(stories_table.c.id == story_id)
+                )
+            ).one_or_none()
+            if row is None:
+                raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+            cast = [
+                str(c)
+                for c in await conn.scalars(
+                    select(characters_table.c.id).where(characters_table.c.story_id == story_id)
+                )
+            ]
+            resolved = resolve_viewpoint(
+                ctx.viewpoint,
+                actor_character_id=None,
+                story_default=StorySettings.from_row(row.settings).default_output_viewpoint,
+                cast_ids=cast,
+                field="query.viewpoint",
+            )
+            if include_audit:
+                require_omniscient(resolved, field="query.include_audit")
+            return await story_images.get_image(
+                conn, story_id, image_id, resolved, audit=include_audit
+            )
+
+    async def delete_story_image(
+        self, ctx: RequestContext, story_id: str, image_id: str
+    ) -> story_images.StoryImageDeletion:
+        """Delete a story image (FR-IMG-5; REST 204): it leaves every read while the deletion's
+        operation is on the timeline, and its asset stays until the media sweep finds no
+        reference (FR-MEDIA-2). Idempotent (a deleted image answers 204 again); 404 for an
+        image of another story or one discarded with its turn; 409 ``story_archived``,
+        ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> story_images.StoryImageDeletion:
+            await self.check_expected_revision(ctx, story_id)
+            return await story_images.delete(
+                self.db,
+                story_id,
+                image_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "delete_story_image",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "image_id": image_id},
+        )
 
     # -- media assets (FR-MEDIA-1,2; FR-API-6; #105) --------------------------------------------
     # Deployment-scoped: an upload or a delete records a story-less ``control`` operation, keyed

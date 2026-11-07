@@ -1154,3 +1154,197 @@ async def test_i_23__m8_candidate_metadata(image_settings: Settings, engine: Asy
         assert saved.status_code == 200, saved.text
         primary = (await cs.draft(app, character_id))["images"]["primary"]
         assert primary["generation_metadata"] == metadata
+
+
+# -- #261: story images at narrative positions for an audience viewpoint ---------------------
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-5")
+async def test_i_23__m8_story_images(
+    image_settings: Settings, engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """In the whisper scene, an image uploaded after turn 2's player beat for Bobby is in
+    Bobby's history right after that beat and absent from Jenni's; an ``omniscient`` image
+    reaches only ``omniscient`` reads (and an omniscient read gets no Bobby image). Truncating
+    turn 2 takes Bobby's image away and untruncating brings it back; a regenerate makes it
+    dormant and a swap back reactivates it; a fork carries it by reference (a new image id, the
+    same asset). An inter-turn slot upload is in place after its turn. A deleted image leaves
+    every read (and a repeat delete is 204). Export then import shows the image in place in the
+    new story; a prune of a truncated tail removes its image rows (complement: the active image
+    remains); an as-recorded read at an earlier checkpoint omits a later image."""
+    from tests import story_image_support as si
+    from tests.respond_support import respond_client
+    from tests.story_support import READ, WRITE
+
+    async def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        response = await client.post(path, json=body, headers=WRITE)
+        assert response.status_code in (200, 201), response.text
+        found: dict[str, Any] = response.json()
+        return found
+
+    async with respond_client(image_settings, engine) as (client, epistrel):
+        story, ids = await si.scene(client, turns=2)
+        bobby, jenni = si.character(ids[si.BOBBY]), si.character(ids[si.JENNI])
+        for_bobby = (await si.placed(client, story, si.meta({"turn": 2, "beat": 1}, bobby)))[
+            "image_id"
+        ]
+        whole = (await si.placed(client, story, si.meta({"turn": 1, "beat": 2}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        bobby_items = await si.history(client, story, bobby)
+        assert si.image_ids(bobby_items) == [for_bobby]
+        before = si.after(bobby_items, for_bobby)
+        assert before is not None
+        assert (before["turn"], before["beat"]) == (2, 1)
+        assert bobby_items[-1]["kind"] == "message_rendered"  # the reply follows the image
+        assert si.image_ids(await si.history(client, story, jenni)) == []
+        omniscient = await si.history(client, story, si.OMNISCIENT)
+        assert si.image_ids(omniscient) == [whole]
+        before = si.after(omniscient, whole)
+        assert before is not None
+        assert (before["turn"], before["beat"]) == (1, 2)
+        assert (await si.get(client, story, for_bobby, bobby)).status_code == 200
+        for other in (jenni, si.OMNISCIENT):
+            assert (await si.get(client, story, for_bobby, other)).status_code == 404
+
+        # An inter-turn slot after the last completed turn sits after that turn's items.
+        slot = (await si.placed(client, story, si.meta({"slot_after_turn": 2}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        omniscient = await si.history(client, story, si.OMNISCIENT)
+        assert si.image_ids(omniscient) == [whole, slot]
+        assert omniscient[-1]["image_id"] == slot
+
+        # As recorded: the latest checkpoint (2⁺1) holds both; turn 2's checkpoint committed
+        # before either was uploaded.
+        async def recorded(**params: Any) -> list[str]:
+            response = await client.get(
+                f"/stories/{story}/history",
+                params={"viewpoint": "omniscient", "view": "as_recorded", **params},
+                headers=READ,
+            )
+            assert response.status_code == 200, response.text
+            return si.image_ids(response.json()["items"])
+
+        assert await recorded() == [whole, slot]
+        assert await recorded(as_of="2") == []
+
+        # Truncate and untruncate.
+        cut = await post(f"/stories/{story}/truncate", {"to_turn": 1})
+        assert si.image_ids(await si.history(client, story, bobby)) == []
+        assert si.image_ids(await si.history(client, story, si.OMNISCIENT)) == [whole]
+        await post(f"/stories/{story}/untruncate", {"truncate_operation_id": cut["operation_id"]})
+        assert si.image_ids(await si.history(client, story, bobby)) == [for_bobby]
+        assert si.image_ids(await si.history(client, story, si.OMNISCIENT)) == [whole, slot]
+
+        # Regenerate turn 2 (its variant 1 goes dormant with the image), then swap back.
+        await post(f"/stories/{story}/regenerate", {})
+        assert si.image_ids(await si.history(client, story, bobby)) == []
+        await post(f"/stories/{story}/swap", {"to_variant_chain": {"turn": 2, "variant": 1}})
+        assert si.image_ids(await si.history(client, story, bobby)) == [for_bobby]
+
+        # A fork copies the rows by reference: new image ids, the same assets.
+        forked = await post(f"/stories/{story}/fork", {"at_turn": 2})
+        fork_id = forked["story_id"]
+        fork_bobby = si.character(
+            next(c["id"] for c in forked["characters"] if c["name"] == si.BOBBY)
+        )
+        copied = [i for i in await si.history(client, fork_id, fork_bobby) if i.get("kind")]
+        copied = [i for i in copied if i["kind"] == "image"]
+        assert len(copied) == 1
+        assert copied[0]["image_id"] != for_bobby
+        source_media = next(
+            i["media_id"]
+            for i in await si.history(client, story, bobby)
+            if i.get("kind") == "image"
+        )
+        assert copied[0]["media_id"] == source_media
+
+        # Delete: gone from every read, a repeat is 204, the asset stays live.
+        assert (await si.delete(client, story, for_bobby)).status_code == 204
+        assert si.image_ids(await si.history(client, story, bobby)) == []
+        assert (await si.get(client, story, for_bobby, bobby)).status_code == 404
+        assert (await si.delete(client, story, for_bobby)).status_code == 204
+        async with engine.connect() as conn:
+            state = await conn.scalar(
+                text("SELECT state FROM media_assets WHERE id = :m"), {"m": source_media}
+            )
+        assert state == "live"
+
+        # Export, then import: the omniscient images in place in the new story, new assets.
+        data = await si.exported(client, engine, story, tmp_path, blobs=epistrel._blob_bytes)
+        new_story = await si.imported(client, engine, data)
+        brought = [
+            i
+            for i in await si.history(client, new_story, si.OMNISCIENT)
+            if i.get("kind") == "image"
+        ]
+        assert [(i["turn"], i.get("beat"), i.get("slot_after_turn")) for i in brought] == [
+            (1, 2, None),
+            (2, None, 2),
+        ]
+        assert {i["image_id"] for i in brought}.isdisjoint({whole, slot})
+
+        # Prune a truncated tail: its image rows go; the active image (turn 1) remains.
+        await post(f"/stories/{story}/truncate", {"to_turn": 1})
+        pruned = await post(f"/stories/{story}/prune", {"ignore_warnings": True})
+        assert pruned.get("applied", True) is not False, pruned
+        async with engine.connect() as conn:
+            left = set(
+                await conn.scalars(
+                    text("SELECT id FROM story_images WHERE story_id = :s"), {"s": story}
+                )
+            )
+        assert whole in left
+        assert for_bobby not in left
+        assert slot not in left
+        assert si.image_ids(await si.history(client, story, si.OMNISCIENT)) == [whole]
+
+
+@pytest.mark.part("M8", "FR-IMG-5")
+async def test_i_23__m8_story_image_anchoring(
+    image_settings: Settings, engine: AsyncEngine
+) -> None:
+    """An image after a beat of turn N survives truncate-to-N and goes with truncate-to-N-1; a
+    slot image after N goes with truncate-to-N. A character-viewpoint read carries no
+    ``depicted_subjects``; complement: the omniscient read does."""
+    from tests import story_image_support as si
+    from tests.respond_support import respond_client
+    from tests.story_support import WRITE
+
+    async def _truncate(client: Any, story_id: str, to_turn: int) -> None:
+        response = await client.post(
+            f"/stories/{story_id}/truncate", json={"to_turn": to_turn}, headers=WRITE
+        )
+        assert response.status_code == 200, response.text
+
+    async with respond_client(image_settings, engine) as (client, _):
+        story_id, ids = await si.scene(client, turns=2)
+        subjects = [{"kind": "character", "id": ids[si.JENNI]}]
+        beat = await si.placed(
+            client,
+            story_id,
+            si.meta({"turn": 2, "beat": 1}, si.character(ids[si.BOBBY]), subjects=subjects),
+        )
+        slot = await si.placed(
+            client, story_id, si.meta({"slot_after_turn": 2}, si.OMNISCIENT, subjects=subjects)
+        )
+        bobby = await si.history(client, story_id, si.character(ids[si.BOBBY]))
+        assert si.image_ids(bobby) == [beat["image_id"]]
+        shown = next(i for i in bobby if i.get("kind") == "image")
+        assert "depicted_subjects" not in shown
+        omniscient = await si.history(client, story_id, si.OMNISCIENT)
+        assert si.image_ids(omniscient) == [slot["image_id"]]
+        shown = next(i for i in omniscient if i.get("kind") == "image")
+        assert shown["depicted_subjects"] == subjects
+        assert shown["slot_after_turn"] == 2
+        assert "beat" not in shown
+
+        await _truncate(client, story_id, 2)  # the head: only its slots go
+        assert si.image_ids(await si.history(client, story_id, si.OMNISCIENT)) == []
+        assert si.image_ids(await si.history(client, story_id, si.character(ids[si.BOBBY]))) == [
+            beat["image_id"]
+        ]
+        await _truncate(client, story_id, 1)
+        assert si.image_ids(await si.history(client, story_id, si.character(ids[si.BOBBY]))) == []

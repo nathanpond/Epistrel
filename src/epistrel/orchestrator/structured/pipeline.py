@@ -217,6 +217,7 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import filtered_turn_beats
+from epistrel.core.images import story_images
 from epistrel.core.membership import (
     Position,
     active_operation,
@@ -7516,6 +7517,10 @@ async def play(
             ]
             # #175: a simultaneous turn's settled conflicts.
             fields["adjudications"] = list(multis[0].adjudications)
+        # #261 (FR-IMG-5): the story images positioned within the turn, for its viewpoint.
+        fields["images"] = await story_images.images_for_operation(
+            conn, story_id, committed.narrative_turn, committed.turn_variant or 0, viewpoint
+        )
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
         return RespondResult(**fields)

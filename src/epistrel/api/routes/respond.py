@@ -14,10 +14,10 @@ from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.clock import TurnClockBody
 from epistrel.api.routes.history import (
     AudienceFilterValue,
-    ItemModel,
     NoticeBody,
+    PlacedItem,
     StateEffectModel,
-    item_model,
+    in_place,
 )
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
@@ -236,7 +236,9 @@ class RespondResponse(MutationResponse):
     (#113, C-16; null only on a replay of a turn stored before #113)."""
 
     message: MessageBody
-    beats: list[ItemModel]
+    beats: list[PlacedItem]
+    """The turn's beats for the viewpoint, with the story images positioned within the turn
+    for that viewpoint in place (``kind: image``, #261)."""
     turn: int
     variant: int
     output_viewpoint: str
@@ -336,7 +338,7 @@ class RespondResponse(MutationResponse):
                 mode=result.message.mode,
                 narrative=None if result.message.mode is None else result.message.text,
             ),
-            beats=[item_model(b) for b in result.beats],
+            beats=in_place(result.beats, result.images),
             turn=result.turn,
             variant=result.variant,
             timeline_revision=result.timeline_revision,

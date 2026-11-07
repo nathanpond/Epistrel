@@ -106,6 +106,7 @@ from epistrel.core.tables.states import (
     state_values,
 )
 from epistrel.core.tables.stories import stories
+from epistrel.core.tables.story_images import story_images
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
 from epistrel.core.tables.turn_queue import turn_queue
 from epistrel.core.tables.utterances import utterances
@@ -198,6 +199,7 @@ __all__ = [
     "stories",
     "story_backfills",
     "story_heads",
+    "story_images",
     "story_profile_overrides",
     "story_provider_bindings",
     "story_texts",

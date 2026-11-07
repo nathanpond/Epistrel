@@ -87,7 +87,7 @@ from collections.abc import (
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO, Protocol
+from typing import Annotated, Any, BinaryIO, Literal, Protocol
 
 from pydantic import (
     AfterValidator,
@@ -401,6 +401,11 @@ class MediaAsset(BaseModel):
     )
     check: ImageCheck | None = Field(
         description="The checker and its per-policy results when `passed`; `null` when `unchecked`."
+    )
+    viewpoint_basis: Literal["filtered_inputs", "protected_term_match", "none"] | None = Field(
+        default=None,
+        description="A story image's asset (FR-IMG-10; #261): what its perceivable inputs were "
+        "built from (`none` for an upload: Epistrel built none); `null` for any other asset.",
     )
 
 
@@ -804,6 +809,7 @@ _COLUMNS = (
     media_assets.c.check_model,
     media_assets.c.check_endpoint,
     media_assets.c.policy_results,
+    media_assets.c.viewpoint_basis,
 )
 _FROM = media_assets.outerjoin(
     content_rating_versions,
@@ -1091,6 +1097,7 @@ async def _insert(
     principal: str,
     poster_media_id: str | None,
     check: ImageCheckRecord = UNCHECKED,
+    viewpoint_basis: str | None = None,
 ) -> None:
     staged, found = probed.staged, probed.found
     # No new medium depicts a subject a catalog-scope erasure removed (FR-ADMIN-9; #127).
@@ -1121,6 +1128,7 @@ async def _insert(
             created_at=clock.now(),
             created_by=principal,
             poster_media_id=poster_media_id,
+            viewpoint_basis=viewpoint_basis,
             **check.values(),
         )
     )
@@ -1144,10 +1152,14 @@ async def commit(
     *,
     principal: str,
     assembled: str | None = None,
+    viewpoint_basis: str | None = None,
+    record_control: bool = True,
 ) -> str:
     """Step 4 of the module docstring in ``conn``'s transaction: the rows (the poster's first),
     their subject index, one ``control`` operation, then the bytes; the asset's id.
-    ``assembled`` names the upload session whose assembled object the store copies (S3)."""
+    ``assembled`` names the upload session whose assembled object the store copies (S3). A
+    story image's upload (#261) stores its asset inside its own story operation: it passes
+    ``viewpoint_basis`` and ``record_control=False``."""
     request, main, poster = prepared.request, prepared.main, prepared.poster
     checksums = {main.staged.sha256} | ({poster.staged.sha256} if poster is not None else set())
     for checksum in sorted(checksums):
@@ -1179,8 +1191,10 @@ async def commit(
         principal=principal,
         poster_media_id=poster_id if main.staged.kind is MediaKind.VIDEO else None,
         check=prepared.main_check,
+        viewpoint_basis=viewpoint_basis,
     )
-    await control.record_control_operation(conn, actor=principal)
+    if record_control:
+        await control.record_control_operation(conn, actor=principal)
     # Last, so a refused statement above leaves the bytes staged (and then discarded).
     if poster is not None:
         await asyncio.to_thread(

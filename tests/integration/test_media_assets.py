@@ -1135,6 +1135,8 @@ MEDIA_COLUMNS = {
     "check_model": ("text", "YES"),
     "check_endpoint": ("text", "YES"),
     "policy_results": ("jsonb", "NO"),
+    # #261: a story image's asset says what its inputs were built from (null otherwise).
+    "viewpoint_basis": ("text", "YES"),
 }
 REFERENCE_COLUMNS = {
     "id": ("bpchar", "NO"),

@@ -1197,6 +1197,28 @@
         "title": "BaseAppearanceRequest",
         "type": "object"
       },
+      "BeatPosition": {
+        "additionalProperties": false,
+        "description": "After beat ``beat`` of turn ``turn`` (the player input is beat 1), on the turn's active\nvariant.",
+        "properties": {
+          "beat": {
+            "minimum": 1,
+            "title": "Beat",
+            "type": "integer"
+          },
+          "turn": {
+            "minimum": 1,
+            "title": "Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "turn",
+          "beat"
+        ],
+        "title": "BeatPosition",
+        "type": "object"
+      },
       "BeatPropositionModel": {
         "description": "A proposition a structured beat asserts, with its verdict (#150).",
         "properties": {
@@ -15573,6 +15595,7 @@
             "title": "Erasure Markers"
           },
           "items": {
+            "description": "The page's items, ascending, with the story images whose audience is the read's viewpoint in place (`kind: image`, #261); images do not count toward `limit`.",
             "items": {
               "anyOf": [
                 {
@@ -15580,6 +15603,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/HistoryItemModel"
+                },
+                {
+                  "$ref": "#/components/schemas/StoryImageItem"
                 }
               ]
             },
@@ -19594,6 +19620,23 @@
           "state": {
             "$ref": "#/components/schemas/MediaState"
           },
+          "viewpoint_basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "filtered_inputs",
+                  "protected_term_match",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A story image's asset (FR-IMG-10; #261): what its perceivable inputs were built from (`none` for an upload: Epistrel built none); `null` for any other asset.",
+            "title": "Viewpoint Basis"
+          },
           "width": {
             "anyOf": [
               {
@@ -19963,6 +20006,23 @@
           },
           "state": {
             "$ref": "#/components/schemas/MediaState"
+          },
+          "viewpoint_basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "filtered_inputs",
+                  "protected_term_match",
+                  "none"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A story image's asset (FR-IMG-10; #261): what its perceivable inputs were built from (`none` for an upload: Epistrel built none); `null` for any other asset.",
+            "title": "Viewpoint Basis"
           },
           "width": {
             "anyOf": [
@@ -22412,7 +22472,8 @@
           "backfill",
           "import",
           "control",
-          "maintenance"
+          "maintenance",
+          "story_image"
         ],
         "title": "OperationKind",
         "type": "string"
@@ -34089,6 +34150,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/HistoryItemModel"
+                },
+                {
+                  "$ref": "#/components/schemas/StoryImageItem"
                 }
               ]
             },
@@ -35263,6 +35327,9 @@
                 },
                 {
                   "$ref": "#/components/schemas/HistoryItemModel"
+                },
+                {
+                  "$ref": "#/components/schemas/StoryImageItem"
                 }
               ]
             },
@@ -43497,6 +43564,22 @@
         "title": "SlotChoice",
         "type": "object"
       },
+      "SlotPosition": {
+        "additionalProperties": false,
+        "description": "In a new inter-turn slot after turn ``slot_after_turn``, which must be the story's last\ncompleted turn (0 before the first).",
+        "properties": {
+          "slot_after_turn": {
+            "minimum": 0,
+            "title": "Slot After Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "slot_after_turn"
+        ],
+        "title": "SlotPosition",
+        "type": "object"
+      },
       "Sources": {
         "description": "Where each effective value came from, per field (``params`` per key): ``own``, ``inherited``\n(the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``),\n``default``, or ``unset`` (``image_check``, which has no default, before it is\nconfigured).",
         "properties": {
@@ -45532,6 +45615,7 @@
           },
           "size": {},
           "source": {},
+          "viewpoint_basis": {},
           "width": {}
         },
         "required": [
@@ -45549,6 +45633,7 @@
           "sha256",
           "size",
           "source",
+          "viewpoint_basis",
           "width"
         ],
         "title": "StoryBundleMedia",
@@ -48194,6 +48279,7 @@
               "inter_turn",
               "maintenance",
               "rewrite_session",
+              "story_image",
               "turn"
             ],
             "type": "string"
@@ -49628,6 +49714,125 @@
         "title": "StoryBundleRecord_stories",
         "type": "object"
       },
+      "StoryBundleRecord_story_images": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/story_images.jsonl` (or `catalog/story_images.jsonl`): a `story_images` row as exported (FR-STORE-7).",
+        "properties": {
+          "asset_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "at_beat": {
+            "type": "integer"
+          },
+          "at_slot_k": {
+            "type": "integer"
+          },
+          "at_step": {
+            "type": "integer"
+          },
+          "at_turn": {
+            "type": "integer"
+          },
+          "at_variant": {
+            "type": "integer"
+          },
+          "audience_viewpoint": {
+            "type": "string"
+          },
+          "camera_pov": {},
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "deleted_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "job_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "viewpoint_basis": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset_id",
+          "at_turn",
+          "audience_viewpoint",
+          "camera_pov",
+          "created_at",
+          "created_by",
+          "id",
+          "membership_tx",
+          "operation_id",
+          "source",
+          "story_id",
+          "viewpoint_basis"
+        ],
+        "title": "StoryBundleRecord_story_images",
+        "type": "object"
+      },
       "StoryBundleRecord_story_profile_overrides": {
         "additionalProperties": false,
         "description": "One line of a story bundle's `records/story_profile_overrides.jsonl` (or `catalog/story_profile_overrides.jsonl`): a `story_profile_overrides` row as exported (FR-STORE-7).",
@@ -50327,6 +50532,483 @@
           "scenario"
         ],
         "title": "StoryFromScenario",
+        "type": "object"
+      },
+      "StoryImageItem": {
+        "description": "A story image in place. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "camera_pov": {
+            "additionalProperties": true,
+            "title": "Camera Pov",
+            "type": "object"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_status": {
+            "$ref": "#/components/schemas/CheckStatus"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "depicted_subjects": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depicted Subjects"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "kind": {
+            "const": "image",
+            "default": "image",
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "slot_after_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot After Turn"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MediaSource"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "viewpoint_basis": {
+            "$ref": "#/components/schemas/ViewpointBasis"
+          }
+        },
+        "required": [
+          "image_id",
+          "media_id",
+          "turn",
+          "camera_pov",
+          "alt_text",
+          "caption",
+          "source",
+          "check_status",
+          "check",
+          "viewpoint_basis",
+          "created_at"
+        ],
+        "title": "StoryImageItem",
+        "type": "object"
+      },
+      "StoryImageUpload": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/images``' ``metadata`` part (FR-IMG-5): where the image goes\n(``position``: ``{turn, beat}`` or ``{slot_after_turn}``), who may receive it\n(``audience_viewpoint``: ``character:<id>`` or ``omniscient``), its camera POV (default\n``{kind: third_person}``; ``over_the_shoulder``/``first_person`` name a ``character_id``\npresent there), the subjects it depicts (required: ``[]`` declares none), and optional\ncaption, alt text and content rating (default the story's).",
+        "examples": [
+          {
+            "alt_text": "Jenni at the window",
+            "audience_viewpoint": "character:01J9Z8Q4N5V6W7X8Y9Z0A1B2C5",
+            "camera_pov": {
+              "kind": "third_person"
+            },
+            "depicted_subjects": [
+              {
+                "id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6",
+                "kind": "character"
+              }
+            ],
+            "position": {
+              "beat": 2,
+              "turn": 3
+            }
+          }
+        ],
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alt Text"
+          },
+          "audience_viewpoint": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Audience Viewpoint",
+            "type": "string"
+          },
+          "camera_pov": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "`{kind}`: `third_person` (the default), `establishing`, or `over_the_shoulder`/`first_person` with the `character_id` of a character present at the position. Composition only: it grants no viewpoint access.",
+            "title": "Camera Pov"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Caption"
+          },
+          "content_rating_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The image's content rating (default the story's). A looser one is accepted with a `rating_looser` warning; the story's rating still governs (FR-RATE-3,5).",
+            "title": "Content Rating Id"
+          },
+          "depicted_subjects": {
+            "description": "Every subject the image depicts (required; `[]` declares none). Omitted: 422 `subjects_required`.",
+            "items": {
+              "$ref": "#/components/schemas/DepictedSubject"
+            },
+            "maxItems": 50,
+            "title": "Depicted Subjects",
+            "type": "array"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeatPosition"
+              },
+              {
+                "$ref": "#/components/schemas/SlotPosition"
+              }
+            ],
+            "title": "Position"
+          }
+        },
+        "required": [
+          "position",
+          "audience_viewpoint",
+          "depicted_subjects"
+        ],
+        "title": "StoryImageUpload",
+        "type": "object"
+      },
+      "StoryImageUploadedBody": {
+        "description": "A story image in place. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alt Text"
+          },
+          "audience_viewpoint": {
+            "description": "The only output viewpoint that receives the image (`character:<id>` or `omniscient`); the camera POV is a separate field and grants no access.",
+            "title": "Audience Viewpoint",
+            "type": "string"
+          },
+          "beat": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Beat"
+          },
+          "camera_pov": {
+            "additionalProperties": true,
+            "title": "Camera Pov",
+            "type": "object"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Caption"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_status": {
+            "$ref": "#/components/schemas/CheckStatus"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "depicted_subjects": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depicted Subjects"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "image_id": {
+            "title": "Image Id",
+            "type": "string"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "kind": {
+            "const": "image",
+            "default": "image",
+            "title": "Kind",
+            "type": "string"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation Id"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prompt"
+          },
+          "slot_after_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot After Turn"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MediaSource"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "turn": {
+            "title": "Turn",
+            "type": "integer"
+          },
+          "viewpoint_basis": {
+            "$ref": "#/components/schemas/ViewpointBasis"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/StoryImageWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "image_id",
+          "media_id",
+          "turn",
+          "camera_pov",
+          "alt_text",
+          "caption",
+          "source",
+          "check_status",
+          "check",
+          "viewpoint_basis",
+          "created_at",
+          "audience_viewpoint"
+        ],
+        "title": "StoryImageUploadedBody",
+        "type": "object"
+      },
+      "StoryImageWarning": {
+        "description": "What the upload did that the consumer should know: ``rating_looser`` (the image's\nrating lacks a guardrail the story's has; the story's rating still governs, FR-RATE-3,5).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "media_id": {
+            "title": "Media Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "media_id"
+        ],
+        "title": "StoryImageWarning",
         "type": "object"
       },
       "StoryList": {
@@ -53225,6 +53907,16 @@
         ],
         "title": "VariantsBody",
         "type": "object"
+      },
+      "ViewpointBasis": {
+        "description": "What an image's perceivable inputs were built from (FR-IMG-10): ``filtered_inputs`` (the\naudience viewpoint's perceivable inputs, #263), ``protected_term_match`` (#263) or ``none``\n(an upload: Epistrel built no inputs).",
+        "enum": [
+          "filtered_inputs",
+          "protected_term_match",
+          "none"
+        ],
+        "title": "ViewpointBasis",
+        "type": "string"
       },
       "ViolationBody": {
         "description": "A key the approved semantics find with too many objects over overlapping time: the\npropositions are reported, never changed.",
@@ -85712,6 +86404,575 @@
         "summary": "Read the story's history for one output viewpoint",
         "tags": [
           "history"
+        ]
+      }
+    },
+    "/stories/{story_id}/images": {
+      "post": {
+        "description": "A `multipart/form-data` body: the `metadata` part (JSON: `position` `{turn, beat}` after a beat of an active turn, the player input being beat 1, or `{slot_after_turn}` in a new inter-turn slot after the story's last completed turn; `audience_viewpoint` `character:<id>` or `omniscient`; `camera_pov` `{kind}` (default `third_person`; `over_the_shoulder`/`first_person` name a `character_id` present there; composition only, it grants no access); `depicted_subjects` (required, `[]` declares none); optional `caption`, `alt_text`, `content_rating_id`, default the story's), then the `file` part (an image). Refusals, in order: 422 `position_invalid` (an inactive turn, a beat it lacks, or a slot after any turn but the last completed one), `viewpoint_invalid`, `camera_pov_invalid`, `camera_pov_not_present`, `subjects_required`; then the image goes through `POST /media`'s upload path (415, 413, `rating_retired`, with an `image_check` model 422 `guardrail_violation` or 503 `image_check_unavailable`, the moderation hook's refusals), and nothing is stored on any of them. The asset is stored `source: uploaded`, `viewpoint_basis: none`, owned by the story's owner, and the image is placed in one operation; a looser rating than the story's answers a `rating_looser` warning. One image per request. Only reads for its audience viewpoint receive it, in place. 409 `story_archived`, `story_paused` or `revision_conflict`. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "operationId": "upload_story_image",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "encoding": {
+                "metadata": {
+                  "contentType": "application/json"
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "file": {
+                    "description": "The bytes, as the part's own `Content-Type` declares them (or `application/octet-stream`).",
+                    "format": "binary",
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "$ref": "#/components/schemas/StoryImageUpload"
+                  }
+                },
+                "required": [
+                  "metadata",
+                  "file"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryImageUploadedBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too large; nothing was written: `media_too_large`, `use_multipart`."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unsupported media type; nothing was written: `media_type_not_allowed`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `camera_pov_invalid`, `camera_pov_not_present`, `media_retired`, `moderation_rejected`, `position_invalid`, `poster_extraction_failed`, `poster_invalid`, `poster_required`, `rating_retired`, `subjects_required`, `validation_error`, `viewpoint_invalid`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`, `moderation_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload a story image at a narrative position for one audience viewpoint",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/stories/{story_id}/images/{image_id}": {
+      "delete": {
+        "description": "The image leaves every read while the deletion is on the timeline (truncating it back brings the image back); its asset stays until the media sweep finds no reference. Idempotent: a deleted image answers 204 again. 404 for another story's image or one discarded with its turn. 409 `story_archived`, `story_paused` or `revision_conflict`.",
+        "operationId": "delete_story_image",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story image's id (a ULID).",
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "description": "The story image's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Image Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete a story image",
+        "tags": [
+          "images"
+        ]
+      },
+      "get": {
+        "description": "The image for the read's viewpoint (`viewpoint`, else the story's default; 422 `viewpoint_unresolved`): 404 for another audience, another story, a deleted image or one discarded with its turn. `depicted_subjects` only for `omniscient`; `include_audit` (`omniscient` only, 403 `omniscient_required`) adds `operation_id`, `job_id` and `prompt`. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "operationId": "get_story_image",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story image's id (a ULID).",
+            "in": "path",
+            "name": "image_id",
+            "required": true,
+            "schema": {
+              "description": "The story image's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C9"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Image Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_audit",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Audit",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryImageItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Forbidden: `omniscient_required`."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`, `viewpoint_unresolved`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read one story image for its audience viewpoint",
+        "tags": [
+          "images"
         ]
       }
     },

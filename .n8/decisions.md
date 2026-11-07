@@ -12737,6 +12737,54 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the tests follow docs/04 IDs. `test_i_25__m8_candidates`, `_candidate_expiry`, `_candidate_target_gone` and `_candidate_discard` (planned `test_candidate_discard`) are in `tests/integration/test_i_25.py`; `test_i_23__m8_candidate_metadata`; `test_x_07__m8_candidate_ttl`; `test_c_22__m8_candidate_no_checker` also covers the planned `test_candidate_not_configured` (adapter null → 409, no job). docs/04 §15's FR-IMG-7 row gains `I-25 (M8), C-22 (M8)`, which `check-traceability` required. Each test's outputs use a size of their own, so no two tests share a checksum on the shared database. C-03 gains the steps (both kinds' requests succeed with a registered PNG adapter); I-21's candidate routes expect 409 (no adapter), 200, 404 and 204 for owner and stranger alike.
   **Why:** a part named with no docs/04 ID is unmappable, and the plan's parts name FR-IMG-7.
   **Issue:** #260
+- **Decision:** #261 step 0. The branch head was `9c03ff0` (#260), its CI run 42392470948 was green, and the worktree was clean.
+  **Why:** the brief's precondition.
+  **Issue:** #261
+- **Decision:** `story_images` is registered as a derived table with `operation_id` as its only operation column. `deleted_operation_id` is not one. Visibility is `active_only(story_images)` and (no deletion, or the deletion's operation is not `active`), in `core.images.story_images.visible`. That deviates from the planner's "extra operation column `deleted_operation_id`".
+  **Why:** a flip moves the rows of every operation column it names. Truncating a slot deletion would then discard the image instead of bringing it back. The planner's own visibility rule ("a deletion follows its own operation's membership") needs the deletion read through its operation, not flipped with it.
+  **Issue:** #261
+- **Decision:** `story_images.asset_id` has no foreign key to `media_assets`. The reference source (`public.story_images.asset_id`, plus a `REFERENCE_HOLDERS` row naming the story) keeps the asset alive. `deleted_operation_id` has a foreign key to `operations`. The CHECKs cover the position shape, the camera kinds (a character camera names `character_id`, no other kind does), the audience form, `source` and `viewpoint_basis`. `media_assets.viewpoint_basis` is nullable, with its own CHECK. Migration `0136_story_images` also adds `story_image` to the `operation_kind` enum.
+  **Why:** the media sweep and erasure delete asset rows by their own rules (#266 owns erasure); a hard foreign key would make them fail on a referencing row. Other derived tables keep soft references the same way.
+  **Issue:** #261, #266
+- **Decision:** a `story_image_added` payload is `{image_id, asset_id}` and a `story_image_deleted` payload is `{image_id}`, both `narrative_state`. The event row's own `beat` and `slot_k` carry the position.
+  **Why:** a slot's `k` is fixed only by its commit, after the payload is validated. The planner asks for ids and positions only, and the row has the position.
+  **Issue:** #261
+- **Decision:** a valid beat is any beat number the turn's active variant recorded (1 to its highest beat, the reply included). The planner's "a beat index ≥ the beat count" was read as "a beat the variant does not have".
+  **Why:** taken literally, with the player input as beat 1, the rule would forbid the last beat (a Lite turn's reply). The demo places an image after a character's beat, and a reply is that.
+  **Issue:** #261
+- **Decision:** the upload stages the bytes and claims the idempotency key first, then runs the 422 checks (`position_invalid` → `viewpoint_invalid` → `camera_pov_invalid` → `camera_pov_not_present` → `subjects_required`), then #258's check and the moderation hook (`media.prepare`). Then one operation stores the asset (`media.commit(..., viewpoint_basis="none", record_control=False)`) and the row in a commit step. That step re-checks the position under the story lock: a changed active variant, or a moved last completed turn, is 422 `position_invalid`.
+  **Why:** the request hash needs the bytes' SHA-256, so a replay answers the stored 201 even after the timeline moved. No check of a byte (#258) runs before the 422 checks, and staged bytes are not stored bytes. `media.commit` gained the two keywords so the asset is written in the story operation, not in a separate deployment `control` operation.
+  **Issue:** #261, #258
+- **Decision:** a `camera_pov_not_present` check passes only the audience's character to `present_at` as its actor, and then tests whether the camera's character is present. A camera character outside the cast is never present.
+  **Why:** with the camera's own character as an actor, #541's rule makes it present trivially, and the check could never fail.
+  **Issue:** #261, #257
+- **Decision:** the library carries images beside the beats: `History.images` and `RespondResult.images`, each a list of `StoryImageItem`, with `History.sequence()` for the in-place order. The REST `items` and `beats` are `list[ItemModel | StoryImageItem]`, merged by `story_images.merge_into_history`. Respond's list holds the images within the returned turn's variant (always empty in #261, because an upload needs a committed turn; it matters for #263 and #265). The Lite, structured and staged result builders all fill it.
+  **Why:** widening `History.items` to a union would retype every consumer of a beat's `text` and `channel`, tests included, under strict mypy. The REST shape the AC asks for is the same either way.
+  **Issue:** #261, #263, #265
+- **Decision:** `as_of=N` on a corrected read leaves out the slot images after N. The default read (no `as_of`) includes the head turn's slots.
+  **Why:** the planner's #65 rule. If the default read left them out, every slot upload after the last completed turn would be invisible.
+  **Issue:** #261
+- **Decision:** the upload's 201 body is the omniscient item plus `operation_id`, `depicted_subjects`, `audience_viewpoint`, `timeline_revision` and `warnings`. `audience_viewpoint` is answered only there: history and the single read return images for their own viewpoint.
+  **Why:** the AC (the omniscient item plus `operation_id` and `depicted_subjects`). C-24's "separate fields" check reads the audience back from the answer.
+  **Issue:** #261
+- **Decision:** a story without a rating needs the request's `content_rating_id` (422 `validation_error` otherwise). A looser rating answers `warnings: [{code: rating_looser, media_id}]`, using the guardrail-set comparison (`is_looser`'s rule, effective live guardrails).
+  **Why:** the planner's FR-RATE-5 line. A story normally has a rating, so the 422 is a guard, not a path.
+  **Issue:** #261
+- **Decision:** the registries. `story_images` joins `STORY_TABLES` (after `scheduled_events`), `PRUNABLE_TABLES`, `SUBJECT_WRITERS` (`records.read_story_images` / `story_image_record`: the prompt as text, and as declared subjects the audience's character, the camera's character and the asset's depicted subjects) and `CONTENT_WRITE_PATHS` (`OPERATION`). The fork overrides map `audience_viewpoint` through the fork's id map and set `deleted_operation_id` to the fork's copy, or null. Bundles export the rows generically, `_media` adds their assets (deleted rows' included), `MEDIA_FIELDS` and the import carry `viewpoint_basis`, and the import's id map remaps `asset_id`.
+  **Why:** the AC's References and Pruning, bundles, as-recorded lines. A fork that kept the source's deletion id would hide the image in a fork that did not copy the deletion.
+  **Issue:** #261, #266
+- **Decision:** the as-recorded read lists the omniscient images whose `story_image_added` is among the checkpoint's events and whose `story_image_deleted` is not (`History.images`, placed in `items` by REST).
+  **Why:** owner decision 2026-11-06 and FR-STORE-23. The checkpoint's event set already applies the boundary and the membership as of then.
+  **Issue:** #261
+- **Decision:** the API registries. The FR-API-6 rows `POST /stories/{story_id}/images` and `DELETE …/images/{image_id}` are `present` at the served path templates, `GET …/images/{image_id}` is an `extras` row, and `PENDING` is empty. `test_c_15__api_surface` now asserts that no row is left `not_yet`; it used to expect exactly M8's. C-03 gains five steps: an upload, one with no subjects (422), a read, a delete and a read after it (404). I-21's `CALLS` get the three routes. The upload is `Call(422)`, because the matrix sends JSON and the route reads multipart. The read and the delete run on an image the owner uploaded. The error codes join `ERROR_STATUS` and `OPERATION_ERRORS`, `StoryImageUpload` is a `MULTIPART_BODIES` component, and `docs/openapi.json` is regenerated.
+  **Why:** the replan's M3 #128 line and I-21 line. #263 extends the same POST for generation requests, so it needs no `PENDING` row.
+  **Issue:** #261, #263
+- **Decision:** the test names. `test_i_23__m8_story_images` and `test_i_23__m8_story_image_anchoring` (the planned `test_story_image_anchoring`, `part("M8", "FR-IMG-5")`) are in `tests/integration/test_i_23.py`. `test_c_24__m8_viewpoint_fields` is in `tests/conformance/test_c_24.py`. `test_story_image_upload_subjects`, `test_story_image_idempotent` and an added `test_story_image_refusal_order` carry no marker and are in `tests/integration/test_story_images.py`. The helpers are in `tests/story_image_support.py`. C-24's absent-camera case uses #257's rooms (`with_rooms`), because under Lite every character is present. S-DELETE plants a `story_images` row, and its foreign-key allowlist gains `deleted_operation_id → operations`.
+  **Why:** a part whose name maps to no docs/04 ID is unmappable, and the traceability gate takes one file per test ID and milestone (#254's precedent).
+  **Issue:** #261
+- **Decision (Rule 1):** the upload route calls `Engine.check_expected_revision` (erasure-gated, so it also refuses an importing or erasure-blocked story) before it reads the multipart body. `GET …/images/{image_id}` documents 403 `omniscient_required` for `include_audit`.
+  **Why:** `test_i_10__m7_importing__running` requires every story route to answer 409 `story_importing` for an importing story, and the body's 422 came first. C-01 found the undocumented 403.
+  **Issue:** #261
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

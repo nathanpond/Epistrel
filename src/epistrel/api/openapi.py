@@ -61,6 +61,7 @@ from epistrel.core.bundles.import_job import ImportMetadata
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
+from epistrel.core.images.story_images import StoryImageUpload
 from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.profiles.certification import CertificationRecord
@@ -380,6 +381,10 @@ ERROR_STATUS: dict[str, int] = {
     "unknown_predicate": 422,
     "slot_required": 422,
     "subjects_required": 422,
+    "position_invalid": 422,
+    "viewpoint_invalid": 422,
+    "camera_pov_invalid": 422,
+    "camera_pov_not_present": 422,
     "transfer_target_invalid": 422,
     "transfer_target_required": 422,
     "unknown_feedback_tag": 422,
@@ -1056,6 +1061,19 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_UPLOADED,
         "use_multipart",
     ),
+    # #261 (FR-IMG-5): a story image's checks, then #258's upload path, in one operation.
+    "upload_story_image": (
+        "position_invalid",
+        "viewpoint_invalid",
+        "camera_pov_invalid",
+        "camera_pov_not_present",
+        *_UPLOADED,
+        "use_multipart",
+        "story_archived",
+        "story_paused",
+    ),
+    "get_story_image": ("viewpoint_unresolved", "omniscient_required"),
+    "delete_story_image": ("story_archived", "story_paused", "erased_subject_referenced"),
     "get_media_content": (
         "url_expired",
         "signature_invalid",
@@ -1198,7 +1216,11 @@ DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
 takes a blank story or one from a scenario, #119)."""
 
-MULTIPART_BODIES = {"upload_media": "MediaUpload", "import_story": "ImportMetadata"}
+MULTIPART_BODIES = {
+    "upload_media": "MediaUpload",
+    "import_story": "ImportMetadata",
+    "upload_story_image": "StoryImageUpload",
+}
 """Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
 part (the component named here, as JSON) followed by a binary ``file`` part and, for a video,
 an optional binary ``poster_file`` part (#107). ``import_story``'s ``file`` is the bundle
@@ -1427,6 +1449,7 @@ def _extra_components() -> dict[str, Any]:
             (StorySpec, "validation"),
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
+            (StoryImageUpload, "validation"),
             (ImportMetadata, "validation"),
             (CertificationRecord, "validation"),
         ],

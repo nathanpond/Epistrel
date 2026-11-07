@@ -44,6 +44,7 @@ from epistrel.api.routes import (
     state_proposals,
     states,
     stories,
+    story_images,
     story_profile,
     story_rating,
     story_texts,
@@ -76,6 +77,7 @@ router.include_router(catalog_images.scenarios)
 router.include_router(media.router)
 router.include_router(image_jobs.router)
 router.include_router(image_prompts.router)
+router.include_router(story_images.router)
 router.include_router(engine_profiles.router)
 router.include_router(certifications.router)
 router.include_router(personas.router)

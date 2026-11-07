@@ -141,6 +141,19 @@ async def _amend(engine: AsyncEngine, story_id: str) -> None:
             ),
             {"j": new_ulid(), "s": story_id},
         )
+        # #261: a story image of the story's, placed and then deleted by its genesis
+        # operation (planted: a soft reference to an asset id).
+        await conn.execute(
+            text(
+                "INSERT INTO story_images (id, story_id, operation_id, membership_tx, at_turn, "
+                "at_slot_k, audience_viewpoint, camera_pov, asset_id, source, viewpoint_basis, "
+                "deleted_operation_id, created_at, created_by) SELECT :i, :s, o.operation_id, "
+                "now(), 0, 1, 'omniscient', '{\"kind\": \"third_person\"}', :a, 'uploaded', "
+                "'none', o.operation_id, now(), 'p-author' FROM operations o "
+                "WHERE o.story_id = :s ORDER BY o.operation_id LIMIT 1"
+            ),
+            {"i": new_ulid(), "s": story_id, "a": new_ulid()},
+        )
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:
@@ -801,6 +814,8 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
             # #223: a question names its session, and an amendment the session that applied
             # it; all of one story.
             ("session_id", "rewrite_sessions", "id"),
+            # #261: a story image names the operation that deleted it; of the same story.
+            ("deleted_operation_id", "operations", "operation_id"),
         }
         found = {
             (column, target, target_column) for _, column, target, target_column in foreign_keys

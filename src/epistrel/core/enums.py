@@ -32,6 +32,9 @@ class OperationKind(StrEnum):
     IMPORT = "import"
     CONTROL = "control"
     MAINTENANCE = "maintenance"
+    STORY_IMAGE = "story_image"
+    """#261 (FR-IMG-5): a story image placed or deleted at a beat of a turn, anchored at that
+    turn and its active variant, so it follows the turn's membership."""
 
 
 class Membership(StrEnum):

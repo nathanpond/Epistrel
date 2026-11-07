@@ -343,13 +343,15 @@ MEDIA_FIELDS = (
     "depicted_subjects",
     "content_rating_version_id",
     "poster_media_id",
+    "viewpoint_basis",
 )
 
 
 async def _media(conn: AsyncConnection, story_row: Any, story_id: str) -> list[dict[str, Any]]:
     """#704: the media assets the story's rows reference (its characters' images, its catalog
-    snapshots, its scenario snapshot) and their posters, as ``media.jsonl`` lines."""
-    from epistrel.core.tables import characters, media_assets
+    snapshots, its scenario snapshot, #261: its story images, deleted ones included) and their
+    posters, as ``media.jsonl`` lines."""
+    from epistrel.core.tables import characters, media_assets, story_images
 
     wanted = _ulids(story_row.scenario_snapshot)
     for (images,) in await conn.execute(
@@ -362,6 +364,12 @@ async def _media(conn: AsyncConnection, story_row: Any, story_id: str) -> list[d
             select(snapshots.c.content).where(snapshots.c.story_id == story_id)
         ):
             wanted |= _ulids(content)
+    wanted |= {
+        str(a)
+        for a in await conn.scalars(
+            select(story_images.c.asset_id).where(story_images.c.story_id == story_id)
+        )
+    }
     if not wanted:
         return []
     m = media_assets.c

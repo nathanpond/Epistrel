@@ -277,3 +277,75 @@ def test_c_24__m8_statements(image_settings: Settings) -> None:
     images = _normal(_section(OPERATIONS.read_text(encoding="utf-8"), "Images"))
     for sentence in (UNCHECKED_STATEMENT, PASSED_STATEMENT):
         assert _normal(sentence) in images
+
+
+# -- #261: a story image's viewpoint fields ------------------------------------------------------
+
+
+@pytest.mark.part("M8", "FR-IMG-5,10")
+async def test_c_24__m8_viewpoint_fields(pg_url: str, engine: AsyncEngine, tmp_path: Path) -> None:
+    """``audience_viewpoint`` and ``camera_pov`` are separate fields: a ``first_person`` camera
+    for Bobby on a Jenni-audience image is returned only to Jenni's reads (complement: not to
+    Bobby's, whose eyes it shows). In the whisper scene's rooms (the adults in the cabin, the
+    minors in the barn) a camera for Lily, absent from Bobby's cabin, is 422
+    ``camera_pov_not_present`` and stores nothing; complement: Jenni's, present, is 201. Every
+    upload reads ``viewpoint_basis: none`` (the answer, the read and the asset)."""
+    from tests import story_image_support as si
+    from tests.auth_support import auth_settings
+    from tests.image_safety_support import with_rooms
+    from tests.respond_support import respond_client
+
+    settings = auth_settings(pg_url, model_adapter="stub", media_root=tmp_path / "media")
+    story, ids = await whisper_story(engine)
+    await with_rooms(engine, story, ids)
+    bobby, jenni = si.character(ids["Bobby"]), si.character(ids["Jenni"])
+    async with respond_client(settings, engine) as (client, _):
+        eyes = {"kind": "first_person", "character_id": ids["Bobby"]}
+        shown = await si.placed(
+            client, story, si.meta({"slot_after_turn": 0}, jenni, camera_pov=eyes)
+        )
+        assert (shown["audience_viewpoint"], shown["camera_pov"]) == (jenni, eyes)
+        assert shown["viewpoint_basis"] == "none"
+        jenni_items = await si.history(client, story, jenni)
+        assert si.image_ids(jenni_items) == [shown["image_id"]]
+        read = next(i for i in jenni_items if i.get("kind") == "image")
+        assert (read["camera_pov"], read["viewpoint_basis"]) == (eyes, "none")
+        assert si.image_ids(await si.history(client, story, bobby)) == []
+        assert (await si.get(client, story, shown["image_id"], bobby)).status_code == 404
+
+        absent = await si.upload(
+            client,
+            story,
+            si.meta(
+                {"slot_after_turn": 0},
+                bobby,
+                camera_pov={"kind": "over_the_shoulder", "character_id": ids["Lily"]},
+            ),
+        )
+        assert absent.status_code == 422, absent.text
+        assert absent.json()["error"]["code"] == "camera_pov_not_present"
+        present = await si.placed(
+            client,
+            story,
+            si.meta(
+                {"slot_after_turn": 0},
+                bobby,
+                camera_pov={"kind": "over_the_shoulder", "character_id": ids["Jenni"]},
+            ),
+        )
+    async with engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                text(
+                    "SELECT i.audience_viewpoint, i.camera_pov, i.viewpoint_basis, "
+                    "m.viewpoint_basis AS asset_basis FROM story_images i "
+                    "JOIN media_assets m ON m.id = i.asset_id WHERE i.story_id = :s ORDER BY i.id"
+                ),
+                {"s": story},
+            )
+        ).all()
+    assert [(r.audience_viewpoint, r.camera_pov) for r in rows] == [
+        (jenni, eyes),
+        (bobby, present["camera_pov"]),
+    ]
+    assert {(r.viewpoint_basis, r.asset_basis) for r in rows} == {("none", "none")}

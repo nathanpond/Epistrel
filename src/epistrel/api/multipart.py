@@ -42,6 +42,8 @@ from epistrel.core.media.assets import (
 if TYPE_CHECKING:
     from python_multipart.multipart import MultipartCallbacks
 
+    from epistrel.core.images.story_images import StoryImageUpload
+
 METADATA = "metadata"
 FILE = "file"
 MAX_HEADER_COUNT = 8
@@ -210,6 +212,59 @@ async def read_upload(request: Request) -> UploadForm:
     return UploadForm(metadata=metadata, content_type=second[2], _events=events)
 
 
+@dataclass
+class StoryImageForm:
+    """A story image upload in progress (#261): its validated ``metadata`` (``StoryImageUpload``),
+    the ``file`` part's own ``Content-Type``, and the stream at the file's first byte."""
+
+    metadata: StoryImageUpload
+    content_type: str | None
+    _events: AsyncIterator[tuple[Any, ...]]
+
+    async def chunks(self) -> AsyncIterator[bytes]:
+        """The file's bytes as they arrive; nothing may follow the ``file`` part."""
+        async for event in self._events:
+            if event[0] == "data":
+                yield event[1]
+            elif event[0] == "end":
+                break
+        async for event in self._events:
+            if event[0] == "part":
+                raise _refused("nothing may follow the `file` part")
+
+
+async def read_story_image(request: Request) -> StoryImageForm:
+    """``POST /stories/{id}/images``' body (#261): the ``metadata`` part
+    (``core.images.story_images.parse_metadata``), then the ``file`` part, then nothing."""
+    from epistrel.core.images.story_images import parse_metadata as parse_story_image
+
+    events = _events(request)
+    raw = await _metadata(events)
+    metadata = parse_story_image(raw)
+    second = await anext(events, None)
+    if second is None or second[0] != "part" or second[1] != FILE:
+        raise _refused("the second part must be `file`", "body.file")
+    return StoryImageForm(metadata=metadata, content_type=second[2], _events=events)
+
+
+async def _metadata(events: AsyncIterator[tuple[Any, ...]]) -> bytes:
+    """The first part, ``metadata``, whole (at most ``METADATA_MAX_BYTES``)."""
+    first = await anext(events, None)
+    if first is None or first[0] != "part" or first[1] != METADATA:
+        raise _refused("the first part must be `metadata`", "body.metadata")
+    raw = bytearray()
+    async for event in events:
+        if event[0] == "end":
+            break
+        if event[0] == "data":
+            raw += event[1]
+            if len(raw) > METADATA_MAX_BYTES:
+                raise _refused(
+                    f"the metadata part is larger than {METADATA_MAX_BYTES} bytes", "body.metadata"
+                )
+    return bytes(raw)
+
+
 @dataclass(frozen=True, slots=True)
 class ImportForm:
     """``POST /admin/stories/import``'s two parts (#250): the ``metadata`` JSON document and
@@ -271,8 +326,10 @@ __all__ = [
     "FILE",
     "METADATA",
     "ImportForm",
+    "StoryImageForm",
     "UploadForm",
     "declared_length",
     "read_import",
+    "read_story_image",
     "read_upload",
 ]

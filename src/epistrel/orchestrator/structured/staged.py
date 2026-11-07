@@ -95,6 +95,7 @@ from epistrel.core.events.operation import Operation, append_stage, stage_entry
 from epistrel.core.events.types import REQUESTED_EFFECT, MessageRendered, RequestedEffect
 from epistrel.core.history import filtered_turn_beats, staged_message, story_player_view
 from epistrel.core.idempotency import IdempotentCall
+from epistrel.core.images import story_images
 from epistrel.core.membership import Position
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.states import contingency
@@ -1128,6 +1129,9 @@ async def recompose(db: AsyncEngine, operation_id: str) -> RespondResult:
         world = await turn_clock_of(
             conn, story_id, int(row.narrative_turn), int(row.turn_variant or 0)
         )
+        images = await story_images.images_for_operation(
+            conn, story_id, int(row.narrative_turn), int(row.turn_variant or 0), viewpoint
+        )
     return RespondResult(
         message=FinishedMessage(message_id=reply.message_id, text=reply.text, mode="deterministic"),
         beats=filtered.items,
@@ -1142,6 +1146,7 @@ async def recompose(db: AsyncEngine, operation_id: str) -> RespondResult:
         state_effects=changed,
         reconciliation=reconciliation,
         clock=world,
+        images=images,
     )
 
 

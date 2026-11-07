@@ -117,6 +117,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events import Operation
 from epistrel.core.history import story_player_view, turn_beats
+from epistrel.core.images import story_images
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.schema import ProfileSettings
@@ -823,6 +824,10 @@ async def _play(
         fields: dict[str, Any] = {
             "message": FinishedMessage(message_id=reply.message_id, text=reply.text),
             "beats": beats,
+            # #261 (FR-IMG-5): the story images positioned within the turn, for its viewpoint.
+            "images": await story_images.images_for_operation(
+                conn, story_id, committed.narrative_turn, committed.turn_variant, viewpoint
+            ),
             "turn": committed.narrative_turn,
             "variant": committed.turn_variant,
             "timeline_revision": committed.timeline_revision,

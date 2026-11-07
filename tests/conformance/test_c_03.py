@@ -2020,6 +2020,40 @@ def _steps() -> list[Step]:
                 e.cancel_scheduled_event(CTX, ids["story"], ids["event"])
             ),
         ),
+        # #261: a story image uploaded after turn 1's first beat for the omniscient audience,
+        # one refused for its missing subjects, read, deleted, and read again (404).
+        Step(
+            "upload_story_image",
+            lambda ids: Rest("POST", f"{s}/images", files=files(STORY_IMAGE_BYTES, STORY_IMAGE)),
+            lambda e, ids: _story_image_uploaded(e, ids["story"], STORY_IMAGE),
+            _keep("story_image", "image_id"),
+        ),
+        Step(  # no depicted subjects: 422 subjects_required on both
+            "upload_story_image",
+            lambda ids: Rest(
+                "POST", f"{s}/images", files=files(STORY_IMAGE_BYTES, STORY_IMAGE_UNDECLARED)
+            ),
+            lambda e, ids: _story_image_uploaded(e, ids["story"], STORY_IMAGE_UNDECLARED),
+        ),
+        Step(
+            "get_story_image",
+            lambda ids: Rest(
+                "GET", f"{s}/images/{{story_image}}", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _story_image(e, ids["story"], ids["story_image"]),
+        ),
+        Step(
+            "delete_story_image",
+            lambda ids: Rest("DELETE", f"{s}/images/{{story_image}}"),
+            lambda e, ids: _no_content(e.delete_story_image(CTX, ids["story"], ids["story_image"])),
+        ),
+        Step(  # deleted: 404 on both
+            "get_story_image",
+            lambda ids: Rest(
+                "GET", f"{s}/images/{{story_image}}", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _story_image(e, ids["story"], ids["story_image"]),
+        ),
         # #186: the State API: a declaration, both reads, a set and a definition change.
         Step(
             "define_state",
@@ -3674,6 +3708,35 @@ async def _media(engine: Engine, media_id: str) -> dict[str, Any]:
 async def _media_content(engine: Engine, media_id: str) -> dict[str, Any]:
     content = await engine.get_media_content(CTX, media_id)
     return _bytes(await content.read(), content.mime_type)
+
+
+STORY_IMAGE_BYTES = png(nonce="c-03 story image")
+STORY_IMAGE = {
+    "position": {"turn": 1, "beat": 1},
+    "audience_viewpoint": "omniscient",
+    "camera_pov": {"kind": "establishing"},
+    "depicted_subjects": [],
+    "alt_text": "The inn's door",
+}
+STORY_IMAGE_UNDECLARED = {k: v for k, v in STORY_IMAGE.items() if k != "depicted_subjects"}
+
+
+async def _story_image_uploaded(
+    engine: Engine, story_id: str, fields: dict[str, Any]
+) -> dict[str, Any]:
+    """#261: the library's upload, rendered as the route renders it."""
+    from epistrel.api.routes.story_images import StoryImageUploadedBody
+    from epistrel.core.images.story_images import StoryImageUpload
+
+    request = StoryImageUpload.model_validate(fields)
+    placed = await engine.upload_story_image(
+        CTX, story_id, request, STORY_IMAGE_BYTES, content_type="image/png"
+    )
+    return dump(StoryImageUploadedBody.of(placed))
+
+
+async def _story_image(engine: Engine, story_id: str, image_id: str) -> dict[str, Any]:
+    return dump(await engine.get_story_image(CTX, story_id, image_id, viewpoint="omniscient"))
 
 
 CANDIDATE_REQUEST = {"slot": "primary", "n": 1}

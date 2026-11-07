@@ -534,6 +534,25 @@ async def _scheduled_event(client: httpx.AsyncClient, kind: Kind, entity: Entity
     return {"event_id": created["event"]["event_id"]}
 
 
+STORY_IMAGE = {
+    "position": {"slot_after_turn": 0},
+    "audience_viewpoint": "omniscient",
+    "depicted_subjects": [],
+}
+"""#261: an omniscient image in the slot after genesis (the story has no completed turn)."""
+
+
+async def _story_image(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A story image the owner uploaded (#261), read for its audience, ``omniscient``."""
+    response = await client.post(
+        kind.path(entity.id, "/images"),
+        files=files(MATRIX_IMAGE, STORY_IMAGE),
+        headers=headers(OWNER),
+    )
+    created = await ok(response, 201)
+    return {"image_id": created["image_id"], "query.viewpoint": "omniscient"}
+
+
 async def _omniscient(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     """The omniscient viewpoint, as a query parameter (#196's list)."""
     return {"query.viewpoint": "omniscient"}
@@ -909,6 +928,11 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"planned": 90}, prepare=_scheduled_event
     ),
     ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(200, prepare=_scheduled_event),
+    # -- stories: its images (#261). The matrix sends JSON, so an upload is 422 for anyone (the
+    # route reads a multipart body); the image the owner uploaded reads and deletes alike.
+    ("POST", f"{S}/images"): Call(422, STORY_IMAGE),
+    ("GET", f"{S}/images/{{image_id}}"): Call(200, prepare=_story_image),
+    ("DELETE", f"{S}/images/{{image_id}}"): Call(204, prepare=_story_image),
     # -- stories: its States (#186), on the story running States at prompt_only (#203)
     ("GET", f"{S}/states"): Call(200, prepare=_state_name),
     ("GET", f"{S}/states/{{name}}"): Call(200, prepare=_state_name),

@@ -61,6 +61,7 @@ from epistrel.core.tables.propositions import (
 )
 from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import state_changes, state_definitions, state_proposals
+from epistrel.core.tables.story_images import story_images
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -436,6 +437,36 @@ def scheduled_event_record(row: Any) -> Record:
         for index, o in enumerate(getattr(row, "shared_owners", None) or ())
     ]
     return Record(scheduled_events.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+def story_image_record(row: Any) -> Record:
+    """A story image (#261; #266 owns its erasure): its stored prompt (a generated image's,
+    #263), the character of a ``character:<id>`` audience, a character camera's character and
+    the subjects its asset depicts (``asset_subjects``, when the reader joined them) are its
+    references, scope ``story``."""
+    declared: list[Declared] = []
+    audience = _str(getattr(row, "audience_viewpoint", None)) or ""
+    if audience.startswith("character:"):
+        declared.append((SubjectKind.CHARACTER, audience.removeprefix("character:"), "audience"))
+    camera = getattr(row, "camera_pov", None) or {}
+    if isinstance(camera, Mapping) and camera.get("character_id"):
+        declared.append((SubjectKind.CHARACTER, str(camera["character_id"]), "camera_pov"))
+    for index, subject in enumerate(getattr(row, "asset_subjects", None) or ()):
+        if isinstance(subject, Mapping) and subject.get("kind") and subject.get("id"):
+            declared.append(
+                (
+                    SubjectKind(str(subject["kind"])),
+                    str(subject["id"]),
+                    f"depicted_subjects[{index}]",
+                )
+            )
+    return Record(
+        story_images.name,
+        str(row.id),
+        _str(row.story_id),
+        {"prompt": _str(getattr(row, "prompt", None))},
+        tuple(declared),
+    )
 
 
 def outbox_record(row: Any) -> Record:
@@ -1032,6 +1063,19 @@ async def read_scheduled_events(conn: AsyncConnection, story_id: str | None) -> 
     return await _story_rows(conn, scheduled_events, story_id, scheduled_event_record)
 
 
+async def read_story_images(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's images (#261), with their assets' depicted subjects, as
+    ``story_image_record`` indexes them."""
+    if story_id is None:
+        return []
+    found = await conn.execute(
+        select(story_images, media_assets.c.depicted_subjects.label("asset_subjects"))
+        .join(media_assets, media_assets.c.id == story_images.c.asset_id, isouter=True)
+        .where(story_images.c.story_id == story_id)
+    )
+    return [story_image_record(r) for r in found]
+
+
 async def read_outbox(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's outbox rows (#210), as ``outbox_record`` indexes them."""
     return await _story_rows(conn, external_effect_outbox, story_id, outbox_record)
@@ -1107,12 +1151,14 @@ __all__ = [
     "read_state_changes",
     "read_state_definitions",
     "read_state_proposals",
+    "read_story_images",
     "read_thunks",
     "scheduled_event_record",
     "snapshot_record",
     "state_change_record",
     "state_definition_record",
     "state_proposal_record",
+    "story_image_record",
     "story_record",
     "text_fields",
     "thunk_record",

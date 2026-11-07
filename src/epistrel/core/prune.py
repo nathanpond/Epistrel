@@ -65,6 +65,7 @@ from epistrel.core.tables import (
     state_changes,
     state_definitions,
     stories,
+    story_images,
     thunks,
     transcript_messages,
     utterances,
@@ -88,6 +89,9 @@ PRUNABLE_TABLES: tuple[Table, ...] = (
     facts,
     state_changes,
     scheduled_events,
+    # #261 (FR-STORE-32): a pruned operation's story images; their assets fall to the media
+    # sweep once no row references them.
+    story_images,
     state_definitions,
     lite_summary_segments,
     proposition_changes,

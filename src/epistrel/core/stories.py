@@ -208,6 +208,7 @@ from epistrel.core.tables.states import (
     state_proposals,
     state_values,
 )
+from epistrel.core.tables.story_images import story_images
 from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
 
@@ -281,6 +282,9 @@ STORY_TABLES: tuple[Table, ...] = (
     # Scheduled events (#196): a derived table (each lifecycle step a version), before the
     # operations it references; copied by a fork through the fork point like ``facts``.
     scheduled_events,
+    # Story images (#261): a derived table, before the operations it references (the placing
+    # and the deleting one); copied by a fork by reference to the same assets.
+    story_images,
     # The outbox (#210): the outcome records (append-only, no foreign key), then the
     # outbox (a derived table), before the operations it references; #211's reconciliation
     # marks (ids and reason codes, no foreign key) first.

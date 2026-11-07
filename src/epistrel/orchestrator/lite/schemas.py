@@ -29,6 +29,7 @@ from pydantic import (
 
 from epistrel.core.history import HistoryItem
 from epistrel.core.ids import Ulid
+from epistrel.core.images.story_images import StoryImageItem
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.core.settings_schema import (
@@ -467,6 +468,9 @@ class RespondResult:
     player_view: str | None = None
     """#177 (FR-RESP-13): the player view the result was produced under (``character`` or
     ``story``); ``None`` only in a result stored before #177."""
+    images: list[StoryImageItem] = field(default_factory=list)
+    """#261 (FR-IMG-5): the story images positioned within the returned turn for the output
+    viewpoint, in order; the REST ``beats`` hold them in place."""
     reconcile: list[dict[str, Any]] = field(default_factory=list)
     """#177 (FR-MULTI-3): a structured turn's reconciled concurrent commitments, ``{proposition,
     winner_beat, loser_beat, rule}``; empty when nothing contradicted."""

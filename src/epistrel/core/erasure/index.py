@@ -815,6 +815,11 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         ("epistrel.core.world_clock.stops",),
         f"{_RECORDS}:read_scheduled_events",
     ),
+    # Story images (#261): a generated image's stored prompt (#263), and the audience's, the
+    # camera's and the asset's depicted characters as declared subjects.
+    SubjectWriter(
+        "story_images", ("epistrel.core.images.story_images",), f"{_RECORDS}:read_story_images"
+    ),
     # The outbox (#210): an effect's texts (the render's reason, positional); a character-scoped
     # value declares its character. Its writer is the outbox module (intent, dispatcher and
     # intake writes alike).

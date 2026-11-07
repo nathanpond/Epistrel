@@ -1955,3 +1955,48 @@ class EvalRunNotFound(EpistrelError):
 
     code = "eval_run_not_found"
     http_status = 404
+
+
+class PositionInvalid(EpistrelError):
+    """A story image's position is not active (FR-IMG-5; #261): an inactive or uncommitted
+    turn, a beat its active variant does not have, or a slot after a turn other than the story's
+    last completed one (a slot is never inserted into the past). Nothing is written.
+    ``details``: ``field``, ``reason`` (``turn_inactive``, ``beat_out_of_range`` or
+    ``not_last_completed_turn``)."""
+
+    code = "position_invalid"
+    http_status = 422
+
+
+class ViewpointInvalid(EpistrelError):
+    """A story image's ``audience_viewpoint`` is neither ``omniscient`` nor ``character:<id>``
+    of a character of the story (FR-IMG-5; #261). ``details``: ``field``."""
+
+    code = "viewpoint_invalid"
+    http_status = 422
+
+
+class CameraPovInvalid(EpistrelError):
+    """A story image's ``camera_pov`` has an unknown kind or a bad shape: a character camera
+    without its ``character_id``, or another kind with one (FR-IMG-5; #261). ``details``:
+    ``field``."""
+
+    code = "camera_pov_invalid"
+    http_status = 422
+
+
+class CameraPovNotPresent(EpistrelError):
+    """A story image's ``over_the_shoulder``/``first_person`` camera names a character not
+    authoritatively present at the image's position (FR-IMG-5; #261). ``details``: ``field``."""
+
+    code = "camera_pov_not_present"
+    http_status = 422
+
+
+class StoryImageNotFound(EpistrelError):
+    """The story has no visible image with that id for the read (FR-IMG-5; #261): unknown,
+    another story's, discarded or dormant with its turn, deleted, or for another audience
+    viewpoint. ``details``: ``story_id`` and ``image_id``."""
+
+    code = "not_found"
+    http_status = 404

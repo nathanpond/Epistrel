@@ -414,6 +414,8 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.states", DIRECT),
     WritePath("epistrel.core.states.proposals", DIRECT),
     WritePath("epistrel.core.world_clock.stops", DIRECT),
+    # #261: a story image's row is written in its own operation's commit step.
+    WritePath("epistrel.core.images.story_images", OPERATION),
     # #221: amendments and their parts are rows written in a rewrite_session's commit step.
     WritePath("epistrel.core.amendments.store", DIRECT),
     # #223: a rewrite session's instruction and free-text answers (author text) and its plan.

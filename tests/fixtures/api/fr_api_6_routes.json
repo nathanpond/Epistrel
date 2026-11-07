@@ -634,15 +634,15 @@
     {
       "item": "images — request or upload a story image",
       "method": "POST",
-      "path": "/stories/{id}/images",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/images",
+      "status": "present",
       "milestone": "M8"
     },
     {
       "item": "images — delete a story image",
       "method": "DELETE",
-      "path": "/stories/{id}/images/{image_id}",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/images/{image_id}",
+      "status": "present",
       "milestone": "M8"
     },
     {
@@ -829,6 +829,11 @@
     }
   ],
   "extras": [
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/images/{image_id}",
+      "why": "#261: one story image for its audience viewpoint (history and respond hold them in place)"
+    },
     {
       "method": "GET",
       "path": "/stories/{story_id}/outbox",

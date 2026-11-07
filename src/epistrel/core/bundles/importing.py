@@ -721,6 +721,8 @@ async def _insert_media(
                 "created_at": clock.now(),
                 "created_by": principal,
                 "poster_media_id": None if poster is None else ids.get(str(poster), str(poster)),
+                # #261: a story image's asset says what its inputs were built from.
+                "viewpoint_basis": line.get("viewpoint_basis"),
             }
         )
     # Posters first: an asset names its poster.

@@ -805,6 +805,13 @@ OVERRIDES: dict[str, dict[str, str]] = {
         # #218: a compensating row names the fork's copy of the row it answers.
         "compensates": _mapped_or_null("compensates"),
     },
+    # Story images (#261): by reference to the same assets (no byte copy); the audience
+    # viewpoint names the fork's copy of its character, and a deletion the fork's copy of its
+    # operation (none when the fork left it behind, so the image is visible in the fork).
+    "story_images": {
+        "audience_viewpoint": f'{_ID}(t."audience_viewpoint"::text)',
+        "deleted_operation_id": _mapped_or_null("deleted_operation_id"),
+    },
     # Speech acts (#150): the propositions an utterance asserts are the fork's copies.
     "utterances": {
         "proposition_ids": (

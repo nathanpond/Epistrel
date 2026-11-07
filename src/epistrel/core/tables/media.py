@@ -141,6 +141,13 @@ CHECKED_BY_CHECK = (
 """A ``passed`` image names its checker's model and endpoint host (#258)."""
 STATE_CHECK = _in("state", MediaState)
 CHECKSUM_CHECK = "checksum ~ '^[0-9a-f]{64}$'"
+VIEWPOINT_BASES = ("filtered_inputs", "protected_term_match", "none")
+"""``media_assets.viewpoint_basis`` (#261; ``core.tables.story_images.ViewpointBasis``)."""
+VIEWPOINT_BASIS_CHECK = (
+    "viewpoint_basis IS NULL OR viewpoint_basis IN ("
+    + ", ".join(f"'{v}'" for v in VIEWPOINT_BASES)
+    + ")"
+)
 SUBJECT_KIND_CHECK = _in("subject_kind", SubjectKind)
 SCOPE_CHECK = _in("scope", ReferenceScope)
 REF_KIND_CHECK = _in("ref_kind", ReferenceKind)
@@ -187,6 +194,10 @@ media_assets = Table(
     Column("check_model", Text, nullable=True),
     Column("check_endpoint", Text, nullable=True),
     Column("policy_results", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    # FR-IMG-10 (#261): what a story image's perceivable inputs were built from
+    # (``filtered_inputs``, ``protected_term_match``, or ``none`` for an upload); ``NULL`` for an
+    # asset that is no story image.
+    Column("viewpoint_basis", Text, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(SOURCE_CHECK, name="source"),
     CheckConstraint(CHECK_STATUS_CHECK, name="check_status"),
@@ -194,6 +205,7 @@ media_assets = Table(
     CheckConstraint(STATE_CHECK, name="state"),
     CheckConstraint(CHECKSUM_CHECK, name="checksum"),
     CheckConstraint("size >= 0", name="size"),
+    CheckConstraint(VIEWPOINT_BASIS_CHECK, name="viewpoint_basis"),
 )
 
 # The blob's other users (the sweep's "no row of any state has this checksum"), listing by owner

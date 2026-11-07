@@ -35,6 +35,13 @@ from epistrel.orchestrator.images.port import ASPECT_RATIO_PATTERN, SIZE_PATTERN
 IMAGE_GENERATION_PORT = "image_generation"
 MAX_ADAPTER_NAME_CHARS = 64
 
+DEFAULT_CAPABILITY_TTL_S = 3_600
+"""How long an adapter caches what it discovered about the provider's endpoints when
+``image_capability_ttl_s`` is unset (#255)."""
+ADAPTER_DEFAULT_BASE_URLS: dict[str, str] = {"openrouter": "https://openrouter.ai"}
+"""The ``base_url`` a bundled adapter uses when the row's is null (#255), so the configuration
+read can name the endpoint the data goes to (FR-IMG-13)."""
+
 DEFAULT_ASPECT_RATIO = "1:1"
 DEFAULT_QUALITY: Quality = "auto"
 BUILTIN_DEFAULTS: dict[str, Any] = {
@@ -87,6 +94,13 @@ class ImageGenerationParams(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
+def default_base_url(params: ImageGenerationParams | None) -> str | None:
+    """The base URL the configured adapter uses when the row's ``base_url`` is null."""
+    if params is None or params.adapter is None:
+        return None
+    return ADAPTER_DEFAULT_BASE_URLS.get(params.adapter)
+
+
 def resolve_dimensions(
     params: ImageGenerationParams, *, size: str | None = None, aspect_ratio: str | None = None
 ) -> tuple[str | None, str | None]:
@@ -107,11 +121,14 @@ def resolve_quality(params: ImageGenerationParams, quality: Quality | None = Non
 
 
 __all__ = [
+    "ADAPTER_DEFAULT_BASE_URLS",
     "BUILTIN_DEFAULTS",
     "DEFAULT_ASPECT_RATIO",
+    "DEFAULT_CAPABILITY_TTL_S",
     "DEFAULT_QUALITY",
     "IMAGE_GENERATION_PORT",
     "ImageGenerationParams",
+    "default_base_url",
     "resolve_dimensions",
     "resolve_quality",
 ]

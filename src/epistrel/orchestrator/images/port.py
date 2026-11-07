@@ -128,10 +128,37 @@ class ImageUsage:
 
 @dataclass(frozen=True)
 class ImageOutput:
-    """One generated image: its bytes, in memory, and their media type (``image/png``)."""
+    """One generated image: its bytes, in memory, and their media type (``image/png``), with
+    the width and height an adapter read from the bytes themselves (#255: Pillow), never from
+    the request; ``None`` when the adapter did not decode them."""
 
     data: bytes = field(repr=False)
     media_type: str
+    width: int | None = None
+    height: int | None = None
+
+
+class AppliedParameters(BaseModel):
+    """What one attempt actually asked of the provider (FR-IMG-1; #255), stored with its
+    generation metadata so that it never claims a seed or a reference image that was not used.
+
+    ``endpoint`` is the provider endpoint that served the call, when known. ``requested`` is
+    what the request asked for (reference images by media id), and ``sent`` is what went to
+    the provider (reference images by count, never their URLs). ``seed_applied`` and
+    ``references_applied`` are ``None`` when nothing of the kind was requested, and otherwise
+    say whether it was sent to an endpoint that supports it. ``negative_prompt`` is
+    ``"folded"`` when the negative prompt went into the prompt text. ``dropped_parameters``
+    names the parameters that were requested but not applied."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    endpoint: str | None = None
+    requested: dict[str, Any] = Field(default_factory=dict)
+    sent: dict[str, Any] = Field(default_factory=dict)
+    seed_applied: bool | None = None
+    references_applied: bool | None = None
+    negative_prompt: Literal["folded"] | None = None
+    dropped_parameters: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -143,6 +170,8 @@ class SubmitResult:
     outputs: tuple[ImageOutput, ...] | None = None
     usage: ImageUsage | None = None
     cost: AttemptCost | None = None
+    applied_parameters: AppliedParameters | None = None
+    """What the attempt actually asked of the provider, when the adapter reports it (#255)."""
 
 
 @dataclass(frozen=True)
@@ -211,6 +240,7 @@ __all__ = [
     "MAX_SEED",
     "SIZE_PATTERN",
     "TERMINAL_STATES",
+    "AppliedParameters",
     "AspectRatio",
     "AttemptCost",
     "AttemptState",

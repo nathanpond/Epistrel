@@ -1,7 +1,7 @@
 """The image-generation port and its registry (#254): the port's types, the registration
 rules, the scripted stub adapters every later M8 test uses, and the model guide's image rows
 (FR-IMG-1,13). The database-backed half (configuration, ``not_configured``, the key) is
-``tests/integration/test_images_config.py``."""
+``tests/integration/test_i_23.py``."""
 
 from __future__ import annotations
 

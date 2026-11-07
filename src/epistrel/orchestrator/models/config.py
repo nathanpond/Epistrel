@@ -19,6 +19,8 @@ only too (``registry.OWN_ROW_ONLY``), but as a purpose: while a field is unset i
 
 Every entry also names its ``endpoint``: the host of its effective ``base_url`` (``None`` when
 unset), which is how an operator sees where each purpose's data goes (FR-MODEL-1, FR-IMG-13).
+For the image port with a null ``base_url`` it is the configured adapter's default host
+(``openrouter.ai``, #255).
 
 **Writes** (FR-MODEL-4) follow every deployment-scoped configuration write (#48): take
 ``lock_deployment``, move ``deployment_state.config_revision`` by exactly one, and record one
@@ -80,7 +82,11 @@ from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.trimmed import trim_as_sent
-from epistrel.orchestrator.images.params import IMAGE_GENERATION_PORT, ImageGenerationParams
+from epistrel.orchestrator.images.params import (
+    IMAGE_GENERATION_PORT,
+    ImageGenerationParams,
+    default_base_url,
+)
 from epistrel.orchestrator.models.adapter import ModelParams, ModelUnavailable
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED, OWN_ROW_ONLY, PORTS
 
@@ -370,7 +376,7 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
             "api_key": source("api_key_ciphertext"),
             "params": {key: param_source(key) for key in params},
         },
-        endpoint=endpoint_of(effective.base_url),
+        endpoint=endpoint_of(effective.base_url or default_base_url(image)),
     )
 
 

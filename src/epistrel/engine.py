@@ -180,6 +180,7 @@ from epistrel.orchestrator.commit import directed
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
+from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
@@ -791,6 +792,8 @@ class Engine:
         self.in_process_providers = provider_in_process.InProcessRegistry()
         self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
+        # Reference images reach a hosted image provider as signed URLs or data URLs (#255).
+        self.models.images.references = MediaReferences(lambda: self.db, self.media, self.signer)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
         # The feedback exports not yet downloaded are rewritten by an erasure in this store
         # (#126; the last Engine constructed in a process binds it).

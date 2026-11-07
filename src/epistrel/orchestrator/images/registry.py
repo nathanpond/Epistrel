@@ -58,6 +58,7 @@ from epistrel.orchestrator.models.config import EffectiveConfig
 from epistrel.orchestrator.models.registry import IMAGE_CHECK
 
 if TYPE_CHECKING:
+    from epistrel.orchestrator.images.references import ReferenceResolver
     from epistrel.orchestrator.models.access import ModelAccessLayer
 
 IMAGE_OUTPUT = "image_output"
@@ -126,7 +127,9 @@ class ConfirmationUnsupported(Exception):
 class ImageAdapterConfig:
     """What a factory builds an adapter from: the ``image_generation`` row as of one
     configuration revision. ``base_url`` ``None`` means the adapter's own default (#255:
-    ``https://openrouter.ai``). The key is decrypted only to build the adapter."""
+    ``https://openrouter.ai``). The key is decrypted only to build the adapter. ``references``
+    turns reference media ids into URLs the provider can fetch (#255; the Engine's
+    ``images.references.MediaReferences``), ``None`` when nothing can resolve them."""
 
     adapter: str
     model: str
@@ -134,6 +137,7 @@ class ImageAdapterConfig:
     api_key: SecretStr
     params: ImageGenerationParams
     revision: int
+    references: ReferenceResolver | None = None
 
 
 @runtime_checkable
@@ -190,9 +194,18 @@ def registered_adapters() -> frozenset[str]:
     return frozenset(_FACTORIES)
 
 
-BUILTIN_IMAGE_ADAPTERS: Mapping[str, Callable[[], ImageAdapterFactory]] = {}
-"""The bundled adapters by name, each with a loader that returns its factory (#255 adds
-``openrouter``)."""
+def _openrouter() -> ImageAdapterFactory:
+    # Imported when registered: the adapter module imports this one.
+    from epistrel.orchestrator.images.adapters.openrouter import OpenRouterImageGenerator
+
+    return OpenRouterImageGenerator
+
+
+BUILTIN_IMAGE_ADAPTERS: Mapping[str, Callable[[], ImageAdapterFactory]] = {
+    "openrouter": _openrouter,
+}
+"""The bundled adapters by name, each with a loader that returns its factory: ``openrouter``
+(#255)."""
 
 
 def register_builtin_image_adapters() -> frozenset[str]:
@@ -291,6 +304,8 @@ class ImageAdapters:
     def __init__(self, models: ModelAccessLayer) -> None:
         self._models = models
         self._current: _Live | None = None
+        self.references: ReferenceResolver | None = None
+        """What resolves reference images for the adapters built here (the Engine sets it)."""
         self.closed = 0
         """How many superseded instances have been closed (observable by tests)."""
 
@@ -330,6 +345,7 @@ class ImageAdapters:
                     api_key=api_key,
                     params=params,
                     revision=config.revision,
+                    references=self.references,
                 )
             )
             fresh = _Live(built, check_declaration(params.adapter, factory), key)

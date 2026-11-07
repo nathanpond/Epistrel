@@ -97,6 +97,7 @@ from epistrel.core.media.checks import CHECK_STATEMENTS, ImageCheck, image_check
 from epistrel.core.membership import (
     Position,
     active_only,
+    active_operation,
     insert_derived,
 )
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
@@ -250,7 +251,7 @@ async def last_completed_turn(conn: AsyncConnection, story_id: str) -> int:
             operations.c.story_id == story_id,
             operations.c.kind == OperationKind.TURN.value,
             operations.c.status == OperationStatus.COMMITTED.value,
-            operations.c.membership == Membership.ACTIVE.value,
+            active_operation(operations),
         )
     )
     return int(found or 0)
@@ -264,7 +265,7 @@ async def _active_turn(conn: AsyncConnection, story_id: str, turn: int) -> tuple
                 operations.c.narrative_turn == turn,
                 operations.c.kind == OperationKind.TURN.value,
                 operations.c.status == OperationStatus.COMMITTED.value,
-                operations.c.membership == Membership.ACTIVE.value,
+                active_operation(operations),
             )
         )
     ).first()
@@ -554,7 +555,7 @@ _DELETION = aliased(operations, name="deletion")
 def _not_deleted(chain: Any | None = None) -> Any:
     """No deletion, or one whose operation is not on the timeline (or the chain read)."""
     d = _DELETION.c
-    on = d.membership == Membership.ACTIVE.value
+    on = active_operation(_DELETION)
     if chain is not None:
         on = chain.visible(d.membership, d.narrative_turn, d.operation_id)
     return or_(

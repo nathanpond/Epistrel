@@ -12786,6 +12786,10 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** `test_i_10__m7_importing__running` requires every story route to answer 409 `story_importing` for an importing story, and the body's 422 came first. C-01 found the undocumented 403.
   **Issue:** #261
 
+- **Decision (Rule 3):** CI run 42402401693 on `38142c8` failed `test (rest)` on two registries the local run missed. `story_images` joins `testing.determinism.ORDER`, ordered by position, then audience, camera and the asset's checksum. The operations reads in `core.images.story_images` filter through `active_operation` instead of a raw `membership` comparison (`check-membership`'s gate test).
+  **Why:** neither `test_determinism` nor `test_membership_gate` was among the touched-area tests. CI's sharded run is the gate that catches them (#256's precedent).
+  **Issue:** #261
+
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.

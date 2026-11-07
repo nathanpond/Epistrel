@@ -261,6 +261,12 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.narrative_turn, t.slot_k, t.beat, t.step, t.turn_variant, "
         "t.planned_offset_minutes, t.status"
     ),
+    # Story images (#261): by position, then audience and camera, then the asset's checksum.
+    "story_images": (
+        f"{_STORY_RANK}, t.at_turn, t.at_slot_k, t.at_beat, t.at_step, t.at_variant, "  # noqa: S608
+        "t.audience_viewpoint, t.camera_pov::text, "
+        "(SELECT m.checksum FROM media_assets m WHERE m.id = t.asset_id)"
+    ),
     "state_changes": (
         f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.narrative_turn, "
         "t.slot_k, t.beat, t.step, t.turn_variant, t.tx_from, t.kind, t.reason"

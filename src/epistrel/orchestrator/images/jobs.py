@@ -66,6 +66,7 @@ import hashlib
 import io
 import logging
 import os
+import re
 import secrets
 import shutil
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -85,6 +86,7 @@ from epistrel.core.config_changes import read_section
 from epistrel.core.context import SYSTEM_PRINCIPAL
 from epistrel.core.errors import EpistrelError, InvalidRequest
 from epistrel.core.idempotency import ResultCodec
+from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.images import store
 from epistrel.core.images.store import ImageJob
 from epistrel.core.media import probe
@@ -671,7 +673,10 @@ async def end_job(
 async def cancel_job(runtime: ImageRuntime, job_id: str) -> ImageJob:
     """Cancel a queued or running job (``cancelled``, a new attempt token fencing any worker at
     promote, a queued ``jobs`` row finished, staged bytes deleted); a terminal job is answered
-    unchanged. 404 ``image_job_not_found``."""
+    unchanged. 404 ``image_job_not_found`` (also for a ``job_id`` that is no ULID, so no text
+    such as a NUL reaches the database)."""
+    if not re.fullmatch(ULID_PATTERN, job_id):
+        raise _not_found(job_id.replace("\x00", ""))
     async with runtime.db.begin() as conn:
         job = await store.read_job(conn, job_id, lock=True)
         if job is None:

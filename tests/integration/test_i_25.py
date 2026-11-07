@@ -232,16 +232,21 @@ async def test_i_25__m8_crash_sweeps(
     assert (await image_jobs.sweep_staging(lib.db, store, ttl_s=ttl))["removed"] == 0
     await child.__aexit__(None, None, None)
 
-    before = await counts(engine)
     promoted_job = await insert(lib)
     child = await crashed_child(pg_url, "images.promote.before_commit", promoted_job)
     try:
         store = LocalFilesystemStore(Path(child.media_root))
-        assert await counts(engine) == before
         view = await lib.get_image_job(CTX, promoted_job)
         assert view.status == "checking"
         assert view.result_ids == ()
         (orphan,) = blobs(store)
+        # The child's own media sweep runs against the shared database too, so the rolled-back
+        # promotion is asserted by the orphan's checksum, not by a row count.
+        async with engine.connect() as conn:
+            named = await conn.scalar(
+                text("SELECT count(*) FROM media_assets WHERE checksum = :c"), {"c": orphan}
+            )
+        assert named == 0
         await media_sweep.sweep(lib.db, store)
         assert blobs(store) == {orphan}
         os.utime(store.path(orphan), (time.time() - 2 * 3600,) * 2)

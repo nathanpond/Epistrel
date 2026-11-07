@@ -12587,6 +12587,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `image_retry_budget` and `staging_ttl` are a new deployment settings section (`ImageJobSettings`, both prospective) with their `SettingsPatch` fields. S-DELETE plants an `image_jobs` row, and `test_a_write_keeps_every_other_section` stores a non-default `image_retry_budget`.
   **Why:** the planner's Settings line. `test_u_18` requires the REST patch to name every setting, and both tests require every story table and every settings section to be exercised.
   **Issue:** #256
+- **Decision (Rule 3):** CI run 42363214190 found five registries the first commit missed. `image_jobs` joins `determinism.OPERATIONAL_TABLES` (work in progress, with random attempt tokens). `image_jobs` and `image_reservations` join the subject index's `EXEMPT_TABLES`, with the reason that indexing and redacting a job's prompt is #266's, along with the images. `Engine.get_image_job` takes `wait` and `since_status` keyword-only, so the NUL-refusal check reports them as `query.*`. `cancel_image_job` is not `refuses_nul`, because no mutation is: a `job_id` that is no ULID is 404 before any query. `test_i_25__m8_crash_sweeps` asserts the rolled-back promotion by its orphan's checksum, not by a `media_assets` count, because the child's own media sweep runs against the shared database.
+  **Why:** these registries (`test_determinism`, `test_every_content_table_has_a_writer`, `test_nul_text`) aren't in the touched-area tests I ran locally. CI's full sharded run is the gate that catches them.
+  **Issue:** #256, #266
 - **Decision:** process note. The plan comment on #256 was posted after the exploration and the first code, not before it.
   **Why:** honesty about the n8-exec order. The plan the comment gives is the one implemented.
   **Issue:** #256

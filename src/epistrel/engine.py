@@ -5536,6 +5536,7 @@ class Engine:
         self,
         ctx: RequestContext,
         job_id: str,
+        *,
         wait: int | None = None,
         since_status: str | None = None,
     ) -> image_jobs.ImageJobView:
@@ -5551,7 +5552,6 @@ class Engine:
             self.db, self.image_waiters, job_id, wait=wait, since_status=since_status
         )
 
-    @refuses_nul()
     async def cancel_image_job(self, ctx: RequestContext, job_id: str) -> image_jobs.ImageJobView:
         """Cancel a queued or running image job: it ends ``cancelled``, a worker running it is
         fenced and promotes nothing, and its staged bytes are deleted. A job that already

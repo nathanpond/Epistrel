@@ -725,6 +725,12 @@ def library_only[F: Callable[..., Any]](reason: str) -> Callable[[F], F]:
     return mark
 
 
+SHARED_ROUTES: Mapping[str, str] = {"request_story_image": "upload_story_image"}
+"""Engine operations a route of another operation serves, told apart by the body (#263: ``POST
+/stories/{id}/images`` takes a JSON generation request or a multipart upload): operation →
+the route's ``operation_id``."""
+
+
 def operations(engine_class: type[Engine] | None = None) -> list[str]:
     """The public operations of ``engine_class`` (``Engine``): every public coroutine method not
     marked ``library_only``, sorted by name."""

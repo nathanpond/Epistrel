@@ -12863,6 +12863,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** tests and registries. The AC's tests are named for docs/04 IDs: `test_i_24__m8_viewpoint_inputs` and `test_i_24__m8_masked_stranger` (I-24); `test_i_23__m8_story_generation`, `…_story_stored_prompt`, `…_story_guidance` and `…_story_camera_pov` (I-23); `test_c_22__m8_story_no_checker` (FR-IMG-3, C-22); `test_c_24__m8_consumer_prompt` (FR-IMG-9,10, C-24); `test_i_27__m8_story_style` (I-27). Unit tests are in `tests/test_story_perceived.py`, and the helpers in `tests/story_image_generation_support.py`. C-03 gains two `request_story_image` steps (202, and 422 `subjects_not_allowed`) and a `SHARED_ROUTES` entry, because the operation has no route of its own: `upload_story_image` serves both bodies. I-21's JSON call on `POST …/images` is now 409 `not_configured`. The FR-API-6 row is #261's.
   **Why:** a part whose name maps to no docs/04 ID is unmappable (#254's precedent), and the parity gate requires a route per operation.
   **Issue:** #263
+- **Decision (Rule 3):** CI run 42420586893 on `2328593` failed `test (conformance)`: C-02's route-reachability checks also map each Engine operation to a route, and they did not know `request_story_image` is served by `upload_story_image`. The mapping is now `epistrel.engine.SHARED_ROUTES`, the single source that both C-02 and C-03 read.
+  **Why:** C-02 was not among the touched-area tests, and two copies of the mapping would drift.
+  **Issue:** #263
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

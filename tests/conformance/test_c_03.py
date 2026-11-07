@@ -264,7 +264,7 @@ from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, 
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledEventReschedule
 from epistrel.core.world_clock.service import ClockAdvanceRequest
-from epistrel.engine import Engine, operations
+from epistrel.engine import SHARED_ROUTES, Engine, operations
 from epistrel.evals.certify import install
 from epistrel.orchestrator.directives import DirectiveRequest
 from epistrel.orchestrator.images.prompt_builder import ImagePromptRequest
@@ -4708,11 +4708,6 @@ def _status_of(code: int) -> Callable[[dict[str, Any]], int]:
         return code if body or code == 204 else 204
 
     return status
-
-
-SHARED_ROUTES = {"request_story_image": "upload_story_image"}
-"""Engine operations one route serves beside its own, told apart by the body (#263: ``POST
-/stories/{id}/images`` takes a JSON generation request or a multipart upload)."""
 
 
 def parity_gaps(engine_class: type[Engine], app: FastAPI, steps: list[Step]) -> list[str]:

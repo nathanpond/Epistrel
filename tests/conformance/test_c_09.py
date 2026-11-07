@@ -105,6 +105,9 @@ async def exercise(
     await put(client, "default", {"base_url": f"{base}/v1", "model": "house"})
     await put_key(client, "default", canaries[0])
     await put_key(client, "generation", canaries[1])
+    # #254: image_check inherits nothing, so it gets its own endpoint and the first key.
+    await put(client, "image_check", {"base_url": f"{base}/v1", "model": "vision"})
+    await put_key(client, "image_check", canaries[0])
     refused = await send(
         "PUT",
         "/admin/model-config/generation/api-key",

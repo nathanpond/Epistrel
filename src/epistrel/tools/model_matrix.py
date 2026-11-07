@@ -130,9 +130,11 @@ from epistrel.orchestrator.models.capability import (
 from epistrel.orchestrator.models.errors import ModelError
 from epistrel.orchestrator.models.metrics import CallLog, ModelCall, recording
 from epistrel.orchestrator.models.registry import (
+    DELIVERED,
     EXTRACTION_BACKSTOP,
     GENERATION,
     GUARDRAIL_CHECK,
+    OWN_ROW_ONLY,
     SALIENCE_DETECTION,
     STORY_PURPOSES,
 )
@@ -1522,7 +1524,10 @@ async def run_matrix(
     repair-heavy rows play ``StructuredDriver`` (#153). A row whose turn fails on a model
     error raises ``MatrixInterrupted`` with the rows finished before it (#454)."""
     await configure(engine, target)
-    report = await assess(engine.models)
+    # A purpose with its own row only (image_check, #254) is not on the target endpoint.
+    report = await assess(
+        engine.models, [p for p in DELIVERED.values() if p.name not in OWN_ROW_ONLY]
+    )
     if not report.protocol.ok:
         print(f"protocol check failed: {report.protocol.reason}", file=sys.stderr)
         return None

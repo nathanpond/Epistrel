@@ -31,6 +31,7 @@ from epistrel.orchestrator.models.registry import (
     DELIVERED,
     DirectiveParseResult,
     GuardrailVerdict,
+    ImageCheckVerdict,
     TimeEstimate,
 )
 from epistrel.orchestrator.models.stub import GARBAGE, StubAdapter
@@ -268,16 +269,18 @@ def test_strict_wire_schema_for_every_response_schema() -> None:
     touching the schema it was given; the full schema is still the one replies are validated
     against. The exception: ``DirectiveParseResult``'s free-form ``qualifiers`` dict has no wire
     form (live, ``additionalProperties`` absent, ``true`` and a schema were each a 400), so it is
-    ``None`` and that call is not sent in ``json_schema`` mode there."""
+    ``None`` and that call is not sent in ``json_schema`` mode there. So is #254's
+    ``ImageCheckVerdict``, whose ``verdicts`` map is keyed by policy id."""
     schemas = {p.response_schema for p in DELIVERED.values() if p.response_schema is not None}
-    assert DirectiveParseResult in schemas
+    no_wire_form = {DirectiveParseResult, ImageCheckVerdict}
+    assert no_wire_form <= schemas
     assert len(schemas) >= 15
     for schema in schemas:
         full = schema.model_json_schema()
         snapshot = json.dumps(full)
         wire = strict_wire_schema(full)
         assert json.dumps(full) == snapshot, schema.__name__
-        if schema is DirectiveParseResult:
+        if schema in no_wire_form:
             assert wire is None
             continue
         assert wire is not None, schema.__name__

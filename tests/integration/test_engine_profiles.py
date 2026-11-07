@@ -136,6 +136,7 @@ from tests.auth_support import auth_settings, bearer
 from tests.conformance.conftest import migrated_database
 from tests.conftest import alembic_config
 from tests.event_support import rows, scalar
+from tests.model_support import reserved_purpose
 from tests.policy_support import AUTHOR, story_item
 from tests.profile_support import (
     EDITED,
@@ -1294,14 +1295,16 @@ async def test_c_17__dependencies(stub_settings: Settings, engine: AsyncEngine) 
 
 
 async def test_settings_are_checked_at_the_boundary(
-    stub_settings: Settings, engine: AsyncEngine
+    stub_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A settings document is validated strictly: a value only coercion would accept, an
     unknown key, a bound crossed, an unknown model purpose, or an endpoint in a route is 422
     ``validation_error`` at its field; a purpose reserved for a later milestone is 422
     ``invalid_profile``; a NUL character is 422; nothing is written for any of them. The
     library refuses the same way. Complement: a delivered purpose with its own model and
-    parameters is accepted and stored as sent."""
+    parameters is accepted and stored as sent. M8 delivered every reserved purpose (#254), so
+    the reserved one here is test-registered (``reserved_purpose``)."""
+    future = reserved_purpose(monkeypatch).name
     cases: list[tuple[dict[str, Any], str, str]] = [
         (
             nest("memory.rolling_summary.window_messages", True),
@@ -1332,7 +1335,7 @@ async def test_settings_are_checked_at_the_boundary(
             "validation_error",
             "body.settings.models.purposes.generation.base_url",
         ),
-        ({"models": {"purposes": {"image_prompt": {"model": "m"}}}}, "invalid_profile", ""),
+        ({"models": {"purposes": {future: {"model": "m"}}}}, "invalid_profile", ""),
         (
             nest("models.purposes.generation.model", "a\x00b"),
             "validation_error",
@@ -1356,7 +1359,7 @@ async def test_settings_are_checked_at_the_boundary(
                     {
                         "module": "models",
                         "level": None,
-                        "setting": "models.purposes.image_prompt",
+                        "setting": f"models.purposes.{future}",
                     }
                 ]
             with pytest.raises((InvalidRequest, InvalidProfile)):

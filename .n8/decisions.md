@@ -12467,6 +12467,60 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the slow first call is filed as #785 (needs-triage, no milestone). With strict mode, a schema's first use on Anthropic may run past the 60 s default call timeout.
   **Why:** it was observed once and not measured, so it is outside #761's AC.
   **Issue:** #761, #785
+- **Decision:** #254's port lives in `orchestrator/images/`: `port.py` (protocols and types), `params.py` (`ImageGenerationParams`, the `image_generation` row's `params`) and `registry.py` (registration, the configured adapter, the `image_check` fail-closed helper). The package `__init__` imports nothing, so `models.config` can import `params` without a cycle. `models.config.check_image_adapter` imports the image registry lazily, inside the function, to check that `params.adapter` is registered.
+  **Why:** the AC name `port.py` and `registry.py`. `models.config` must validate the adapter name at write time, and the image registry builds adapters from `models.config`'s rows, so one of the two imports has to be lazy. The write-side check is the smaller one.
+  **Issue:** #254
+- **Decision:** `capabilities()` is a plain method, not `async`. Registration takes a factory that declares it before any instance exists: an adapter class with a classmethod, or a test stub that is its own factory (`__call__(config) -> self`). `status`/`cancel` are found on the factory with a callable-attribute check. The other port methods are `async def`, as planned.
+  **Why:** registration has to check the declaration (the three rules) before there is a configuration to build an instance from, and a capability declaration is static.
+  **Issue:** #254
+- **Decision:** `ImageOutput`'s bytes field is `data`, not `bytes`.
+  **Why:** a field named `bytes` shadows the builtin in every annotation inside the dataclass. The AC's `ImageOutput(bytes, media_type)` describes its contents.
+  **Issue:** #254, #255, #256
+- **Decision:** `require_image_adapter(models)` takes the Model Access Layer, not `conn`. The adapter instance is cached per configuration in `ModelAccessLayer.images` (`ImageAdapters`), and the config is read through its revision cache. `get_adapter` is the same function. The FastAPI dependency is `epistrel.api.deps.ImageAdapterDep`. `details.missing` names the first gap in this order: `adapter` (null, or not registered in this process), `model`, `api_key`. A key is required for every adapter, stubs included.
+  **Why:** #52's runtime reload is the revision cache, and a cache keyed by a connection would rebuild on every call. The order follows what an operator configures first.
+  **Issue:** #254, #260, #263
+- **Decision:** `ConfigReplacement.params` is accepted as a JSON object and checked against the path's purpose by `params_for`: `ImageGenerationParams` for `image_generation`, else `ModelParams`. Its OpenAPI schema is `anyOf [ModelParams, ImageGenerationParams, null]` (`PlainValidator(json_schema_input_type=…)`). Errors are reported at `body.params.<field>` with the same messages and types as before, and `Engine.replace_model_config` checks them before it claims the idempotency key. The request hash covers the validated params' JSON dump, which is byte-identical to the old hash for chat purposes.
+  **Why:** owner decision 11 puts the image fields inside the shared `params`. The body cannot know its purpose, and a pydantic union would change every existing error path to `body.params.ModelParams.<field>`.
+  **Issue:** #254
+- **Decision:** `image_check` declares `default_model_key = "image_check"`, its own name. The registry reads that as "own row only" (`registry.OWN_ROW_ONLY` = the ports plus such purposes). `_default_row` gives it an empty row, `parent_of` gives none, and `describe` reports each unset field as `unset`. Ports keep reporting `own`, as #138 does.
+  **Why:** the AC (`image_check` reuses the port fallback rule but reports `unset`). `Purpose` keeps no `kind` field, per the replan.
+  **Issue:** #254
+- **Decision:** every model-config entry carries `endpoint`: the hostname of the effective `base_url`, without the port, or null.
+  **Why:** the AC says "host". The image port's null `base_url` (which means the adapter's default) reads `null` until #255 knows OpenRouter's default.
+  **Issue:** #254, #255
+- **Decision:** the mutation body's `warnings` (`[{code: "image_check_unset"}]`) is computed by the route from the entries after the write. It is not stored on `ConfigWrite`, so a replay recomputes it. C-03's library renderer takes the default `[]`.
+  **Why:** `ConfigWrite` is the idempotency codec's stored value, and a warning is a reading of the current state, not a result of the write.
+  **Issue:** #254
+- **Decision:** `image_prompt` and `image_check` ship minimal templates (`image_prompt.j2`, `image_check.j2`) and response schemas (`ImagePromptResult`, `ImageCheckVerdict`). `image_check`'s template never renders the image: #258 sends it as an image part. `guardrail_check` gains the optional `image_subjects` (label, true age, visual descriptors). Its template is unchanged, so no preset fingerprint moves; #257 renders it. Neither new purpose is story-scoped, so neither template enters `TEMPLATE_HASHES`. `image_prompt`'s `purpose` field is tagged `constraint`.
+  **Why:** a delivered `Purpose` needs a `.j2` template that passes the import-time check. Editing `guardrail_check.j2` would have moved every fingerprint a second time in M8, and that is #257's planned edit.
+  **Issue:** #254, #257, #258, #259
+- **Decision:** `ImageCheckVerdict.verdicts` is a `dict[str, verdict]`, as #258's AC gives it. It has no strict wire form (#761), so a structured `image_check` call to api.anthropic.com goes as parse-validate-retry, like `DirectiveParseResult`. `test_strict_wire_schema_for_every_response_schema` names both exceptions.
+  **Why:** #258 fixes the answer's shape. A list form would get constrained decoding on Anthropic, but it would change #258's contract.
+  **Issue:** #254, #258, #761
+- **Decision:** the guarantee table gains three model-dependent rows: `image_prompt`, `image_check` and `image_generation`, each `in_story=False`. `image_check`'s metric is `unmeasured` for now.
+  **Why:** `tools.guarantees` needs a row for every delivered purpose and port. It refuses NFR-QUAL-12 while no eval suite measures it, so #270 sets that metric when E-11 lands.
+  **Issue:** #254, #270
+- **Decision:** the guide prints `HOSTED_SAFETY_RETENTION` through `model_guide.SAFETY_RETENTION_LINE`, and `render` raises `GuideError` when a safety purpose's row lacks the sentence. The mutated-template test monkeypatches that line in-process and watches `render` and `--check` fail before it checks the real guide. The image rows also carry docs/02 §6's "never receives" words (`NEVER_RECEIVES_NOTES`). With nothing reserved, the Reserved section says so in one line.
+  **Why:** the guide is generated in code and has no template file to copy. The format line is that template.
+  **Issue:** #254
+- **Decision:** the planned test names change to IDs the traceability gate knows: `test_not_configured` becomes `test_i_23__m8_not_configured`, `test_image_adapter_registration` becomes `test_i_23__m8_adapter_registration`, and `test_image_config_secret` becomes `test_c_09__m8_image_key`. All three live in `tests/integration/test_images_config.py`, because one part ID and milestone may come from one file only. docs/04 §15's NFR-SEC-3 row gains `C-09 (M8)`. `test_i_24__m8_data_flow_rows` and `test_c_04__m8_image` keep their planned names.
+  **Why:** `check-traceability` reads a part's ID from the test's name, and a bare name such as `NOT-CONFIGURED` is no docs/04 test. docs/04 I-23 opens with exactly the not-configured clause.
+  **Issue:** #254
+- **Decision:** the M2 part `test_c_04` keeps the M8 lexicon out of its text. Its path expectation for own-row purposes is computed from `registry.OWN_ROW_ONLY` and `suite.OWN_ROW_PATH`, and the shared conformance suite (and C-09's `exercise`) give `image_check` a row of its own, because it inherits no endpoint.
+  **Why:** `check-lexicon` refused "image check" and "image prompt" in an M2 part. The suite calls every delivered purpose under the `openai` adapter, and an unset `image_check` is `not_configured`.
+  **Issue:** #254
+- **Decision:** `model_matrix.run_matrix` assesses the delivered purposes except `OWN_ROW_ONLY` ones.
+  **Why:** the matrix points only `default` at the target, so `image_check` would always report incapable. The matrix's table lists story purposes only.
+  **Issue:** #254
+- **Decision:** `Port` is generic over its floor (`Port[EmbeddingFloor]`, `Port[ImageGenerationFloor]`; `PortFloor` is the union), and `CapabilityFloor` gains `vision: bool`, which is declared and never probed.
+  **Why:** the replan widened `Port.floor` per port. Making `Port` generic keeps `EMBEDDING.floor.max_batch` typed for the embedding service. "PUT on `image_check` records the vision floor; no probe" means the registry declares the floor.
+  **Issue:** #254
+- **Decision:** no migration. The image config is the existing `model_config` row `image_generation`, and alembic head stays `0131_backfill_inferred_states`.
+  **Why:** the planner's Discretion says there is no new table.
+  **Issue:** #254
+- **Decision:** the reserved-purpose refusal tests use `tests/model_support.py::reserved_purpose(monkeypatch)`, which declares `future_purpose` (M10) in `registry.RESERVED_PURPOSES`, `registry.RESERVED`, `access.RESERVED` and the package's re-export.
+  **Why:** the replan (M6 #199) keeps the reserved machinery covered once M8 empties it.
+  **Issue:** #254
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

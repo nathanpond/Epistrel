@@ -502,6 +502,36 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         in_story=False,
         note="Eval only, never in a turn.",
     ),
+    _row(
+        "image_prompt",
+        "image prompt",
+        M,
+        UNMEASURED,
+        purposes=("image_prompt",),
+        in_story=False,
+        note="Writes an image prompt from what the image's audience perceived; the prompt then "
+        "passes the image-prompt policies before anything is generated (FR-IMG-2,3).",
+    ),
+    _row(
+        "image_check",
+        "image check",
+        M,
+        UNMEASURED,
+        purposes=("image_check",),
+        in_story=False,
+        note="A vision model checks each image against the image-output policies; with none "
+        "configured, an image a policy applies to fails closed (FR-IMG-3).",
+    ),
+    _row(
+        "image_generation",
+        "image generation",
+        M,
+        UNMEASURED,
+        purposes=("image_generation",),
+        in_story=False,
+        note="The image adapter (FR-IMG-1): what it draws is the provider's; nobody sees an "
+        "image until it has passed the checks.",
+    ),
 )
 """Every step of the guarantee boundary (see the module docstring)."""
 

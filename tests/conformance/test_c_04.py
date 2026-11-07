@@ -1,6 +1,7 @@
 """C-04: model-adapter conformance (docs/04), the M2 parts this Model Access Layer delivers, and
 the M4 part: the guide's embedding-port row (#138, ``test_c_04__embedding_row``), and the M5 part:
-the ``belief_adjudication`` row (#162, ``test_c_04__adjudication_row``).
+the ``belief_adjudication`` row (#162, ``test_c_04__adjudication_row``), and the M8 part: the
+image purposes and the image adapter (#254, ``test_c_04__m8_image``).
 
 Both adapters — the ``openai`` SDK adapter against a local OpenAI-compatible server and the
 deterministic stub — run the same suite (``tests/conformance/suite.py``).
@@ -27,6 +28,7 @@ from epistrel.core.profiles import schema as profile_schema
 from epistrel.core.profiles.guarantees import GUARANTEE, Kind
 from epistrel.engine import Engine
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.images import registry as images
 from epistrel.orchestrator.models import metrics, registry, reported_version
 from epistrel.orchestrator.models.access import build_inputs
 from epistrel.orchestrator.models.config import ConfigRow, KeyBox, describe
@@ -55,10 +57,13 @@ from tests.conformance.suite import (
     DEFAULT_KEY,
     GENERATION_MODEL,
     HOUSE_MODEL,
+    OWN_ROW_PATH,
+    VISION_MODEL,
     configure,
     run_suite,
 )
 from tests.event_support import new_story
+from tests.image_support import StubImageChecker
 from tests.model_support import (
     MockOpenAI,
     Recorded,
@@ -79,6 +84,7 @@ from tests.structured_support import (
 )
 
 ADAPTERS = ("openai", "stub")
+VISION = VISION_MODEL
 PROBE = example_instance(DELIVERED["generation"].input_schema)
 SUMMARY = example_instance(DELIVERED["lite_summary"].input_schema)
 
@@ -149,17 +155,20 @@ async def test_c_04(model_engine: Engine, adapter_settings: Settings, mock: Mock
         # A purpose that defaults to guardrail_check's row (M3, #121) reaches its base_url too.
         # A purpose that defaults to the default row (the eval harness's quality_judge, #134)
         # reaches the default row's base_url.
+        # A purpose that reads its own row only (#254) reaches the endpoint the suite gave it.
+        own_row = {name: OWN_ROW_PATH for name in DELIVERED if name in registry.OWN_ROW_ONLY}
         inheriting = {
             name: "/gateway/v1/chat/completions"
             if purpose.default_model_key == "guardrail_check"
             else "/v1/chat/completions"
             for name, purpose in DELIVERED.items()
-            if name not in ("generation", "lite_summary", "guardrail_check")
+            if name not in ("generation", "lite_summary", "guardrail_check", *own_row)
         }
         assert observed.paths == {
             "generation": "/v1/chat/completions",
             "lite_summary": "/v1/chat/completions",
             "guardrail_check": "/gateway/v1/chat/completions",
+            **own_row,
             **inheriting,
         }
         assert observed.paths["quality_judge"] == "/v1/chat/completions"
@@ -546,7 +555,7 @@ def test_c_04__embedding_row() -> None:
     guide = (Path(__file__).resolve().parents[2] / "docs" / "models.md").read_text("utf-8")
     assert guide == model_guide.render()
     ports = guide.split("## Ports delivered", 1)[1].split("## Reserved purposes", 1)[0]
-    section = ports.split("### `embedding`", 1)[1]
+    section = ports.split("### `embedding`", 1)[1].split("\n### ", 1)[0]
     assert "**Capability floor:** inputs of at least 512 tokens" in section
     assert "vectors of 64 to 4,096 dimensions; batches of up to 64 texts" in section
     assert "the `embedding` row of `model_config` only" in section
@@ -722,3 +731,110 @@ def test_c_04__m6() -> None:
 
     stale = guide.replace("### `time_estimation`", "### `withheld`")
     assert stale != model_guide.render()
+
+
+def _committed_guide() -> str:
+    return (Path(__file__).resolve().parents[2] / "docs" / "models.md").read_text("utf-8")
+
+
+class _ImagePolicy:
+    """A synthetic image-output policy (``ensure_image_check_configured`` reads its id and
+    targets only)."""
+
+    id = "no_gore_images"
+    applies_to = ("image_prompt", "image_output")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-MODEL-3,13; FR-IMG-1")
+async def test_c_04__m8_image(
+    model_engine: Engine, adapter_settings: Settings, mock: MockOpenAI
+) -> None:
+    """M8's purposes and port (#254), for each adapter: the guide has the image adapter's row
+    (a delivered port, no longer reserved); ``image_check`` reports ``unset`` by default (no
+    model, ``sources`` ``unset``, no endpoint), and an image-output policy evaluation with it
+    unset raises ``image_check_unconfigured`` naming the policy, with no model call;
+    ``image_prompt`` resolves to the generation model when not overridden (``inherited``), and
+    its call reaches that model.
+
+    Complements: with a stub checker set (the scripted ``StubImageChecker`` under the stub, the
+    mock's canned verdict under ``openai``), the same evaluation runs and records a verdict for
+    the policy; the chat purposes still read the ``default`` row ``image_check`` ignores."""
+    reported_version.forget()  # #765/#770: no listing cached by an earlier case
+    models = model_engine.models
+    openai_kind = adapter_settings.model_adapter == "openai"
+    guide = _committed_guide()
+    assert guide == model_guide.render()
+    ports = guide.split("## Ports delivered", 1)[1].split("## Reserved purposes", 1)[0]
+    assert "### `image_generation`" in ports
+    assert "| `prompt` | `image_prompt` |" in ports.split("### `image_generation`", 1)[1]
+    reserved = guide.split("## Reserved purposes", 1)[1].split("## Content categories", 1)[0]
+    assert "`image_generation`" not in reserved
+    assert "image_generation" in registry.PORTS
+    assert not registry.RESERVED
+
+    async with admin_client(adapter_settings, model_engine) as client:
+        await _point_default_at(client, mock)
+        await put(client, "generation", {"model": GENERATION_MODEL})
+        listing = (await client.get("/admin/model-config", headers=bearer())).json()["purposes"]
+        check = listing["image_check"]
+        assert (check["model"], check["base_url"], check["endpoint"]) == (None, None, None)
+        assert check["sources"] == {
+            "base_url": "unset",
+            "model": "unset",
+            "api_key": "unset",
+            "params": {},
+        }
+        prompt = listing["image_prompt"]
+        assert (prompt["model"], prompt["sources"]["model"]) == (GENERATION_MODEL, "inherited")
+        assert prompt["endpoint"] == "127.0.0.1"
+        port = listing["image_generation"]
+        assert (port["model"], port["params"], port["sources"]["model"]) == (None, {}, "own")
+        assert listing["lite_summary"]["sources"]["model"] == "default"
+
+        calls = _adapter_calls(model_engine, mock)
+        result = await models.call(
+            "image_prompt", example_instance(registry.IMAGE_PROMPT.input_schema)
+        )
+        assert result.model == GENERATION_MODEL
+        assert _adapter_calls(model_engine, mock) == calls + 1
+        if openai_kind:
+            assert _completions(mock)[-1].body["model"] == GENERATION_MODEL
+
+        with pytest.raises(images.ImageCheckUnconfigured) as unset:
+            await images.ensure_image_check_configured(models, [_ImagePolicy()])
+        assert unset.value.policy_ids == (_ImagePolicy.id,)
+        assert unset.value.code == "image_check_unconfigured"
+        assert _adapter_calls(model_engine, mock) == calls + 1  # nothing was sent
+
+        await put(client, "image_check", {"base_url": f"{mock.root}/vision/v1", "model": VISION})
+        await put_key(client, "image_check", DEFAULT_KEY)
+        verdicts: dict[str, registry.ImageVerdict] = {_ImagePolicy.id: "pass"}
+        if openai_kind:
+            mock.json_answers["ImageCheckVerdict"] = json.dumps({"verdicts": verdicts})
+        else:
+            StubImageChecker(models.stub).answer(verdicts)
+        config = await images.ensure_image_check_configured(models, [_ImagePolicy()])
+        assert config is not None
+        assert config.model == VISION
+        inputs = registry.ImageCheckInputs(
+            image="data:image/png;base64,AAAA",
+            prompt="a lighthouse at dusk",
+            policies=[registry.ImageCheckPolicy(policy_id=_ImagePolicy.id, text="No gore.")],
+        )
+        verdict = await models.structured_call(
+            "image_check",
+            registry.ImageCheckVerdict,
+            inputs,
+            deterministic_first=lambda: None,
+            budget=TurnBudget(),
+        )
+        assert verdict == registry.ImageCheckVerdict(verdicts={_ImagePolicy.id: "pass"})
+        if openai_kind:
+            sent = _completions(mock)[-1]
+            assert sent.path == "/vision/v1/chat/completions"
+            assert sent.body["model"] == VISION
+        else:
+            (recorded,) = StubImageChecker(models.stub).inputs
+            assert "no_gore_images: No gore." in recorded
+        assert await images.ensure_image_check_configured(models, []) is None

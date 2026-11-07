@@ -276,6 +276,10 @@ class ModelAccessLayer:
         from epistrel.orchestrator.embeddings.service import EmbeddingService
 
         self.embeddings: EmbeddingService = EmbeddingService(settings, self.keybox)
+        # The image adapter (#254): the image_generation port's row names it.
+        from epistrel.orchestrator.images.registry import ImageAdapters
+
+        self.images: ImageAdapters = ImageAdapters(self)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> ModelAccessLayer:
@@ -595,6 +599,7 @@ class ModelAccessLayer:
     async def aclose(self) -> None:
         await self.adapter.aclose()
         await self.embeddings.aclose()
+        await self.images.aclose()
 
 
 __all__ = [

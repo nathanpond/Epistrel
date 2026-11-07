@@ -905,7 +905,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | NFR-SCALE-2 | M | M4 | I-16 (M4), X-01 (M4), X-01 (M7) |
 | NFR-SEC-1 | M | M2 | POLICY (M2) |
 | NFR-SEC-2 | M | M6 | R-04 (M6) |
-| NFR-SEC-3 | M | M2 | C-09 (M2), C-09 (M3), C-09 (M7) |
+| NFR-SEC-3 | M | M2 | C-09 (M2), C-09 (M3), C-09 (M7), C-09 (M8) |
 | NFR-SEC-4 | M | M2 | C-08 (M2), S-ERASURE-BOUNDARY (M3) |
 | NFR-SEC-5 | M | M2 | S-TRUST-BOUNDARY (M2) |
 

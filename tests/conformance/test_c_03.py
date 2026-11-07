@@ -808,6 +808,11 @@ LISTING_GROUP = "listing"
 NEW_OWNER = {"principal": "p-parity-owner"}
 RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
+IMAGE_OVERRIDE = {
+    "model": "parity-image",
+    "params": {"adapter": None, "default_aspect_ratio": "16:9", "default_quality": "high"},
+}
+CHECKER_OVERRIDE = {"base_url": "http://vision.parity/v1", "model": "parity-vision"}
 MEDIA_BYTES = png(nonce="c-03 parity")
 MEDIA = metadata(
     alt_text="The lighthouse door",
@@ -3129,6 +3134,33 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/admin/model-config/generation"),
             lambda e, ids: _model_remove(e),
         ),
+        # #254: the image adapter is the image_generation port, its image fields in params;
+        # image_check reads its own row only (unset, then set, then unset again).
+        Step(
+            "replace_model_config",
+            lambda ids: Rest("PUT", "/admin/model-config/image_generation", IMAGE_OVERRIDE),
+            lambda e, ids: _model_replace(e, "image_generation", IMAGE_OVERRIDE),
+        ),
+        Step(
+            "model_config_entry",
+            lambda ids: Rest("GET", "/admin/model-config/image_generation"),
+            lambda e, ids: _model_entry(e, "image_generation"),
+        ),
+        Step(
+            "model_config_entry",
+            lambda ids: Rest("GET", "/admin/model-config/image_check"),
+            lambda e, ids: _model_entry(e, "image_check"),
+        ),
+        Step(
+            "replace_model_config",
+            lambda ids: Rest("PUT", "/admin/model-config/image_check", CHECKER_OVERRIDE),
+            lambda e, ids: _model_replace(e, "image_check", CHECKER_OVERRIDE),
+        ),
+        Step(
+            "remove_model_override",
+            lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
+            lambda e, ids: _model_remove(e, "image_check"),
+        ),
         # -- external-data providers (#204): registration and a story's binding
         Step(
             "register_external_provider",
@@ -4126,15 +4158,17 @@ async def _model_entry(engine: Engine, purpose: str) -> dict[str, Any]:
     return dump(ModelConfigItem(purpose=purpose, config_revision=revision, **fields))
 
 
-async def _model_replace(engine: Engine) -> dict[str, Any]:
-    body = ConfigReplacement.model_validate(MODEL_OVERRIDE)
-    write = await engine.replace_model_config(CTX, "generation", body)
-    return await _model_config_write(engine, "generation", write)
+async def _model_replace(
+    engine: Engine, purpose: str = "generation", override: dict[str, Any] = MODEL_OVERRIDE
+) -> dict[str, Any]:
+    body = ConfigReplacement.model_validate(override)
+    write = await engine.replace_model_config(CTX, purpose, body)
+    return await _model_config_write(engine, purpose, write)
 
 
-async def _model_remove(engine: Engine) -> dict[str, Any]:
-    write = await engine.remove_model_override(CTX, "generation")
-    return await _model_config_write(engine, "generation", write)
+async def _model_remove(engine: Engine, purpose: str = "generation") -> dict[str, Any]:
+    write = await engine.remove_model_override(CTX, purpose)
+    return await _model_config_write(engine, purpose, write)
 
 
 PROVIDER_NAME = "parity-ledger"

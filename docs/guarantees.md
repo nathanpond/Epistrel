@@ -67,6 +67,9 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 | directive parse | `directive_parse` | model-dependent | unmeasured | none (outside stories) | `directive_parse` |
 | author directives | `author_directives` | deterministic | — (tested, not measured) | none (outside stories) | — |
 | quality judge | `quality_judge` | model-dependent | NFR-QUAL-14 | none (outside stories) | `quality_judge` |
+| image prompt | `image_prompt` | model-dependent | unmeasured | none (outside stories) | `image_prompt` |
+| image check | `image_check` | model-dependent | unmeasured | none (outside stories) | `image_check` |
+| image generation | `image_generation` | model-dependent | unmeasured | none (outside stories) | `image_generation` |
 
 ## Notes
 
@@ -98,6 +101,9 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `directive_parse`: The author's side-channel, never in a turn: a request's explicit kind overrides its classification, and a change to the past is previewed as a rewrite. Lite form: the same parse classifies a Lite directive as a nudge or a lasting author fact (FR-LITE-8); whether the model honours the fact in its reply is unmeasured.
 - `author_directives`: The author's directions apply with author authority at the next inter-turn slot (FR-DIRECT-1,2): facts are checked by the contradiction rules, and narrative canon never supersedes them (FR-DIRECT-6). Lite form: prompt-only: a nudge for the next reply, or a lasting author fact in every later prompt, following timeline membership; no contradiction checking (Lite keeps no canon).
 - `quality_judge`: Eval only, never in a turn.
+- `image_prompt`: Writes an image prompt from what the image's audience perceived; the prompt then passes the image-prompt policies before anything is generated (FR-IMG-2,3).
+- `image_check`: A vision model checks each image against the image-output policies; with none configured, an image a policy applies to fails closed (FR-IMG-3).
+- `image_generation`: The image adapter (FR-IMG-1): what it draws is the provider's; nobody sees an image until it has passed the checks.
 
 ## Outside the guarantee: voice and plot
 
@@ -154,6 +160,9 @@ Profile `00000000000000000000PRF001`, version 1 as seeded.
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
+| image prompt | `image_prompt` | model-dependent | outside stories |
+| image check | `image_check` | model-dependent | outside stories |
+| image generation | `image_generation` | model-dependent | outside stories |
 
 **Not provided under Lite:** structural knowledge separation, verification, audience filtering, commitment.
 
@@ -206,6 +215,9 @@ Profile `00000000000000000000PRF003`, version 1 as seeded.
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
+| image prompt | `image_prompt` | model-dependent | outside stories |
+| image check | `image_check` | model-dependent | outside stories |
+| image generation | `image_generation` | model-dependent | outside stories |
 
 **Provided under Standard:** structural knowledge separation, verification, audience filtering, commitment.
 
@@ -254,6 +266,9 @@ Profile `00000000000000000000PRF002`, version 4 as seeded.
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
+| image prompt | `image_prompt` | model-dependent | outside stories |
+| image check | `image_check` | model-dependent | outside stories |
+| image generation | `image_generation` | model-dependent | outside stories |
 
 **Provided under Full:** structural knowledge separation, verification, audience filtering, commitment.
 
@@ -300,6 +315,9 @@ Profile `00000000000000000000PRF004`, version 1 as seeded.
 | directive parse | `directive_parse` | model-dependent | outside stories |
 | author directives | `author_directives` | deterministic | outside stories |
 | quality judge | `quality_judge` | model-dependent | outside stories |
+| image prompt | `image_prompt` | model-dependent | outside stories |
+| image check | `image_check` | model-dependent | outside stories |
+| image generation | `image_generation` | model-dependent | outside stories |
 
 **Provided under Max:** structural knowledge separation, verification, audience filtering, commitment.
 

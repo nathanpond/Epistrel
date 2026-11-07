@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import types
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import httpx2 as httpx
+import pytest
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -22,6 +24,7 @@ from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.engine import Engine
 from epistrel.orchestrator.embeddings.adapter import stub_vector
+from epistrel.orchestrator.models.registry import ReservedPurpose
 from tests.auth_support import bearer
 
 CONFIG_KEY = base64.urlsafe_b64encode(b"epistrel-test-config-key-0000000").decode()
@@ -301,3 +304,26 @@ async def put_key(client: httpx.AsyncClient, purpose: str, api_key: str) -> None
         headers=OPERATOR_HEADERS,
     )
     assert response.status_code == 204, response.text
+
+
+FUTURE_PURPOSE = ReservedPurpose(
+    "future_purpose", "A purpose a later milestone delivers (test-registered).", "M10"
+)
+"""The reserved purpose the refusal tests name, now that M8 delivered every reserved one
+(#254): ``reserved_purpose`` registers it."""
+
+
+def reserved_purpose(
+    monkeypatch: pytest.MonkeyPatch, purpose: ReservedPurpose = FUTURE_PURPOSE
+) -> ReservedPurpose:
+    """Declare ``purpose`` reserved until ``monkeypatch`` undoes it (the test's end): in the
+    registry's ``RESERVED_PURPOSES`` and ``RESERVED``, and in every module that imported
+    ``RESERVED`` by name."""
+    from epistrel.orchestrator import models as models_package
+    from epistrel.orchestrator.models import access, registry
+
+    reserved = types.MappingProxyType({**registry.RESERVED, purpose.name: purpose})
+    monkeypatch.setattr(registry, "RESERVED_PURPOSES", (*registry.RESERVED_PURPOSES, purpose))
+    for module in (registry, access, models_package):
+        monkeypatch.setattr(module, "RESERVED", reserved)
+    return purpose

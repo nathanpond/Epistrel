@@ -4471,8 +4471,12 @@ class Engine:
         """Replace a purpose's own configuration. For the ``embedding`` port (#138) a new
         model is probed first (422 ``embedding_unreachable`` when it does not answer): the
         write then moves the embedding pin and enqueues the re-embed jobs in its transaction
-        (``reembed_job.on_embedding_model_changed``)."""
+        (``reembed_job.on_embedding_model_changed``). ``params`` are checked against the
+        purpose's own schema first (the ``image_generation`` port's image fields, #254), so a
+        refused body claims no key."""
         principal = self.require_principal(ctx)
+        model_config.check_purpose(purpose)
+        params = body.params_for(purpose)
         probe = await self._probe_embedding_change(purpose, body)
         with reembed_job.changing(self.models.embeddings, probe):
             return await self._keyed(
@@ -4481,7 +4485,13 @@ class Engine:
                 lambda _: model_config.replace_config(
                     self.db, purpose, body, keybox=self.models.keybox, principal=principal
                 ),
-                material={"purpose": purpose, "body": _body(body)},
+                material={
+                    "purpose": purpose,
+                    "body": {
+                        **_body(body),
+                        "params": None if params is None else params.model_dump(mode="json"),
+                    },
+                },
             )
 
     async def _probe_embedding_change(
@@ -4491,8 +4501,9 @@ class Engine:
         for any other purpose, an unset model or the same model."""
         if purpose != EMBEDDING_PORT or body.model is None:
             return None
-        if body.params is not None:
-            model_config.check_port_params(purpose, body.params)
+        params = body.params_for(purpose)
+        if params is not None:
+            model_config.check_port_params(purpose, params)
         _, rows = await model_config.snapshot(self.db)
         own = rows.get(purpose)
         if own is not None and own.model == body.model:
@@ -4502,7 +4513,7 @@ class Engine:
             base_url=body.base_url,
             model=body.model,
             api_key_ciphertext=None if own is None else own.api_key_ciphertext,
-            params=body.params or ModelParams(),
+            params=params if isinstance(params, ModelParams) else ModelParams(),
             revision=0,
         )
         try:

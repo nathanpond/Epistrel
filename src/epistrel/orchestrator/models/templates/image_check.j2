@@ -1,0 +1,29 @@
+{#- Image check (FR-IMG-3,13; #254, called by #258): one image against the image-output
+    policies. The image itself travels as an image part of the user message, never as text
+    (#258); the subjects are opaque labels with true ages and the prompt's own descriptors. -#}
+{% block system %}
+You check one image against content policies. Judge only what the image shows, with its
+prompt, caption and alt text as context. Answer only with a JSON object
+{"verdicts": {"<policy id>": "pass" | "violation" | "uncertain"}}, one entry per listed policy.
+
+## Policies (id: text)
+{% for policy in policies %}
+- {{ policy.policy_id }}: {{ policy.text }}
+{% endfor %}
+{% if subjects %}
+
+## Subjects (label: true age; visual descriptors)
+{% for subject in subjects %}
+- {{ subject.label }}: age {{ subject.true_age }}{% if subject.visual_descriptors %}; {{ subject.visual_descriptors | join(", ") }}{% endif +%}
+{% endfor %}
+{% endif %}
+{% endblock %}
+{% block user %}
+Prompt: {{ prompt }}
+{% if caption %}
+Caption: {{ caption }}
+{% endif %}
+{% if alt_text %}
+Alt text: {{ alt_text }}
+{% endif %}
+{% endblock %}

@@ -30,6 +30,7 @@ from epistrel.core.media.stores import store_kind_problem
 from epistrel.engine import Engine
 from epistrel.observability import metrics
 from epistrel.observability.instrument import TelemetryMiddleware
+from epistrel.orchestrator.images.registry import register_builtin_image_adapters
 from epistrel.orchestrator.models.config import config_key_problem
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.engine = None
     app.state.epistrel = Engine.from_settings(settings)
+    # The bundled image adapters (#254; OpenRouter, #255), named by `image_generation`'s row.
+    register_builtin_image_adapters()
     errors.install(app)
     # Added first, so it runs inside ``ReceiptStamp`` (which stays the outermost): one scope,
     # server span, latency sample and ``request`` line per request (#74).

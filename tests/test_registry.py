@@ -29,6 +29,7 @@ from epistrel.orchestrator.models.registry import (
     RegistryError,
 )
 from tests.auth_support import auth_settings
+from tests.model_support import reserved_purpose
 
 # docs/03 FR-MODEL-2's purposes and the two separate ports, in registry names.
 FR_MODEL_2 = {
@@ -68,7 +69,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
     # generation's row (docs/02 §5: usually the same model). M5 delivers testimony's
     # belief_adjudication (#162), which defaults to entailment's row (FR-MODEL-2). M6 delivers
     # the clock's time_estimation (#199), which defaults to extraction_backstop's row. M7
-    # delivers the history side-channel's rewrite_parse (#223), deployment-level.
+    # delivers the history side-channel's rewrite_parse (#223), deployment-level. M8 delivers
+    # image_prompt, which defaults to generation's row, and image_check, its own row only (#254).
     assert set(DELIVERED) == {
         "generation",
         "guardrail_check",
@@ -88,6 +90,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
         "directive_parse",
         "lite_rewrite_reach",
         "lite_rewrite_parse",
+        "image_prompt",
+        "image_check",
     }
     for purpose in DELIVERED.values():
         parents = {
@@ -96,6 +100,8 @@ def test_m2_purposes_are_delivered_with_tagged_schemas() -> None:
             "lite_summary": "consolidation",
             "regeneration": "generation",
             "time_estimation": "extraction_backstop",
+            "image_prompt": "generation",
+            "image_check": "image_check",
         }
         expected = parents.get(purpose.name, "default")
         assert purpose.default_model_key == expected
@@ -111,24 +117,31 @@ def test_registry_enumerates_every_named_purpose() -> None:
     assert set(DELIVERED) | set(PORTS) | set(RESERVED) >= FR_MODEL_2
     assert not set(DELIVERED) & set(RESERVED)
     assert not set(PORTS) & (set(DELIVERED) | set(RESERVED))
-    assert set(PORTS) == {"embedding"}
-    for reserved in RESERVED.values():
-        assert reserved.milestone in {"M3", "M4", "M5", "M6", "M7", "M8"}
-        assert reserved.defaults_to is None or reserved.defaults_to in FR_MODEL_2
-    assert RESERVED["image_check"].defaults_to is None
+    # M8 delivers the image port (#254), and with it the last reserved names.
+    assert set(PORTS) == {"embedding", "image_generation"}
+    assert dict(RESERVED) == {}
+    assert registry.RESERVED_PURPOSES == ()
+    assert DELIVERED["image_check"].default_model_key == "image_check"
+    assert {"embedding", "image_generation", "image_check"} == registry.OWN_ROW_ONLY
 
 
-def test_reserved_and_unknown_purposes_are_refused() -> None:
+def test_reserved_and_unknown_purposes_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reserved machinery outlives M8's emptying of it: a test-registered reserved purpose
+    is refused with its milestone (#254)."""
+    future = reserved_purpose(monkeypatch)
     with pytest.raises(UnknownPurpose) as reserved:
-        get_delivered("image_prompt")
+        get_delivered(future.name)
     details = dict(reserved.value.details)
     assert len(details.pop("errors")) == 1
     assert details == {
         "field": "body",
-        "purpose": "image_prompt",
+        "purpose": "future_purpose",
         "reason": "reserved",
-        "milestone": "M8",
+        "milestone": "M10",
     }
+    with pytest.raises(UnknownPurpose) as port:
+        get_delivered("image_generation")
+    assert port.value.details["reason"] == "port"
     with pytest.raises(UnknownPurpose) as unknown:
         get_delivered("nope")
     assert unknown.value.details["reason"] == "unknown"

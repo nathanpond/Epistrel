@@ -5963,7 +5963,7 @@
       },
       "ConfigReplacement": {
         "additionalProperties": false,
-        "description": "``PUT /admin/model-config/{purpose}``: the purpose's own ``base_url``, ``model`` and\n``params``, replaced in full. An omitted or ``null`` field inherits from ``default``\n(``params`` per key). The API key is never part of this body (``extra=forbid``).",
+        "description": "``PUT /admin/model-config/{purpose}``: the purpose's own ``base_url``, ``model`` and\n``params``, replaced in full. An omitted or ``null`` field inherits from ``default``\n(``params`` per key). The API key is never part of this body (``extra=forbid``).\n\n``params`` are the chat parameters (``ModelParams``) for every purpose and ``embedding``,\nand the image fields (``ImageGenerationParams``) for the ``image_generation`` port (owner\ndecision 11, #254). Which one applies depends on the path's purpose, so they are checked by\n``params_for`` (422 at ``body.params.<field>``, as the body's own validation reports).",
         "examples": [
           {
             "base_url": "http://localhost:11434/v1",
@@ -6006,12 +6006,31 @@
                 "$ref": "#/components/schemas/ModelParams"
               },
               {
+                "$ref": "#/components/schemas/ImageGenerationParams"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "title": "Params"
           }
         },
         "title": "ConfigReplacement",
+        "type": "object"
+      },
+      "ConfigWarning": {
+        "description": "Something a write allowed that the operator should know: ``image_check_unset`` (an\nimage adapter was enabled while no ``image_check`` model is configured, so every\nimage-output policy fails closed, #254).",
+        "properties": {
+          "code": {
+            "const": "image_check_unset",
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "ConfigWarning",
         "type": "object"
       },
       "Conflict": {
@@ -15544,6 +15563,103 @@
         "title": "IdentityItemBody",
         "type": "object"
       },
+      "ImageGenerationParams": {
+        "additionalProperties": false,
+        "description": "The ``image_generation`` row's ``params``: replaced in full by a ``PUT``; ``None``\ntakes the built-in default (module docs).",
+        "examples": [
+          {
+            "adapter": "openrouter",
+            "default_aspect_ratio": "1:1",
+            "default_quality": "auto",
+            "request_timeout_s": 120
+          }
+        ],
+        "properties": {
+          "adapter": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "pattern": "^[a-z][a-z0-9_]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adapter"
+          },
+          "default_aspect_ratio": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{1,2}:\\d{1,2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Aspect Ratio"
+          },
+          "default_quality": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Quality"
+          },
+          "default_size": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{2,5}x\\d{2,5}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Size"
+          },
+          "image_capability_ttl_s": {
+            "anyOf": [
+              {
+                "maximum": 86400.0,
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Capability Ttl S"
+          },
+          "request_timeout_s": {
+            "anyOf": [
+              {
+                "maximum": 600.0,
+                "minimum": 10.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout S"
+          }
+        },
+        "title": "ImageGenerationParams",
+        "type": "object"
+      },
       "ImpactPreviewRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign\n(``profile_id``), a change of the story's overrides (``overrides``: a JSON merge patch over\nthem, as ``PATCH /stories/{id}/profile-overrides`` takes its ``settings``, so ``null``\nremoves an override), or both at once. Nothing is written.",
@@ -19935,6 +20051,17 @@
             ],
             "title": "Base Url"
           },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
           "model": {
             "anyOf": [
               {
@@ -19961,7 +20088,8 @@
           "params",
           "api_key",
           "api_key_fingerprint",
-          "sources"
+          "sources",
+          "endpoint"
         ],
         "title": "ModelConfigEntry",
         "type": "object"
@@ -20007,6 +20135,17 @@
             "title": "Config Revision",
             "type": "integer"
           },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
           "model": {
             "anyOf": [
               {
@@ -20038,6 +20177,7 @@
           "api_key",
           "api_key_fingerprint",
           "sources",
+          "endpoint",
           "purpose",
           "config_revision"
         ],
@@ -20085,6 +20225,17 @@
             "title": "Config Revision",
             "type": "integer"
           },
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -20118,6 +20269,13 @@
           },
           "sources": {
             "$ref": "#/components/schemas/Sources"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ConfigWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -20128,6 +20286,7 @@
           "api_key",
           "api_key_fingerprint",
           "sources",
+          "endpoint",
           "purpose"
         ],
         "title": "ModelConfigMutation",
@@ -42478,13 +42637,14 @@
         "type": "object"
       },
       "Sources": {
-        "description": "Where each effective value came from, per field (``params`` per key): ``own``, ``inherited``\n(the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``)\nor ``default``.",
+        "description": "Where each effective value came from, per field (``params`` per key): ``own``, ``inherited``\n(the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``),\n``default``, or ``unset`` (``image_check``, which has no default, before it is\nconfigured).",
         "properties": {
           "api_key": {
             "enum": [
               "own",
               "inherited",
-              "default"
+              "default",
+              "unset"
             ],
             "title": "Api Key",
             "type": "string"
@@ -42493,7 +42653,8 @@
             "enum": [
               "own",
               "inherited",
-              "default"
+              "default",
+              "unset"
             ],
             "title": "Base Url",
             "type": "string"
@@ -42502,7 +42663,8 @@
             "enum": [
               "own",
               "inherited",
-              "default"
+              "default",
+              "unset"
             ],
             "title": "Model",
             "type": "string"
@@ -42512,7 +42674,8 @@
               "enum": [
                 "own",
                 "inherited",
-                "default"
+                "default",
+                "unset"
               ],
               "type": "string"
             },

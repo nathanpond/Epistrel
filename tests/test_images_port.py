@@ -1,7 +1,7 @@
 """The image-generation port and its registry (#254): the port's types, the registration
-rules, the scripted stub adapters every later M8 test uses, and the model guide's image rows
-(FR-IMG-1,13). The database-backed half (configuration, ``not_configured``, the key) is
-``tests/integration/test_i_23.py``."""
+rules and the scripted stub adapters every later M8 test uses (FR-IMG-1). The model guide's
+image rows are I-24's (``tests/integration/test_i_24.py``). The database-backed half
+(configuration, ``not_configured``, the key) is ``tests/integration/test_i_23.py``."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import struct
 import zlib
 from collections.abc import Iterator
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -23,13 +22,6 @@ from epistrel.orchestrator.images.port import (
     ImageRequest,
     SubmitResult,
 )
-from epistrel.orchestrator.models import registry
-from epistrel.orchestrator.models.registry import (
-    HOSTED_SAFETY_RETENTION,
-    ContentCategory,
-    field_categories,
-)
-from epistrel.tools import model_guide
 from tests.image_support import (
     Fail,
     Outputs,
@@ -41,7 +33,6 @@ from tests.image_support import (
     registered,
 )
 
-GUIDE = Path(__file__).resolve().parents[1] / "docs" / "models.md"
 REQUEST = ImageRequest(prompt="a lighthouse at dusk", aspect_ratio="16:9", n=2)
 
 
@@ -198,77 +189,6 @@ def test_image_check_fails_closed_naming_every_policy_type() -> None:
     assert error.policy_ids == ("gore", "minors")
     assert error.code == "image_check_unconfigured"
     assert images.image_output_policies([Synthetic("text_only", "text_output")]) == []
-
-
-def _section(guide: str, name: str) -> str:
-    return guide.split(f"### `{name}`", 1)[1].split("\n### ", 1)[0].split("\n## ", 1)[0]
-
-
-def _rows(section: str) -> list[str]:
-    receives = section.split("**Receives**", 1)[1].split("**Never receives:**", 1)[0]
-    return [line.split("|")[1].strip().strip("`") for line in receives.splitlines()[4:] if line]
-
-
-@pytest.mark.part("M8", "FR-IMG-13")
-def test_i_24__m8_data_flow_rows(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The generated guide's rows for ``guardrail_check`` and ``image_check`` list exactly the
-    inputs their registry schemas declare (subject labels, true ages and the prompt's visual
-    descriptors in both; the image, prompt, caption and alt text in ``image_check``'s) and
-    carry the hosted-provider retention sentence verbatim; the image adapter has a row too,
-    listing the prompt, its parameters and reference images and never the safety context.
-
-    Complement, run first: with the sentence removed from the guide's row template, rendering
-    fails and ``--check`` exits 1, so the sentence cannot silently drop out."""
-    monkeypatch.setattr(model_guide, "SAFETY_RETENTION_LINE", "- **Hosted providers:** see terms")
-    with pytest.raises(model_guide.GuideError, match="retention sentence"):
-        model_guide.render()
-    assert model_guide.main(["--check"]) == 1
-    monkeypatch.undo()
-
-    guide = GUIDE.read_text(encoding="utf-8")
-    assert guide == model_guide.render()
-    assert model_guide.main(["--check"]) == 0
-    for name in registry.SAFETY_PURPOSES:
-        section = _section(guide, name)
-        purpose = registry.DELIVERED[name]
-        assert _rows(section) == [
-            path
-            for path in field_categories(purpose.input_schema)
-            if not any(
-                other.startswith(f"{path}.") for other in field_categories(purpose.input_schema)
-            )
-        ]
-        assert HOSTED_SAFETY_RETENTION in section
-    check = _section(guide, "image_check")
-    for row in (
-        "| `image` | `image` |",
-        "| `prompt` | `image_prompt` |",
-        "| `caption` | `caption_alt_text` |",
-        "| `alt_text` | `caption_alt_text` |",
-        "| `subjects.label` | `subject_label` |",
-        "| `subjects.true_age` | `subject_true_age` |",
-        "| `subjects.visual_descriptors` | `visual_descriptor` |",
-        "| `policies.text` | `policy_text` |",
-    ):
-        assert row in check, row
-    assert "names the prompt lacks" in check
-    assert "none: its own `image_check` row" in check
-    guardrail = _section(guide, "guardrail_check")
-    assert "| `image_subjects.true_age` | `subject_true_age` |" in guardrail
-    assert "| `image_subjects.visual_descriptors` | `visual_descriptor` |" in guardrail
-    adapter = _section(guide, "image_generation")
-    assert "| `prompt` | `image_prompt` |" in adapter
-    assert "| `reference_images` | `reference_image` |" in adapter
-    never = adapter.split("**Never receives:**", 1)[1]
-    assert "`subject_true_age`" in never
-    assert "`subject_label`" in never
-    assert "go to the image provider" in adapter
-    prompt = _section(guide, "image_prompt")
-    assert "`subject_true_age`" in prompt.split("**Never receives:**", 1)[1]
-    assert ContentCategory.SUBJECT_TRUE_AGE not in registry.schema_categories(
-        registry.DELIVERED["image_prompt"].input_schema
-    )
-    assert registry.SAFETY_PURPOSES == ("guardrail_check", "image_check")
 
 
 def test_registered_stub_context() -> None:

@@ -10,7 +10,12 @@ import pytest
 from pydantic import ValidationError
 
 from epistrel.core.policies.model import Violation
-from epistrel.orchestrator.models.registry import GuardrailCheckInputs, Subject
+from epistrel.orchestrator.models.registry import (
+    CheckedImageSubject,
+    GuardrailCheckInputs,
+    ImageSubject,
+    Subject,
+)
 from epistrel.orchestrator.policies.age import (
     CastMember,
     applies,
@@ -78,11 +83,31 @@ def test_subjects_are_positional_in_creation_order() -> None:
 
 
 def test_subject_labels_refuse_names() -> None:
-    """The registry schema admits only ``character_<n>`` labels (complement: one passes)."""
-    for name in ("Maribelle", "character_", "character_0", "character_1 Ada", ""):
+    """The registry schema admits only positional labels: ``character_<n>`` for a text check's
+    cast, ``subject_<n>`` and ``figure_<n>`` for an image's safety context (#257), in both the
+    text check's and the image check's subject schemas (complement: one of each passes)."""
+    refused = (
+        "Maribelle",
+        "character_",
+        "character_0",
+        "character_1 Ada",
+        "",
+        "subject_0",
+        "figure_",
+        "Lily_1",
+        "subject_1 Lily",
+        "figure_10000",
+    )
+    for name in refused:
         with pytest.raises(ValidationError):
             Subject(label=name, age=16)
+        with pytest.raises(ValidationError):
+            ImageSubject(label=name, true_age=16)
+        with pytest.raises(ValidationError):
+            CheckedImageSubject(label=name, classification="indeterminate")
     assert Subject(label="character_12", age=16).label == "character_12"
+    assert ImageSubject(label="subject_3", true_age=17).label == "subject_3"
+    assert CheckedImageSubject(label="figure_9999", classification="minor").label == "figure_9999"
 
 
 def test_check_inputs() -> None:

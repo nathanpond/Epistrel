@@ -48,6 +48,9 @@ class AuditKind(StrEnum):
     """#256: an image job ended without an image: failed closed, cancelled, stale or its target
     gone (job id, attempt token, ``outcome``: the status, and its ``reason`` code; the policy
     ids). Never the image or its prompt."""
+    IMAGE_PROMPT_REJECTED = "image_prompt_rejected"
+    """#257: an image prompt refused by the prompt check before any job (the target's kind and
+    id, the entry point; the policy ids). Never the prompt (FR-GUARD-10, NFR-SEC-4)."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

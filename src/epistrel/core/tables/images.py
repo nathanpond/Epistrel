@@ -136,6 +136,7 @@ image_jobs = Table(
     Column("principal", Text, nullable=False),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False),
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("safety_context", JSONB, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STORY_CHECK, name="story"),

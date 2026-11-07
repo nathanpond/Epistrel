@@ -122,7 +122,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 
 - **Hot path:** yes
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `guardrail_check.j2`
+- **Template:** `guardrail_check.j2`; variants: figures `guardrail_figures.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
 - **Returns:** `GuardrailVerdict` (`violation`, `confidence`), validated strictly; no free-text field
 - **Hosted providers:** When this purpose is routed to a hosted provider, the images and true ages it receives leave the deployment, are kept under that provider's terms and are outside Epistrel's erasure boundary; to keep them in-house, route both `guardrail_check` and `image_check` to self-hosted models.
@@ -139,7 +139,9 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `external_data` | `external_data` |
 | `image_subjects.label` | `subject_label` |
 | `image_subjects.true_age` | `subject_true_age` |
+| `image_subjects.classification` | `subject_true_age` |
 | `image_subjects.visual_descriptors` | `visual_descriptor` |
+| `image_subjects.mentioned_as` | `checked_text` |
 
 **Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `image_prompt`, `caption_alt_text`, `reference_image`
 
@@ -650,6 +652,7 @@ Checks one image against the image-output policies, with its prompt, caption, al
 | `alt_text` | `caption_alt_text` |
 | `subjects.label` | `subject_label` |
 | `subjects.true_age` | `subject_true_age` |
+| `subjects.classification` | `subject_true_age` |
 | `subjects.visual_descriptors` | `visual_descriptor` |
 | `policies.policy_id` | `policy_text` |
 | `policies.text` | `policy_text` |

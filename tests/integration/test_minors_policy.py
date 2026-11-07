@@ -18,6 +18,7 @@ from epistrel.orchestrator.models import metrics
 from epistrel.orchestrator.policies.check import check_text
 from epistrel.orchestrator.policies.output_gate import CONSTRAINT
 from epistrel.orchestrator.policies.seeds.policies import (
+    IMAGE_TARGETS,
     MINORS_POLICY,
     MINORS_POLICY_ID,
     SEED_PRINCIPAL,
@@ -50,7 +51,8 @@ def _checks_made() -> float:
 
 async def test_seed_row(engine: AsyncEngine) -> None:
     """Migration 0009 inserted the module's row: global, text input and output, model-assisted,
-    conditioned on a minor involved or present, created by ``system``."""
+    conditioned on a minor involved or present, created by ``system``; migration 0133 (#257)
+    added the two remaining targets after the text ones."""
     async with engine.connect() as conn:
         row = (
             (
@@ -63,7 +65,7 @@ async def test_seed_row(engine: AsyncEngine) -> None:
         )
     for key in ("scope", "scope_id", "story_id", "kind", "effect", "age_condition"):
         assert row[key] == MINORS_POLICY[key], key
-    assert row["applies_to"] == ["text_input", "text_output"]
+    assert row["applies_to"] == [*MINORS_POLICY["applies_to"], *IMAGE_TARGETS]
     assert row["rule"]["type"] == "model_assisted"
     assert row["rule"]["on_uncertain"] == "violation"
     assert "{minor_age_threshold}" in row["rule"]["prompt"]

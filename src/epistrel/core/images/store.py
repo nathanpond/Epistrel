@@ -75,6 +75,9 @@ class ImageJob:
     principal: str
     created_at: datetime
     updated_at: datetime
+    safety_context: dict[str, Any] | None = None
+    """#257: the prompt check's safety context (``core.images.safety.SafetyContext.as_json``),
+    which the output check reads (#258). Never returned by a read."""
 
     @property
     def terminal(self) -> bool:
@@ -129,6 +132,7 @@ def _job(row: Any) -> ImageJob:
         principal=m["principal"],
         created_at=m["created_at"],
         updated_at=m["updated_at"],
+        safety_context=None if m["safety_context"] is None else dict(m["safety_context"]),
     )
 
 
@@ -162,6 +166,7 @@ class NewJob:
     principal: str
     idempotency_key: str | None = None
     job_id: str = field(default_factory=new_ulid)
+    safety_context: Mapping[str, Any] | None = None
 
 
 async def notify(conn: AsyncConnection, job_id: str, status: ImageJobStatus) -> None:
@@ -194,6 +199,7 @@ async def insert_job(conn: AsyncConnection, job: NewJob) -> tuple[str, str]:
             principal=job.principal,
             created_at=now,
             updated_at=now,
+            safety_context=None if job.safety_context is None else dict(job.safety_context),
         )
     )
     await insert_reservation(conn, job.job_id, token)

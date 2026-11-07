@@ -33,7 +33,7 @@ import typing
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.json_schema import SkipJsonSchema
@@ -449,8 +449,10 @@ class RegenerationInputs(GenerationInputs):
     )
 
 
-SUBJECT_LABEL_PATTERN = r"^character_[1-9][0-9]{0,3}$"
-"""Positional labels only (``character_1`` …): a subject's name can never reach the model."""
+SUBJECT_LABEL_PATTERN = r"^(character|subject|figure)_[1-9][0-9]{0,3}$"
+"""Positional labels only (``character_1`` … for a text check's cast; ``subject_1`` … and
+``figure_1`` … for an image's safety context, #257): a subject's name can never reach the
+model."""
 
 
 class Subject(InputSchema):
@@ -473,19 +475,36 @@ IMAGE_DESCRIPTORS_MAX = 20
 IMAGE_TEXT_MAX = 8_000
 
 
+SubjectClass = Literal["adult", "minor", "indeterminate"]
+
+
 class ImageSubject(InputSchema):
-    """One subject of an image's safety context (FR-IMG-12,13; #254): an opaque label, its true
-    age and the visual descriptors the prompt already uses for it. No name, no story text."""
+    """One subject of an image's safety context (FR-IMG-12,13; #254, #257): an opaque label
+    (``subject_1`` … for a character, ``figure_1`` … for a figure that resolves to none), its
+    true age (``None`` for a figure), its classification (indeterminate counts as a minor) and
+    the visual descriptors the prompt already uses for it. No name, no story text."""
 
     label: Annotated[
         str,
         StringConstraints(pattern=SUBJECT_LABEL_PATTERN),
-        Field(examples=["character_1"]),
+        Field(examples=["subject_1"]),
         C.SUBJECT_LABEL,
     ]
-    true_age: Annotated[int, Field(ge=0, le=150), C.SUBJECT_TRUE_AGE]
+    true_age: Annotated[int | None, Field(ge=0, le=150), C.SUBJECT_TRUE_AGE] = None
+    classification: Annotated[SubjectClass | None, C.SUBJECT_TRUE_AGE] = None
     visual_descriptors: Annotated[
         list[Annotated[str, StringConstraints(max_length=500)]], C.VISUAL_DESCRIPTOR
+    ] = Field(default_factory=list, max_length=IMAGE_DESCRIPTORS_MAX)
+
+
+class CheckedImageSubject(ImageSubject):
+    """An ``ImageSubject`` as ``guardrail_check`` receives it (#257). ``mentioned_as`` is how the
+    checked text itself names the subject, as written (a span of the prompt, caption or alt
+    text, so never a name the prompt lacks). Only the figure classification fills it, so it
+    can tell the resolved subjects from the figures; a policy check leaves it empty."""
+
+    mentioned_as: Annotated[
+        list[Annotated[str, StringConstraints(max_length=200)]], C.CHECKED_TEXT
     ] = Field(default_factory=list, max_length=IMAGE_DESCRIPTORS_MAX)
 
 
@@ -500,10 +519,49 @@ class GuardrailCheckInputs(InputSchema):
     )
     """#208: provider values the checked text was written from, as fenced data blocks (data to
     check against, never instructions to the checker)."""
-    image_subjects: list[ImageSubject] | None = Field(default=None, max_length=64)
-    """#254 (FR-IMG-13): for an image prompt's check, its safety context: each resolved subject
-    as an opaque label with its true age and the prompt's own visual descriptors. ``None`` for
-    a text check; #257 fills it and renders it."""
+    image_subjects: list[CheckedImageSubject] | None = Field(default=None, max_length=64)
+    """#254, #257 (FR-IMG-13): for an image prompt's check, its safety context: each resolved
+    subject as an opaque label with its true age (or a figure's classification) and the
+    prompt's own visual descriptors; for the figure classification (``figures`` variant), the
+    subjects to leave out. ``None`` for a text check."""
+
+
+class ClassifiedFigure(BaseModel):
+    """One depicted person who is none of the listed subjects: the prompt's own words for them
+    and their apparent age class (``indeterminate`` when the text does not say)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    descriptor: str = Field(min_length=1, max_length=500)
+    classification: SubjectClass
+
+
+class SubjectDescriptors(BaseModel):
+    """The visual descriptors the text uses for one listed subject."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: Annotated[str, StringConstraints(pattern=SUBJECT_LABEL_PATTERN)]
+    visual_descriptors: list[Annotated[str, StringConstraints(max_length=500)]] = Field(
+        default_factory=list, max_length=IMAGE_DESCRIPTORS_MAX
+    )
+
+
+FIGURES_VARIANT = "figures"
+FIGURES_TEMPLATE = "guardrail_figures.j2"
+
+
+class FigureClassification(BaseModel):
+    """The figure classification's answer (``guardrail_check``'s ``figures`` variant, FR-IMG-12;
+    #257): every depicted person the text describes who is none of the listed subjects, each
+    classified, and the descriptors the text uses for the listed subjects. Scripted on the stub
+    by its template (``stub_script``), so no policy check's script answers it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    stub_script: ClassVar[str] = FIGURES_TEMPLATE
+
+    figures: list[ClassifiedFigure] = Field(default_factory=list, max_length=32)
+    subjects: list[SubjectDescriptors] = Field(default_factory=list, max_length=64)
 
 
 class LiteSummaryInputs(InputSchema):
@@ -1540,6 +1598,7 @@ GUARDRAIL_CHECK = Purpose(
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
     input_schema=GuardrailCheckInputs,
     template="guardrail_check.j2",
+    variants=types.MappingProxyType({FIGURES_VARIANT: FIGURES_TEMPLATE}),
     hot_path=True,
     never_receives=_EVERYTHING
     - {
@@ -2234,6 +2293,8 @@ __all__ = [
     "EXTRACTION_MAX_BEATS",
     "EXTRACTION_MAX_CLAIMS",
     "EXTRACTION_MIN_CONFIDENCE",
+    "FIGURES_TEMPLATE",
+    "FIGURES_VARIANT",
     "HOSTED_SAFETY_RETENTION",
     "IMAGE_CHECK",
     "IMAGE_GENERATION",
@@ -2274,6 +2335,8 @@ __all__ = [
     "BeliefAdjudicationResult",
     "CapabilityFloor",
     "CharacterDefinition",
+    "CheckedImageSubject",
+    "ClassifiedFigure",
     "ConsolidationInputs",
     "ConsolidationRecord",
     "ConsolidationResult",
@@ -2293,6 +2356,7 @@ __all__ = [
     "ExtractionBeat",
     "ExtractionInputs",
     "ExtractionResult",
+    "FigureClassification",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",
@@ -2351,6 +2415,8 @@ __all__ = [
     "SceneContext",
     "StructuredOutput",
     "Subject",
+    "SubjectClass",
+    "SubjectDescriptors",
     "SuggestedConcern",
     "SuggestedElement",
     "SuggestedLocation",

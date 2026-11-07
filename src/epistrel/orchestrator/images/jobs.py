@@ -6,8 +6,9 @@
 - ``prepare_image_job`` (no transaction) validates the request, calls the target's
   ``validate_enqueue``, ``require_image_checker`` (409 ``not_configured`` without an adapter,
   then 409 ``image_check_unconfigured`` while an image-output policy applies and ``image_check``
-  is unset) and the checks' ``check_prompt`` (#257: ``422 guardrail_violation``). Nothing is
-  written on any refusal.
+  is unset) and the checks' ``check_prompt`` (#257's ``safety_checks``: ``422
+  guardrail_violation``, its audit row aside), which answers the safety context the job keeps
+  (``image_jobs.safety_context``). Nothing else is written on any refusal.
 - ``insert_image_job`` joins the caller's transaction (#263's reserve-and-enqueue, #265's turn
   commit): the ``image_jobs`` row, its first ``image_reservations`` row (``prepared``), the
   ``jobs`` row (kind ``image_job``, payload ``{image_job_id}``), then ``PRE_COMMIT_HOOKS`` (empty
@@ -47,9 +48,10 @@ outcome), never the image or its prompt.
 
 **Seams.** Targets (``ImageTarget``, registered by kind: ``catalog`` #260, ``story``
 #263/#264) and checks (``ImageChecks``: ``check_prompt`` #257, ``check_output`` #258;
-``set_image_checks``). Until #258 the default output check fails closed: no applicable policy
-→ the output stays ``unchecked``; ``image_check`` unset → ``ImageCheckUnconfigured``;
-configured → ``ImageCheckUnavailable`` (no check is delivered yet, so nothing passes).
+``set_image_checks``). The default prompt check is #257's. Until #258 the default output check
+fails closed: no applicable policy → the output stays ``unchecked``; ``image_check`` unset →
+``ImageCheckUnconfigured``; configured → ``ImageCheckUnavailable`` (no check is delivered
+yet, so nothing passes).
 
 **Read and cancel.** ``read_view`` and ``cancel_job`` (``Engine.get_image_job`` /
 ``cancel_image_job``); ``ImageJobWaiters`` is the long poll's one-per-process ``LISTEN``
@@ -136,6 +138,7 @@ from epistrel.orchestrator.images.registry import (
 from epistrel.testing import crash
 
 if TYPE_CHECKING:
+    from epistrel.core.images.safety import SafetyContext
     from epistrel.orchestrator.models.access import ModelAccessLayer
 
 logger = logging.getLogger(__name__)
@@ -146,7 +149,8 @@ JOB_LOCATION = "/image-jobs/{}"
 """Where a consumer follows a job (``Location`` of the 202 a generation route answers)."""
 MINORS_POLICY_ID = "minors_no_sexual_content"
 """The seeded minors policy (``orchestrator.policies.seeds``): it always applies to image
-outputs, whether or not its ``applies_to`` names them yet (#257 adds the targets)."""
+outputs while it exists, whatever an administrator set its ``applies_to`` to (#257's migration
+``0133`` added the image targets)."""
 SEED_LIMIT = 2**31
 WAIT_MIN_S = 1
 WAIT_MAX_S = 30
@@ -192,6 +196,24 @@ class ImageCheckUnavailable(Exception):
 # -- the request ----------------------------------------------------------------------------
 
 
+class DepictedSubject(BaseModel):
+    """A subject an image depicts (FR-IMG-9): a story character's id (or the persona's or catalog
+    character's it was made from; a catalog image: the catalog character's), with the visual
+    descriptors the prompt uses for it. The prompt builder marks its own ``depicted`` (#259); a
+    consumer's declaration may be the bare id."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    character_id: str = Field(min_length=1, max_length=64)
+    visual_descriptors: tuple[str, ...] = Field(default=(), max_length=20)
+    depicted: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _bare_id(cls, value: Any) -> Any:
+        return {"character_id": value} if isinstance(value, str) else value
+
+
 class ImageJobRequest(BaseModel):
     """What a generation request asks the adapter for (``image_jobs.params`` plus the prompt):
     ``n`` images (1 for a story job), an optional ``seed``, ``size`` or ``aspect_ratio`` (at most
@@ -209,6 +231,9 @@ class ImageJobRequest(BaseModel):
     reference_image_ids: tuple[str, ...] = Field(default=(), max_length=MAX_REFERENCE_IMAGES)
     caption: str | None = None
     alt_text: str | None = None
+    depicted_subjects: tuple[DepictedSubject, ...] = Field(default=(), max_length=64)
+    """Who the image depicts (FR-IMG-9): the request's declaration or the prompt builder's
+    list. The prompt check resolves more (#257): never only this list (FR-IMG-12)."""
 
     @model_validator(mode="after")
     def _one_dimension(self) -> ImageJobRequest:
@@ -239,6 +264,8 @@ class PreparedImageJob:
     request: ImageJobRequest
     principal: str
     viewpoint: str | None = None
+    safety_context: Mapping[str, Any] | None = None
+    """The prompt check's safety context (#257), stored with the job for the output check."""
 
     @property
     def story_id(self) -> str | None:
@@ -334,12 +361,14 @@ class PromotableOutput:
 @dataclass(frozen=True, slots=True)
 class PromptCheck:
     """What ``check_prompt`` judges: the request, its target and origin (#257 builds the safety
-    context from them)."""
+    context from them), who asked and the image's viewpoint."""
 
     kind: ImageJobKind
     target: Mapping[str, Any]
     origin: Mapping[str, Any]
     request: ImageJobRequest
+    principal: str = SYSTEM_PRINCIPAL
+    viewpoint: str | None = None
 
 
 @runtime_checkable
@@ -365,7 +394,9 @@ class ImageTarget(Protocol):
 class ImageChecks(Protocol):
     """The checks every request and output passes (#257, #258)."""
 
-    async def check_prompt(self, runtime: ImageRuntime, check: PromptCheck) -> None: ...
+    async def check_prompt(
+        self, runtime: ImageRuntime, check: PromptCheck
+    ) -> SafetyContext | None: ...
 
     async def check_output(
         self, runtime: ImageRuntime, job: ImageJob, output: StagedOutput
@@ -413,11 +444,13 @@ class _Applies:
 
 
 class FailClosedChecks:
-    """The checks until #257 and #258 deliver theirs: every prompt passes (the prompt check is
-    #257's), and an output check fails closed (module docstring)."""
+    """The default checks: #257's prompt check (``safety_checks.check_image_prompt``), and an
+    output check that fails closed until #258 delivers its own (module docstring)."""
 
-    async def check_prompt(self, runtime: ImageRuntime, check: PromptCheck) -> None:
-        return None
+    async def check_prompt(self, runtime: ImageRuntime, check: PromptCheck) -> SafetyContext:
+        from epistrel.orchestrator.images.safety_checks import check_image_prompt  # it imports us
+
+        return await check_image_prompt(runtime, check)
 
     async def check_output(
         self, runtime: ImageRuntime, job: ImageJob, output: StagedOutput
@@ -529,8 +562,18 @@ async def prepare_image_job(
         raise ImageCheckRequired(
             "image generation needs an image check model", {"policy_ids": list(exc.policy_ids)}
         ) from None
-    await image_checks().check_prompt(runtime, PromptCheck(kind, target, origin, found))
-    return PreparedImageJob(kind, dict(target), dict(origin), found, principal, viewpoint)
+    context = await image_checks().check_prompt(
+        runtime, PromptCheck(kind, target, origin, found, principal, viewpoint)
+    )
+    return PreparedImageJob(
+        kind,
+        dict(target),
+        dict(origin),
+        found,
+        principal,
+        viewpoint,
+        None if context is None else context.as_json(),
+    )
 
 
 async def insert_image_job(
@@ -556,6 +599,7 @@ async def insert_image_job(
         },
         principal=prepared.principal,
         idempotency_key=idempotency_key,
+        safety_context=prepared.safety_context,
     )
     job_id, _ = await store.insert_job(conn, new)
     await queue.enqueue(conn, IMAGE_JOB_KIND, {"image_job_id": job_id}, story_id=prepared.story_id)
@@ -1583,6 +1627,7 @@ __all__ = [
     "JOB_LOCATION",
     "MAX_WAITERS",
     "PRE_COMMIT_HOOKS",
+    "DepictedSubject",
     "FailClosedChecks",
     "ImageCheckRequired",
     "ImageCheckUnavailable",

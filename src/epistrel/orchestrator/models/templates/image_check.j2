@@ -14,7 +14,7 @@ prompt, caption and alt text as context. Answer only with a JSON object
 
 ## Subjects (label: true age; visual descriptors)
 {% for subject in subjects %}
-- {{ subject.label }}: age {{ subject.true_age }}{% if subject.visual_descriptors %}; {{ subject.visual_descriptors | join(", ") }}{% endif +%}
+- {{ subject.label }}: {% if subject.true_age is not none %}age {{ subject.true_age }}{% else %}{{ subject.classification }} figure{% if subject.classification == "indeterminate" %}, treated as a minor{% endif %}{% endif %}{% if subject.visual_descriptors %}; {{ subject.visual_descriptors | join(", ") }}{% endif +%}
 {% endfor %}
 {% endif %}
 {% endblock %}

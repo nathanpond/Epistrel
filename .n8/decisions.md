@@ -12593,6 +12593,42 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** process note. The plan comment on #256 was posted after the exploration and the first code, not before it.
   **Why:** honesty about the n8-exec order. The plan the comment gives is the one implemented.
   **Issue:** #256
+- **Decision:** #257 step 0. CI run 42365801989 on `e948220` (#256's final commit) ended green on every job, so there is no Rule 1 fix under #256.
+  **Why:** the brief asked for the check before #257's code. The only jobs still running at the start were the evals and zero-leak runs, and all of them passed.
+  **Issue:** #256
+- **Decision:** #257's figure classification is a `figures` variant of `guardrail_check`. It uses the template `guardrail_figures.j2` and the response schema `FigureClassification` (`{figures: [{descriptor, classification}], subjects: [{label, visual_descriptors}]}`). The schema is keyed to the stub by its template (`stub_script`), so no policy-check script answers it. The call runs once per prompt, and only when some age-conditioned policy targets `image_prompt`. Any `ModelError`, or an `Uncertain` after #53's retries, counts as one indeterminate figure (`UNRESOLVED_FIGURE`).
+  **Why:** the planner says "a new response schema under `guardrail_check`". The `subjects` half is the planner's "the classification call returns descriptors for figures and named characters". With no age-conditioned policy in play, a figure's class can change no outcome, so the call would be pure cost.
+  **Issue:** #257
+- **Decision:** `ImageSubject` gains `classification` (adult, minor or indeterminate) and an optional `true_age`, which is `None` for a figure. `guardrail_check` receives `CheckedImageSubject`, a subclass that adds `mentioned_as`: the texts' own spans for the subject. Only the figure classification fills `mentioned_as`, so the model can leave resolved subjects out. `image_check` keeps the plain `ImageSubject`. `image_check.j2` now renders a figure as its class, and #258 inherits that. The model guide is regenerated.
+  **Why:** a figure has no true age. The classifier can't tell "Lily" in the prompt from `subject_1` without the prompt's own word for her, and FR-IMG-13 allows that because it is no name the prompt lacks. A policy check needs none of it, so its payload stays exactly FR-IMG-13's list.
+  **Issue:** #257, #258
+- **Decision:** a refusal uses the text input's envelope (`policies.check.guardrail_violation`, message "Image prompt violates N policies: a minor is involved or present."). Each violation's key is `name`, not the AC's `policy_name`. Every applicable policy is evaluated, model-assisted ones included, even after a deterministic violation, so the error lists every violated policy.
+  **Why:** FR-IMG-3 says "the policy error, as for text input", and FR-GUARD-10's shipped error says `name`. Two spellings of one error would be worse. The AC asks for every violated policy, and that costs the extra calls.
+  **Issue:** #257
+- **Decision:** the texts checked are the prompt, negative prompt, caption and alt text, each labelled on its own line for a model call. Deterministic policies run on each text separately, so a label can never match a word list.
+  **Why:** the AC's check_prompt line names the negative prompt. FR-IMG-13 says "the image prompt", and the negative prompt is part of it.
+  **Issue:** #257
+- **Decision:** resolution details. A name part two characters share ("Ann" for Ann Lee and Ann Moss) resolves to both. Erasure's `with_name_parts` leaves shared parts out, so the safety path adds back every part of a character's own name. A declared id may be the character's own, its persona's or its catalog character's, and an id the target doesn't know is 422 `validation_error` at `body.depicted_subjects[i]`. A known character with no age on record (a catalog draft) is indeterminate. A subject found several ways keeps the first source in this order: declared or depicted, then named, then present.
+  **Why:** safety fails closed, the reverse of erasure's trade-off. An unknown declared id is a client error, not a figure.
+  **Issue:** #257
+- **Decision:** presence. An origin with no `position` uses the end of its turn and variant, with every beat's moves (`POSITION_MAX`). A slot `N⁺k` uses `load_scene_state(N+1)`, the scene after turn N and its slots. The actors passed to `turn_audience` are the image's viewpoint, when it is a character, and the resolved subjects, as #541's actors are. Anything a consumer sends as a roster is ignored.
+  **Why:** the planner says "a slot uses the scene at the end of turn N". The union over a turn's states errs toward applying the policy, as `placed_elsewhere` does.
+  **Issue:** #257
+- **Decision:** `ImageJobRequest.depicted_subjects` is a list of `DepictedSubject{character_id, visual_descriptors, depicted}`, and a bare id string is accepted. The list is not copied into `image_jobs.params`. The resolved context goes to the new `image_jobs.safety_context` (jsonb, nullable), which no view returns. `ImageChecks.check_prompt` now returns the `SafetyContext`, and `prepare_image_job` keeps it on `PreparedImageJob`. The default `FailClosedChecks.check_prompt` is the real check, and `safety_checks.PromptChecks(output)` pairs it with any output check, as the tests use it. `PromptCheck` gains `principal` and `viewpoint`.
+  **Why:** FR-IMG-9 says requests declare their subjects, and #259/#263 will send them. The planner puts the context in `image_jobs.safety_context` with character ids. #258 reads it for the output check.
+  **Issue:** #257, #258, #259, #263
+- **Decision:** migration `0133_minors_image_targets` unions `image_prompt` and `image_output` into the seeded policy's `applies_to`. It runs silently, as `0009` did: no `config_changes` row and no version bump. An edited policy keeps its own targets, and a removed one is skipped. The migration also adds `image_jobs.safety_context` and the audit kind `image_prompt_rejected`, whose details hold the target's kind and id, the entry point and the subject and figure counts. `MINORS_POLICY` keeps its two text targets, because it is the row `0009` inserts, and the new `IMAGE_TARGETS` names what `0133` adds. `test_seed_row` now expects all four. The admin API already accepted image targets on rating policies (`schemas.Targets` is the full enum), so no code change was needed. `test_c_22__m8_prompt` creates such a policy and sees it enforced.
+  **Why:** the planner's migration line and the seed module's own rule ("change seeds through a new migration").
+  **Issue:** #257
+- **Decision:** the catalog path is built ahead of #260. A character entry's own character is always a subject (`depicted`, FR-IMG-9), with the draft's age as written. A scenario entry's locked and default role characters are the universe, each read at its pinned version, else its current version, else its draft. The entry's rating joins the global policies (`creation_context`).
+  **Why:** the AC's catalog clause ("global ∪ the entry's rating", "`catalog_true_age`"). #260 wires the route and its tests. `test_catalog_image_subjects` covers the character entry.
+  **Issue:** #257, #260
+- **Decision:** test names and files. The planned `test_figure_classification_fail_closed` is `test_i_24__m8_figure_classification_fail_closed`. #254's `test_i_24__m8_data_flow_rows` moved from `tests/test_images_port.py` into the new `tests/integration/test_i_24.py`, because `check-traceability` refused I-24's M8 parts in two files. The gate test `tests/gates/test_image_paths_contract.py` and the unit-level `tests/integration/test_image_safety_context.py` carry no part marker. The planned "whisper-scene fixture" did not exist, so `tests/image_safety_support.py` builds that cast (Bobby, Jenni, Marcus 34, Lily 17 and Wren 16) from test constants.
+  **Why:** a part whose name maps to no docs/04 ID is unmappable, and the traceability gate takes one file per test ID and milestone.
+  **Issue:** #257, #254
+- **Decision:** `docs/evals/INDEX.md` is regenerated. Lite is now `2e85109a0c24`, Standard `443af45359e2`, Full `7f7956250424` and Max `492736d820b9`, and all four read uncertified as before. The edit to `guardrail_check.j2` and the new `guardrail_figures.j2` variant moved `TEMPLATE_HASHES`. `evals --check` and `evals index --check` pass. No committed record was edited.
+  **Why:** the Fingerprint move AC, following #760's precedent.
+  **Issue:** #257, #760
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

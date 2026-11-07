@@ -1,6 +1,8 @@
 {#- Model-assisted guardrail check (FR-GUARD-9). The policy's own prompt says what to look for;
     an age-conditioned policy (FR-GUARD-11, #55) also lists the cast as opaque labels with true ages,
-    marking a character placed elsewhere "not present" (#161). -#}
+    marking a character placed elsewhere "not present" (#161). An image prompt's check (FR-IMG-12,13;
+    #257) lists its safety context instead: each subject's label with its true age, or a figure's
+    class (an indeterminate one is treated as a minor), and the prompt's own visual descriptors. -#}
 {% block system %}
 You check text against one content policy. Answer only with a JSON object
 {"violation": true|false, "confidence": 0.0-1.0}.
@@ -12,6 +14,13 @@ You check text against one content policy. Answer only with a JSON object
 ## Subjects (label: true age)
 {% for subject in subjects %}
 - {{ subject.label }}: age {{ subject.age }}{% if not subject.present %}, not present{% endif +%}
+{% endfor %}
+{% endif %}
+{% if image_subjects %}
+
+## Subjects (label: true age)
+{% for subject in image_subjects %}
+- {{ subject.label }}: {% if subject.true_age is not none %}age {{ subject.true_age }}{% else %}{{ subject.classification }} figure{% if subject.classification == "indeterminate" %}, treated as a minor{% endif %}{% endif %}{% if subject.visual_descriptors %}; {{ subject.visual_descriptors | join(", ") }}{% endif +%}
 {% endfor %}
 {% endif %}
 {% if external_data %}

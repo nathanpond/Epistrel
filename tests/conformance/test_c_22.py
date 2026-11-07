@@ -8,7 +8,8 @@
   ``image_retry_budget`` times, with the requested seed reused and an unseeded request seeded
   afresh each attempt.
 
-#258 adds ``test_c_22__m8_output`` here. Every C-22 M8 part lives in this file (the
+#257 adds ``test_c_22__m8_prompt`` (the prompt check before any generation); #258 adds
+``test_c_22__m8_output`` here. Every C-22 M8 part lives in this file (the
 traceability gate takes one file per test ID and milestone)."""
 
 from __future__ import annotations
@@ -22,13 +23,18 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.errors import GuardrailViolation
 from epistrel.core.ids import new_ulid
 from epistrel.core.images import store as image_store
+from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
+from epistrel.core.stories import StorySpec, create_story_from
 from epistrel.core.tables.images import ImageJobKind, ImageJobStatus
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import errors as adapter_errors
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images.registry import ImageCheckUnconfigured, ImageNotConfigured
+from epistrel.orchestrator.models.errors import ModelUnavailable
+from epistrel.orchestrator.policies.schemas import PolicyFields
 from epistrel.testing.images import (
     PASS,
     ScriptedChecks,
@@ -50,7 +56,19 @@ from tests.image_job_support import (
     prepared,
     staged,
 )
+from tests.image_safety_support import (
+    ADULTS,
+    WREN,
+    jobs_of,
+    prompt_checked,
+    recognise_sexual,
+    subject,
+    whisper_story,
+)
+from tests.image_safety_support import MINORS as MINORS_CAST
+from tests.image_safety_support import origin as safety_origin
 from tests.image_support import Fail, Outputs, StubImageGenerator, catalog_origin, registered
+from tests.policy_support import OPERATOR, unique
 
 ADAPTER = "stub_sync"
 
@@ -275,3 +293,136 @@ async def test_c_22__m8_retry_budget(
         async with engine.connect() as conn:
             reservation = await image_store.reservations(conn, refused)
         assert [r.outcome.value if r.outcome else None for r in reservation] == ["failed"]
+
+
+async def _rating_with_image_policy(lib: Engine, engine: AsyncEngine, word: str) -> tuple[str, str]:
+    """A new rating whose own policy is a word list for image prompts and outputs, written
+    through the admin path (FR-RATE-1; #257: rating policies may target images)."""
+    rating = await create_rating(
+        engine, RatingFields(name=unique("image-rating")), principal="p-operator"
+    )
+    body = PolicyFields.model_validate(
+        {
+            "scope": "rating",
+            "scope_id": rating.rating.id,
+            "name": unique("no-wyverns"),
+            "rule": {"type": "wordlist", "words": [word]},
+            "applies_to": ["image_prompt", "image_output"],
+            "message": "No wyverns in pictures.",
+        }
+    )
+    made = (await lib.policies_create(OPERATOR, body)).policy
+    current = rating.rating
+    await update_rating(
+        engine,
+        current.id,
+        RatingReplacement(
+            name=current.name,
+            description=current.description,
+            display_order=current.display_order,
+            prompt_guidance=current.prompt_guidance,
+            image_guidance=current.image_guidance,
+            policy_ids=[made.id],
+            inherits_from=[],
+        ),
+        principal="p-operator",
+    )
+    return current.id, made.id
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-3; FR-GUARD-8,11")
+async def test_c_22__m8_prompt(
+    lib: Engine, image_settings: Settings, engine: AsyncEngine, target: TestImageTarget
+) -> None:
+    """Every image prompt is checked before any generation (FR-IMG-3), by true ages.
+
+    - The seeded minors policy applies to all four targets (migration ``0133``).
+    - A prompt the builder wrote depicting Wren (16) in sexual content is refused with the
+      minors policy's error before any adapter call (the stub generator is never called) and
+      no job is created; a consumer's prompt naming Wren with an empty subject list is checked
+      the same way.
+    - A rating policy for ``image_prompt`` (accepted by the admin API) is enforced
+      deterministically, and a refusal lists every violated policy.
+    - An uncertain minors check follows ``on_uncertain`` (violation); a guardrail model that
+      cannot answer is 503 ``model_unavailable`` with no job.
+
+    Complements asserted: a non-sexual prompt of Wren passes and creates its job; the rating's
+    word in a prompt of a story at another rating passes."""
+    async with engine.connect() as conn:
+        seeded = await conn.scalar(
+            text("SELECT applies_to FROM policies WHERE id = :p"), {"p": MINORS}
+        )
+    assert seeded == ["text_input", "text_output", "image_prompt", "image_output"]
+    stub = StubImageGenerator(script=[])
+    guard = lib.models.stub
+    story, ids = await whisper_story(engine)
+    rt = lib.image_runtime()
+
+    async def enqueue(story_id: str, prompt: str, **request: Any) -> str:
+        found = await image_jobs.enqueue_image_job(
+            rt,
+            ImageJobKind.STORY,
+            {},
+            await safety_origin(engine, story_id),
+            {"prompt": prompt, **request},
+            None,
+            PRINCIPAL,
+        )
+        return found.job_id
+
+    with registered(ADAPTER, stub), prompt_checked():
+        await configure(lib, image_settings, ADAPTER)
+        guard.reset()
+        recognise_sexual(guard, "undresses")
+        built = "Wren, a boy of sixteen, undresses by the stove."
+        requests: list[dict[str, Any]] = [
+            {"depicted_subjects": [subject(ids[WREN], "a boy of sixteen")]},
+            {"depicted_subjects": []},
+        ]
+        for request in requests:
+            with pytest.raises(GuardrailViolation) as refused:
+                await enqueue(story, built, **request)
+            assert [v["policy_id"] for v in refused.value.details["violations"]] == [MINORS]
+            assert "a minor is involved or present" in refused.value.message
+        assert stub.requests == []
+        assert await jobs_of(engine, story) == 0
+        assert await enqueue(story, "Wren, a boy of sixteen, reads by the stove.")
+        assert await jobs_of(engine, story) == 1
+
+        # Uncertain follows on_uncertain; a model that cannot answer is 503 and no job.
+        guard.reset()
+        guard.script("guardrail_check", ["not a verdict"] * 20)
+        with pytest.raises(GuardrailViolation):
+            await enqueue(story, "Wren by the window.")
+        guard.reset()
+        guard.fault("guardrail_check", "http_500", 50)
+        with pytest.raises(ModelUnavailable) as down:
+            await enqueue(story, "Wren by the window.")
+        assert (down.value.code, down.value.http_status) == ("model_unavailable", 503)
+        assert await jobs_of(engine, story) == 1
+        guard.reset()
+
+        # A rating policy for image prompts: enforced deterministically, every violation listed.
+        word = unique("wyvern").replace("-", "")
+        rating, policy_id = await _rating_with_image_policy(lib, engine, word)
+        rated = (
+            await create_story_from(
+                engine,
+                StorySpec(
+                    name="Rated",
+                    content_rating_id=rating,
+                    characters=[*ADULTS, MINORS_CAST[1]],
+                ),
+                principal="p-author",
+            )
+        ).story_id
+        recognise_sexual(guard, "undresses")
+        with pytest.raises(GuardrailViolation) as both:
+            await enqueue(rated, f"A {word} watches as Wren undresses.")
+        assert {v["policy_id"] for v in both.value.details["violations"]} == {MINORS, policy_id}
+        with pytest.raises(GuardrailViolation) as one:
+            await enqueue(rated, f"A {word} over the hills.")
+        assert [v["policy_id"] for v in one.value.details["violations"]] == [policy_id]
+        assert await enqueue(story, f"A {word} over the hills.")
+    assert stub.requests == []

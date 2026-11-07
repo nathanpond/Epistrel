@@ -10756,7 +10756,7 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
 - **Batch E close-out:** weekly-p04 was dispatched on the branch (run 41413355016, `gh workflow run perf.yml -f suite=weekly-p04`). Its report is committed under perf/results/ when it lands, closing #665's evidence too.
   **Issue:** #619, #665
 
-## Ad-hoc — 2026-11-02 (#246, the planned rename)
+## Ad-hoc — 2026-11-02 (#246, the planned rename) — reconciled by /n8-replan 2026-11-06 (M8; no plan change: M7 built it as drafted)
 
 - **Change:** "Compaction" is renamed "pruning" across docs/01–04, CLAUDE.md, the code (`core.feedback.mark_pruned`, `message_feedback.pruned_at` by migration 0109, the feedback read's `pruned_at`), the test ID (S-COMPACTION → S-PRUNE), the §13 lexicon's M7 term (`compaction` → `prune`) and the open issues and milestones. Invariant 6 is renamed with it, and #71's wording is kept otherwise: "Only erasure, opt-in pruning, audit-record retention expiry, and whole-story deletion remove events; erasure and pruning leave markers". Its meaning and its honor-system status are unchanged. ADR-175 records it. Earlier ledger entries and ADRs keep the old word as history.
   **Why:** the owner's decision (round two, 2026-10-10), planned as #246. "Compaction" was confused with the Lite rolling summary.
@@ -11451,7 +11451,7 @@ Branch `milestone/m7-history-profiles` off `b495f9e`. The 58 pre-story fixes run
   - The downgrade report's `summary_backfill.estimate` is `{model_calls}` only.
   **Issue:** #232
 
-## Ad-hoc — 2026-11-03 (#244, the planned FR-LITE-8 amendment)
+## Ad-hoc — 2026-11-03 (#244, the planned FR-LITE-8 amendment) — reconciled by /n8-replan 2026-11-06 (M8; no plan change: M7 built it as drafted)
 
 - **Change:** docs/03 gains FR-LITE-8 (M7), the Lite forms of directives and rewrites, and the §22 M7 row lists it. FR-PROF-13 keeps FR-DIRECT and FR-REWRITE under `structured` "as written (under `lite`, the forms of FR-LITE-8)". FR-LITE-1's prompt list names the author blocks. docs/02 §4.11's Lite bullet, the capability map's notes, and docs/04 (S-LITE-DIRECTIVE, §15 rows for FR-LITE-8 and FR-DIRECT-1,2) follow.
   **Why:** the owner's round-two decision (2026-10-10), planned as #244. The amendment lands in this PR as the issue requires.
@@ -12360,3 +12360,50 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #770
 - **Decision:** as in retries 8–11, the full suite gates in CI's shards, not locally (a local run takes ~75 min and trips #701's stored Hypothesis example). Locally: the eight affected files (106 passed), ruff, ruff format, mypy, and the parts, lexicon, traceability and assignment gates.
   **Issue:** #768, #769, #770
+
+## /n8-verify M7 (re-verify after PR #771) — 2026-11-06
+
+- **Decision:** M7 passes and is closed; epics #24, #25 and #26 are closed with their AC ticked. Verified at 32f72a6 (tree identical to PR #771's CI-green head): #768, #769 and #770 are VERIFIED, which completes #759 and #764. All 131 M7 stories carry a VERIFIED record, the coverage map is 40/40, the blocking-bug query returns 0, and nothing is carried.
+  **Why:** per-story fresh verifiers, with one claim each re-run by the collator in a separate worktree. The guard-delete mutant and ADR-180 mutants D1/D2 fail the new tests; C-04 passes alone and in shuffled orders. CI run 42275599940 passed 4,504 tests, and the local gates are green.
+  **Issue:** #768, #769, #770 (records on #25 and PR #771)
+- **Decision:** at the owner's instruction after `/n8-stat`, M4's last open issues were closed. #153 is closed as completed: AC1 (the 50k fixture in under 10 min) was waived on PR #426, and the remaining work is #490 (M10). Epic #17 is closed with its AC ticked on the M4 records.
+  **Issue:** #153, #17
+
+## Ad-hoc — 2026-11-06 (owner triage of milestone-less issues) — reconciled by /n8-replan 2026-11-06 (M8)
+
+- **Change:** the owner triaged the eight open issues without a milestone. #761 (`json_schema.strict`), #760 (template list whitespace), #706 (HNSW vector-arm miss) and #692 (S-CLOCK-BELIEF oracle) go to M8. #693 and #701 are closed as duplicates of #692, #694 (amendment retract) goes to v2, and #695 (P-04 report expiry) stays an owner task with no milestone.
+  **Why:** owner's call. #760 and #761 have to land before M9 re-certifies, because #760 moves the preset fingerprints and #761 changes the structured request shape. M10, which comes after M9, would be too late.
+  **Affects:** M8 (four bugs added to a planned milestone).
+
+## /n8-replan M8 — 2026-11-06
+
+- **Cause:** M7 executed after M8's 2026-11-01 replan, shipping certification records and the evals index, bundles (`classify`/`NEVER`), pruning (`PRUNABLE_TABLES`), amendments and undo, and ADR-175 to ADR-180. The 2026-11-06 owner triage also put four bugs into M8. The evidence came from three read-only checkers working against 32f72a6.
+- **Decision (owner):** for #706, raise `hnsw.max_scan_tuples` (a constant `SET LOCAL`), which keeps the fixed statement count. For #271, the image checker may be certified on a local or a hosted vision model (ADR-179). For #264, any active amendment touching the target beats, or any non-`age` fact about a depicted subject, stales an image, because Epistrel has no visual-predicate flag. For #261, the as-recorded view includes story images (FR-STORE-23).
+- **Decision:** AC changed on #256, #257, #258, #261, #262, #264, #269, #272 and epic #27, and AC were added to the bugs #692, #706, #760 and #761. Only the HOW changed on #254, #255, #259, #265, #266, #268, #270 and #271 (#271 also gets a new title). #260, #263 and #267 were unchanged.
+  **Why:**
+  - *Bundles:* `bundles.classify` exports any `story_id` table not in `NEVER`, so `image_jobs`, `image_reservations` and `image_costs` join `NEVER`.
+  - *Fingerprints:* `guardrail_check` is story-scoped, so #257's and #760's template edits move every preset fingerprint. The PR must regenerate INDEX.md, and Standard, Full and Max read as uncertified until M9 re-certifies.
+  - *#258:* the checker fingerprint gains the `image_check.j2` hash (FR-PROF-16).
+  - *Crash hooks:* M7 never built `crash.fail`/`arm_failure`, so the image crash points are an `IMAGE_POINTS` group of process crashes.
+  - *#271:* image-check records go in `seeds/certifications/image-check/`, because the preset loaders glob the parent directory.
+  - *#272:* a `NEVER` member is ignored on import, which is #250's built rule.
+  **Issue:** #254–#272, #27, #692, #706, #760, #761
+- **Decision:** edges changed: #257 is now blocked by #760, and #271 by #761 (which matters if the run is hosted on Anthropic). #268 is no longer blocked by #222, which provided nothing it uses. #760 and #761 ship in one PR, so the fingerprint move marks the Haiku records uncertified honestly. Request shape is not a fingerprint input, so #761 alone would leave them silently stale.
+  **Issue:** #257, #268, #271, #760, #761
+- **Decision:** filed #773 (`sev:medium`, `confirmed`, M8, under epic #27): `certification_runs` is exported in story bundles, because it has a `story_id` and isn't in `NEVER`. It's fixed by #272's new AC that every `STORY_ID_EXCEPTIONS` table is in `NEVER`.
+  **Issue:** #773
+- **Decision:** the M8 description's migration head is updated (0131), its live-run line now allows local or hosted, a `PULLED-FORWARD BUGS` line is added to the coverage map, a Phases line 7 is added, and a "Replan 2026-11-06" section is appended. The four bugs aren't attached to epic #27, because they aren't image work and their own epics are closed. Their records go on the milestone PR.
+  **Issue:** M8
+
+## /n8-release v0.2.0 — 2026-11-06
+
+- **Version:** v0.2.0 (minor bump from v0.1.1; owner chose it at `/n8-release`). `pyproject.toml` bumped in PR #772.
+- **Commit:** annotated tag `v0.2.0` on `95e57a5`, the merge of #772 on main. Its parent `32f72a6` is M7's verified commit, and #772 changes only the version string.
+- **Milestones included:** M2, M3, M4, M5, M6 and M7, all closed by `/n8-verify`.
+- **What the tag triggered:** `release.yml`, [run 42298312192](https://github.com/nathanpond/Epistrel/actions/runs/42298312192). It took 2h22m, slowed by runner contention from a burst of Dependabot CI runs.
+  - **validate:** success.
+  - **Full CI:** success.
+  - **C-10 compose smoke:** success.
+  - **Multi-arch publish:** success. `ghcr.io/nathanpond/epistrel` is tagged `0.2.0`, `0.2`, `0` and `latest`. All four point to `sha256:89051309a88c4d8c5c41468210b34d73832f32bd4ec470f39d2ea5b536216573` (amd64 and arm64).
+  - **GitHub release:** the workflow created it, and a human summary was added on top with `gh release edit`.
+- **Release:** https://github.com/nathanpond/Epistrel/releases/tag/v0.2.0

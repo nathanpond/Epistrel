@@ -70,6 +70,7 @@ from epistrel.testing.images import (
     installed_checks,
     registered_target,
 )
+from tests import catalog_image_support as cs
 from tests import image_prompt_support as ip
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import BASE, read, save
@@ -1101,3 +1102,55 @@ async def test_i_23__m8_draft_base_prompt(image_settings: Settings, engine: Asyn
         )
         assert missing.status_code == 422
         assert missing.json()["error"]["details"]["field"] == "definition.appearance"
+
+
+# -- catalog candidates (#260) ------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4,7")
+async def test_i_23__m8_candidate_metadata(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A catalog candidate carries its full generation metadata (adapter, model, prompt,
+    negative prompt, requested and applied parameters with the seed, reference ids, usage and
+    cost) and its check, and the job's origin records the draft revision and image-input
+    fingerprint it was requested from. It is attached only on request: the draft's images are
+    unchanged by the job, and the save naming it puts its media id in the slot.
+
+    Complement asserted: until that save, the draft has no primary image and the card shows
+    none."""
+    async with cs.candidate_app(image_settings, engine) as app:
+        created = await cs.character(app)
+        character_id, revision = created["id"], created["draft_revision"]
+        job_id, [candidate_id] = await cs.generated(app, character_id, Outputs(n=1, size=(79, 45)))
+        [item] = (await cs.listed(app, character_id))["items"]
+        metadata = item["media"]["generation_metadata"]
+        assert (metadata["adapter"], metadata["model"]) == (cs.ADAPTER, "img-1")
+        assert ip.BAND in metadata["prompt"]
+        assert metadata["negative_prompt"]
+        assert metadata["applied_parameters"]["seed"] == ip.SEED
+        assert metadata["requested_parameters"]["n"] == 1
+        assert "usage" in metadata
+        assert "cost" in metadata
+        assert item["media"]["check"]["model"] == "stub-vision"
+        assert (item["slot"], item["job_id"], item["draft_revision"]) == (
+            "primary",
+            job_id,
+            revision,
+        )
+        async with engine.connect() as conn:
+            origin = await conn.scalar(
+                text("SELECT origin FROM image_jobs WHERE id = :j"), {"j": job_id}
+            )
+        assert origin["draft_revision"] == revision
+        assert origin["image_input_fingerprint"].startswith("v1:")
+        assert (await cs.draft(app, character_id))["images"]["primary"] is None
+
+        saved = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"primary": {"candidate_id": candidate_id}}},
+        )
+        assert saved.status_code == 200, saved.text
+        primary = (await cs.draft(app, character_id))["images"]["primary"]
+        assert primary["generation_metadata"] == metadata

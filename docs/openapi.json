@@ -2146,6 +2146,129 @@
         "title": "CandidateBody",
         "type": "object"
       },
+      "CandidateMedia": {
+        "description": "`unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "properties": {
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The checker and its per-policy results when `passed`; `null` when `unchecked`."
+          },
+          "check_status": {
+            "$ref": "#/components/schemas/CheckStatus",
+            "description": "`passed`: the image passed every applicable image-output policy under the checker `check` names; `unchecked`: no policy applied. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe."
+          },
+          "generation_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Metadata"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MediaSource"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "mime_type",
+          "size",
+          "width",
+          "height",
+          "source",
+          "check_status",
+          "check",
+          "generation_metadata"
+        ],
+        "title": "CandidateMedia",
+        "type": "object"
+      },
+      "CandidatePage": {
+        "description": "A page of an entry's candidates, oldest first (generation order), and the cursor of the\nnext page (``null`` at the end).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImageCandidate"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "CandidatePage",
+        "type": "object"
+      },
+      "CandidateRef": {
+        "additionalProperties": false,
+        "description": "A catalog image candidate named in a draft save's image slot (FR-IMG-7; #260): the save\nattaches it, and the slot holds its media id.",
+        "properties": {
+          "candidate_id": {
+            "description": "The candidate to attach (`…/images/candidates`).",
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Candidate Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate_id"
+        ],
+        "title": "CandidateRef",
+        "type": "object"
+      },
       "CanonBody": {
         "description": "A canon fact about a resolved entity: its id, subject, predicate and its object (an\nentity, a set or a literal), as the viewpoint may read it.",
         "properties": {
@@ -2384,6 +2507,80 @@
           "source"
         ],
         "title": "CatalogCastCard",
+        "type": "object"
+      },
+      "CatalogImageRequest": {
+        "additionalProperties": false,
+        "description": "``POST /catalog/{characters|scenarios}/{id}/images/generate`` (FR-IMG-7): the image\n``slot`` the candidates are for (``primary`` or ``gallery`` for a character, ``cover`` for a\nscenario) and how many candidates, ``n`` (1 to 10; omitted: the deployment's\n``catalog_candidates_n``, 4 by default).",
+        "examples": [
+          {
+            "n": 4,
+            "slot": "primary"
+          }
+        ],
+        "properties": {
+          "n": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N"
+          },
+          "slot": {
+            "enum": [
+              "primary",
+              "gallery",
+              "cover"
+            ],
+            "title": "Slot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slot"
+        ],
+        "title": "CatalogImageRequest",
+        "type": "object"
+      },
+      "CatalogImagesAccepted": {
+        "description": "A catalog image request's answer (202): the job to follow at ``Location``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "job_id",
+          "status"
+        ],
+        "title": "CatalogImagesAccepted",
         "type": "object"
       },
       "CatalogScope": {
@@ -4406,14 +4603,21 @@
       },
       "CharacterImagesPatch": {
         "additionalProperties": false,
-        "description": "The images part of a draft patch: ``primary`` set or removed (``null``), and ``gallery``\nreplaced as a whole.",
+        "description": "The images part of a draft patch: ``primary`` set or removed (``null``), and ``gallery``\nreplaced as a whole. Each image is a media id or ``{candidate_id}``, a candidate of this\ncharacter's to attach (FR-IMG-7): the save checks it is current (409 ``candidate_stale``\notherwise) and stores its media id.",
         "properties": {
           "gallery": {
             "anyOf": [
               {
                 "items": {
-                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-                  "type": "string"
+                  "anyOf": [
+                    {
+                      "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                      "type": "string"
+                    },
+                    {
+                      "$ref": "#/components/schemas/CandidateRef"
+                    }
+                  ]
                 },
                 "maxItems": 20,
                 "type": "array"
@@ -4429,6 +4633,9 @@
               {
                 "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
                 "type": "string"
+              },
+              {
+                "$ref": "#/components/schemas/CandidateRef"
               },
               {
                 "type": "null"
@@ -15720,6 +15927,56 @@
           "record_id"
         ],
         "title": "IdentityItemBody",
+        "type": "object"
+      },
+      "ImageCandidate": {
+        "description": "`unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "properties": {
+          "candidate_id": {
+            "title": "Candidate Id",
+            "type": "string"
+          },
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "media": {
+            "$ref": "#/components/schemas/CandidateMedia"
+          },
+          "slot": {
+            "description": "The slot it was requested for: a hint, as it may fill any image slot.",
+            "enum": [
+              "primary",
+              "gallery",
+              "cover"
+            ],
+            "title": "Slot",
+            "type": "string"
+          },
+          "stale": {
+            "title": "Stale",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidate_id",
+          "slot",
+          "job_id",
+          "draft_revision",
+          "expires_at",
+          "stale",
+          "media"
+        ],
+        "title": "ImageCandidate",
         "type": "object"
       },
       "ImageCheck": {
@@ -38084,7 +38341,7 @@
       },
       "ScenarioPatch": {
         "additionalProperties": false,
-        "description": "``PATCH /catalog/scenarios/{id}``: a JSON merge patch (RFC 7386) over the draft, group\nby group — a key sets that field, ``null`` removes it, an object merges into the stored one\nand an array replaces it (``roles``, ``seeded_memories``, …) — with the ``draft_revision``\nit is based on (FR-CAT-3). The merged draft is validated as a whole: an invalid field is 422\nat ``body.<path>``, wherever the field came from.",
+        "description": "``PATCH /catalog/scenarios/{id}``: a JSON merge patch (RFC 7386) over the draft, group\nby group — a key sets that field, ``null`` removes it, an object merges into the stored one\nand an array replaces it (``roles``, ``seeded_memories``, …) — with the ``draft_revision``\nit is based on (FR-CAT-3). The merged draft is validated as a whole: an invalid field is 422\nat ``body.<path>``, wherever the field came from. ``public_card.media.cover`` and each\n``public_card.media.gallery`` item may be ``{candidate_id}``, a candidate of this scenario's\nto attach (FR-IMG-7; #260): 409 ``candidate_stale`` or 422 ``candidate_not_found`` when it\ncannot be.",
         "examples": [
           {
             "draft_revision": 1,
@@ -39823,11 +40080,25 @@
             "title": "Bundle Max Uncompressed Bytes",
             "type": "integer"
           },
+          "candidate_ttl": {
+            "default": 604800,
+            "maximum": 7776000.0,
+            "minimum": 3600.0,
+            "title": "Candidate Ttl",
+            "type": "integer"
+          },
           "cascade_threshold": {
             "default": 5,
             "maximum": 1000.0,
             "minimum": 1.0,
             "title": "Cascade Threshold",
+            "type": "integer"
+          },
+          "catalog_candidates_n": {
+            "default": 4,
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Catalog Candidates N",
             "type": "integer"
           },
           "certification_canary_enabled": {
@@ -41285,6 +41556,17 @@
             ],
             "title": "Bundle Max Uncompressed Bytes"
           },
+          "candidate_ttl": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Ttl"
+          },
           "cascade_threshold": {
             "anyOf": [
               {
@@ -41295,6 +41577,17 @@
               }
             ],
             "title": "Cascade Threshold"
+          },
+          "catalog_candidates_n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Candidates N"
           },
           "certification_canary_enabled": {
             "anyOf": [
@@ -54509,7 +54802,9 @@
                           "bundle_max_entries",
                           "bundle_max_entry_bytes",
                           "bundle_max_uncompressed_bytes",
+                          "candidate_ttl",
                           "cascade_threshold",
+                          "catalog_candidates_n",
                           "certification_canary_enabled",
                           "certification_canary_interval_s",
                           "certification_canary_sample_size",
@@ -64543,7 +64838,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `draft_stale`, `idempotency_conflict`."
+            "description": "Conflict; nothing was written: `candidate_stale`, `draft_stale`, `idempotency_conflict`."
           },
           "413": {
             "content": {
@@ -64563,7 +64858,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `candidate_not_found`, `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -65048,6 +65343,868 @@
           "catalog"
         ],
         "x-epistrel-mutating": false
+      }
+    },
+    "/catalog/characters/{character_id}/images/candidates": {
+      "get": {
+        "description": "The character's live candidates (FR-IMG-7), oldest first (generation order), in keyset pages: `job_id` narrows to one job's (an unknown job answers an empty page). Each item is `{candidate_id, slot, job_id, draft_revision, expires_at, stale, media: {mime_type, size, width, height, source, check_status, check, generation_metadata}}`; `stale` is true when its image-input fingerprint differs from the draft's now, so an attach would be refused 409 `candidate_stale`. A candidate past `expires_at` is left out even before the expiry task deletes it. Candidates never appear in `GET /media`, a card or full projection, or a story. 404 for an unknown character. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "operationId": "list_image_candidates_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only this job's candidates.",
+            "in": "query",
+            "name": "job_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this job's candidates.",
+              "title": "Job Id"
+            }
+          },
+          {
+            "description": "Candidates a page, 1 to 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Candidates a page, 1 to 50.",
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidatePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a character's image candidates",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/images/candidates/{candidate_id}": {
+      "delete": {
+        "description": "Discards a candidate before it expires (FR-IMG-7): its candidate record and asset are deleted, and its bytes unless another asset has the same checksum. 204 with no body. Idempotent by design, so it takes no `Idempotency-Key`: an unknown character or candidate, or one already discarded or attached, also answers 204 and changes nothing (an attached candidate's asset is never touched).",
+        "operationId": "discard_image_candidate_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The candidate's id (a ULID).",
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "description": "The candidate's id (a ULID).",
+              "maxLength": 26,
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Discard a character image candidate",
+        "tags": [
+          "images"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
+    "/catalog/characters/{character_id}/images/candidates/{candidate_id}/content": {
+      "get": {
+        "description": "A live candidate's bytes with its MIME type, `ETag` (its SHA-256), `Accept-Ranges: bytes` and `Cache-Control: private, no-store`. One `Range` is 206 with `Content-Range`, one no byte of which exists 416; `If-None-Match` matching the `ETag` is 304; `If-Range` applies the range only when it names the `ETag` (#107). Needs the service credential. 404 `not_found` for an unknown character, and for a candidate that is unknown, another entry's, attached, discarded or expired alike.",
+        "operationId": "get_image_candidate_content_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The candidate's id (a ULID).",
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "description": "The candidate's id (a ULID).",
+              "maxLength": 26,
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One byte range, `bytes=<first>-<last>`, `bytes=<first>-` or `bytes=-<suffix>`: answered 206 with `Content-Range` (clamped to the content), or 416 when no byte of it exists. Several ranges, another unit or a malformed header get the whole content (200).",
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One byte range, `bytes=<first>-<last>`, `bytes=<first>-` or `bytes=-<suffix>`: answered 206 with `Content-Range` (clamped to the content), or 416 when no byte of it exists. Several ranges, another unit or a malformed header get the whole content (200).",
+              "title": "Range"
+            }
+          },
+          {
+            "description": "Entity tags (or `*`): when one is the asset's `ETag`, 304 with no body.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Entity tags (or `*`): when one is the asset's `ETag`, 304 with no body.",
+              "title": "If-None-Match"
+            }
+          },
+          {
+            "description": "An entity tag: `Range` applies only when it is the asset's `ETag`.",
+            "in": "header",
+            "name": "If-Range",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An entity tag: `Range` applies only when it is the asset's `ETag`.",
+              "title": "If-Range"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The candidate's bytes.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "`bytes`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "`*`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "206": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The requested byte range.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "`bytes`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "`*`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "description": "`bytes <first>-<last>/<size>`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "`If-None-Match` named the candidate's `ETag`: no body.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "`bytes`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "`*`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Range not satisfiable: `range_not_satisfiable`.",
+            "headers": {
+              "Content-Range": {
+                "description": "`bytes */<size>`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a character image candidate's bytes",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/images/candidates/{candidate_id}/url": {
+      "get": {
+        "description": "A URL that serves a live candidate's bytes without the service credential until `expires_at` (FR-MEDIA-3): on an S3-compatible store the store's presigned GET; on the local store Epistrel's signed `GET /media/{asset_id}/content?exp=&sig=` under `public_base_url` (the one signed route, ADR-152; a credentialed `GET /media/{id}` or `…/content` of a candidate stays 404). It works for `ttl` seconds, at most and by default `media_signed_url_ttl`. It stops serving once the candidate is discarded or expires; after an attach it serves until its expiry. 404 as the content read; 503 `config_missing` without `public_base_url`, `config_key_missing` without `EPISTREL_CONFIG_KEY`.",
+        "operationId": "get_image_candidate_url_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The candidate's id (a ULID).",
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "description": "The candidate's id (a ULID).",
+              "maxLength": 26,
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Seconds the URL works (at most `media_signed_url_ttl`).",
+            "in": "query",
+            "name": "ttl",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seconds the URL works (at most `media_signed_url_ttl`).",
+              "title": "Ttl"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaUrlBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `config_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get a short-lived URL for a character image candidate",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/catalog/characters/{character_id}/images/generate": {
+      "post": {
+        "description": "Generates `n` private candidate images (1 to 10; omitted: the deployment's `catalog_candidates_n`, 4 by default) for the character's `primary` or `gallery` image (FR-IMG-7), built from its draft's perceivable inputs, like `POST /image-prompts` (#259), under its rating's image guidance and image policies. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: follow the job there; it ends `candidates_ready` with the `candidate_ids`, or `failed` when no output passed its checks, or `target_gone` when the entry was deleted meanwhile. The job records the draft revision and image-input fingerprint it was built from. **Nothing is attached**: each candidate is private (listed and previewed only through `…/images/candidates`) until an author attaches it with an ordinary draft save naming `{candidate_id}` in an image slot with the current `draft_revision`; unattached candidates are deleted after `candidate_ttl` (7 days by default). The request never saves or advances the draft.\n\nRefused before any job, reservation or provider call: 404 for an unknown character; 422 `entry_archived`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 422 `validation_error` for a slot the character's images cannot have or an `n` outside 1 to 10, and for a draft lacking its true age, rating or appearance; 422 `guardrail_violation` when the built prompt violates an image-prompt policy; 503 `image_prompt_unavailable`. Idempotent under `Idempotency-Key` (deployment-scoped).",
+        "operationId": "request_catalog_images_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogImagesAccepted"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `not_configured`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `entry_archived`, `guardrail_violation`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Generate candidate images for a character",
+        "tags": [
+          "images"
+        ]
       }
     },
     "/catalog/characters/{character_id}/listing-status": {
@@ -67216,7 +68373,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `draft_stale`, `erased_subject_referenced`, `idempotency_conflict`."
+            "description": "Conflict; nothing was written: `candidate_stale`, `draft_stale`, `erased_subject_referenced`, `idempotency_conflict`."
           },
           "413": {
             "content": {
@@ -67236,7 +68393,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `cast_limit_exceeded`, `companion_slots_fixed`, `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `candidate_not_found`, `cast_limit_exceeded`, `companion_slots_fixed`, `entry_archived`, `media_retired`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -67421,6 +68578,868 @@
         "summary": "Archive a scenario",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/images/candidates": {
+      "get": {
+        "description": "The scenario's live candidates (FR-IMG-7), oldest first (generation order), in keyset pages: `job_id` narrows to one job's (an unknown job answers an empty page). Each item is `{candidate_id, slot, job_id, draft_revision, expires_at, stale, media: {mime_type, size, width, height, source, check_status, check, generation_metadata}}`; `stale` is true when its image-input fingerprint differs from the draft's now, so an attach would be refused 409 `candidate_stale`. A candidate past `expires_at` is left out even before the expiry task deletes it. Candidates never appear in `GET /media`, a card or full projection, or a story. 404 for an unknown scenario. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "operationId": "list_image_candidates_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only this job's candidates.",
+            "in": "query",
+            "name": "job_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only this job's candidates.",
+              "title": "Job Id"
+            }
+          },
+          {
+            "description": "Candidates a page, 1 to 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "description": "Candidates a page, 1 to 50.",
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidatePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a scenario's image candidates",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}": {
+      "delete": {
+        "description": "Discards a candidate before it expires (FR-IMG-7): its candidate record and asset are deleted, and its bytes unless another asset has the same checksum. 204 with no body. Idempotent by design, so it takes no `Idempotency-Key`: an unknown scenario or candidate, or one already discarded or attached, also answers 204 and changes nothing (an attached candidate's asset is never touched).",
+        "operationId": "discard_image_candidate_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The candidate's id (a ULID).",
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "description": "The candidate's id (a ULID).",
+              "maxLength": 26,
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Discard a scenario image candidate",
+        "tags": [
+          "images"
+        ],
+        "x-epistrel-mutating": false
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}/content": {
+      "get": {
+        "description": "A live candidate's bytes with its MIME type, `ETag` (its SHA-256), `Accept-Ranges: bytes` and `Cache-Control: private, no-store`. One `Range` is 206 with `Content-Range`, one no byte of which exists 416; `If-None-Match` matching the `ETag` is 304; `If-Range` applies the range only when it names the `ETag` (#107). Needs the service credential. 404 `not_found` for an unknown scenario, and for a candidate that is unknown, another entry's, attached, discarded or expired alike.",
+        "operationId": "get_image_candidate_content_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The candidate's id (a ULID).",
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "description": "The candidate's id (a ULID).",
+              "maxLength": 26,
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "One byte range, `bytes=<first>-<last>`, `bytes=<first>-` or `bytes=-<suffix>`: answered 206 with `Content-Range` (clamped to the content), or 416 when no byte of it exists. Several ranges, another unit or a malformed header get the whole content (200).",
+            "in": "header",
+            "name": "Range",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One byte range, `bytes=<first>-<last>`, `bytes=<first>-` or `bytes=-<suffix>`: answered 206 with `Content-Range` (clamped to the content), or 416 when no byte of it exists. Several ranges, another unit or a malformed header get the whole content (200).",
+              "title": "Range"
+            }
+          },
+          {
+            "description": "Entity tags (or `*`): when one is the asset's `ETag`, 304 with no body.",
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Entity tags (or `*`): when one is the asset's `ETag`, 304 with no body.",
+              "title": "If-None-Match"
+            }
+          },
+          {
+            "description": "An entity tag: `Range` applies only when it is the asset's `ETag`.",
+            "in": "header",
+            "name": "If-Range",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An entity tag: `Range` applies only when it is the asset's `ETag`.",
+              "title": "If-Range"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The candidate's bytes.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "`bytes`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "`*`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "206": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The requested byte range.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "`bytes`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "`*`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Range": {
+                "description": "`bytes <first>-<last>/<size>`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "`If-None-Match` named the candidate's `ETag`: no body.",
+            "headers": {
+              "Accept-Ranges": {
+                "description": "`bytes`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Origin": {
+                "description": "`*`.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, max-age=31536000, immutable",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "description": "The quoted SHA-256 of the bytes (absent while staged).",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "416": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Range not satisfiable: `range_not_satisfiable`.",
+            "headers": {
+              "Content-Range": {
+                "description": "`bytes */<size>`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a scenario image candidate's bytes",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}/url": {
+      "get": {
+        "description": "A URL that serves a live candidate's bytes without the service credential until `expires_at` (FR-MEDIA-3): on an S3-compatible store the store's presigned GET; on the local store Epistrel's signed `GET /media/{asset_id}/content?exp=&sig=` under `public_base_url` (the one signed route, ADR-152; a credentialed `GET /media/{id}` or `…/content` of a candidate stays 404). It works for `ttl` seconds, at most and by default `media_signed_url_ttl`. It stops serving once the candidate is discarded or expires; after an attach it serves until its expiry. 404 as the content read; 503 `config_missing` without `public_base_url`, `config_key_missing` without `EPISTREL_CONFIG_KEY`.",
+        "operationId": "get_image_candidate_url_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The candidate's id (a ULID).",
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "description": "The candidate's id (a ULID).",
+              "maxLength": 26,
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Seconds the URL works (at most `media_signed_url_ttl`).",
+            "in": "query",
+            "name": "ttl",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 2147483647,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seconds the URL works (at most `media_signed_url_ttl`).",
+              "title": "Ttl"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaUrlBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `config_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get a short-lived URL for a scenario image candidate",
+        "tags": [
+          "images"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/images/generate": {
+      "post": {
+        "description": "Generates `n` private candidate images (1 to 10; omitted: the deployment's `catalog_candidates_n`, 4 by default) for the scenario's `cover` image (FR-IMG-7), built from its draft's perceivable inputs, like `POST /image-prompts` (#259), under its rating's image guidance and image policies. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: follow the job there; it ends `candidates_ready` with the `candidate_ids`, or `failed` when no output passed its checks, or `target_gone` when the entry was deleted meanwhile. The job records the draft revision and image-input fingerprint it was built from. **Nothing is attached**: each candidate is private (listed and previewed only through `…/images/candidates`) until an author attaches it with an ordinary draft save naming `{candidate_id}` in an image slot with the current `draft_revision`; unattached candidates are deleted after `candidate_ttl` (7 days by default). The request never saves or advances the draft.\n\nRefused before any job, reservation or provider call: 404 for an unknown scenario; 422 `entry_archived`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 422 `validation_error` for a slot the scenario's images cannot have or an `n` outside 1 to 10, and for a draft lacking its true age, rating or appearance; 422 `guardrail_violation` when the built prompt violates an image-prompt policy; 503 `image_prompt_unavailable`. Idempotent under `Idempotency-Key` (deployment-scoped).",
+        "operationId": "request_catalog_images_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CatalogImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CatalogImagesAccepted"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `not_configured`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `entry_archived`, `guardrail_violation`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Generate candidate images for a scenario",
+        "tags": [
+          "images"
         ]
       }
     },

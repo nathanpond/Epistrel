@@ -198,6 +198,8 @@ class SettingsPatch(BaseModel):
     certification_recertify_interval_s: StrictInt | None = None
     image_retry_budget: StrictInt | None = None
     staging_ttl: StrictInt | None = None
+    candidate_ttl: StrictInt | None = None
+    catalog_candidates_n: StrictInt | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None

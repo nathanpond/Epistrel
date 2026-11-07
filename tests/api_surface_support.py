@@ -30,11 +30,6 @@ CURRENT = "M8"
 """The milestone this table was checked at: every ``present`` row is delivered by it, every
 ``not_yet`` row by a later one (or named in ``PENDING``)."""
 PENDING: dict[tuple[str, str], str] = {
-    ("POST", "/catalog/{type}/{id}/images/generate"): "#260",
-    ("GET", "/catalog/{type}/{id}/images/candidates"): "#260",
-    ("GET", "/catalog/{type}/{id}/images/candidates/{cid}/content"): "#260",
-    ("GET", "/catalog/{type}/{id}/images/candidates/{cid}/url"): "#260",
-    ("POST", "/catalog/{type}/{id}/images/candidates/{cid}/attach"): "#260",
     ("POST", "/stories/{id}/images"): "#261, #263",
     ("DELETE", "/stories/{id}/images/{image_id}"): "#261",
 }

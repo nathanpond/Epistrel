@@ -55,7 +55,7 @@ from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.idempotency import idempotency_keys
-from epistrel.core.tables.images import image_jobs, image_reservations
+from epistrel.core.tables.images import image_candidates, image_jobs, image_reservations
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.media import media_assets, subject_references
 from epistrel.core.tables.memories import memories
@@ -155,6 +155,7 @@ __all__ = [
     "genesis_deferred",
     "guardrail_check_results",
     "idempotency_keys",
+    "image_candidates",
     "image_check_certifications",
     "image_jobs",
     "image_reservations",

@@ -1730,3 +1730,105 @@ async def test_x_07__m8_staging(
             assert again == {"removed": 0, "skipped_running": 0}
         finally:
             await child.__aexit__(None, None, None)
+
+
+# -- image candidates (M8, #260) ----------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_candidate_ttl(quiet: Probe, pg_url: str, engine: AsyncEngine) -> None:
+    """#260: with no worker running, a catalog candidate passes its ``expires_at`` and the
+    hourly ``image_candidate_expiry`` falls overdue; starting a worker runs the overdue expiry
+    once, which deletes the candidate row, its asset row and its bytes. Running it again
+    changes nothing.
+
+    Complements asserted: before the start the candidate, its asset and its bytes are still
+    there, and exactly one ``image_candidate_expiry`` job ran."""
+    from epistrel.core.images import candidates
+    from epistrel.core.images.store import insert_generated_asset
+    from epistrel.core.seeds.ratings import EVERYONE_ID
+    from epistrel.core.tables import content_ratings
+    from epistrel.core.tables.media import MediaState
+    from epistrel.orchestrator.jobs.handlers import image_candidate_expiry
+    from epistrel.testing import faults
+    from epistrel.testing.images import png
+    from tests.auth_support import CREDENTIAL_A
+    from tests.model_support import CONFIG_KEY
+
+    name = image_candidate_expiry.IMAGE_CANDIDATE_EXPIRY
+    child = faults.EngineProcess(pg_url, CREDENTIAL_A, config_key=CONFIG_KEY, mode="all")
+    store = LocalFilesystemStore(Path(child.media_root))
+    store.prepare()
+    data = png(83, 41, shade=7)
+    checksum = hashlib.sha256(data).hexdigest()
+    staged = Path(child.media_root) / "x07-candidate.png"
+    staged.write_bytes(data)
+    store.put(staged, checksum, content_type="image/png")
+    entry_id = new_ulid()
+    async with engine.begin() as conn:
+        version = await conn.scalar(
+            select(content_ratings.c.current_version_id).where(content_ratings.c.id == EVERYONE_ID)
+        )
+        asset_id = await insert_generated_asset(
+            conn,
+            checksum=checksum,
+            mime_type="image/png",
+            size=len(data),
+            width=83,
+            height=41,
+            owner="p-x07",
+            content_rating_version_id=str(version),
+            generation_metadata={},
+            state=MediaState.CANDIDATE,
+            created_by="p-x07",
+        )
+        [candidate_id] = await candidates.insert(
+            conn,
+            entry_kind="character",
+            entry_id=entry_id,
+            job_id=new_ulid(),
+            slot="primary",
+            draft_revision=1,
+            fingerprint="v1:" + "0" * 64,
+            asset_ids=[asset_id],
+            ttl_s=3_600,
+        )
+    try:
+        await _execute(
+            engine,
+            "UPDATE catalog.image_candidates SET expires_at = now() - interval '3 hours' "
+            "WHERE id = :c",
+            c=candidate_id,
+        )
+        await _execute(
+            engine,
+            "UPDATE recurring_tasks SET next_run_at = now() - interval '2 hours' WHERE name = :n",
+            n=name,
+        )
+        async with engine.connect() as conn:
+            assert await candidates.count_for_entry(conn, "character", entry_id) == 1
+        assert store.exists(checksum)
+        async with child:
+
+            async def expired() -> bool:
+                task = await _task(engine, name)
+                return task.last_status == "ok" and not store.exists(checksum)
+
+            await _wait_for(expired, within=30)
+        assert len(await _jobs_of(engine, name)) == 1
+        async with engine.connect() as conn:
+            assert await candidates.count_for_entry(conn, "character", entry_id) == 0
+            assert (
+                await conn.scalar(
+                    text("SELECT count(*) FROM media_assets WHERE id = :a"), {"a": asset_id}
+                )
+                == 0
+            )
+        again = await image_candidate_expiry.expire(engine, store)
+        assert again == {"expired": 0, "blobs_deleted": 0}
+    finally:
+        await _execute(
+            engine, "DELETE FROM catalog.image_candidates WHERE entry_id = :e", e=entry_id
+        )
+        await _execute(engine, "DELETE FROM media_assets WHERE id = :a", a=asset_id)

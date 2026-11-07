@@ -17,6 +17,7 @@ an operation without a route, or without a step here, fails ``test_c_03``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -24,6 +25,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
@@ -31,7 +33,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, SecretStr
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
@@ -2797,6 +2799,79 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", "/media/{media}/url", params={"ttl": 60}),
             lambda e, ids: _media_url(e, ids["media"]),
         ),
+        # -- catalog image candidates (#260): a request for the character's primary image
+        # (the parity image adapter and a checker configured first), its job's candidates (one
+        # planted as a promotion writes it), a candidate's content and URL, and a discard.
+        Step(
+            "request_catalog_images",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/images/generate", CANDIDATE_REQUEST
+            ),
+            lambda e, ids: _catalog_images(e, ids["character"]),
+            _keep("candidate_job", "job_id"),
+            prepare=_image_generation,
+            status=lambda body: 202,
+        ),
+        Step(
+            "request_catalog_images",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/images/generate", COVER_REQUEST
+            ),
+            lambda e, ids: _catalog_images(e, ids["scenario"], kind="scenario"),
+            status=lambda body: 202,
+        ),
+        Step(
+            "list_image_candidates",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/images/candidates"),
+            lambda e, ids: _candidates(e, ids["character"]),
+            prepare=_plant_candidate,
+        ),
+        Step(
+            "get_image_candidate_content",
+            lambda ids: Rest(
+                "GET", "/catalog/characters/{character}/images/candidates/{candidate}/content"
+            ),
+            lambda e, ids: _candidate_content(e, ids["character"], ids["candidate"]),
+        ),
+        Step(
+            "get_image_candidate_url",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}/images/candidates/{candidate}/url",
+                params={"ttl": 60},
+            ),
+            lambda e, ids: _candidate_url(e, ids["character"], ids["candidate"]),
+        ),
+        Step(
+            "discard_image_candidate",
+            lambda ids: Rest(
+                "DELETE", "/catalog/characters/{character}/images/candidates/{candidate}"
+            ),
+            lambda e, ids: _no_content(
+                e.discard_image_candidate(CTX, ids["candidate"], character_id=ids["character"])
+            ),
+        ),
+        Step(  # a scenario's candidate it never had: 204 on both (idempotent)
+            "discard_image_candidate",
+            lambda ids: Rest(
+                "DELETE", "/catalog/scenarios/{scenario}/images/candidates/{candidate}"
+            ),
+            lambda e, ids: _no_content(
+                e.discard_image_candidate(CTX, ids["candidate"], scenario_id=ids["scenario"])
+            ),
+        ),
+        Step(  # discarded: 404 on both
+            "get_image_candidate_content",
+            lambda ids: Rest(
+                "GET", "/catalog/characters/{character}/images/candidates/{candidate}/content"
+            ),
+            lambda e, ids: _candidate_content(e, ids["character"], ids["candidate"]),
+        ),
+        Step(
+            "remove_model_override",
+            lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
+            lambda e, ids: _model_remove(e, "image_check"),
+        ),
         Step(
             "open_upload",
             lambda ids: Rest("POST", "/media/uploads", SESSION),
@@ -3599,6 +3674,123 @@ async def _media(engine: Engine, media_id: str) -> dict[str, Any]:
 async def _media_content(engine: Engine, media_id: str) -> dict[str, Any]:
     content = await engine.get_media_content(CTX, media_id)
     return _bytes(await content.read(), content.mime_type)
+
+
+CANDIDATE_REQUEST = {"slot": "primary", "n": 1}
+COVER_REQUEST = {"slot": "cover", "n": 1}
+PARITY_IMAGE_ADAPTER = "parity_png"
+
+
+async def _image_generation(engine: Engine, ids: Ids) -> None:
+    """#260: the surface's image adapter (``testing.images.PngImageGenerator``, registered as
+    ``parity_png``) configured with a key, and an ``image_check`` model, so a catalog image
+    request is accepted; nothing runs the job."""
+    from epistrel.orchestrator.images.registry import register_image_adapter
+    from epistrel.testing.images import PngImageGenerator
+
+    register_image_adapter(PARITY_IMAGE_ADAPTER, PngImageGenerator(), replace=True)
+    await engine.replace_model_config(
+        CTX,
+        "image_generation",
+        ConfigReplacement.model_validate(
+            {"model": "parity-image", "params": {"adapter": PARITY_IMAGE_ADAPTER}}
+        ),
+    )
+    await engine.set_model_api_key(CTX, "image_generation", SecretStr("sk-parity-image"))
+    await engine.replace_model_config(
+        CTX, "image_check", ConfigReplacement.model_validate({"model": "parity-vision"})
+    )
+
+
+async def _plant_candidate(engine: Engine, ids: Ids) -> None:
+    """#260: one candidate of the request's job, as its promotion would write it (its asset in
+    state ``candidate``, its bytes in the surface's store); ``ids["candidate"]``."""
+    from epistrel.core.images import candidates
+    from epistrel.core.images.store import insert_generated_asset
+    from epistrel.core.seeds.ratings import EVERYONE_ID
+    from epistrel.core.tables import catalog as catalog_tables
+    from epistrel.core.tables import content_ratings
+    from epistrel.core.tables.media import MediaState
+    from epistrel.testing.images import png as job_png
+
+    data = job_png(5, 7, shade=99)
+    checksum = hashlib.sha256(data).hexdigest()
+    staged = Path(engine.media.staging_path(new_ulid()))
+
+    def put() -> None:
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(data)
+        engine.media.put(staged, checksum, content_type="image/png")
+
+    await asyncio.to_thread(put)
+    async with engine.db.begin() as conn:
+        draft = await conn.scalar(
+            select(catalog_tables.character_catalog.c.draft).where(
+                catalog_tables.character_catalog.c.id == ids["character"]
+            )
+        )
+        version = await conn.scalar(
+            select(content_ratings.c.current_version_id).where(content_ratings.c.id == EVERYONE_ID)
+        )
+        asset_id = await insert_generated_asset(
+            conn,
+            checksum=checksum,
+            mime_type="image/png",
+            size=len(data),
+            width=5,
+            height=7,
+            owner=PRINCIPAL,
+            content_rating_version_id=str(version),
+            generation_metadata={"adapter": PARITY_IMAGE_ADAPTER},
+            state=MediaState.CANDIDATE,
+            created_by=PRINCIPAL,
+        )
+        [ids["candidate"]] = await candidates.insert(
+            conn,
+            entry_kind="character",
+            entry_id=ids["character"],
+            job_id=ids["candidate_job"],
+            slot="primary",
+            draft_revision=1,
+            fingerprint=await candidates.image_input_fingerprint(
+                conn, "character", ids["character"], draft
+            ),
+            asset_ids=[asset_id],
+            ttl_s=3_600,
+        )
+
+
+async def _catalog_images(
+    engine: Engine, entry_id: str, *, kind: str = "character"
+) -> dict[str, Any]:
+    from epistrel.api.routes.catalog_images import CatalogImagesAccepted
+    from epistrel.orchestrator.images.targets.catalog import CatalogImageRequest
+
+    if kind == "character":
+        request = CatalogImageRequest.model_validate(CANDIDATE_REQUEST)
+        queued = await engine.request_catalog_images(CTX, request, character_id=entry_id)
+    else:
+        request = CatalogImageRequest.model_validate(COVER_REQUEST)
+        queued = await engine.request_catalog_images(CTX, request, scenario_id=entry_id)
+    return dump(CatalogImagesAccepted.of(queued))
+
+
+async def _candidates(engine: Engine, character_id: str) -> dict[str, Any]:
+    return dump(await engine.list_image_candidates(CTX, character_id=character_id))
+
+
+async def _candidate_content(
+    engine: Engine, character_id: str, candidate_id: str
+) -> dict[str, Any]:
+    content = await engine.get_image_candidate_content(CTX, candidate_id, character_id=character_id)
+    return _bytes(await content.read(), content.mime_type)
+
+
+async def _candidate_url(engine: Engine, character_id: str, candidate_id: str) -> dict[str, Any]:
+    found = await engine.get_image_candidate_url(
+        CTX, candidate_id, character_id=character_id, ttl=60
+    )
+    return dump(MediaUrlBody.of(found))
 
 
 async def _media_url(engine: Engine, media_id: str) -> dict[str, Any]:

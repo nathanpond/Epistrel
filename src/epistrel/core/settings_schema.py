@@ -1032,15 +1032,24 @@ STAGING_TTL_MIN_S = 600
 STAGING_TTL_MAX_S = 86_400
 IMAGE_STAGING_SWEEP_TASK = "image_staging_sweep"
 """The image staging sweep's recurring task (and job kind; every 10 minutes, #256)."""
+DEFAULT_CANDIDATE_TTL_S = 7 * 24 * 3_600
+"""FR-IMG-7's default ``candidate_ttl``: seven days (``P7D``)."""
+CANDIDATE_TTL_MIN_S = 3_600
+CANDIDATE_TTL_MAX_S = 90 * 24 * 3_600
+DEFAULT_CATALOG_CANDIDATES_N = 4
+CATALOG_CANDIDATES_N_MAX = 10
+IMAGE_CANDIDATE_EXPIRY_TASK = "image_candidate_expiry"
+"""The catalog candidates' expiry (recurring task and job kind; hourly, #260)."""
 
 
 class ImageJobSettings(BaseModel):
     """How image jobs run (FR-IMG-3,4; #256), stored under ``deployment_state.settings``:
     ``image_retry_budget`` (0-5, default 2), how many times a story job generates again after
     every output of an attempt failed a check (FR-GUARD-6's bound, a key of its own beside the
-    text retry bound); and ``staging_ttl`` (600-86400 seconds, default one hour), the age past
-    which the staging sweep removes what a crashed job left in private staging. Prospective: a
-    job or sweep reads them when it starts."""
+    text retry bound); ``staging_ttl`` (600-86400 seconds, default one hour), the age past
+    which the staging sweep removes what a crashed job left in private staging; and #260's
+    ``candidate_ttl`` and ``catalog_candidates_n``. Prospective: a job or sweep reads them when
+    it starts."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -1050,6 +1059,24 @@ class ImageJobSettings(BaseModel):
     staging_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
         default=DEFAULT_STAGING_TTL_S, ge=STAGING_TTL_MIN_S, le=STAGING_TTL_MAX_S
     )
+    candidate_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CANDIDATE_TTL_S, ge=CANDIDATE_TTL_MIN_S, le=CANDIDATE_TTL_MAX_S
+    )
+    """How long an unattached catalog candidate lives (FR-IMG-7; #260), in seconds: default
+    seven days (``P7D``), whole hours from 1 hour to 90 days. Prospective: a candidate's
+    ``expires_at`` is fixed when it is promoted, and a change never moves existing ones."""
+    catalog_candidates_n: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CATALOG_CANDIDATES_N, ge=1, le=CATALOG_CANDIDATES_N_MAX
+    )
+    """How many candidates a catalog image request asks for when it names no ``n`` (FR-IMG-7;
+    default 4, 1 to 10; #262 owns its limits). Prospective."""
+
+    @field_validator("candidate_ttl")
+    @classmethod
+    def _whole_hours(cls, value: int) -> int:
+        if value % 3_600:
+            raise ValueError("candidate_ttl must be a whole number of hours, in seconds")
+        return value
 
 
 class ModelTiers(BaseModel):

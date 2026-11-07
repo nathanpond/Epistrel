@@ -61,6 +61,13 @@ UNKEYED_WRITES = {
         "an export file's deletion (#126): 204 also when the file is already gone; the export's "
         "record stays, so a repeat adds nothing"
     ),
+    "discard_image_candidate_character": (
+        "a catalog image candidate's discard (#260): 204 also for an unknown or discarded one, "
+        "so a repeat answers the same and changes nothing"
+    ),
+    "discard_image_candidate_scenario": (
+        "a catalog image candidate's discard (#260): 204 also for an unknown or discarded one"
+    ),
     "cancel_image_job": (
         "an image job's cancel (#256, docs/02 §9): a job that already ended is answered "
         "unchanged, so a repeat answers the same state and records nothing more"

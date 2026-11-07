@@ -78,6 +78,9 @@ class ImageJob:
     safety_context: dict[str, Any] | None = None
     """#257: the prompt check's safety context (``core.images.safety.SafetyContext.as_json``),
     which the output check reads (#258). Never returned by a read."""
+    result: dict[str, Any] | None = None
+    """#260: what a successful job made beyond ``asset_ids`` (a catalog job's
+    ``{candidate_ids}``)."""
 
     @property
     def terminal(self) -> bool:
@@ -133,6 +136,7 @@ def _job(row: Any) -> ImageJob:
         created_at=m["created_at"],
         updated_at=m["updated_at"],
         safety_context=None if m["safety_context"] is None else dict(m["safety_context"]),
+        result=None if m["result"] is None else dict(m["result"]),
     )
 
 
@@ -319,6 +323,13 @@ async def next_attempt(conn: AsyncConnection, job_id: str, old_token: str) -> st
     return token
 
 
+async def set_result(conn: AsyncConnection, job_id: str, result: Mapping[str, Any]) -> None:
+    """Record what the job made (``image_jobs.result``; #260), in ``conn``'s transaction."""
+    await conn.execute(
+        update(image_jobs).where(image_jobs.c.id == job_id).values(result=dict(result))
+    )
+
+
 async def append_policy_results(
     conn: AsyncConnection, job_id: str, results: Sequence[Mapping[str, Any]]
 ) -> None:
@@ -411,6 +422,7 @@ __all__ = [
     "read_reservation",
     "read_statuses",
     "reservations",
+    "set_result",
     "set_status",
     "update_reservation",
 ]

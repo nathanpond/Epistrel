@@ -279,6 +279,9 @@ ERROR_STATUS: dict[str, int] = {
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
+    "candidate_stale": 409,
+    "not_configured": 409,
+    "image_check_unconfigured": 409,
     "feedback_tag_in_use": 409,
     "listing_status_in_use": 409,
     "offboarding_in_progress": 409,
@@ -343,6 +346,7 @@ ERROR_STATUS: dict[str, int] = {
     "invalid_profile": 422,
     "locked_slot_reassigned": 422,
     "media_retired": 422,
+    "candidate_not_found": 422,
     "moderation_rejected": 422,
     "not_published": 422,
     "nothing_to_regenerate": 422,
@@ -955,6 +959,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "entry_archived",
         "rating_retired",
         "media_retired",
+        "candidate_not_found",
+        "candidate_stale",
     ),
     # A character's publish makes its companion's version too (#116): each refusal may be the
     # companion's (``details.entity``).
@@ -977,6 +983,49 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "erasure_pending",
     ),
     "get_character": ("not_published",),
+    # Catalog image candidates (#260): a request is refused before any job when no adapter or
+    # checker is configured, the entry is archived, the prompt cannot be built or violates a
+    # policy; a candidate's reads are 404 alike for every candidate that is not live.
+    **{
+        f"request_catalog_images_{kind}": (
+            "not_found",
+            "entry_archived",
+            "not_configured",
+            "image_check_unconfigured",
+            "guardrail_violation",
+            "image_prompt_unavailable",
+            "model_unavailable",
+            "erasure_pending",
+        )
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"list_image_candidates_{kind}": ("not_found", "erasure_pending")
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"get_image_candidate_content_{kind}": (
+            "not_found",
+            "range_not_satisfiable",
+            "media_store_unavailable",
+            "erasure_pending",
+        )
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"get_image_candidate_url_{kind}": (
+            "not_found",
+            "config_missing",
+            "config_key_missing",
+            "media_store_unavailable",
+            "erasure_pending",
+        )
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"discard_image_candidate_{kind}": ("erasure_pending",)
+        for kind in ("character", "scenario")
+    },
     "create_scenario_draft": _SCENARIO_SAVE,
     # A companion scenario (#116): its slots are fixed, and it is archived, unarchived and
     # deleted only with its character.
@@ -985,6 +1034,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "entry_archived",
         *_SCENARIO_SAVE,
         "companion_slots_fixed",
+        "candidate_not_found",
+        "candidate_stale",
     ),
     "publish_scenario": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
     "archive_scenario": ("companion_follows_character",),

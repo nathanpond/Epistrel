@@ -502,9 +502,13 @@ def entity_tags(value: str | None) -> list[str]:
     return [tag.strip() for tag in value.split(",") if tag.strip()]
 
 
+PRIVATE_CACHE_CONTROL = "private, no-store"
+"""A catalog image candidate's content (#260): never cached, unlike an asset's immutable bytes."""
+
+
 def _content_headers(content: MediaContent) -> dict[str, str]:
     headers = {
-        "Cache-Control": CACHE_CONTROL,
+        "Cache-Control": PRIVATE_CACHE_CONTROL if content.private else CACHE_CONTROL,
         "Accept-Ranges": "bytes",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": EXPOSED_HEADERS,
@@ -564,6 +568,13 @@ async def _content(
         if_range=if_range.strip() if if_range is not None else None,
         with_bytes=with_bytes,
     )
+    return await content_response(content, with_bytes=with_bytes)
+
+
+async def content_response(content: MediaContent, *, with_bytes: bool = True) -> Response:
+    """The answer for opened content (#107's delivery, shared with #260's candidate content):
+    200, 206 with ``Content-Range`` or 304, with the entity tag, ``Accept-Ranges`` and the
+    cache header (``private, no-store`` for a candidate); the body streams and closes after."""
     headers = _content_headers(content)
     if not with_bytes or content.not_modified:
         await content.aclose()
@@ -587,6 +598,8 @@ ExpQuery = Annotated[
 ]
 SigQuery = Annotated[str | None, Query(max_length=SIG_MAX, description="A signed URL's signature.")]
 RangeHeader = Annotated[str | None, Header(alias="Range", description=RANGE_DESCRIPTION)]
+CONTENT_HEADERS_DOC = _HEADERS_DOC
+"""The content headers' documentation, shared with #260's candidate content routes."""
 IfNoneMatchHeader = Annotated[
     str | None,
     Header(

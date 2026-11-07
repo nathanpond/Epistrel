@@ -15,6 +15,7 @@ from epistrel.api.routes import (
     amendments,
     backfill,
     catalog_characters,
+    catalog_images,
     catalog_scenarios,
     certifications,
     clock,
@@ -70,6 +71,8 @@ router.include_router(operations.router)
 router.include_router(operations.story_router)
 router.include_router(catalog_characters.router)
 router.include_router(catalog_scenarios.router)
+router.include_router(catalog_images.characters)
+router.include_router(catalog_images.scenarios)
 router.include_router(media.router)
 router.include_router(image_jobs.router)
 router.include_router(image_prompts.router)

@@ -186,6 +186,12 @@ class ImageCheckRequired(EpistrelError):
     http_status = 409
 
 
+class TargetGone(Exception):
+    """The job's target no longer exists (a catalog entry deleted, #260; a story, #263): raised
+    by a target's ``revalidate`` (at claim and before each provider call) or its ``promote``,
+    it ends the job ``target_gone`` with nothing promoted and its staging deleted."""
+
+
 class ImageCheckUnavailable(Exception):
     """The output check gave no verdict (unavailable, timed out after its retries, or not
     delivered): the check is retried on the same bytes, then the job fails
@@ -411,6 +417,14 @@ class ImageTarget(Protocol):
     async def result_ids(self, conn: AsyncConnection, job: ImageJob) -> tuple[str, list[str]]: ...
 
 
+async def revalidate(target: ImageTarget, conn: AsyncConnection, job: ImageJob) -> None:
+    """The target's optional ``revalidate(conn, job)`` (#260): raises ``TargetGone`` when the
+    target no longer exists. A target without one is never gone before promotion."""
+    check = getattr(target, "revalidate", None)
+    if check is not None:
+        await check(conn, job)
+
+
 class ImageChecks(Protocol):
     """The checks every request and output passes (#257, #258)."""
 
@@ -542,6 +556,17 @@ async def require_image_checker(models: ModelAccessLayer, db: AsyncEngine) -> No
     await ensure_image_check_configured(models, await image_output_policy_set(db))
 
 
+async def require_generation(models: ModelAccessLayer, db: AsyncEngine) -> None:
+    """``require_image_checker`` as a request refuses: 409 ``not_configured``, then 409
+    ``image_check_unconfigured`` (``ImageCheckRequired``, naming the policies)."""
+    try:
+        await require_image_checker(models, db)
+    except ImageCheckUnconfigured as exc:
+        raise ImageCheckRequired(
+            "image generation needs an image check model", {"policy_ids": list(exc.policy_ids)}
+        ) from None
+
+
 def check_request(
     kind: ImageJobKind, request: ImageJobRequest | Mapping[str, Any]
 ) -> ImageJobRequest:
@@ -584,12 +609,7 @@ async def prepare_image_job(
         raise InvalidRequest("a story image job names its story", {"field": "origin.story_id"})
     async with runtime.db.connect() as conn:
         await handler.validate_enqueue(conn, target, origin)
-    try:
-        await require_image_checker(runtime.models, runtime.db)
-    except ImageCheckUnconfigured as exc:
-        raise ImageCheckRequired(
-            "image generation needs an image check model", {"policy_ids": list(exc.policy_ids)}
-        ) from None
+    await require_generation(runtime.models, runtime.db)
     context = await image_checks().check_prompt(
         runtime, PromptCheck(kind, target, origin, found, principal, viewpoint)
     )
@@ -921,6 +941,8 @@ class ImageJobRunner:
             if job is None or job.terminal or job.attempt_token != attempt.token:
                 return {"image_job": None if job is None else job.status.value}
             if not attempt.outputs:
+                if await self._gone(job, target, attempt.token):
+                    return {"image_job": ImageJobStatus.TARGET_GONE.value}
                 sent = await self._generate(job, attempt, handle, params)
                 if sent is not None:
                     return sent
@@ -929,6 +951,23 @@ class ImageJobRunner:
                 return ended
             attempt = ended
         return {"image_job": "fenced"}
+
+    async def _gone(self, job: ImageJob, target: ImageTarget, token: str) -> bool:
+        """Whether the target is gone (``revalidate``): then the job ends ``target_gone`` at
+        once, with no provider call."""
+        try:
+            async with self.rt.db.connect() as conn:
+                await revalidate(target, conn, job)
+        except TargetGone:
+            await end_job(
+                self.rt,
+                job.id,
+                ImageJobStatus.TARGET_GONE,
+                token=token,
+                outcome=AttemptOutcome.DISCARDED,
+            )
+            return True
+        return False
 
     # -- attempts ---------------------------------------------------------------------------
 
@@ -1328,6 +1367,37 @@ class ImageJobRunner:
                 )
             )
         asset_ids: list[str] = []
+        try:
+            fenced, asset_ids = await self._promote_in_transaction(job, attempt, target, promotable)
+        except TargetGone:
+            # Nothing was promoted (the transaction rolled back); the blobs already copied to
+            # their keys are left to the media sweep's orphan step.
+            await end_job(
+                self.rt,
+                job.id,
+                ImageJobStatus.TARGET_GONE,
+                token=attempt.token,
+                outcome=AttemptOutcome.DISCARDED,
+            )
+            return {"image_job": ImageJobStatus.TARGET_GONE.value}
+        if fenced:
+            logger.info("image job %s: promotion refused, the attempt was fenced", job.id)
+            await asyncio.to_thread(self._remove_attempt, job.id, attempt.token)
+            return {"image_job": "fenced"}
+        await _delete_staging(self.rt.media, job.id)
+        logger.info("image job %s promoted %d output(s)", job.id, len(asset_ids))
+        return {"image_job": target.success_status.value, "assets": len(asset_ids)}
+
+    async def _promote_in_transaction(
+        self,
+        job: ImageJob,
+        attempt: _Attempt,
+        target: ImageTarget,
+        promotable: Sequence[PromotableOutput],
+    ) -> tuple[bool, list[str]]:
+        """The promotion's one transaction: ``(fenced, asset_ids)``. ``TargetGone`` from the
+        target's ``promote`` rolls it back."""
+        asset_ids: list[str] = []
         async with self.rt.db.begin() as conn:
             current = await store.read_job(conn, job.id, lock=True)
             if (
@@ -1357,13 +1427,7 @@ class ImageJobRunner:
                 assert ended is not None  # noqa: S101 - locked above
                 await target.on_terminal(conn, ended)
                 crash.hit("images.promote.before_commit")
-        if fenced:
-            logger.info("image job %s: promotion refused, the attempt was fenced", job.id)
-            await asyncio.to_thread(self._remove_attempt, job.id, attempt.token)
-            return {"image_job": "fenced"}
-        await _delete_staging(self.rt.media, job.id)
-        logger.info("image job %s promoted %d output(s)", job.id, len(asset_ids))
-        return {"image_job": target.success_status.value, "assets": len(asset_ids)}
+        return fenced, asset_ids
 
 
 async def run_image_job(runtime: ImageRuntime, job_id: str, failures: int) -> dict[str, Any]:
@@ -1684,6 +1748,7 @@ __all__ = [
     "PromotableOutput",
     "PromptCheck",
     "StagedOutput",
+    "TargetGone",
     "TooManyWaiters",
     "bind",
     "bound",
@@ -1700,7 +1765,9 @@ __all__ = [
     "prepare_image_job",
     "read_view",
     "register_target",
+    "require_generation",
     "require_image_checker",
+    "revalidate",
     "run_image_job",
     "set_image_checks",
     "sweep_staging",

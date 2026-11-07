@@ -857,6 +857,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "what names a subject is #266's, with the images themselves",
     "image_reservations": "one provider attempt per row (#256): tokens, send states, provider "
     "references, applied parameters and counts, no prompt",
+    "image_candidates": "a catalog candidate's ids, slot, draft revision, fingerprint and expiry "
+    "(#260), no text; its asset row is #266's, with the images themselves",
     "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "
     "counts (#249); the archive's own lines are not indexed",
     "timers": "transient: a timer's kind and target id",

@@ -73,9 +73,11 @@ from epistrel.core.catalog import promote as catalog_promote
 from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
+from epistrel.core.catalog import service as catalog_service
 from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
+from epistrel.core.config_changes import read_section
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import (
     BeliefKind,
@@ -120,6 +122,7 @@ from epistrel.core.idempotency import (
 )
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
+from epistrel.core.images import candidates as image_candidates
 from epistrel.core.images import perceived as image_perceived
 from epistrel.core.media import assets as media
 from epistrel.core.media import sweep as media_sweep
@@ -148,7 +151,12 @@ from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
-from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
+from epistrel.core.settings_schema import (
+    ConfigClass,
+    ImageJobSettings,
+    PlayerView,
+    StorySettings,
+)
 from epistrel.core.states import api as state_api
 from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
@@ -187,7 +195,9 @@ from epistrel.orchestrator.images import output_check, prompt_builder
 from epistrel.orchestrator.images import registry as image_registry
 from epistrel.orchestrator.images import safety_checks as image_safety
 from epistrel.orchestrator.images.params import ImageGenerationParams
+from epistrel.orchestrator.images.port import MAX_REFERENCE_IMAGES
 from epistrel.orchestrator.images.references import MediaReferences
+from epistrel.orchestrator.images.targets import catalog as catalog_images
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
@@ -562,6 +572,16 @@ def _ownership_codecs() -> dict[str, ResultCodec[Any]]:
 
 
 CODECS.update(_ownership_codecs())
+# A catalog entry's image candidates (#260): one method, one codec per kind (the key is the route's
+# ``operation_id``, ``request_catalog_images_character``), deployment-scoped.
+CODECS.update(
+    {
+        f"request_catalog_images_{kind}": ResultCodec.of(
+            catalog_images.CatalogImagesQueued, status=202, revision_field=_CONFIG
+        )
+        for kind in catalog_images.ENTRY_KINDS
+    }
+)
 # A catalog entry's listing status (#110): one method, one codec per catalog kind (the key is the
 # route's ``operation_id``, ``set_listing_status_character``), deployment-scoped.
 CODECS.update(
@@ -4912,11 +4932,18 @@ class Engine:
         """Delete the entry and its versions, from any status, with a ``catalog_entry_deleted``
         audit row. Stories created from it keep their snapshot and provenance (FR-CAT-9)."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> catalog_characters.DeletedCharacter:
+            async with self.db.connect() as conn:
+                companions = await image_candidates.companions_of(conn, character_id)
+                entries = [("character", character_id), *(("scenario", c) for c in companions)]
+                checksums = await image_candidates.entry_checksums(conn, entries)
+            deleted = await catalog_characters.delete(self.db, character_id, principal=principal)
+            await self._collect(checksums)
+            return deleted
+
         return await self._keyed(
-            ctx,
-            "delete_character",
-            lambda _: catalog_characters.delete(self.db, character_id, principal=principal),
-            material={"character_id": character_id},
+            ctx, "delete_character", run, material={"character_id": character_id}
         )
 
     @refuses_nul()
@@ -5076,12 +5103,17 @@ class Engine:
         ``catalog_entry_deleted`` audit row. Stories created from it keep their snapshot and
         provenance (FR-CAT-9)."""
         principal = self.require_principal(ctx)
-        return await self._keyed(
-            ctx,
-            "delete_scenario",
-            lambda _: catalog_scenarios.delete(self.db, scenario_id, principal=principal),
-            material={"scenario_id": scenario_id},
-        )
+
+        async def run(_: RequestContext) -> catalog_scenarios.DeletedScenario:
+            async with self.db.connect() as conn:
+                checksums = await image_candidates.entry_checksums(
+                    conn, [("scenario", scenario_id)]
+                )
+            deleted = await catalog_scenarios.delete(self.db, scenario_id, principal=principal)
+            await self._collect(checksums)
+            return deleted
+
+        return await self._keyed(ctx, "delete_scenario", run, material={"scenario_id": scenario_id})
 
     @refuses_nul()
     async def get_scenario(
@@ -5664,6 +5696,233 @@ class Engine:
         return prompt_builder.DraftedBaseAppearance(
             base_appearance_prompt=drafted, draft_revision=inputs.draft_revision
         )
+
+    # -- catalog image candidates (FR-IMG-4,7; #260) ------------------------------------------
+    # One method per operation for both kinds, naming its entry ``character_id=`` or
+    # ``scenario_id=`` (so the catalog gate, #346, applies), each served by one route per kind.
+    # Attaching a candidate is an ordinary draft save naming ``{candidate_id}``.
+
+    async def _collect(self, checksums: Sequence[str]) -> None:
+        """Delete each blob no asset row names any more (#105's checksum-guarded delete), once
+        the write that freed it committed; a failure is left to the media sweep's orphan
+        step."""
+        for checksum in checksums:
+            try:
+                await media_sweep.collect_blob(self.db, self.media, checksum)
+            except Exception as exc:
+                logger.warning("blob not collected after commit: %s", type(exc).__name__)
+
+    async def request_catalog_images(
+        self,
+        ctx: RequestContext,
+        request: catalog_images.CatalogImageRequest,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> catalog_images.CatalogImagesQueued:
+        """Generate ``request.n`` private candidate images for a catalog character's
+        ``primary`` or ``gallery`` image or a scenario's ``cover`` (FR-IMG-7), from its draft's
+        perceivable inputs (#259) under its rating's guidance and image policies (#257): 202
+        ``{job_id, status: queued}``; follow it at ``GET /image-jobs/{id}``, which ends
+        ``candidates_ready`` with the ``candidate_ids`` (or ``failed`` when none passed). The
+        job records the draft revision and image-input fingerprint it was built from. Nothing
+        is attached: an author attaches a candidate with a draft save naming
+        ``{candidate_id}``. Refused before any job, reservation or provider call: 404 for an
+        unknown entry, 422 ``entry_archived``, 409 ``not_configured`` without an image adapter,
+        409 ``image_check_unconfigured`` while an image-output policy applies and
+        ``image_check`` is unset, 422 for a ``slot`` the kind's images cannot have, the
+        builder's 422 and 503 and the prompt check's 422 ``guardrail_violation``. Idempotent
+        under its key (deployment-scoped); the request never saves or advances the draft."""
+        principal = self.require_principal(ctx)
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        if request.slot not in image_candidates.SLOTS[kind]:
+            allowed = ", ".join(sorted(image_candidates.SLOTS[kind]))
+            raise InvalidRequest(
+                f"a {kind}'s image slot is one of {allowed}", {"field": "body.slot"}
+            )
+
+        async def run(_: RequestContext) -> catalog_images.CatalogImagesQueued:
+            async with self.db.connect() as conn:
+                await catalog_images.require_editable(conn, kind, entry_id)
+            await image_jobs.require_generation(self.models, self.db)
+            settings = await read_section(self.db, ImageJobSettings)
+            deployment = await self._image_deployment()
+            async with self.db.connect() as conn, conn.begin():
+                resolved = await image_perceived.resolve_target(conn, kind, entry_id, draft=True)
+                document, _rating = await image_perceived.entry_document(conn, resolved)
+                view = await prompt_builder.build_catalog_image_inputs(
+                    conn,
+                    kind,
+                    entry_id,
+                    draft_revision=resolved.draft_revision,
+                    purpose=request.slot,
+                    deployment=deployment,
+                )
+                fingerprint = await image_candidates.image_input_fingerprint(
+                    conn, kind, entry_id, document
+                )
+            built = await prompt_builder.write_image_prompt(self.models, view)
+            job_request = image_jobs.ImageJobRequest(
+                prompt=built.prompt,
+                negative_prompt=built.negative_prompt,
+                n=request.n or settings.catalog_candidates_n,
+                seed=built.seed,
+                size=built.size,
+                aspect_ratio=None if built.size is not None else built.aspect_ratio,
+                reference_image_ids=tuple(built.reference_image_ids)[:MAX_REFERENCE_IMAGES],
+            )
+            metadata = document.get("metadata") if isinstance(document, Mapping) else None
+            rating = metadata.get("content_rating_id") if isinstance(metadata, Mapping) else None
+            prepared = await image_jobs.prepare_image_job(
+                self.image_runtime(),
+                ImageJobKind.CATALOG,
+                {
+                    "entry_kind": kind,
+                    "entry_id": entry_id,
+                    "slot": request.slot,
+                    "content_rating_id": rating,
+                },
+                {
+                    "entry_kind": kind,
+                    "entry_id": entry_id,
+                    "draft_revision": resolved.draft_revision,
+                    "image_input_fingerprint": fingerprint,
+                },
+                job_request,
+                principal,
+            )
+            async with self.db.begin() as conn:
+                queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)
+                revision = await catalog_service.config_revision(conn)
+            return catalog_images.CatalogImagesQueued(queued.job_id, revision)
+
+        return await self._keyed(
+            ctx,
+            f"request_catalog_images_{kind}",
+            run,
+            material={
+                "entry_kind": kind,
+                "entry_id": entry_id,
+                "body": request.model_dump(mode="json", exclude_unset=True),
+            },
+        )
+
+    @refuses_nul()
+    async def list_image_candidates(
+        self,
+        ctx: RequestContext,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        job_id: str | None = None,
+        limit: int = image_candidates.LIST_DEFAULT,
+        cursor: str | None = None,
+    ) -> image_candidates.CandidatePage:
+        """The entry's live candidates (FR-IMG-7), oldest first (generation order), by
+        ``job_id`` when given (an unknown job: an empty page), ``limit`` 1 to 50 a page: each
+        with its slot, job, draft revision, expiry, whether it is ``stale`` (its image-input
+        fingerprint differs from the draft's now) and its image's metadata, check and
+        generation metadata. A candidate past its expiry is left out before the expiry task
+        deletes it. 404 for an unknown entry."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            entry = await catalog_images.require_entry(conn, kind, entry_id)
+            current = await image_candidates.image_input_fingerprint(
+                conn, kind, entry_id, entry.draft
+            )
+            return await image_candidates.list_for_entry(
+                conn,
+                kind,
+                entry_id,
+                current_fingerprint=current,
+                job_id=job_id,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    @refuses_nul()
+    async def get_image_candidate_content(
+        self,
+        ctx: RequestContext,
+        candidate_id: str,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        byte_range: media.ByteRange | None = None,
+        if_none_match: str | Sequence[str] = (),
+        if_range: str | None = None,
+        with_bytes: bool = True,
+    ) -> media.MediaContent:
+        """A live candidate's bytes, opened as ``get_media_content`` opens an asset's (``Range``,
+        ``If-None-Match``, ``If-Range``; FR-MEDIA-3), marked ``private`` (REST sends
+        ``Cache-Control: private, no-store``). 404 ``not_found`` for an unknown entry and for a
+        candidate that is unknown, another entry's, attached, discarded or expired alike."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            await catalog_images.require_entry(conn, kind, entry_id)
+            live = await image_candidates.live_candidate(conn, kind, entry_id, candidate_id)
+        return await media.open_content(
+            self.db,
+            self.media,
+            live.asset_id,
+            candidate=True,
+            byte_range=byte_range,
+            if_none_match=if_none_match,
+            if_range=if_range,
+            with_bytes=with_bytes,
+        )
+
+    @refuses_nul()
+    async def get_image_candidate_url(
+        self,
+        ctx: RequestContext,
+        candidate_id: str,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        ttl: int | None = None,
+    ) -> media.MediaUrl:
+        """A short-lived URL that serves a live candidate's bytes without the service
+        credential, valid ``ttl`` seconds (at most, and by default, ``media_signed_url_ttl``):
+        on S3 the store's presigned GET; on the local store Epistrel's signed ``GET
+        /media/{asset_id}/content?exp=&sig=`` under ``public_base_url``, invariant 4's one
+        signed route (ADR-152), which serves a candidate only with that signature. It stops
+        serving once the candidate is discarded or expires; after an attach it serves until
+        its expiry. 404 as ``get_image_candidate_content``; 503 ``config_missing`` or
+        ``config_key_missing`` as ``get_media_url``."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            await catalog_images.require_entry(conn, kind, entry_id)
+            live = await image_candidates.live_candidate(conn, kind, entry_id, candidate_id)
+        settings = await media.read_media_settings(self.db)
+        return await media.signed_url(
+            self.db,
+            self.media,
+            live.asset_id,
+            ttl_s=ttl,
+            settings=settings,
+            signer=self.signer,
+            candidate=True,
+        )
+
+    async def discard_image_candidate(
+        self,
+        ctx: RequestContext,
+        candidate_id: str,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> None:
+        """Discard a candidate before it expires (FR-IMG-7): its candidate row and asset row are
+        deleted, and its bytes once that commits unless another asset row has the same
+        checksum. Idempotent by design, so it takes no ``Idempotency-Key``: an unknown entry or
+        candidate, or one already discarded or attached, changes nothing (an attached
+        candidate's ``live`` asset is never touched)."""
+        self.require_principal(ctx)
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.begin() as conn:
+            checksums = await image_candidates.discard(conn, kind, entry_id, candidate_id)
+        await self._collect(checksums)
 
     # -- erasure (FR-ADMIN-2,6, NFR-PRIV-2; #124) -------------------------------------------------
 

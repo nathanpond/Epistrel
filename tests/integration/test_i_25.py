@@ -16,6 +16,7 @@ import asyncio
 import os
 import time
 from collections.abc import AsyncIterator, Iterator
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -30,6 +31,7 @@ from epistrel import engine as engine_module
 from epistrel.api import errors as api_errors
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.config import Settings
+from epistrel.core import clock
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind
 from epistrel.core.errors import MediaNotFound
@@ -52,7 +54,10 @@ from epistrel.testing.images import (
     installed_checks,
     registered_target,
 )
+from tests import catalog_image_support as cs
+from tests import image_prompt_support as ip
 from tests.auth_support import auth_settings
+from tests.catalog_support import PRINCIPAL as CATALOG_PRINCIPAL
 from tests.image_job_support import (
     CTX,
     HEADERS,
@@ -78,6 +83,8 @@ from tests.image_support import (
     registered,
     story_origin,
 )
+from tests.media_support import OPERATOR as MEDIA_OPERATOR
+from tests.media_support import set_media
 from tests.model_support import admin_client
 from tests.respond_support import body, new_story, played, respond_client
 
@@ -570,3 +577,329 @@ async def test_image_worker_concurrency_caps_claims(
     off = auth_settings(dummy_dsn, image_worker_concurrency=0)
     assert WorkerConfig.from_settings(off).kind_caps == {IMAGE_JOB_KIND: 0}
     assert image_jobs.IMAGE_JOB_KIND == IMAGE_JOB_KIND
+
+
+# -- catalog candidates (#260) ------------------------------------------------------------------
+
+
+def _ids(page: dict[str, Any]) -> list[str]:
+    return [item["candidate_id"] for item in page["items"]]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-7; FR-IMG-4; FR-CAT-3; FR-MEDIA-2")
+async def test_i_25__m8_candidates(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A request for four candidates of a character's primary image yields four checked
+    candidates and attaches none: the job ends ``candidates_ready`` with their ids, and each has
+    a ``candidate``-state asset owned by the entry's owner. They are listed and previewed
+    through the candidate routes only (content with ``Range`` and ``private, no-store``, and a
+    signed URL that serves without the credential), and are absent from ``GET /media``, the
+    media reads, the card and full projections. The staging sweep and the general media sweep
+    (run over seven days) leave them in place. Attaching one with a stale revision is 409
+    ``draft_stale``; after a tagline edit, with the current revision it attaches (the asset
+    ``live``, the card's primary its media id, the revision advanced, the candidate gone).
+    After an appearance edit another is listed ``stale`` and refused 409 ``candidate_stale``;
+    restored, it attaches after a publish. An unknown candidate is 422 ``candidate_not_found``.
+
+    Complements asserted: before attaching, the draft has no primary image and a credentialed
+    media read of a candidate is 404; the unattached sibling is still listed after an attach."""
+    async with cs.candidate_app(image_settings, engine) as app:
+        client = app.client
+        created = await cs.character(app)
+        character_id, revision = created["id"], created["draft_revision"]
+        job_id, ids = await cs.generated(app, character_id, Outputs(n=4, size=(71, 53)))
+        assert len(ids) == 4
+        rows = await cs.candidate_rows(engine, ids)
+        assert {r.state for r in rows} == {"candidate"}
+        assert len({r.checksum for r in rows}) == 4
+        assert {r.owner_principal for r in rows} == {CATALOG_PRINCIPAL}
+        assets = [r.asset_id for r in rows]
+        assert (await cs.draft(app, character_id))["images"].get("primary") is None
+
+        page = await cs.listed(app, character_id, job_id=job_id)
+        assert _ids(page) == ids
+        assert {i["stale"] for i in page["items"]} == {False}
+        assert page["items"][0]["media"]["check_status"] == "passed"
+        assert _ids(await cs.listed(app, character_id, job_id=new_ulid())) == []
+        first = await cs.listed(app, character_id, limit=3)
+        rest = await cs.listed(app, character_id, cursor=first["next_cursor"])
+        assert _ids(first) + _ids(rest) == ids
+
+        path = cs.candidate_path(character_id, ids[0])
+        content = await client.get(f"{path}/content", headers=HEADERS)
+        assert content.status_code == 200
+        assert content.headers["cache-control"] == "private, no-store"
+        ranged = await client.get(f"{path}/content", headers={**HEADERS, "Range": "bytes=0-3"})
+        assert ranged.status_code == 206
+        assert ranged.content == content.content[:4]
+        for media_path in (f"/media/{assets[0]}", f"/media/{assets[0]}/content"):
+            assert (await client.get(media_path, headers=HEADERS)).status_code == 404
+        assert (await client.get(f"/media/{assets[0]}/url", headers=HEADERS)).status_code == 404
+        listing = await client.get("/media", params={"limit": 200}, headers=HEADERS)
+        assert not {a["id"] for a in listing.json()["items"]} & set(assets)
+        state = await client.get("/media", params={"state": "candidate"}, headers=HEADERS)
+        assert state.status_code == 422
+
+        await set_media(client, public_base_url="https://epistrel.example")
+        try:
+            url = await client.get(f"{path}/url", headers=HEADERS)
+            assert url.status_code == 200, url.text
+            signed = url.json()["url"].removeprefix("https://epistrel.example")
+            assert signed.startswith(f"/media/{assets[0]}/content?")
+            anonymous = await client.get(signed)
+            assert anonymous.status_code == 200
+            assert anonymous.content == content.content
+        finally:
+            await set_media(client, public_base_url=None)
+
+        # The staging sweep and the general sweep, every day for seven days, leave them alone.
+        await image_jobs.sweep_staging(engine, app.lib.media, ttl_s=0)
+        for day in range(1, 8):
+            await media_sweep.sweep(engine, app.lib.media, now=clock.now() + timedelta(days=day))
+        assert _ids(await cs.listed(app, character_id)) == ids
+        assert {r.checksum for r in await cs.candidate_rows(engine, ids)} <= blobs(app.lib.media)
+
+        stale = await cs.save(
+            app,
+            character_id,
+            revision - 1 if revision > 1 else revision + 5,
+            public_card={"images": {"primary": {"candidate_id": ids[0]}}},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "draft_stale"
+        tagline = await cs.save(
+            app, character_id, revision, public_card={"public_description": "New."}
+        )
+        assert tagline.status_code == 200, tagline.text
+        revision = tagline.json()["draft_revision"]
+        attached = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"primary": {"candidate_id": ids[0]}}},
+        )
+        assert attached.status_code == 200, attached.text
+        assert attached.json()["draft_revision"] == revision + 1
+        revision = attached.json()["draft_revision"]
+        assert (await cs.asset(engine, assets[0])).state == "live"
+        assert (await cs.draft(app, character_id))["images"]["primary"]["media_id"] == assets[0]
+        assert (await client.get(f"/media/{assets[0]}", headers=HEADERS)).status_code == 200
+        assert _ids(await cs.listed(app, character_id)) == ids[1:]
+        assert (await client.get(f"{path}/content", headers=HEADERS)).status_code == 404
+
+        appearance = created["definition"]["appearance"]
+        changed = await cs.save(
+            app, character_id, revision, definition={"appearance": appearance + " Freckles."}
+        )
+        revision = changed.json()["draft_revision"]
+        assert {i["stale"] for i in (await cs.listed(app, character_id))["items"]} == {True}
+        refused = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"gallery": [{"candidate_id": ids[1]}]}},
+        )
+        assert refused.status_code == 409, refused.text
+        error = refused.json()["error"]
+        assert (error["code"], error["details"]["reason"]) == ("candidate_stale", "stale")
+        assert error["details"]["candidate_ids"] == [ids[1]]
+        restored = await cs.save(app, character_id, revision, definition={"appearance": appearance})
+        revision = restored.json()["draft_revision"]
+        published = await ip.publish(client, character_id, revision)
+        revision = published["draft_revision"]
+        later = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"gallery": [{"candidate_id": ids[1]}]}},
+        )
+        assert later.status_code == 200, later.text
+        assert (await cs.asset(engine, assets[1])).state == "live"
+        unknown = await cs.save(
+            app,
+            character_id,
+            later.json()["draft_revision"],
+            public_card={"images": {"primary": {"candidate_id": new_ulid()}}},
+        )
+        assert unknown.status_code == 422
+        assert unknown.json()["error"]["code"] == "candidate_not_found"
+        assert _ids(await cs.listed(app, character_id)) == ids[2:]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-7; FR-MEDIA-2")
+async def test_i_25__m8_candidate_expiry(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A candidate expires ``candidate_ttl`` (seven days by default) after promotion, fixed
+    then: the expiry deletes its row and its asset row, and its bytes unless another asset has
+    the same checksum. A candidate sharing its bytes with an attached image loses its rows and
+    keeps the bytes. A ``candidate_ttl`` change applies to later candidates only, and must be
+    whole hours.
+
+    Complement asserted: a minute before ``expires_at`` the expiry leaves both in place."""
+    from epistrel.orchestrator.jobs.handlers.image_candidate_expiry import expire
+
+    async with cs.candidate_app(image_settings, engine) as app:
+        created = await cs.character(app)
+        character_id, revision = created["id"], created["draft_revision"]
+        _, first = await cs.generated(app, character_id, Outputs(n=2, size=(73, 51)))
+        rows = await cs.candidate_rows(engine, first)
+        for row in rows:
+            left = row.expires_at - clock.now()
+            assert timedelta(days=7) - timedelta(minutes=5) < left <= timedelta(days=7)
+        attached = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"primary": {"candidate_id": first[0]}}},
+        )
+        assert attached.status_code == 200, attached.text
+        _, second = await cs.generated(app, character_id, Outputs(n=1, size=(73, 51)))
+        [twin] = await cs.candidate_rows(engine, second)
+        assert twin.checksum == rows[0].checksum
+        waiting = [first[1], second[0]]
+
+        await cs.expire_at(engine, waiting, "1 minute")
+        assert (await expire(engine, app.lib.media))["expired"] == 0
+        assert _ids(await cs.listed(app, character_id)) == waiting
+
+        await cs.expire_at(engine, waiting, "-1 minute")
+        assert (await expire(engine, app.lib.media))["expired"] == 2
+        assert await cs.candidate_rows(engine, waiting) == []
+        assert await cs.asset(engine, rows[1].asset_id) is None
+        assert await cs.asset(engine, twin.asset_id) is None
+        stored = blobs(app.lib.media)
+        assert rows[1].checksum not in stored
+        assert rows[0].checksum in stored
+        assert (await cs.asset(engine, rows[0].asset_id)).state == "live"
+        assert (await expire(engine, app.lib.media))["expired"] == 0
+
+        async with admin_client(image_settings, app.lib) as admin:
+            refused = await admin.put(
+                "/admin/settings", json={"candidate_ttl": 5_400}, headers=MEDIA_OPERATOR
+            )
+            assert refused.status_code == 422, refused.text
+            await set_media(admin, candidate_ttl=3_600)
+        try:
+            _, third = await cs.generated(app, character_id, Outputs(n=1, size=(73, 52)))
+            [row] = await cs.candidate_rows(engine, third)
+            assert row.expires_at - clock.now() <= timedelta(hours=1)
+        finally:
+            async with admin_client(image_settings, app.lib) as admin:
+                await set_media(admin, candidate_ttl=7 * 24 * 3_600)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4,7")
+async def test_i_25__m8_candidate_target_gone(
+    image_settings: Settings, engine: AsyncEngine
+) -> None:
+    """Deleting the entry while its job is queued ends the job ``target_gone`` with no provider
+    call and nothing promoted; deleting a character deletes its candidates and its companion
+    scenario's (a cover's), rows, assets and bytes. A slot the kind's images cannot have and an
+    ``n`` outside 1 to 10 are 422 before any job.
+
+    Complement asserted: before the delete the cover candidates are listed and their bytes
+    stored."""
+    async with cs.candidate_app(image_settings, engine) as app:
+        client = app.client
+        doomed, created = await cs.characters(app, 2)
+        app.script(Outputs(n=1, size=(75, 49)))
+        accepted = await cs.generate(app, doomed["id"], n=1)
+        assert accepted.status_code == 202, accepted.text
+        job_id = accepted.json()["job_id"]
+        deleted = await client.delete(f"{cs.CHARACTERS}/{doomed['id']}", headers=HEADERS)
+        assert deleted.status_code == 204, deleted.text
+        assert (await cs.run(app, job_id))["image_job"] == "target_gone"
+        assert app.generator.requests == []
+        assert app.generator.script  # the scripted output was never asked for
+        app.generator.script.clear()
+        job = (await client.get(f"/image-jobs/{job_id}", headers=HEADERS)).json()
+        assert (job["status"], job["candidate_ids"]) == ("target_gone", [])
+        assert staged(app.lib.media, job_id) == []
+
+        companion = (
+            created.get("companion_id") or (await cs.draft(app, created["id"]))["companion_id"]
+        )
+        for body in (
+            {"slot": "cover"},
+            {"slot": "primary", "n": 11},
+            {"slot": "primary", "n": 2.0},
+        ):
+            refused = await client.post(
+                f"{cs.CHARACTERS}/{created['id']}/images/generate", json=body, headers=HEADERS
+            )
+            assert refused.status_code == 422, body
+        wrong = await cs.generate(app, companion, kind="scenario", slot="primary")
+        assert wrong.status_code == 422
+        _, covers = await cs.generated(
+            app, companion, Outputs(n=2, size=(75, 48)), kind="scenario", slot="cover"
+        )
+        assert _ids(await cs.listed(app, companion, kind="scenario")) == covers
+        rows = await cs.candidate_rows(engine, covers)
+        assert {r.checksum for r in rows} <= blobs(app.lib.media)
+        gone = await client.delete(f"{cs.CHARACTERS}/{created['id']}", headers=HEADERS)
+        assert gone.status_code == 204, gone.text
+        assert await cs.candidate_rows(engine, covers) == []
+        for row in rows:
+            assert await cs.asset(engine, row.asset_id) is None
+            assert row.checksum not in blobs(app.lib.media)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-7")
+async def test_i_25__m8_candidate_discard(image_settings: Settings, engine: AsyncEngine) -> None:
+    """``DELETE …/images/candidates/{cid}`` discards a candidate: 204, its candidate and asset
+    rows gone and its bytes deleted. A second discard, an unknown candidate and an unknown
+    entry are 204 with no change. A candidate sharing its bytes with another asset leaves the
+    bytes, and discarding an attached candidate never touches its live asset.
+
+    Complement asserted: the undiscarded sibling is still listed and attachable."""
+    async with cs.candidate_app(image_settings, engine) as app:
+        client = app.client
+        created = await cs.character(app)
+        character_id, revision = created["id"], created["draft_revision"]
+        _, ids = await cs.generated(app, character_id, Outputs(n=3, size=(77, 47)))
+        rows = await cs.candidate_rows(engine, ids)
+        path = cs.candidate_path(character_id, ids[0])
+        for _ in range(2):
+            gone = await client.delete(path, headers=HEADERS)
+            assert gone.status_code == 204, gone.text
+            assert gone.content == b""
+        assert await cs.candidate_rows(engine, [ids[0]]) == []
+        assert await cs.asset(engine, rows[0].asset_id) is None
+        assert rows[0].checksum not in blobs(app.lib.media)
+        for other in (
+            cs.candidate_path(character_id, new_ulid()),
+            cs.candidate_path(new_ulid(), ids[1]),
+        ):
+            assert (await client.delete(other, headers=HEADERS)).status_code == 204
+        assert _ids(await cs.listed(app, character_id)) == ids[1:]
+
+        attached = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"primary": {"candidate_id": ids[1]}}},
+        )
+        assert attached.status_code == 200, attached.text
+        revision = attached.json()["draft_revision"]
+        assert (
+            await client.delete(cs.candidate_path(character_id, ids[1]), headers=HEADERS)
+        ).status_code == 204
+        assert (await cs.asset(engine, rows[1].asset_id)).state == "live"
+
+        _, twins = await cs.generated(app, character_id, Outputs(n=2, size=(77, 47)))
+        twin_rows = await cs.candidate_rows(engine, twins)
+        assert twin_rows[1].checksum == rows[1].checksum
+        assert (
+            await client.delete(cs.candidate_path(character_id, twins[1]), headers=HEADERS)
+        ).status_code == 204
+        assert rows[1].checksum in blobs(app.lib.media)
+
+        sibling = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"gallery": [{"candidate_id": ids[2]}]}},
+        )
+        assert sibling.status_code == 200, sibling.text

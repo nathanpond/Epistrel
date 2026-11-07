@@ -888,12 +888,25 @@ class CharacterDefinitionPatch(CharacterModel):
     safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
 
 
+class CandidateRef(CharacterModel):
+    """A catalog image candidate named in a draft save's image slot (FR-IMG-7; #260): the save
+    attaches it, and the slot holds its media id."""
+
+    candidate_id: Ulid = Field(description="The candidate to attach (`…/images/candidates`).")
+
+
+ImageRef = Ulid | CandidateRef
+"""An image slot's value in a draft save: a media id, or ``{candidate_id}`` to attach."""
+
+
 class CharacterImagesPatch(CharacterModel):
     """The images part of a draft patch: ``primary`` set or removed (``null``), and ``gallery``
-    replaced as a whole."""
+    replaced as a whole. Each image is a media id or ``{candidate_id}``, a candidate of this
+    character's to attach (FR-IMG-7): the save checks it is current (409 ``candidate_stale``
+    otherwise) and stores its media id."""
 
-    primary: Ulid | None = None
-    gallery: list[Ulid] | None = Field(default=None, max_length=GALLERY_MAX)
+    primary: ImageRef | None = None
+    gallery: list[ImageRef] | None = Field(default=None, max_length=GALLERY_MAX)
 
 
 class CharacterPublicCardPatch(CharacterModel):
@@ -982,6 +995,7 @@ __all__ = [
     "SAFE_FALLBACK_MAX",
     "SEED_MAX",
     "Audience",
+    "CandidateRef",
     "CardImage",
     "Caution",
     "CautionDisposition",
@@ -1009,6 +1023,7 @@ __all__ = [
     "DominanceDisposition",
     "Honesty",
     "HonestyDisposition",
+    "ImageRef",
     "InteractionStyle",
     "InteractionStylePatch",
     "LikesDislikes",

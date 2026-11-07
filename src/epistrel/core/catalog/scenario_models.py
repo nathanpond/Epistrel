@@ -963,7 +963,10 @@ class ScenarioPatch(BaseModel):
     by group — a key sets that field, ``null`` removes it, an object merges into the stored one
     and an array replaces it (``roles``, ``seeded_memories``, …) — with the ``draft_revision``
     it is based on (FR-CAT-3). The merged draft is validated as a whole: an invalid field is 422
-    at ``body.<path>``, wherever the field came from."""
+    at ``body.<path>``, wherever the field came from. ``public_card.media.cover`` and each
+    ``public_card.media.gallery`` item may be ``{candidate_id}``, a candidate of this scenario's
+    to attach (FR-IMG-7; #260): 409 ``candidate_stale`` or 422 ``candidate_not_found`` when it
+    cannot be."""
 
     model_config = ConfigDict(
         extra="forbid",

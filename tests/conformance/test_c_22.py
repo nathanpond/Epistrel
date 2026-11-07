@@ -45,6 +45,7 @@ from epistrel.testing.images import (
     installed_checks,
     registered_target,
 )
+from tests import catalog_image_support as cs
 from tests import image_prompt_support as ip
 from tests.image_job_support import (
     CTX,
@@ -80,7 +81,7 @@ from tests.image_support import (
     registered,
 )
 from tests.media_support import WRITE, files, metadata, png, upload, uploaded, video
-from tests.model_support import admin_client
+from tests.model_support import admin_client, put, put_key
 from tests.policy_support import OPERATOR, unique
 
 ADAPTER = "stub_sync"
@@ -625,3 +626,50 @@ async def test_c_22__m8_image_prompt_policy(image_settings: Settings, engine: As
         passed = await ip.built(client, "character", created["id"], "primary", draft=True)
         assert passed["prompt"].startswith("a tall woman on a pier")
         assert await ip.image_rows(engine) == before
+
+
+# -- catalog candidates (#260) ------------------------------------------------------------------
+
+
+async def _attempt_rows(engine: AsyncEngine) -> tuple[int, int]:
+    async with engine.connect() as conn:
+        jobs = int(await conn.scalar(text("SELECT count(*) FROM image_jobs")) or 0)
+        held = int(await conn.scalar(text("SELECT count(*) FROM image_reservations")) or 0)
+    return jobs, held
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-3,7")
+async def test_c_22__m8_candidate_no_checker(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A catalog image request with the image adapter configured and ``image_check`` unset,
+    while the seeded minors policy applies to image outputs, is 409
+    ``image_check_unconfigured`` naming it, with no ``image_reservations`` or ``image_jobs``
+    row and no adapter call. Without an adapter it is 409 ``not_configured`` and makes no job
+    either.
+
+    Complement asserted: with the checker set, the same request is 202."""
+    async with cs.candidate_app(image_settings, engine, adapter=False) as app:
+        [created] = await cs.characters(app, 1)
+        before = await _attempt_rows(engine)
+        missing = await cs.generate(app, created["id"], n=2)
+        assert missing.status_code == 409, missing.text
+        assert missing.json()["error"]["code"] == "not_configured"
+        assert await _attempt_rows(engine) == before
+
+        async with admin_client(image_settings, app.lib) as admin:
+            await put(admin, "image_generation", {"model": "img-1", "params": {"adapter": ADAPTER}})
+            await put_key(admin, "image_generation", "sk-image-test-0001")
+        unchecked = await cs.generate(app, created["id"], n=2)
+        assert unchecked.status_code == 409, unchecked.text
+        error = unchecked.json()["error"]
+        assert error["code"] == "image_check_unconfigured"
+        assert MINORS in error["details"]["policy_ids"]
+        assert await _attempt_rows(engine) == before
+        assert app.generator.requests == []
+
+        async with admin_client(image_settings, app.lib) as admin:
+            await put(admin, "image_check", {"model": "stub-vision"})
+        accepted = await cs.generate(app, created["id"], n=2)
+        assert accepted.status_code == 202, accepted.text
+        assert accepted.headers["location"] == f"/image-jobs/{accepted.json()['job_id']}"
+        assert (await _attempt_rows(engine))[0] == before[0] + 1

@@ -597,17 +597,31 @@
       "milestone": "M3"
     },
     {
-      "item": "images — generate candidates for a catalog entry",
+      "item": "images — generate candidates for a catalog entry (character)",
       "method": "POST",
-      "path": "/catalog/{type}/{id}/images/generate",
-      "status": "not_yet",
+      "path": "/catalog/characters/{character_id}/images/generate",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — attach a candidate to the draft",
+      "item": "images — generate candidates for a catalog entry (scenario)",
       "method": "POST",
-      "path": "/catalog/{type}/{id}/images/candidates/{cid}/attach",
-      "status": "not_yet",
+      "path": "/catalog/scenarios/{scenario_id}/images/generate",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — attach a candidate to the draft (character: a draft save naming {candidate_id})",
+      "method": "PATCH",
+      "path": "/catalog/characters/{character_id}",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — attach a candidate to the draft (scenario: a draft save naming {candidate_id})",
+      "method": "PATCH",
+      "path": "/catalog/scenarios/{scenario_id}",
+      "status": "present",
       "milestone": "M8"
     },
     {
@@ -639,24 +653,45 @@
       "milestone": "M8"
     },
     {
-      "item": "images — list a catalog job's candidates",
+      "item": "images — list a catalog job's candidates (character)",
       "method": "GET",
-      "path": "/catalog/{type}/{id}/images/candidates",
-      "status": "not_yet",
+      "path": "/catalog/characters/{character_id}/images/candidates",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — preview a candidate (content)",
+      "item": "images — list a catalog job's candidates (scenario)",
       "method": "GET",
-      "path": "/catalog/{type}/{id}/images/candidates/{cid}/content",
-      "status": "not_yet",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — preview a candidate (signed URL)",
+      "item": "images — preview a candidate (content) (character)",
       "method": "GET",
-      "path": "/catalog/{type}/{id}/images/candidates/{cid}/url",
-      "status": "not_yet",
+      "path": "/catalog/characters/{character_id}/images/candidates/{candidate_id}/content",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (content) (scenario)",
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}/content",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (signed URL) (character)",
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/images/candidates/{candidate_id}/url",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (signed URL) (scenario)",
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}/url",
+      "status": "present",
       "milestone": "M8"
     },
     {
@@ -802,7 +837,7 @@
     {
       "method": "GET",
       "path": "/stories/{story_id}/operations",
-      "why": "#681: the operations read's list, filterable by label (staged_turn, genesis, \u2026)"
+      "why": "#681: the operations read's list, filterable by label (staged_turn, genesis, …)"
     },
     {
       "method": "POST",
@@ -1063,6 +1098,16 @@
       "method": "POST",
       "path": "/catalog/characters/{character_id}/draft/visual-identity/draft-base-prompt",
       "why": "FR-CAT-4: a base appearance prompt drafted from the draft's appearance, not saved (#259)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/catalog/characters/{character_id}/images/candidates/{candidate_id}",
+      "why": "FR-IMG-7: discard a candidate before it expires (#260)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}",
+      "why": "FR-IMG-7: discard a candidate before it expires (#260)"
     }
   ],
   "outside": [

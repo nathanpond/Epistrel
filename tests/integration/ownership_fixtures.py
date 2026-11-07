@@ -222,6 +222,14 @@ async def _nothing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dic
     return {}
 
 
+UNKNOWN_CANDIDATE = "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+"""A candidate no entry has (#260): its reads are 404 and its discard 204 for anyone."""
+
+
+async def _no_candidate(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"candidate_id": UNKNOWN_CANDIDATE}
+
+
 CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
 
 
@@ -1007,6 +1015,14 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{C}/listing-status"): Call(200, {"value": "public"}),
     # the advisory rating table (#121), of the draft: a read that writes nothing
     ("POST", f"{C}/rating-suggestion"): Call(200),
+    # catalog image candidates (#260): with no image adapter configured a request is 409
+    # `not_configured` for anyone; the list reads; a candidate the entry never had is 404 to
+    # read and 204 to discard (idempotent). Ownership gates none of them (FR-AUTH-8).
+    ("POST", f"{C}/images/generate"): Call(409, {"slot": "primary"}),
+    ("GET", f"{C}/images/candidates"): Call(200),
+    ("GET", f"{C}/images/candidates/{{candidate_id}}/content"): Call(404, prepare=_no_candidate),
+    ("GET", f"{C}/images/candidates/{{candidate_id}}/url"): Call(404, prepare=_no_candidate),
+    ("DELETE", f"{C}/images/candidates/{{candidate_id}}"): Call(204, prepare=_no_candidate),
     # a base appearance prompt drafted from the draft, not saved (#259)
     ("POST", f"{C}/draft/visual-identity/draft-base-prompt"): Call(200),
     # -- catalog characters: reads of a `private` entry: the latest version as the card (the
@@ -1029,6 +1045,14 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{SC}/listing-status"): Call(200, {"value": "public"}),
     ("POST", f"{SC}/validate"): Call(200),  # a dry run that writes nothing (#111)
     ("POST", f"{SC}/rating-suggestion"): Call(200),  # the advisory rating table (#121)
+    # catalog image candidates (#260): with no image adapter configured a request is 409
+    # `not_configured` for anyone; the list reads; a candidate the entry never had is 404 to
+    # read and 204 to discard (idempotent). Ownership gates none of them (FR-AUTH-8).
+    ("POST", f"{SC}/images/generate"): Call(409, {"slot": "cover"}),
+    ("GET", f"{SC}/images/candidates"): Call(200),
+    ("GET", f"{SC}/images/candidates/{{candidate_id}}/content"): Call(404, prepare=_no_candidate),
+    ("GET", f"{SC}/images/candidates/{{candidate_id}}/url"): Call(404, prepare=_no_candidate),
+    ("DELETE", f"{SC}/images/candidates/{{candidate_id}}"): Call(204, prepare=_no_candidate),
     # -- scenarios: reads of a `private` scenario, as for catalog characters
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),

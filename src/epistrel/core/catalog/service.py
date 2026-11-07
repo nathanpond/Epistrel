@@ -31,7 +31,10 @@ shared with a character's publish, which publishes a companion version with it
   ``draft_too_large``) and writes it with a compare-and-set on ``draft_revision``. A save based
   on an older revision is 409 ``draft_stale`` (``details.current_draft_revision``) and changes
   nothing, so of two saves from the same revision exactly one succeeds. Every save bumps the
-  revision, even one that changes nothing.
+  revision, even one that changes nothing. An image slot may name a catalog image candidate
+  as ``{candidate_id}`` (FR-IMG-7; #260): the save attaches it in its transaction
+  (``core.images.candidates.attach``: 422 ``candidate_not_found``, then 409
+  ``candidate_stale``, after ``draft_stale``), and the slot holds its media id.
 - **Publish** compares ``draft_revision`` the same way, prepares the draft's validation outside
   any transaction (the input policies may call a model, #111), then, under the entry's row lock,
   compares the revision again and validates the draft: any error is 422 ``publish_invalid`` with
@@ -617,6 +620,16 @@ class CatalogService(ABC):
         async with db.connect() as conn:
             entry = await self.entry(conn, entry_id)
         self.refuse(entry, entry_id, draft_revision)
+        from epistrel.core.images import candidates  # here: it imports the catalog's models
+
+        kind = self.entity_type.value
+        attached = candidates.referenced_ids(kind, patch)
+        if attached:
+            # FR-IMG-7 (#260): a ``{candidate_id}`` in an image slot names a candidate; the
+            # merged draft holds its media id. ``attach`` checks it again under its lock.
+            async with db.connect() as conn:
+                media_ids = await candidates.resolve(conn, kind, entry_id, attached)
+            patch = candidates.substituted(kind, patch, media_ids)
         document = self.saving(entry, merge_patch(entry.draft, patch), patch)
         self.check_size(document)
         await pauses.pause(pauses.CATALOG_SAVE_BEFORE_CAS)
@@ -640,6 +653,19 @@ class CatalogService(ABC):
                 # Another save, publish or archive committed since the read (or the entry is
                 # gone).
                 raise self.conflict(await self.entry(conn, entry_id), entry_id, draft_revision)
+            if attached:
+                owner = await candidates.entry_owner(conn, kind, entry_id)
+                await candidates.attach(
+                    conn,
+                    kind,
+                    entry_id,
+                    attached,
+                    fingerprint=await candidates.image_input_fingerprint(
+                        conn, kind, entry_id, document
+                    ),
+                    owner=owner or str(entry.owner_principal),
+                    principal=principal,
+                )
             await self.checked(conn, document, entry.draft)
             await self.saved(conn, entry_id, document, entry.draft)
             await control.record_control_operation(conn, actor=principal)
@@ -914,6 +940,11 @@ class CatalogService(ABC):
             .where(self.versions.c.catalog_id == entry_id)
         )
         await self.forgotten(conn, entry_id)
+        # FR-IMG-7 (#260): its candidates go with it (their bytes are collected after commit,
+        # with the media sweep's orphan step as the backstop).
+        from epistrel.core.images import candidates  # here: it imports the catalog's models
+
+        await candidates.delete_for_entry(conn, self.entity_type.value, entry_id)
         await conn.execute(sql_delete(self.catalog).where(self.catalog.c.id == entry_id))
         return int(versions or 0)
 

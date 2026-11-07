@@ -43,7 +43,9 @@ and its bytes:
    runs steps 3 and 4 on its assembled bytes.
 
 **Reads.** ``get`` returns the metadata of a ``live`` or ``retired`` asset (a ``candidate`` is
-private, FR-IMG-7: 404). ``open_content`` opens its bytes, all of them or one byte range
+private, FR-IMG-7: 404; only a valid signed URL, which its entry's candidate URL route issues,
+or that route's own content read serves its bytes, #260). ``open_content`` opens its bytes, all
+of them or one byte range
 (``ByteRange``; FR-MEDIA-3: a file seek locally, a ``Range`` request on S3; 416
 ``range_not_satisfiable`` when no byte of it exists), answers ``not_modified`` to a matching
 ``If-None-Match`` before any range, and applies a range only when ``If-Range`` names the current
@@ -515,6 +517,8 @@ class MediaContent:
     start: int | None = None
     end: int | None = None
     not_modified: bool = False
+    private: bool = False
+    """A catalog image candidate's bytes (#260): sent ``Cache-Control: private, no-store``."""
     _closed: bool = field(default=False, repr=False)
 
     @property
@@ -1281,13 +1285,17 @@ async def open_content(
     if_none_match: Sequence[str] = (),
     if_range: str | None = None,
     with_bytes: bool = True,
+    candidate: bool = False,
 ) -> MediaContent:
     """The asset's bytes, opened (a ``live`` or ``retired`` asset), all of them or the one
     ``byte_range`` (applied only when ``if_range`` is absent or names the current entity tag;
     416 ``range_not_satisfiable`` when no byte of it exists). A matching ``if_none_match``
     answers ``not_modified`` first. With ``signed`` (the request carried a valid signed URL for
-    this asset) an upload still waiting for the moderation hook is served from staging too.
-    ``with_bytes`` false (``HEAD``) opens nothing. 404 otherwise."""
+    this asset) an upload still waiting for the moderation hook is served from staging too, and
+    so is a catalog image candidate (#260: its candidate URL is that signed URL); ``candidate``
+    serves a candidate too (its entry's candidate content route, which checked it). A
+    candidate's content is ``private``. Without either, a candidate is 404 like an unknown
+    asset. ``with_bytes`` false (``HEAD``) opens nothing. 404 otherwise."""
     async with db.connect() as conn:
         row = (
             await conn.execute(
@@ -1300,7 +1308,8 @@ async def open_content(
             )
         ).one_or_none()
     staged_path: Path | None = None
-    if row is not None and row.state != MediaState.CANDIDATE.value:
+    is_candidate = row is not None and row.state == MediaState.CANDIDATE.value
+    if row is not None and (not is_candidate or signed or candidate):
         mime_type, total, checksum = str(row.mime_type), int(row.size), str(row.checksum)
     elif row is None and signed:
         staged_path = store.staging_path(media_id)
@@ -1311,7 +1320,7 @@ async def open_content(
         mime_type, checksum = probe.sniff(head) or UNSPECIFIED_TYPE, None
     else:
         raise _not_found(media_id)
-    content = MediaContent(media_id, mime_type, total, checksum, total=total)
+    content = MediaContent(media_id, mime_type, total, checksum, total=total, private=is_candidate)
     if if_none_match and _etag_matches(if_none_match, content.etag):
         content.not_modified = True
         content.size = 0
@@ -1367,20 +1376,34 @@ async def signed_url(
     ttl_s: int | None,
     settings: MediaSettings,
     signer: Signer,
+    candidate: bool = False,
 ) -> MediaUrl:
     """``GET /media/{id}/url`` (FR-MEDIA-3): a URL that serves the asset's bytes without the
     service credential for ``ttl_s`` seconds (the setting ``media_signed_url_ttl`` when
     ``None``, never longer): the store's own presigned URL (S3), or Epistrel's signed content
     URL (local: 503 ``config_key_missing`` or ``config_missing`` for ``public_base_url``).
-    404 for an asset that is not ``live`` or ``retired``."""
+    404 for an asset that is not ``live`` or ``retired``; with ``candidate`` (#260: a catalog
+    image candidate's URL, which its entry's route checked), for one that is not a
+    ``candidate``. The local URL is invariant 4's one signed route either way (ADR-152)."""
     limit = settings.media_signed_url_ttl
     if ttl_s is not None and ttl_s < 1:
         raise InvalidRequest("ttl must be at least 1 second", {"field": "query.ttl"})
     seconds = limit if ttl_s is None else min(ttl_s, limit)
     async with db.connect() as conn:
-        asset = await read_asset(conn, media_id)
+        if candidate:
+            checksum = await conn.scalar(
+                select(media_assets.c.checksum).where(
+                    media_assets.c.id == media_id,
+                    media_assets.c.state == MediaState.CANDIDATE.value,
+                )
+            )
+            if checksum is None:
+                raise _not_found(media_id)
+            digest = str(checksum)
+        else:
+            digest = (await read_asset(conn, media_id)).checksum
     started = datetime.now(UTC)
-    presigned = await asyncio.to_thread(store.presign, asset.checksum, seconds)
+    presigned = await asyncio.to_thread(store.presign, digest, seconds)
     if presigned is not None:
         return MediaUrl(url=presigned, expires_at=started + timedelta(seconds=seconds))
     signer.require("EPISTREL_CONFIG_KEY is not set, so no signed media URL can be made")

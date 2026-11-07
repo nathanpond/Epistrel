@@ -505,6 +505,35 @@ class EntryArchived(EpistrelError):
     http_status = 422
 
 
+class CandidateNotFound(EpistrelError):
+    """A draft save names a catalog image candidate (``{candidate_id}``, FR-IMG-7; #260) that
+    cannot be attached: unknown, expired, already attached, discarded or another entry's, one
+    code for all of them so they cannot be told apart. Nothing is written. ``details``: the
+    entry and ``candidate_ids``, every offending candidate."""
+
+    code = "candidate_not_found"
+    http_status = 422
+
+
+class CandidateStale(EpistrelError):
+    """A draft save names a catalog image candidate generated from other image inputs than the
+    draft now has (FR-IMG-4,7; #260): its appearance, visual identity, true age, rating or style
+    changed. Nothing is written. ``details``: the entry, ``candidate_ids`` and ``reason:
+    stale`` (FR-IMG-7's word)."""
+
+    code = "candidate_stale"
+    http_status = 409
+
+
+class ImageCandidateNotFound(EpistrelError):
+    """A read or URL of a catalog image candidate that is not the entry's live candidate
+    (unknown, another entry's, attached, discarded or expired: indistinguishable; #260).
+    ``details``: the entry and ``candidate_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class NotPublished(EpistrelError):
     """A read of the published entry before its first publish: read the draft
     (``?draft=true``) instead. ``details``: the entry (``character_id`` or ``scenario_id``)."""

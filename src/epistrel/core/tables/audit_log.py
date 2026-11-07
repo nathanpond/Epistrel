@@ -51,6 +51,10 @@ class AuditKind(StrEnum):
     IMAGE_PROMPT_REJECTED = "image_prompt_rejected"
     """#257: an image prompt refused by the prompt check before any job (the target's kind and
     id, the entry point; the policy ids). Never the prompt (FR-GUARD-10, NFR-SEC-4)."""
+    IMAGE_UPLOAD_REJECTED = "image_upload_rejected"
+    """#258: an uploaded image (or a video's poster) refused by the output check before anything
+    was stored (the entry point, the request's operation id, the media kind; the policy ids).
+    Never the image or its hash (FR-GUARD-10)."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

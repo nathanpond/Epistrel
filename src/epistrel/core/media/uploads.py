@@ -82,6 +82,7 @@ from epistrel.core.media.assets import (
     MediaWrite,
     Prepared,
     Staged,
+    UploadImageCheck,
     check_declared_type,
     check_supplied_poster,
     check_type,
@@ -559,8 +560,10 @@ async def complete(
     settings: MediaSettings,
     signer: Signer,
     posters: PosterExtractor,
+    image_check: UploadImageCheck | None = None,
 ) -> MediaWrite:
-    """Complete a session into a ``live`` asset (see the module docstring)."""
+    """Complete a session into a ``live`` asset (see the module docstring), through the same
+    image check as a single-request upload (``image_check``, #258)."""
     staged: Staged | None = None
     prepared: Prepared | None = None
     assembling = False
@@ -604,6 +607,7 @@ async def complete(
                 signer=signer,
                 posters=posters,
                 poster_field=f"{POSTER_AT}.poster",
+                image_check=image_check,
             )
             media_id = await commit(conn, store, prepared, principal=principal, assembled=upload_id)
             await conn.execute(

@@ -74,10 +74,13 @@ def request_body(
     ``{"type": "json_schema", "json_schema": {"name", "schema"}}``; with ``strict`` (an
     api.anthropic.com endpoint, #761) it also carries ``"strict": true`` and the schema is its
     strict wire form (``provider_schema.strict_wire_schema``). A schema with no wire form is sent
-    as without ``strict``; ``structured_call`` never asks for one (``json_schema_mode``)."""
+    as without ``strict``; ``structured_call`` never asks for one (``json_schema_mode``). A
+    message with image parts is sent as a content array of ``text`` and ``image_url`` parts
+    (#258)."""
     body: dict[str, Any] = {
         "model": model,
-        "messages": [m.model_dump() for m in messages],
+        # A multimodal message's parts go as OpenAI's content array (#258).
+        "messages": [m.wire() for m in messages],
         "stream": False,
     }
     if sampling and params.temperature is not None:

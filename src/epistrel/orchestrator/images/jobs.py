@@ -48,10 +48,11 @@ outcome), never the image or its prompt.
 
 **Seams.** Targets (``ImageTarget``, registered by kind: ``catalog`` #260, ``story``
 #263/#264) and checks (``ImageChecks``: ``check_prompt`` #257, ``check_output`` #258;
-``set_image_checks``). The default prompt check is #257's. Until #258 the default output check
-fails closed: no applicable policy → the output stays ``unchecked``; ``image_check`` unset →
-``ImageCheckUnconfigured``; configured → ``ImageCheckUnavailable`` (no check is delivered
-yet, so nothing passes).
+``set_image_checks``). The default prompt check is #257's and the default output check #258's
+(``output_check``): no applicable policy → the output stays ``unchecked``; ``image_check``
+unset → ``ImageCheckUnconfigured``; a checker that cannot answer → ``ImageCheckUnavailable``.
+A promoted output's ``media_assets`` row carries the verdict's check fields
+(``insert_output_asset``).
 
 **Read and cancel.** ``read_view`` and ``cancel_job`` (``Engine.get_image_job`` /
 ``cancel_image_job``); ``ImageJobWaiters`` is the long poll's one-per-process ``LISTEN``
@@ -106,7 +107,7 @@ from epistrel.core.tables.images import (
     SendState,
     image_jobs,
 )
-from epistrel.core.tables.media import MediaState
+from epistrel.core.tables.media import CheckStatus, MediaSource, MediaState
 from epistrel.orchestrator.images import errors as adapter_errors
 from epistrel.orchestrator.images.params import (
     ImageGenerationParams,
@@ -311,7 +312,10 @@ class StagedOutput:
 
 @dataclass(frozen=True, slots=True)
 class PolicyVerdict:
-    """One applicable policy's result for one output (#258 fills ``certified``)."""
+    """One applicable policy's result for one output: ``pass`` or ``violation``, whether the
+    checker was uncertain (an ``allow`` policy's uncertain result is a pass), whether the checker
+    is certified for the policy (NFR-QUAL-12; #258), and the policy's version and name as they
+    were at check time."""
 
     policy_id: str
     result: Literal["pass", "violation"]
@@ -320,16 +324,32 @@ class PolicyVerdict:
     policy_version: int | None = None
     policy_name: str | None = None
 
+    def stored(self) -> dict[str, Any]:
+        """The result as ``media_assets.policy_results`` holds it."""
+        return {
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
+            "policy_name": self.policy_name,
+            "result": self.result,
+            "uncertain": self.uncertain,
+            "certified": self.certified,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class OutputVerdict:
-    """``check_output``'s answer (#258's type): every applicable policy's result, and the
-    checker model and its endpoint; no policy and no model means the image stays
-    ``unchecked``."""
+    """``check_output``'s answer (#258, ``orchestrator.images.output_check``): every applicable
+    policy's result, and the checker model, its endpoint's host and its fingerprint; no policy
+    and no model means the image stays ``unchecked``."""
 
     per_policy: tuple[PolicyVerdict, ...] = ()
     model: str | None = None
     endpoint: str | None = None
+    checker_fingerprint: str | None = None
+
+    def policy_results(self) -> list[dict[str, Any]]:
+        """``media_assets.policy_results``: the passes (a violating image is never stored)."""
+        return [v.stored() for v in self.per_policy if v.result == "pass"]
 
     @property
     def violations(self) -> list[str]:
@@ -444,8 +464,20 @@ class _Applies:
 
 
 class FailClosedChecks:
-    """The default checks: #257's prompt check (``safety_checks.check_image_prompt``), and an
-    output check that fails closed until #258 delivers its own (module docstring)."""
+    """The default checks: #257's prompt check (``safety_checks.check_image_prompt``) and #258's
+    output check (``output_check.OutputChecks``), which fails closed: ``image_check`` unset while
+    a policy applies is ``ImageCheckUnconfigured``, a checker that cannot answer is
+    ``ImageCheckUnavailable``."""
+
+    def __init__(self) -> None:
+        self._output: ImageChecks | None = None
+
+    def _checks(self) -> ImageChecks:
+        if self._output is None:
+            from epistrel.orchestrator.images.output_check import OutputChecks  # it imports us
+
+            self._output = OutputChecks()
+        return self._output
 
     async def check_prompt(self, runtime: ImageRuntime, check: PromptCheck) -> SafetyContext:
         from epistrel.orchestrator.images.safety_checks import check_image_prompt  # it imports us
@@ -455,11 +487,7 @@ class FailClosedChecks:
     async def check_output(
         self, runtime: ImageRuntime, job: ImageJob, output: StagedOutput
     ) -> OutputVerdict:
-        policies = await image_output_policy_set(runtime.db)
-        config = await ensure_image_check_configured(runtime.models, policies)
-        if config is None:
-            return OutputVerdict()
-        raise ImageCheckUnavailable("no output check is delivered")
+        return await self._checks().check_output(runtime, job, output)
 
 
 _CHECKS: list[ImageChecks] = [FailClosedChecks()]
@@ -1353,11 +1381,16 @@ async def insert_output_asset(
     owner: str,
     content_rating_version_id: str,
     depicted_subjects: Sequence[Mapping[str, Any]] = (),
+    source: MediaSource = MediaSource.GENERATED,
 ) -> str:
     """A target's promote: the output's ``media_assets`` row, its ``generation_metadata``
     holding adapter, model, endpoint, prompt, negative prompt, requested and applied parameters,
-    reference image ids, usage and cost (#258 adds the check fields, #266 the depicted
-    subjects)."""
+    reference image ids, usage and cost, and the output check's fields (#258: ``check_status``,
+    the checker's model and endpoint host, the per-policy results; #266 adds the depicted
+    subjects). ``source`` is ``generated`` for an Epistrel-built prompt and
+    ``generated_from_consumer_prompt`` for a consumer's (the target knows which, #263)."""
+    verdict = output.verdict
+    passed = verdict.check_status == "passed"
     return await store.insert_generated_asset(
         conn,
         checksum=output.sha256,
@@ -1373,6 +1406,11 @@ async def insert_output_asset(
         alt_text=job.params.get("alt_text"),
         caption=job.params.get("caption"),
         depicted_subjects=depicted_subjects,
+        source=source,
+        check_status=CheckStatus.PASSED if passed else CheckStatus.UNCHECKED,
+        check_model=verdict.model if passed else None,
+        check_endpoint=verdict.endpoint if passed else None,
+        policy_results=verdict.policy_results() if passed else [],
     )
 
 

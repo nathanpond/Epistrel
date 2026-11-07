@@ -9,8 +9,8 @@
   afresh each attempt.
 
 #257 adds ``test_c_22__m8_prompt`` (the prompt check before any generation); #258 adds
-``test_c_22__m8_output`` here. Every C-22 M8 part lives in this file (the
-traceability gate takes one file per test ID and milestone)."""
+``test_c_22__m8_output`` (the output check on generated and uploaded images). Every C-22 M8
+part lives in this file (the traceability gate takes one file per test ID and milestone)."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from epistrel.orchestrator.images import errors as adapter_errors
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images.registry import ImageCheckUnconfigured, ImageNotConfigured
 from epistrel.orchestrator.models.errors import ModelUnavailable
+from epistrel.orchestrator.policies.check import MINOR_INVOLVED
 from epistrel.orchestrator.policies.schemas import PolicyFields
 from epistrel.testing.images import (
     PASS,
@@ -67,7 +68,16 @@ from tests.image_safety_support import (
 )
 from tests.image_safety_support import MINORS as MINORS_CAST
 from tests.image_safety_support import origin as safety_origin
-from tests.image_support import Fail, Outputs, StubImageGenerator, catalog_origin, registered
+from tests.image_support import (
+    Fail,
+    Outputs,
+    StubImageChecker,
+    StubImageGenerator,
+    catalog_origin,
+    registered,
+)
+from tests.media_support import WRITE, files, metadata, png, upload, uploaded, video
+from tests.model_support import admin_client
 from tests.policy_support import OPERATOR, unique
 
 ADAPTER = "stub_sync"
@@ -426,3 +436,140 @@ async def test_c_22__m8_prompt(
         assert [v["policy_id"] for v in one.value.details["violations"]] == [policy_id]
         assert await enqueue(story, f"A {word} over the hills.")
     assert stub.requests == []
+
+
+async def _audited(engine: AsyncEngine, kind: str) -> list[Any]:
+    async with engine.connect() as conn:
+        return list(
+            (
+                await conn.execute(
+                    text(
+                        "SELECT principal, policy_ids, details FROM audit_log WHERE kind = :k "
+                        "ORDER BY at, id"
+                    ),
+                    {"k": kind},
+                )
+            ).all()
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-3")
+async def test_c_22__m8_output(
+    lib: Engine, image_settings: Settings, engine: AsyncEngine, target: TestImageTarget
+) -> None:
+    """The output check (#258), through the pipeline's default checks and the stub vision
+    checker.
+
+    - A stub checker flags every generated image for the minors policy: each output is
+      discarded, generation retries within ``image_retry_budget`` (1 + 2 adapter calls), and the
+      job fails ``guardrail_violation`` naming the policy, leaving no media row, no blob and an
+      ``image_output_rejected`` audit row per output.
+    - An upload with no checker configured is stored ``unchecked``. With a checker, a violating
+      upload is 422 ``guardrail_violation`` (FR-GUARD-10's envelope, "a minor is involved or
+      present") and no row or blob is created, while a clean upload is stored ``passed``. A
+      video's poster is checked the same way, and a refused poster refuses the whole video.
+
+    Complements asserted: with the checker answering ``pass`` the job promotes one asset that is
+    ``passed`` with the checker's model and endpoint and the minors policy's result; the
+    refused upload wrote an ``image_upload_rejected`` audit row with no image hash."""
+    stub = StubImageGenerator(script=[Outputs()] * 4)
+    vision = StubImageChecker(lib.models.stub)
+    story = (await whisper_story(engine, minors=False))[0]
+    async with admin_client(image_settings, lib) as client:
+        unchecked = await uploaded(client, caption="a quiet harbour")
+        assert (unchecked["source"], unchecked["check_status"], unchecked["check"]) == (
+            "uploaded",
+            "unchecked",
+            None,
+        )
+        with registered(ADAPTER, stub):
+            await configure(lib, image_settings, ADAPTER)
+            lib.models.stub.reset()
+            vision.answer({MINORS: "violation"})
+            before, stored = await counts(engine), blobs(lib.media)
+            failing = await insert(lib, prepared(story))
+            assert await _run(lib, failing) == {
+                "image_job": "failed",
+                "reason": "guardrail_violation",
+            }
+            assert len(stub.requests) == 3
+            view = await lib.get_image_job(CTX, failing)
+            assert (view.status, view.policy_ids, view.result_ids) == ("failed", (MINORS,), ())
+            assert await counts(engine) == before
+            assert blobs(lib.media) == stored
+            assert staged(lib.media, failing) == []
+            rejected = [
+                r
+                for r in await _audited(engine, "image_output_rejected")
+                if r.details["job_id"] == failing
+            ]
+            assert len(rejected) == 3
+            assert all(r.policy_ids == [MINORS] for r in rejected)
+            assert len(vision.calls) == 3
+
+            lib.models.stub.reset()
+            vision.answer({MINORS: "pass"})
+            passing = await insert(lib, prepared(story))
+            assert (await _run(lib, passing))["image_job"] == "promoted"
+            (asset_id,) = (await lib.get_image_job(CTX, passing)).result_ids
+            asset = (await lib.get_media(CTX, asset_id)).model_dump(mode="json")
+            assert (asset["source"], asset["check_status"]) == ("generated", "passed")
+            assert asset["check"]["model"] == "stub-vision"
+            assert asset["check"]["endpoint"]
+            assert [(p["policy_id"], p["result"]) for p in asset["check"]["policies"]] == [
+                (MINORS, "pass")
+            ]
+
+        lib.models.stub.reset()
+        vision.answer({MINORS: "violation"}, when="QUILLSHOT")
+        vision.answer({MINORS: "pass"})
+        before, stored = await counts(engine), blobs(lib.media)
+        audited = len(await _audited(engine, "image_upload_rejected"))
+        refused = await upload(client, png(), metadata(caption="QUILLSHOT at the harbour"))
+        assert refused.status_code == 422, refused.text
+        error = refused.json()["error"]
+        assert error["code"] == "guardrail_violation"
+        assert [v["policy_id"] for v in error["details"]["violations"]] == [MINORS]
+        assert MINOR_INVOLVED in error["message"]
+        assert await counts(engine) == before
+        assert blobs(lib.media) == stored
+        (row,) = (await _audited(engine, "image_upload_rejected"))[audited:]
+        assert row.policy_ids == [MINORS]
+        assert row.details["entry_point"] == "media_upload"
+        assert not ({"sha256", "checksum"} & set(row.details))
+
+        clean = await uploaded(client, caption="a quiet harbour at dawn")
+        assert (clean["source"], clean["check_status"]) == ("uploaded", "passed")
+        assert clean["check"]["model"] == "stub-vision"
+        assert [p["policy_id"] for p in clean["check"]["policies"]] == [MINORS]
+
+        # A video's poster is checked as an image upload is; a refused poster refuses the video.
+        lib.models.stub.reset()
+        vision.answer({MINORS: "violation"}, when="QUILLPOSTER")
+        vision.answer({MINORS: "pass"})
+
+        async def with_poster(caption: str) -> Any:
+            return await client.post(
+                "/media",
+                files={
+                    **files(
+                        video(), metadata(kind="video", caption=caption), content_type="video/mp4"
+                    ),
+                    "poster_file": ("poster.png", png(), "image/png"),
+                },
+                headers=WRITE,
+            )
+
+        before, stored = await counts(engine), blobs(lib.media)
+        refused_video = await with_poster("QUILLPOSTER at the pier")
+        assert refused_video.status_code == 422, refused_video.text
+        assert refused_video.json()["error"]["code"] == "guardrail_violation"
+        assert await counts(engine) == before
+        assert blobs(lib.media) == stored
+        kept = await with_poster("the pier at noon")
+        assert kept.status_code == 201, kept.text
+        clip = kept.json()
+        assert clip["check_status"] == "unchecked", "the image check judges images only"
+        poster = (await client.get(f"/media/{clip['poster_media_id']}", headers=WRITE)).json()
+        assert (poster["source"], poster["check_status"]) == ("uploaded", "passed")

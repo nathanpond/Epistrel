@@ -1130,6 +1130,11 @@ MEDIA_COLUMNS = {
     "created_at": ("timestamptz", "NO"),
     "created_by": ("text", "NO"),
     "poster_media_id": ("bpchar", "YES"),
+    # Migration 0134 (#258): the output check's fields.
+    "check_status": ("text", "NO"),
+    "check_model": ("text", "YES"),
+    "check_endpoint": ("text", "YES"),
+    "policy_results": ("jsonb", "NO"),
 }
 REFERENCE_COLUMNS = {
     "id": ("bpchar", "NO"),

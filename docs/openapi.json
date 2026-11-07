@@ -4137,7 +4137,7 @@
       },
       "CharacterImageDetail": {
         "additionalProperties": false,
-        "description": "An image as ``full`` shows it (FR-CAT-4; #105): the media asset's id and, from its live\nrow, its alt text, caption, MIME type, dimensions and generation metadata, exactly as stored\n(every field ``null`` for an asset no row holds).",
+        "description": "An image as `full` shows it. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
         "properties": {
           "alt_text": {
             "anyOf": [
@@ -4160,6 +4160,27 @@
               }
             ],
             "title": "Caption"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`passed` or `unchecked` (`null` for an asset no row holds). `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe."
           },
           "generation_metadata": {
             "anyOf": [
@@ -4198,6 +4219,16 @@
               }
             ],
             "title": "Mime Type"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "width": {
             "anyOf": [
@@ -5061,6 +5092,15 @@
         ],
         "title": "CheckProgressBody",
         "type": "object"
+      },
+      "CheckStatus": {
+        "description": "Whether Epistrel checked an image (FR-IMG-3,10; #258): ``passed`` every applicable\nimage-output policy under a named checker, or ``unchecked``: Epistrel did not check it\n(never a pass). A rejected image is never stored, so there is no third value.",
+        "enum": [
+          "passed",
+          "unchecked"
+        ],
+        "title": "CheckStatus",
+        "type": "string"
       },
       "CheckTargetBody": {
         "description": "The rating the check evaluates and the version id it evaluates.",
@@ -15563,6 +15603,33 @@
         "title": "IdentityItemBody",
         "type": "object"
       },
+      "ImageCheck": {
+        "description": "`unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "properties": {
+          "endpoint": {
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyCheck"
+            },
+            "title": "Policies",
+            "type": "array"
+          }
+        },
+        "required": [
+          "model",
+          "endpoint",
+          "policies"
+        ],
+        "title": "ImageCheck",
+        "type": "object"
+      },
       "ImageGenerationParams": {
         "additionalProperties": false,
         "description": "The ``image_generation`` row's ``params``: replaced in full by a ``PUT``; ``None``\ntakes the built-in default (module docs).",
@@ -18923,7 +18990,7 @@
         "type": "object"
       },
       "MediaAsset": {
-        "description": "A media asset's metadata (FR-MEDIA-1): its owner, kind, MIME type (sniffed from the\nbytes), size, dimensions or duration (``null`` when no probe could read them), SHA-256\nchecksum, content rating and the rating's version it was uploaded under, alt text, caption,\ngeneration metadata (as sent), source, state (``live``, or ``retired`` once deleted), the\nsubjects it depicts, who created it when, and, for a video, its poster's id (FR-MEDIA-3;\n``null`` for an image).",
+        "description": "A media asset's metadata. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
         "properties": {
           "alt_text": {
             "anyOf": [
@@ -18946,6 +19013,21 @@
               }
             ],
             "title": "Caption"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The checker and its per-policy results when `passed`; `null` when `unchecked`."
+          },
+          "check_status": {
+            "$ref": "#/components/schemas/CheckStatus",
+            "description": "`passed`: the image passed every applicable image-output policy under the checker `check` names; `unchecked`: Epistrel did not check it (a video, an upload with no checker configured, or an image no policy applies to). `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe."
           },
           "checksum": {
             "title": "Checksum",
@@ -19084,7 +19166,9 @@
           "depicted_subjects",
           "created_at",
           "created_by",
-          "poster_media_id"
+          "poster_media_id",
+          "check_status",
+          "check"
         ],
         "title": "MediaAsset",
         "type": "object"
@@ -19128,10 +19212,11 @@
         "type": "object"
       },
       "MediaSource": {
-        "description": "Where an asset came from: ``uploaded`` by the consumer, ``generated`` (M8), or\n``extracted``: a video's poster taken from its first frame with ffmpeg (#107).",
+        "description": "Where an asset came from (FR-IMG-10): ``uploaded`` by the consumer, ``generated`` from an\nEpistrel-built prompt, ``generated_from_consumer_prompt`` (#258), or ``extracted``: a video's\nposter taken from its first frame with ffmpeg (#107).",
         "enum": [
           "uploaded",
           "generated",
+          "generated_from_consumer_prompt",
           "extracted"
         ],
         "title": "MediaSource",
@@ -19260,7 +19345,7 @@
         "type": "object"
       },
       "MediaUploadedBody": {
-        "description": "The asset an upload stored, with the deployment's ``config_revision`` (unchanged).",
+        "description": "A media asset's metadata. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
         "properties": {
           "alt_text": {
             "anyOf": [
@@ -19283,6 +19368,21 @@
               }
             ],
             "title": "Caption"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The checker and its per-policy results when `passed`; `null` when `unchecked`."
+          },
+          "check_status": {
+            "$ref": "#/components/schemas/CheckStatus",
+            "description": "`passed`: the image passed every applicable image-output policy under the checker `check` names; `unchecked`: Epistrel did not check it (a video, an upload with no checker configured, or an image no policy applies to). `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe."
           },
           "checksum": {
             "title": "Checksum",
@@ -19437,7 +19537,9 @@
           "depicted_subjects",
           "created_at",
           "created_by",
-          "poster_media_id"
+          "poster_media_id",
+          "check_status",
+          "check"
         ],
         "title": "MediaUploadedBody",
         "type": "object"
@@ -24304,6 +24406,55 @@
           "retired_at"
         ],
         "title": "PolicyBody",
+        "type": "object"
+      },
+      "PolicyCheck": {
+        "description": "One applicable image-output policy's result for a ``passed`` image (FR-IMG-10): the\npolicy's id, version and name as they were when the image was checked, its result\n(``pass``; a violating image is never stored) and whether the checker is certified for\nthis policy (NFR-QUAL-12). Certification is per policy, never one status for the\nchecker.",
+        "properties": {
+          "certified": {
+            "title": "Certified",
+            "type": "boolean"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "result": {
+            "const": "pass",
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id",
+          "policy_version",
+          "name",
+          "result",
+          "certified"
+        ],
+        "title": "PolicyCheck",
         "type": "object"
       },
       "PolicyFields": {
@@ -33176,7 +33327,7 @@
       },
       "ReferenceImageDetail": {
         "additionalProperties": false,
-        "description": "A reference image as ``full`` shows it: its asset (see ``CharacterImageDetail``) and its\naudience.",
+        "description": "An image as `full` shows it. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
         "properties": {
           "alt_text": {
             "anyOf": [
@@ -33209,6 +33360,27 @@
               }
             ],
             "title": "Caption"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImageCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`passed` or `unchecked` (`null` for an asset no row holds). `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe."
           },
           "generation_metadata": {
             "anyOf": [
@@ -33247,6 +33419,16 @@
               }
             ],
             "title": "Mime Type"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MediaSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "width": {
             "anyOf": [
@@ -72067,7 +72249,7 @@
         ]
       },
       "post": {
-        "description": "A `multipart/form-data` body: the `metadata` part (JSON: `kind`, `content_rating_id`, `depicted_subjects`, optional `alt_text`, `caption`, `generation_metadata`, `owner`, and for a video `poster`), then the `file` part, then for a video an optional `poster_file` part (an image). The bytes' type is sniffed: it must be one of the deployment's `media_allowed_types` and agree with `kind` and the part's own `Content-Type` (else 415 `media_type_not_allowed`); larger than `media_max_bytes` is 413 `media_too_large`, and a body larger than `media_multipart_threshold` is 413 `use_multipart` (open a resumable upload instead). `depicted_subjects` is required (`[]` declares none; omitted: 422 `subjects_required`). Every video gets a poster: the `poster` named (a live image), the `poster_file` sent, or a PNG taken from its first frame with ffmpeg (422 `poster_required` without ffmpeg, 422 `poster_extraction_failed` when it fails); a poster stored with the video has its rating, owner and subjects. When the deployment configures a moderation hook, the upload (and a poster stored with it) is sent to it before anything is stored; `reject` is 422 `moderation_rejected`, and a hook that times out, cannot be reached or answers anything else is 503 `moderation_unavailable` (it fails closed). Identical bytes are stored once. Answers 201 with the asset.",
+        "description": "A `multipart/form-data` body: the `metadata` part (JSON: `kind`, `content_rating_id`, `depicted_subjects`, optional `alt_text`, `caption`, `generation_metadata`, `owner`, and for a video `poster`), then the `file` part, then for a video an optional `poster_file` part (an image). The bytes' type is sniffed: it must be one of the deployment's `media_allowed_types` and agree with `kind` and the part's own `Content-Type` (else 415 `media_type_not_allowed`); larger than `media_max_bytes` is 413 `media_too_large`, and a body larger than `media_multipart_threshold` is 413 `use_multipart` (open a resumable upload instead). `depicted_subjects` is required (`[]` declares none; omitted: 422 `subjects_required`). Every video gets a poster: the `poster` named (a live image), the `poster_file` sent, or a PNG taken from its first frame with ffmpeg (422 `poster_required` without ffmpeg, 422 `poster_extraction_failed` when it fails); a poster stored with the video has its rating, owner and subjects. When an `image_check` model is configured, an image (and a video's poster) is first checked in staging against every policy that applies to image outputs (the global, its rating's and its declared story characters' policies): a violation is 422 `guardrail_violation` listing the policies and nothing is stored (a refused poster refuses the video), a checker that cannot answer is 503 `image_check_unavailable`, and a passing image is stored `check_status: passed` with its per-policy results; without a checker it is stored `unchecked`. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe. When the deployment configures a moderation hook, the upload (and a poster stored with it) is sent to it before anything is stored; `reject` is 422 `moderation_rejected`, and a hook that times out, cannot be reached or answers anything else is 503 `moderation_unavailable` (it fails closed). Identical bytes are stored once. Answers 201 with the asset.",
         "operationId": "upload_media",
         "parameters": [
           {

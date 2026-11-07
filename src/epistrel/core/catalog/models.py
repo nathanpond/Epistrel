@@ -73,8 +73,10 @@ from epistrel.core.catalog.service import CardRating, PublishRequest, Revision
 from epistrel.core.enums import EntryStatus
 from epistrel.core.ids import Ulid
 from epistrel.core.json_numbers import require_finite
+from epistrel.core.media.checks import CHECK_STATEMENTS, ImageCheck
 from epistrel.core.ownership import Owner
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
+from epistrel.core.tables.media import CheckStatus, MediaSource
 from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 120
@@ -655,8 +657,13 @@ class CharacterCardImages(CharacterModel):
 
 class CharacterImageDetail(CharacterModel):
     """An image as ``full`` shows it (FR-CAT-4; #105): the media asset's id and, from its live
-    row, its alt text, caption, MIME type, dimensions and generation metadata, exactly as stored
-    (every field ``null`` for an asset no row holds)."""
+    row, its alt text, caption, MIME type, dimensions and generation metadata, exactly as stored,
+    and its source, check status and check (FR-IMG-10; #258) (every field ``null`` for an asset
+    no row holds)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"description": f"An image as `full` shows it. {CHECK_STATEMENTS}"}
+    )
 
     media_id: str
     alt_text: str | None = None
@@ -665,6 +672,13 @@ class CharacterImageDetail(CharacterModel):
     width: int | None = None
     height: int | None = None
     generation_metadata: dict[str, Any] | None = None
+    source: MediaSource | None = None
+    check_status: CheckStatus | None = Field(
+        default=None,
+        description="`passed` or `unchecked` (`null` for an asset no row holds). "
+        + CHECK_STATEMENTS,
+    )
+    check: ImageCheck | None = None
 
 
 class CharacterImagesDetail(CharacterModel):

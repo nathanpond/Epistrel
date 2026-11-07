@@ -37,7 +37,7 @@ from epistrel.core.tables.images import (
     image_jobs,
     image_reservations,
 )
-from epistrel.core.tables.media import MediaKind, MediaSource, MediaState, media_assets
+from epistrel.core.tables.media import CheckStatus, MediaKind, MediaSource, MediaState, media_assets
 
 CHANNEL_PREFIX = "image_job_"
 
@@ -352,9 +352,15 @@ async def insert_generated_asset(
     alt_text: str | None = None,
     caption: str | None = None,
     depicted_subjects: Sequence[Mapping[str, Any]] = (),
+    source: MediaSource = MediaSource.GENERATED,
+    check_status: CheckStatus = CheckStatus.UNCHECKED,
+    check_model: str | None = None,
+    check_endpoint: str | None = None,
+    policy_results: Sequence[Mapping[str, Any]] = (),
 ) -> str:
-    """A promoted output's ``media_assets`` row (``kind = image``, ``source = generated``) in
-    ``conn``'s transaction (a target's promote); its id. The blob ``checksum`` is already in the
+    """A promoted output's ``media_assets`` row (``kind = image``, ``source`` ``generated`` or
+    ``generated_from_consumer_prompt``, with its output check's fields, #258) in ``conn``'s
+    transaction (a target's promote); its id. The blob ``checksum`` is already in the
     store: until the transaction commits, nothing names it, and the media sweep's orphan step
     only removes a blob nothing names after an hour."""
     asset_id = new_ulid()
@@ -373,12 +379,16 @@ async def insert_generated_asset(
             alt_text=alt_text,
             caption=caption,
             generation_metadata=dict(generation_metadata),
-            source=MediaSource.GENERATED.value,
+            source=source.value,
             state=state.value,
             depicted_subjects=[dict(s) for s in depicted_subjects],
             created_at=clock.now(),
             created_by=created_by,
             poster_media_id=None,
+            check_status=check_status.value,
+            check_model=check_model,
+            check_endpoint=check_endpoint,
+            policy_results=[dict(r) for r in policy_results],
         )
     )
     return asset_id

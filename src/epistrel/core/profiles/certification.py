@@ -31,6 +31,10 @@ an effective-configuration read and an impact report each read it once with the 
 configuration (``RuntimeFacts.quality``). Any other fingerprint is ``uncertified``; ``stale``
 comes from #234 alone. "Meeting a floor" is never stored apart from a record: ``floors_met``
 is computed from the matching certification only.
+
+**Image checkers** (NFR-QUAL-12; #258) are certified per policy, not per configuration:
+``image_check_certified`` answers which image-output policies a checker fingerprint has a
+``valid`` ``image_check_certifications`` row for. #270 writes those rows from E-11's runs.
 """
 
 from __future__ import annotations
@@ -60,7 +64,7 @@ from epistrel.core.profiles.fingerprint import (
     QualityStatusValue,
 )
 from epistrel.core.profiles.schema import ProfileSettings
-from epistrel.core.tables import profile_certifications
+from epistrel.core.tables import image_check_certifications, profile_certifications
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -570,6 +574,29 @@ def floors_met(fingerprint_value: str, status: QualityStatus) -> FloorsMet:
     )
 
 
+async def image_check_certified(
+    conn: AsyncConnection, checker_fingerprint: str, policy_ids: Sequence[str]
+) -> frozenset[str]:
+    """The ids among ``policy_ids`` that the image checker ``checker_fingerprint`` is certified
+    for (NFR-QUAL-12; #258): a ``valid`` ``image_check_certifications`` row for the pair. One
+    indexed query; empty until #270 records E-11's runs, so every result reads ``certified:
+    false`` until then."""
+    wanted = sorted(set(policy_ids))
+    if not wanted:
+        return frozenset()
+    t = image_check_certifications.c
+    rows = await conn.execute(
+        select(t.policy_id)
+        .where(
+            t.checker_fingerprint == checker_fingerprint,
+            t.policy_id.in_(wanted),
+            t.status == VALID,
+        )
+        .distinct()
+    )
+    return frozenset(str(row.policy_id) for row in rows)
+
+
 def committed_records(directory: Path = SEEDS_DIR) -> list[Path]:
     """The committed record files, in name order (none when the directory is absent)."""
     if not directory.is_dir():
@@ -848,6 +875,7 @@ __all__ = [
     "get_eval_run",
     "harness",
     "harness_or_none",
+    "image_check_certified",
     "import_record",
     "install_harness",
     "invalidate",

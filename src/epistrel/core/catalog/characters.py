@@ -117,6 +117,7 @@ from epistrel.core.erasure.index import (
 from epistrel.core.erasure.records import character_draft_record, character_version_record
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
 from epistrel.core.media.assets import assert_referenceable, rating_version
+from epistrel.core.media.checks import image_check_of
 from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import media_assets
@@ -168,6 +169,11 @@ async def _media_rows(conn: AsyncConnection, media_ids: Sequence[str]) -> dict[s
             media_assets.c.width,
             media_assets.c.height,
             media_assets.c.generation_metadata,
+            media_assets.c.source,
+            media_assets.c.check_status,
+            media_assets.c.check_model,
+            media_assets.c.check_endpoint,
+            media_assets.c.policy_results,
         ).where(media_assets.c.id.in_(wanted))
     )
     return {str(row.id): row for row in rows}
@@ -191,6 +197,11 @@ def _detail(media_id: str, rows: Mapping[str, Any]) -> dict[str, Any]:
         "width": row.width,
         "height": row.height,
         "generation_metadata": row.generation_metadata,
+        "source": row.source,
+        "check_status": row.check_status,
+        "check": image_check_of(
+            row.check_status, row.check_model, row.check_endpoint, row.policy_results or ()
+        ),
     }
 
 

@@ -181,6 +181,7 @@ from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
 from epistrel.orchestrator.images import jobs as image_jobs
+from epistrel.orchestrator.images import output_check
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
@@ -953,6 +954,11 @@ class Engine:
         return image_jobs.ImageRuntime(
             self.db, self.models, self.media, self.settings.job_max_attempts
         )
+
+    def upload_check(self) -> output_check.UploadCheck:
+        """The output check an uploaded image or a video's poster passes before it is stored
+        (FR-IMG-3; #258): ``unchecked`` while ``image_check`` has no model."""
+        return output_check.UploadCheck(self.models, self.db)
 
     def prepare_media(self) -> None:
         """Create the media root and its staging area and prove them writable, and on S3 that
@@ -5830,8 +5836,10 @@ class Engine:
         bytes (or chunks), ``content_type`` the bytes' declared MIME type and ``body_size`` the
         whole request's declared length (REST's ``Content-Length``). 415
         ``media_type_not_allowed``, 413 ``media_too_large``, 413 ``use_multipart`` (larger than
-        ``media_multipart_threshold``: use ``open_upload``), 422 ``rating_retired``; with a
-        moderation hook configured, 422 ``moderation_rejected`` or 503
+        ``media_multipart_threshold``: use ``open_upload``), 422 ``rating_retired``; with an
+        ``image_check`` model configured, an image (or a video's poster) is checked first (422
+        ``guardrail_violation``, 503 ``image_check_unavailable``; #258) and stored ``passed``,
+        else ``unchecked``; with a moderation hook configured, 422 ``moderation_rejected`` or 503
         ``moderation_unavailable`` (nothing stored). A video's poster (FR-MEDIA-3) is
         ``request.poster``, the ``poster_file`` given, or extracted from its first frame with
         ffmpeg (422 ``poster_required`` without it, ``poster_extraction_failed`` when it fails).
@@ -5895,6 +5903,7 @@ class Engine:
                     signer=self.signer,
                     posters=self.posters,
                     poster_file=poster,
+                    image_check=self.upload_check(),
                 ),
                 material=material,
             )
@@ -6087,6 +6096,7 @@ class Engine:
                 settings=settings,
                 signer=self.signer,
                 posters=self.posters,
+                image_check=self.upload_check(),
             ),
             material={"upload_id": upload_id},
         )

@@ -57,7 +57,7 @@ from epistrel.core.erasure import index
 from epistrel.core.erasure.matcher import matcher, nfc
 from epistrel.core.errors import InvalidRequest
 from epistrel.core.membership import POSITION_MAX, Position
-from epistrel.core.tables import characters
+from epistrel.core.tables import characters, personas
 from epistrel.core.tables.catalog import character_catalog, character_versions, scenario_catalog
 
 type Classification = Literal["adult", "minor", "indeterminate"]
@@ -510,6 +510,105 @@ async def build_safety_context(
     return SafetyContext(_resolved(candidates, threshold), threshold, None, kind="story")
 
 
+# -- uploads (#258) ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class UploadSubject:
+    """A subject an upload declares (``core.media.assets.DepictedSubject``): its kind
+    (``character``, ``catalog_character`` or ``persona``) and id."""
+
+    kind: str
+    id: str
+
+
+async def _declared_candidate(
+    conn: AsyncConnection, ordinal: int, subject: UploadSubject
+) -> _Candidate:
+    """A declared subject as a candidate with its true age (``None``, so indeterminate, when it
+    does not exist yet: an upload may declare a subject created later, and safety fails closed)."""
+    if subject.kind == "character":
+        row = (
+            await conn.execute(
+                select(characters.c.story_id, characters.c.name).where(
+                    characters.c.id == subject.id
+                )
+            )
+        ).one_or_none()
+        if row is not None:
+            from epistrel.core.world_clock import HEAD  # here: the clock reads States
+
+            age = (await ages.true_ages_at(conn, str(row.story_id), HEAD)).get(subject.id)
+            name = str(row.name)
+            return _Candidate(subject.id, ordinal, age, (name,), tuple(index.name_parts(name)))
+    elif subject.kind == "catalog_character":
+        version = await conn.scalar(
+            select(character_catalog.c.current_version).where(character_catalog.c.id == subject.id)
+        )
+        document: Any = None
+        if version is not None:
+            document = await conn.scalar(
+                select(character_versions.c.content).where(
+                    character_versions.c.catalog_id == subject.id,
+                    character_versions.c.version == int(version),
+                )
+            )
+        if document is None:
+            document = await conn.scalar(
+                select(character_catalog.c.draft).where(character_catalog.c.id == subject.id)
+            )
+        if document is not None:
+            return _catalog_candidate(ordinal, subject.id, document)
+    elif subject.kind == "persona":
+        row = (
+            await conn.execute(
+                select(personas.c.name, personas.c.age).where(personas.c.id == subject.id)
+            )
+        ).one_or_none()
+        if row is not None:
+            name = str(row.name)
+            return _Candidate(
+                subject.id, ordinal, int(row.age), (name,), tuple(index.name_parts(name))
+            )
+    return _Candidate(subject.id, ordinal, None, (), ())
+
+
+async def build_upload_safety_context(
+    conn: AsyncConnection,
+    declared: Sequence[UploadSubject],
+    *,
+    caption: str | None,
+    alt_text: str | None,
+) -> SafetyContext:
+    """An uploaded image's safety context (FR-IMG-3,12; #258): its declared subjects, each with
+    its true age (a story character's current one, a catalog character's as written, a persona's
+    age; a subject that does not exist yet is indeterminate), plus every catalog character or
+    persona its caption or alt text names (``index.catalog_subjects``, as the upload's subject
+    index finds them). An upload has no story position, so no presence."""
+    threshold = (await read_settings(conn)).minor_age_threshold
+    texts = (caption or "", alt_text or "")
+    candidates: list[_Candidate] = []
+    seen: set[str] = set()
+    for subject in dict.fromkeys(declared):
+        candidate = await _declared_candidate(conn, len(candidates), subject)
+        candidate.found("declared")
+        candidates.append(candidate)
+        seen.add(subject.id)
+    if any(texts):
+        for found in await index.catalog_subjects(conn):
+            look = found.matcher()
+            if found.id in seen or not any(look.mentions(t) for t in texts if t):
+                continue
+            candidate = await _declared_candidate(
+                conn, len(candidates), UploadSubject(found.kind.value, found.id)
+            )
+            candidate.names, candidate.parts = found.terms, found.parts
+            candidates.append(candidate)
+            seen.add(found.id)
+    _scan(candidates, texts)
+    return SafetyContext(_resolved(candidates, threshold), threshold, None, kind="catalog")
+
+
 __all__ = [
     "FIGURE_PREFIX",
     "MINOR_CLASSES",
@@ -521,7 +620,9 @@ __all__ = [
     "SafetyContext",
     "SafetyRequest",
     "Source",
+    "UploadSubject",
     "build_safety_context",
+    "build_upload_safety_context",
     "classify",
     "image_position",
     "present_at",

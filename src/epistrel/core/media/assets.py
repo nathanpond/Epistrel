@@ -74,11 +74,18 @@ import hashlib
 import json
 import os
 import re
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO
+from typing import Annotated, Any, BinaryIO, Protocol
 
 from pydantic import (
     AfterValidator,
@@ -125,6 +132,14 @@ from epistrel.core.errors import (
 from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.json_numbers import require_finite
 from epistrel.core.media import moderation, probe
+from epistrel.core.media.checks import (
+    CHECK_STATEMENTS,
+    PASSED_STATEMENT,
+    UNCHECKED_STATEMENT,
+    ImageCheck,
+    PolicyCheck,
+    image_check_of,
+)
 from epistrel.core.media.poster import POSTER_MIME_TYPE, PosterExtractor
 from epistrel.core.media.signing import Signer
 from epistrel.core.media.store import BlobStore, ByteStream, Window
@@ -134,6 +149,7 @@ from epistrel.core.settings_schema import MediaSettings
 from epistrel.core.tables import content_rating_versions, content_ratings, deployment_state
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
 from epistrel.core.tables.media import (
+    CheckStatus,
     MediaKind,
     MediaSource,
     MediaState,
@@ -349,8 +365,12 @@ class MediaAsset(BaseModel):
     bytes), size, dimensions or duration (``null`` when no probe could read them), SHA-256
     checksum, content rating and the rating's version it was uploaded under, alt text, caption,
     generation metadata (as sent), source, state (``live``, or ``retired`` once deleted), the
-    subjects it depicts, who created it when, and, for a video, its poster's id (FR-MEDIA-3;
-    ``null`` for an image)."""
+    subjects it depicts, who created it when, for a video its poster's id (FR-MEDIA-3;
+    ``null`` for an image), and its check status and check (FR-IMG-10; #258)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"description": f"A media asset's metadata. {CHECK_STATEMENTS}"}
+    )
 
     id: str
     owner_principal: str
@@ -372,6 +392,47 @@ class MediaAsset(BaseModel):
     created_at: datetime
     created_by: str
     poster_media_id: str | None
+    check_status: CheckStatus = Field(
+        description="`passed`: the image passed every applicable image-output policy under the "
+        "checker `check` names; `unchecked`: Epistrel did not check it (a video, an upload "
+        f"with no checker configured, or an image no policy applies to). {CHECK_STATEMENTS}"
+    )
+    check: ImageCheck | None = Field(
+        description="The checker and its per-policy results when `passed`; `null` when `unchecked`."
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ImageCheckRecord:
+    """An image's output check as ``media_assets`` stores it (#258): ``passed`` with the
+    checker's model, endpoint host and per-policy results, or ``unchecked``."""
+
+    status: CheckStatus = CheckStatus.UNCHECKED
+    model: str | None = None
+    endpoint: str | None = None
+    policy_results: tuple[Mapping[str, Any], ...] = ()
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "check_status": self.status.value,
+            "check_model": self.model,
+            "check_endpoint": self.endpoint,
+            "policy_results": [dict(r) for r in self.policy_results],
+        }
+
+
+UNCHECKED = ImageCheckRecord()
+
+
+class UploadImageCheck(Protocol):
+    """The output check an uploaded image (or a video's poster) passes in staging, before the
+    moderation hook (FR-IMG-3; the Orchestrator's ``output_check.UploadCheck``): ``passed`` or
+    ``unchecked``, or it raises (422 ``guardrail_violation``, 503 ``image_check_unavailable``)
+    and nothing is stored."""
+
+    async def __call__(
+        self, staged: Staged, request: MediaUpload, *, principal: str, operation_id: str | None
+    ) -> ImageCheckRecord: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,6 +796,10 @@ _COLUMNS = (
     media_assets.c.created_at,
     media_assets.c.created_by,
     media_assets.c.poster_media_id,
+    media_assets.c.check_status,
+    media_assets.c.check_model,
+    media_assets.c.check_endpoint,
+    media_assets.c.policy_results,
 )
 _FROM = media_assets.outerjoin(
     content_rating_versions,
@@ -743,7 +808,14 @@ _FROM = media_assets.outerjoin(
 
 
 def _asset(row: Any) -> MediaAsset:
-    return MediaAsset.model_validate(dict(row._mapping))
+    found = dict(row._mapping)
+    found["check"] = image_check_of(
+        found["check_status"],
+        found.pop("check_model"),
+        found.pop("check_endpoint"),
+        found.pop("policy_results") or (),
+    )
+    return MediaAsset.model_validate(found)
 
 
 def _not_found(media_id: str) -> MediaNotFound:
@@ -871,6 +943,8 @@ class Prepared:
     poster: Probed | None = None
     poster_source: MediaSource = MediaSource.UPLOADED
     poster_field: str = f"body.metadata.{POSTER_FIELD}"
+    main_check: ImageCheckRecord = UNCHECKED
+    poster_check: ImageCheckRecord = UNCHECKED
 
     @property
     def extracted(self) -> Staged | None:
@@ -921,6 +995,19 @@ async def extract_poster(store: BlobStore, posters: PosterExtractor, video: Stag
     return Staged(poster_id, out, sha256, size, POSTER_MIME_TYPE, MediaKind.IMAGE)
 
 
+async def _checked(
+    image_check: UploadImageCheck | None,
+    staged: Staged,
+    request: MediaUpload,
+    *,
+    principal: str,
+) -> ImageCheckRecord:
+    """The output check of an image about to be stored (``unchecked`` without one)."""
+    if image_check is None or staged.kind is not MediaKind.IMAGE:
+        return UNCHECKED
+    return await image_check(staged, request, principal=principal, operation_id=staged.asset_id)
+
+
 async def prepare(
     db: AsyncEngine,
     store: BlobStore,
@@ -933,26 +1020,30 @@ async def prepare(
     posters: PosterExtractor,
     poster_file: Staged | None = None,
     poster_field: str = f"body.metadata.{POSTER_FIELD}",
+    image_check: UploadImageCheck | None = None,
 ) -> Prepared:
     """Steps 3's checks of the module docstring, before anything is stored: the rating (and a
-    named poster), the probe, the hook and, for a video, its poster (given, sent, or extracted
-    and sent to the hook too). Nothing is written; a poster this call extracted is removed when
-    it fails."""
+    named poster), the probe, the image's output check (``image_check``, #258: an image, or a
+    video's poster sent or extracted; a refused poster refuses the video), the hook and, for a
+    video, its poster (given, sent, or extracted and sent to the hook too). Nothing is written;
+    a poster this call extracted is removed when it fails."""
     async with db.begin() as conn:
         await rating_version(conn, request.content_rating_id)
         if request.poster is not None:
             await check_supplied_poster(conn, request.poster, field=poster_field)
     owner = request.owner or principal
     found = await _dimensions(staged, posters)
+    main_check = await _checked(image_check, staged, request, principal=principal)
     await _moderate(staged, request, found, owner=owner, settings=settings, signer=signer)
     main = Probed(staged, found)
     if staged.kind is not MediaKind.VIDEO:
-        return Prepared(request, owner, main, poster_field=poster_field)
+        return Prepared(request, owner, main, poster_field=poster_field, main_check=main_check)
     if request.poster is not None:
         return Prepared(request, owner, main, poster_id=request.poster, poster_field=poster_field)
     poster_meta = poster_request(request, staged.asset_id, owner=owner)
     if poster_file is not None:
         poster_found = await probe.dimensions(poster_file.path, MediaKind.IMAGE)
+        poster_check = await _checked(image_check, poster_file, poster_meta, principal=principal)
         await _moderate(
             poster_file, poster_meta, poster_found, owner=owner, settings=settings, signer=signer
         )
@@ -962,10 +1053,12 @@ async def prepare(
             main,
             poster=Probed(poster_file, poster_found),
             poster_field=poster_field,
+            poster_check=poster_check,
         )
     extracted = await extract_poster(store, posters, staged)
     try:
         poster_found = await probe.dimensions(extracted.path, MediaKind.IMAGE)
+        poster_check = await _checked(image_check, extracted, poster_meta, principal=principal)
         await _moderate(
             extracted, poster_meta, poster_found, owner=owner, settings=settings, signer=signer
         )
@@ -979,6 +1072,7 @@ async def prepare(
         poster=Probed(extracted, poster_found),
         poster_source=MediaSource.EXTRACTED,
         poster_field=poster_field,
+        poster_check=poster_check,
     )
 
 
@@ -992,6 +1086,7 @@ async def _insert(
     source: MediaSource,
     principal: str,
     poster_media_id: str | None,
+    check: ImageCheckRecord = UNCHECKED,
 ) -> None:
     staged, found = probed.staged, probed.found
     # No new medium depicts a subject a catalog-scope erasure removed (FR-ADMIN-9; #127).
@@ -1022,6 +1117,7 @@ async def _insert(
             created_at=clock.now(),
             created_by=principal,
             poster_media_id=poster_media_id,
+            **check.values(),
         )
     )
     subjects: list[Declared] = [
@@ -1067,6 +1163,7 @@ async def commit(
             source=prepared.poster_source,
             principal=principal,
             poster_media_id=None,
+            check=prepared.poster_check,
         )
     await _insert(
         conn,
@@ -1077,6 +1174,7 @@ async def commit(
         source=MediaSource.UPLOADED,
         principal=principal,
         poster_media_id=poster_id if main.staged.kind is MediaKind.VIDEO else None,
+        check=prepared.main_check,
     )
     await control.record_control_operation(conn, actor=principal)
     # Last, so a refused statement above leaves the bytes staged (and then discarded).
@@ -1111,9 +1209,11 @@ async def upload(
     signer: Signer,
     posters: PosterExtractor,
     poster_file: Staged | None = None,
+    image_check: UploadImageCheck | None = None,
 ) -> MediaWrite:
     """Store a staged upload as a ``live`` asset (steps 3 and 4 of the module docstring):
-    422 ``rating_retired``; 422 ``moderation_rejected``, 503 ``moderation_unavailable`` or 503
+    422 ``rating_retired``; 422 ``guardrail_violation`` or 503 ``image_check_unavailable`` from
+    the image check (#258); 422 ``moderation_rejected``, 503 ``moderation_unavailable`` or 503
     ``config_key_missing`` from the hook; a video's poster refusals; nothing is stored on any
     refusal."""
     request = check_upload(request)
@@ -1127,6 +1227,7 @@ async def upload(
         signer=signer,
         posters=posters,
         poster_file=poster_file,
+        image_check=image_check,
     )
     try:
         async with db.begin() as conn:
@@ -1632,16 +1733,22 @@ async def unreferenced(conn: AsyncConnection) -> ColumnElement[bool]:
 
 __all__ = [
     "ANY_STRING_PATH",
+    "CHECK_STATEMENTS",
     "ENVELOPE_MAX_BYTES",
     "INDEXED_FIELDS",
     "MEDIA_REFERENCE_SOURCES",
     "METADATA_MAX_BYTES",
+    "PASSED_STATEMENT",
     "POSTER_FILE_FIELD",
     "RECORD_TABLE",
     "REFERENCE_HOLDERS",
+    "UNCHECKED",
+    "UNCHECKED_STATEMENT",
     "ByteRange",
     "DepictedSubject",
     "GenerationMetadata",
+    "ImageCheck",
+    "ImageCheckRecord",
     "MediaAsset",
     "MediaContent",
     "MediaPage",
@@ -1650,12 +1757,14 @@ __all__ = [
     "MediaUpload",
     "MediaUrl",
     "MediaWrite",
+    "PolicyCheck",
     "PosterFileSource",
     "Prepared",
     "Probed",
     "ReferenceSource",
     "Staged",
     "UploadFile",
+    "UploadImageCheck",
     "assert_referenceable",
     "check_declared_type",
     "check_supplied_poster",
@@ -1668,6 +1777,7 @@ __all__ = [
     "document_subjects_required",
     "extract_poster",
     "get",
+    "image_check_of",
     "list_assets",
     "lock_checksum",
     "open_content",

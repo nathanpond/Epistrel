@@ -222,3 +222,20 @@ Each write bumps the story's timeline revision. A Lite story answers 409 `module
 The output gate quarantines on its own as well. A memory that the contexts of `repair.implication_threshold` rejected renders held (default 2; `0` turns this off) is quarantined with reason `repeated_implication` by `system`, and the regeneration runs without it. An author pin can be quarantined the same way, and the turn then reports a `pin_quarantined` warning. Watch `epistrel_quarantines_total{reason}` and `epistrel_sanitizes_total`. Release a memory quarantined by mistake with the `DELETE` above.
 
 The nightly `redteam.yml` workflow runs R-01's 20 poisoning sequences (`-m "redteam or redteam_long"`). A red run opens a "Nightly red-team run failed" issue.
+
+## Images
+
+Every image a deployment stores says where it came from and how far Epistrel checked it. Each media read returns a `source` (`generated` from an Epistrel-built prompt, `generated_from_consumer_prompt`, `uploaded`, or `extracted` for a video's poster) and a `check_status`:
+
+- `passed` comes with a `check` block. It names the image-check model and its endpoint's host, and lists each applicable image-output policy with its result and whether that checker is certified for that policy. Certification is per policy (NFR-QUAL-12). A record in `image_check_certifications` for the checker's fingerprint and the policy makes it `certified: true`. #270 writes those records from E-11's runs, and until then every result reads `certified: false`.
+- `unchecked` comes with `check: null`.
+
+`unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass.
+
+A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.
+
+**Configuring the checker.** The `image_check` model purpose needs a vision-capable model. It has no default and never inherits the `default` row: `PUT /admin/model-config/image_check {model, base_url}` plus its API key. One call checks an image against every model-assisted policy that applies to image outputs. The call carries the image (downscaled to at most 1024 px), its prompt, caption and alt text, each policy's text, and the subjects as opaque labels with their true ages. It never carries story text. Deterministic policies run locally on the prompt, caption and alt text. An uncertain verdict follows the policy's `on_uncertain`: `violation` blocks the image, and `pass` stores it with `uncertain: true`. The seeded minors policy blocks. The call uses the purpose's timeout (default 60 s) and the structured-call retries.
+
+Without a checker, generation is refused up front while any image-output policy applies (409 `image_check_unconfigured`; the seeded minors policy always applies). Uploads still work, and they are stored `unchecked` after the moderation hook, which is then the control. With a checker, an uploaded image (and a video's poster) is checked in staging before the moderation hook. A violation is 422 `guardrail_violation` and writes an `image_upload_rejected` audit row (the policy ids, never the image or its hash). A checker that cannot answer is 503 `image_check_unavailable`. Nothing is stored in either case. A generated image that fails is deleted from staging and generation retries within `image_retry_budget`.
+
+The checker fingerprint is the first 12 hex digits of the SHA-256 of the canonical JSON of the endpoint's host, the model id, the version the model last reported, and the SHA-256 of the `image_check` prompt template. Changing any of them, including editing the template, makes the checker uncertified until it is certified again.

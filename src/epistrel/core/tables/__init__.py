@@ -31,6 +31,7 @@ from epistrel.core.tables.catalog import (
 )
 from epistrel.core.tables.certifications import (
     certification_runs,
+    image_check_certifications,
     model_reported_versions,
     profile_certifications,
 )
@@ -154,6 +155,7 @@ __all__ = [
     "genesis_deferred",
     "guardrail_check_results",
     "idempotency_keys",
+    "image_check_certifications",
     "image_jobs",
     "image_reservations",
     "jobs",

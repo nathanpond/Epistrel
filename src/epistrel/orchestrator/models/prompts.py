@@ -23,7 +23,12 @@ from jinja2 import Environment, PackageLoader, StrictUndefined, Template, Templa
 from pydantic import BaseModel
 
 from epistrel.orchestrator.models.adapter import Message
-from epistrel.orchestrator.models.registry import DELIVERED, InputSchema, Purpose
+from epistrel.orchestrator.models.registry import (
+    DELIVERED,
+    ContentCategory,
+    InputSchema,
+    Purpose,
+)
 
 BLOCKS = ("system", "user")
 
@@ -196,9 +201,35 @@ def render(purpose: Purpose, inputs: InputSchema, variant: str | None = None) ->
     history (when the purpose has one), then ``user``; through template ``variant`` when one is
     named (#150)."""
     purpose.template_of(variant)  # an unknown variant is a registry error
-    return render_blocks(
+    messages = render_blocks(
         TEMPLATES[variant_key(purpose.name, variant)], inputs, purpose.history_field
     )
+    return with_images(messages, image_urls(inputs))
+
+
+def image_urls(inputs: InputSchema) -> tuple[str, ...]:
+    """The values of ``inputs``' top-level fields tagged ``ContentCategory.IMAGE`` (an image as
+    a URL: ``image_check``'s data URL, #258), in field order; empty ones left out. A template
+    never renders an image as text."""
+    found: list[str] = []
+    for name, info in type(inputs).model_fields.items():
+        if ContentCategory.IMAGE in info.metadata:
+            value = getattr(inputs, name)
+            if isinstance(value, str) and value:
+                found.append(value)
+    return tuple(found)
+
+
+def with_images(messages: list[Message], urls: tuple[str, ...]) -> list[Message]:
+    """``messages`` with ``urls`` carried by the last user message, after its text."""
+    if not urls:
+        return messages
+    out = list(messages)
+    for index in range(len(out) - 1, -1, -1):
+        if out[index].role == "user":
+            out[index] = out[index].model_copy(update={"images": (*out[index].images, *urls)})
+            return out
+    return [*out, Message(role="user", content="", images=urls)]
 
 
 __all__ = [
@@ -206,10 +237,12 @@ __all__ = [
     "TemplateFieldError",
     "check_template",
     "example_instance",
+    "image_urls",
     "load_templates",
     "make_environment",
     "merge_roles",
     "payload_fields",
     "render",
     "variant_key",
+    "with_images",
 ]

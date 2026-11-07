@@ -114,7 +114,7 @@ def model_params(resolved: ResolvedGeneration, cast: ResolvedCast) -> ModelParam
 
 def prompt_hash(messages: Sequence[Message]) -> str:
     """SHA-256 of the rendered chat messages' canonical JSON (recorded on the reply)."""
-    return hash_member([m.model_dump() for m in messages])
+    return hash_member([m.wire() for m in messages])
 
 
 __all__ = ["assemble", "model_params", "prompt_hash", "transcript_line"]

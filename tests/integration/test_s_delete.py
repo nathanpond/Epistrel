@@ -131,6 +131,16 @@ async def _amend(engine: AsyncEngine, story_id: str) -> None:
             text("INSERT INTO bundle_jobs (id, story_id, requested_by) VALUES (:b, :s, 'p-op')"),
             {"b": new_ulid(), "s": story_id},
         )
+        # #256: an image job of the story's (planted: no worker ran it).
+        await conn.execute(
+            text(
+                "INSERT INTO image_jobs (id, kind, story_id, target, origin, prompt, params, "
+                "attempt_token, principal, created_at, updated_at) VALUES (:j, 'story', :s, "
+                "'{}', '{}', 'a lighthouse', '{\"n\": 1}', gen_random_uuid(), 'p-author', "
+                "now(), now())"
+            ),
+            {"j": new_ulid(), "s": story_id},
+        )
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:

@@ -256,6 +256,7 @@ class StubImageChecker:
 
 
 __all__ = [
+    "IMAGE_TABLES_CLEANUP",
     "STUB_COST",
     "Fail",
     "Outputs",
@@ -265,6 +266,44 @@ __all__ = [
     "StubImageChecker",
     "StubImageGenerator",
     "StubScriptExhausted",
+    "catalog_origin",
     "png",
     "registered",
+    "story_origin",
 ]
+
+
+# -- image jobs (#256) -----------------------------------------------------------------------
+
+
+IMAGE_TABLES_CLEANUP = (
+    "DELETE FROM image_reservations",
+    "DELETE FROM image_jobs",
+    "DELETE FROM jobs WHERE kind = 'image_job'",
+)
+"""What an image job test leaves on the shared database, taken back after it (a queued
+``image_job`` row would otherwise reach a later test's worker)."""
+
+
+def story_origin(story_id: str, **fields: object) -> dict[str, object]:
+    """A story job's origin (docs/02 §4.13)."""
+    return {
+        "story_id": story_id,
+        "operation_id": None,
+        "turn": 1,
+        "variant": 1,
+        "position": None,
+        "viewpoint": "omniscient",
+        "timeline_revision": 1,
+        **fields,
+    }
+
+
+def catalog_origin(entry_id: str) -> dict[str, object]:
+    """A catalog job's origin."""
+    return {
+        "entry_kind": "character",
+        "entry_id": entry_id,
+        "draft_revision": 1,
+        "image_input_fingerprint": "f" * 12,
+    }

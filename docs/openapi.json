@@ -15660,6 +15660,106 @@
         "title": "ImageGenerationParams",
         "type": "object"
       },
+      "ImageJobBody": {
+        "description": "An image job's state.",
+        "properties": {
+          "asset_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Ids"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "candidate_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Candidate Ids"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "catalog",
+              "story"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "policy_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The policies a failed job's outputs violated or that could not be evaluated (absent otherwise).",
+            "title": "Policy Ids"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "kind",
+          "status",
+          "status_reason",
+          "attempts",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ImageJobBody",
+        "type": "object"
+      },
       "ImpactPreviewRequest": {
         "additionalProperties": false,
         "description": "``POST /stories/{id}/impact-preview``: the change to preview, a profile to assign\n(``profile_id``), a change of the story's overrides (``overrides``: a JSON merge patch over\nthem, as ``PATCH /stories/{id}/profile-overrides`` takes its ``settings``, so ``null``\nremoves an override), or both at once. Nothing is written.",
@@ -39524,6 +39624,13 @@
             "title": "Idempotency Result Window",
             "type": "integer"
           },
+          "image_retry_budget": {
+            "default": 2,
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Image Retry Budget",
+            "type": "integer"
+          },
           "job_retention_days": {
             "default": 7,
             "maximum": 3650.0,
@@ -40611,6 +40718,13 @@
             "title": "Rewrite Stale Retries",
             "type": "integer"
           },
+          "staging_ttl": {
+            "default": 3600,
+            "maximum": 86400.0,
+            "minimum": 600.0,
+            "title": "Staging Ttl",
+            "type": "integer"
+          },
           "structured_retry_budget": {
             "default": 2,
             "maximum": 10.0,
@@ -41072,6 +41186,17 @@
               }
             ],
             "title": "Idempotency Result Window"
+          },
+          "image_retry_budget": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Retry Budget"
           },
           "job_retention_days": {
             "anyOf": [
@@ -42336,6 +42461,17 @@
               }
             ],
             "title": "Rewrite Stale Retries"
+          },
+          "staging_ttl": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Staging Ttl"
           },
           "structured_retry_budget": {
             "anyOf": [
@@ -53970,6 +54106,7 @@
                           "gate_promotion_min_agreement",
                           "gate_promotion_min_cases",
                           "idempotency_result_window",
+                          "image_retry_budget",
                           "job_retention_days",
                           "listing_status_values",
                           "lite_author_facts_max",
@@ -54106,6 +54243,7 @@
                           "rewrite_max_open_sessions",
                           "rewrite_session_ttl_minutes",
                           "rewrite_stale_retries",
+                          "staging_ttl",
                           "structured_retry_budget",
                           "thunks_max_open",
                           "timer_lag_alert",
@@ -71509,6 +71647,261 @@
         "summary": "Liveness and readiness",
         "tags": [
           "ops"
+        ]
+      }
+    },
+    "/image-jobs/{job_id}": {
+      "delete": {
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "operationId": "cancel_image_job",
+        "parameters": [
+          {
+            "description": "The background job's id (a ULID), as its 202 answered it.",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "description": "The background job's id (a ULID), as its 202 answered it.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageJobBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel an image job",
+        "tags": [
+          "images"
+        ],
+        "x-epistrel-mutating": false
+      },
+      "get": {
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "operationId": "get_image_job",
+        "parameters": [
+          {
+            "description": "The background job's id (a ULID), as its 202 answered it.",
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "description": "The background job's id (a ULID), as its 202 answered it.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2D1"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Seconds to wait, 1 to 30.",
+            "in": "query",
+            "name": "wait",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seconds to wait, 1 to 30.",
+              "title": "Wait"
+            }
+          },
+          {
+            "description": "Answer once the status differs from this one.",
+            "in": "query",
+            "name": "since_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Answer once the status differs from this one.",
+              "title": "Since Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageJobBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read an image job (long-polling with ?wait=)",
+        "tags": [
+          "images"
         ]
       }
     },
@@ -94353,6 +94746,10 @@
     {
       "description": "Media assets: immutable, content-addressed images and videos with their declared depicted subjects, an optional moderation hook, and delete-as-retire (FR-MEDIA-1,2); byte ranges, short-lived signed URLs, resumable uploads and a poster for every video (FR-MEDIA-3).",
       "name": "media"
+    },
+    {
+      "description": "Image jobs (FR-IMG-3,4): a generation runs as a background job outside any turn; its bytes stay in private staging, unreachable, until they pass every check. A consumer follows a job with a long-polling read and may cancel it.",
+      "name": "images"
     },
     {
       "description": "Engine profiles: named, versioned sets of capability modules and dials that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only the modules and levels this deployment has delivered; presets are ordinary profiles. A story runs under its profile's latest version with its own overrides over it, on top of the deployment's defaults (FR-PROF-5,6).",

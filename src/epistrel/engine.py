@@ -180,6 +180,7 @@ from epistrel.orchestrator.commit import directed
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
+from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
@@ -795,6 +796,8 @@ class Engine:
         # Reference images reach a hosted image provider as signed URLs or data URLs (#255).
         self.models.images.references = MediaReferences(lambda: self.db, self.media, self.signer)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
+        # Image jobs' long-polling reads wait here (#256): one LISTEN connection per process.
+        self.image_waiters = image_jobs.ImageJobWaiters(lambda: self.db)
         # The feedback exports not yet downloaded are rewritten by an erasure in this store
         # (#126; the last Engine constructed in a process binds it).
         feedback_export.bind(self.media)
@@ -868,6 +871,9 @@ class Engine:
         reembed_job.bind(self.models.embeddings)
         rating_check_job.bind(self.models)
         media_sweep_job.bind(self.media)
+        # #256: image jobs generate through this Engine's adapter and stage in its media root.
+        self._image_runtime_bound = self.image_runtime()
+        image_jobs.bind(self._image_runtime_bound)
         erasure_reconcile_job.bind(self._reconcile_run)
         # #210: the outbox dispatcher sends through this Engine's in-process callables.
         outbox_job.bind(self.in_process_providers)
@@ -921,6 +927,9 @@ class Engine:
             rating_check_job.bind(None)
         if media_sweep_job.bound() is self.media:
             media_sweep_job.bind(None)
+        if image_jobs.bound() is getattr(self, "_image_runtime_bound", None):
+            image_jobs.bind(None)
+        await self.image_waiters.aclose()
         if erasure_reconcile_job.bound() == self._reconcile_run:
             erasure_reconcile_job.bind(None)
         if outbox_job.bound() is self.in_process_providers:
@@ -937,6 +946,13 @@ class Engine:
         if self._db is None:
             raise RuntimeError("the Engine has no database; bind one first")
         return self._db
+
+    def image_runtime(self) -> image_jobs.ImageRuntime:
+        """What image jobs run on in this Engine (#256): its database, Model Access Layer,
+        blob store and ``job_max_attempts``."""
+        return image_jobs.ImageRuntime(
+            self.db, self.models, self.media, self.settings.job_max_attempts
+        )
 
     def prepare_media(self) -> None:
         """Create the media root and its staging area and prove them writable, and on S3 that
@@ -5512,6 +5528,39 @@ class Engine:
         entity deleted, transferred, removed, kept or skipped, and what is still linked to the
         principal (FR-AUTH-7). 404 for an unknown job (or a purged report)."""
         return await offboarding.get(self.db, job_id)
+
+    # -- image jobs (FR-IMG-3,4; #256) --------------------------------------------------------
+
+    @refuses_nul()
+    async def get_image_job(
+        self,
+        ctx: RequestContext,
+        job_id: str,
+        wait: int | None = None,
+        since_status: str | None = None,
+    ) -> image_jobs.ImageJobView:
+        """An image job's state: kind, status, ``status_reason`` (a bare code), ``asset_ids``
+        (a story job) or ``candidate_ids`` (a catalog job), ``[]`` until it succeeds, how many
+        provider attempts it made, its timestamps and, when it failed on a policy, the
+        ``policy_ids``. With ``wait`` (1 to 30 seconds) the read is a long poll: it answers
+        once the status differs from ``since_status`` (default: the status when the read
+        began) or when the wait ends, whichever is first. 422 ``validation_error`` for a
+        ``wait`` outside 1..30 or an unknown ``since_status``; 503 ``too_many_waiters`` when
+        this process already holds 200 long polls; 404 ``image_job_not_found``."""
+        return await image_jobs.get_job(
+            self.db, self.image_waiters, job_id, wait=wait, since_status=since_status
+        )
+
+    @refuses_nul()
+    async def cancel_image_job(self, ctx: RequestContext, job_id: str) -> image_jobs.ImageJobView:
+        """Cancel a queued or running image job: it ends ``cancelled``, a worker running it is
+        fenced and promotes nothing, and its staged bytes are deleted. A job that already
+        ended is answered unchanged, so a repeat changes nothing: the cancel is idempotent by
+        design and takes no ``Idempotency-Key`` (docs/02 §9). It needs only the service
+        credential: ownership gates nothing. 404 ``image_job_not_found``."""
+        await image_jobs.cancel_job(self.image_runtime(), job_id)
+        async with self.db.connect() as conn:
+            return await image_jobs.read_view(conn, job_id)
 
     # -- erasure (FR-ADMIN-2,6, NFR-PRIV-2; #124) -------------------------------------------------
 

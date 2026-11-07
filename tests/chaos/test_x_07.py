@@ -57,6 +57,7 @@ from epistrel.core.enums import (
 from epistrel.core.events.operation import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import sweep as media_sweep
+from epistrel.core.media.store import LocalFilesystemStore
 from epistrel.core.profiles import certification
 from epistrel.core.profiles.certification import (
     CertificationRecord,
@@ -1663,3 +1664,69 @@ async def test_x_07__m7_prune(pg_url: str, moved: MovableClock) -> None:
         finally:
             prune_policy.bind(None)
             await db.dispose()
+
+
+# -- image staging (M8, #256) -----------------------------------------------------------------
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_staging(
+    pg_url: str, engine: AsyncEngine, quiet: Probe, tmp_path: Path
+) -> None:
+    """#256: workers killed after an image job staged its output and before the check
+    (``images.after_stage``), and the job then ended by recovery without its after-commit
+    delete, leave the staging directory. While no worker runs it ages past ``staging_ttl`` and
+    the 10-minute ``image_staging_sweep`` falls overdue; restarting runs the overdue sweep once,
+    which deletes the directory. Running the sweep again changes nothing.
+
+    Complements asserted: before the restart the directory is still there, and exactly one
+    ``image_staging_sweep`` job ran."""
+    from epistrel.orchestrator.images import jobs as image_jobs
+    from epistrel.orchestrator.jobs.handlers import image_job
+    from tests.image_job_support import (
+        backdate,
+        configure_child_adapter,
+        crashed_child,
+        end_by_recovery,
+        image_engine,
+        image_settings_for,
+        insert,
+        staged,
+    )
+
+    ttl = 3600
+    settings = image_settings_for(pg_url, tmp_path)
+    async with image_engine(settings, engine) as lib:
+        await configure_child_adapter(lib, settings)
+        job_id = await insert(lib)
+        child = await crashed_child(pg_url, "images.after_stage", job_id)
+        try:
+            store = LocalFilesystemStore(Path(child.media_root))
+            job_dir = store.image_staging_dir(job_id)
+            assert [p.name for p in staged(store, job_id)] == ["0"]
+            await end_by_recovery(engine, job_id)
+            backdate(job_dir, ttl + 60)
+            await _execute(
+                engine,
+                "UPDATE recurring_tasks SET next_run_at = now() - interval '35 minutes' "
+                "WHERE name = :name",
+                name=image_job.IMAGE_STAGING_SWEEP,
+            )
+            assert job_dir.exists()
+            child.crash = None
+            await child.start()
+
+            async def swept() -> bool:
+                task = await _task(engine, image_job.IMAGE_STAGING_SWEEP)
+                return not job_dir.exists() and task.last_status == "ok"
+
+            await _wait_for(swept, within=30)
+            assert len(await _jobs_of(engine, image_job.IMAGE_STAGING_SWEEP)) == 1
+            task = await _task(engine, image_job.IMAGE_STAGING_SWEEP)
+            assert task.next_run_at > _now()
+            again = await image_jobs.sweep_staging(engine, store, ttl_s=ttl)
+            assert again == {"removed": 0, "skipped_running": 0}
+        finally:
+            await child.__aexit__(None, None, None)

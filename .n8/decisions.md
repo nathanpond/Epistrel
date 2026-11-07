@@ -12545,6 +12545,51 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the `image_generation` entry's `endpoint` reads `openrouter.ai` when `base_url` is null and the adapter is `openrouter` (`params.ADAPTER_DEFAULT_BASE_URLS`, `default_base_url`). Pillow was already a runtime dependency (#105, `pillow>=13.0.0`), so no install was needed, and `check-licenses` passes.
   **Why:** #254's decision left `endpoint` null "until #255 knows OpenRouter's default".
   **Issue:** #255, #254
+- **Decision:** #256's planned bare test names are given test IDs the traceability gate knows. The FR-IMG-3 ones are C-22 parts in `tests/conformance/test_c_22.py`: `test_c_22__m8_fail_closed`, `test_c_22__m8_require_checker` (planned `test_require_image_checker`) and `test_c_22__m8_retry_budget` (planned `test_image_job_retry_budget`). The FR-IMG-4 ones are I-25 parts in `tests/integration/test_i_25.py`: `test_i_25__m8_idempotent`, `_long_poll` and `_outside_turn_budget`, plus `_cancel` for the Read AC's cancel. I-25's crash clauses get a part of their own, `test_i_25__m8_crash_sweeps` (FR-IMG-3), beside `test_i_25__m8_staging`. `test_x_07__m8_staging` keeps its name.
+  **Why:** `check-parts` reports a part whose name maps to no docs/04 ID as unmappable. #254 made the same rename, and docs/04 §15 already lists I-25 (M8) and C-22 (M8) for FR-IMG-3,4.
+  **Issue:** #256
+- **Decision:** `image_output_policy_set` always counts the seeded minors policy (`minors_no_sexual_content`) as applying to image outputs while it exists, whatever its `applies_to` says. Other live global policies count when they name `image_output`.
+  **Why:** the AC says "the seeded minors policy always does", but its `applies_to` gains the image targets only in #257's migration. Counting it now keeps `require_image_checker` and the fail-closed rule honest before #257. A deployment that deletes the policy loses it, as FR-GUARD-11 allows.
+  **Issue:** #256, #257
+- **Decision:** the checks seam (`ImageChecks`, `set_image_checks`) defaults to `FailClosedChecks` until #257 and #258 land. Every prompt passes (the prompt check is #257's). An output with no applicable policy stays `unchecked`. With `image_check` unset, the check raises `ImageCheckUnconfigured`. With `image_check` configured it raises `ImageCheckUnavailable`, because no output check is delivered yet, so nothing can pass. Tests and the fault harness install `testing.images.ScriptedChecks`.
+  **Why:** fail closed. No production route enqueues a job before #260/#263, and an output check that ignored the image would pass anything.
+  **Issue:** #256, #257, #258
+- **Decision:** `DELETE /image-jobs/{job_id}` is flagged `route_flags(mutating=False)` and named in `tests/replay_support.UNKEYED_WRITES`. It still requires the principal, but it takes no `Idempotency-Key` and answers `ImageJobBody` with no `config_revision`. Cancelling a queued job also finishes its #70 `jobs` row as `done` with `result {"image_job": "cancelled"}`.
+  **Why:** a cancel is idempotent by design (a terminal job answers unchanged), which is the rule the other unkeyed writes follow (docs/02 §9). A keyed route would need `DeploymentMutationResponse`'s `config_revision`, which a cancel does not change. `jobs.status` has no `cancelled` value, and widening that CHECK is a schema change the AC does not ask for.
+  **Issue:** #256
+- **Decision:** the after-commit staging deletes run after each ending transaction's `begin()` block exits, inside the pipeline (`end_job`, `cancel_job`, promotion). A failed delete is logged by class name and left to `image_staging_sweep`. They do not use #45's Operation hook list.
+  **Why:** the job's transitions are plain transactions, not Operations, and `Operation` has no general after-commit hook list (only its summary notification). The effect is the same: the delete happens only once the ending has committed.
+  **Issue:** #256
+- **Decision:** `image_reservations` has the primary key `(job_id, attempt_token)`, which is the AC's uniqueness, and a `created_at` column to order attempts. `image_jobs.attempts` counts attempts that were sent: it is incremented in the transaction that marks the attempt `sending`. CHECKs added: `(story_id IS NOT NULL) = (kind = 'story')` and `attempts >= 0`, beside the AC's three.
+  **Why:** "`attempts` counts reservation rows (a crash reclaim adds none until a new send)". A prepared row that was never sent cost nothing.
+  **Issue:** #256, #262
+- **Decision:** until #268, a reclaimed run resumes as follows. A current attempt still `prepared` is sent. An attempt in `checking` with its outputs still staged has only its checks re-run on those bytes (this is also the path for checker retries). Any other attempt is discarded with its staged bytes (`sending` → `ambiguous`, outcome `discarded`), and a new attempt starts under a new token without waiting for a horizon.
+  **Why:** provider delivery is at least once and promotion at most once. #268 replaces the last branch with idempotent re-sends and presumed settlement.
+  **Issue:** #256, #267, #268
+- **Decision:** a retryable adapter error marks the attempt `failed`, moves the job back to `queued` under a new token, and raises `ImageJobRetry`, so #70's `fail_job` backs off. On the last try (`failures + 1 >= job_max_attempts`, carried in `ImageRuntime.max_attempts`), the job ends `failed`/`provider_unavailable` instead. A checker failure follows the same pattern and ends `image_check_unavailable`.
+  **Why:** the planner's provider-error and checker-unavailable lines. Without the last-try rule, `jobs` would end `failed` while `image_jobs` stayed in `generating`.
+  **Issue:** #256
+- **Decision:** `image_worker_concurrency` is enforced in the worker as `WorkerConfig.kind_caps = {"image_job": N}`. A loop takes a capped kind's slot before it claims (with no `await` between the count and the take), and `queue.claim(exclude_kinds=...)` skips a kind that is at its cap.
+  **Why:** `claim` takes the earliest due job of any kind, so a cap has to filter the claim. Taking the slot first keeps loops racing in one process from going over the cap.
+  **Issue:** #256
+- **Decision:** the crash tests run `images.after_stage` and `images.promote.before_commit` as process crashes in a child engine: `EngineProcess(images=True, config_key=...)`, a new `faults serve --images` option. It registers `testing.images.PngImageGenerator` as `faults_png`, the test target for `story`, and passing checks. "The job then ended by recovery" is simulated in SQL (`failed`/`interrupted`, with its `jobs` row): an ending that committed and died before its after-commit delete, which is exactly the case the staging sweep exists for.
+  **Why:** the replan's crash convention. #256's own endings delete staging at once, so a sweep test needs an ending whose delete never ran.
+  **Issue:** #256
+- **Decision:** `test_i_25__m8_outside_turn_budget`'s respond hook monkeypatches `Operation.commit` in the test to add a commit step that calls `insert_image_job` for `turn` operations. There is no production seam.
+  **Why:** the planner calls for a test-only hook, removed when #265 lands. The respond path has no hook list, and adding one would be production code for a test.
+  **Issue:** #256, #265
+- **Decision:** what a run does with outputs. Outputs beyond the requested `n` are discarded unchecked. Bytes that do not sniff and decode as an image (Pillow `verify`) are discarded unchecked and are not violations. If no usable output remains, the job ends `provider_empty_result`. Each staged output is fsynced. Promotion copies the passing bytes to a sibling file and `put`s that copy, so a fenced attempt's staging stays intact for its ending's delete. A promote that finds its staging gone treats the attempt as fenced. `generation_metadata.endpoint` is the adapter-reported serving endpoint. `applied_parameters` add `seed` and `seed_source` (`requested`/`engine`). The request's `caption` and `alt_text` are kept in `image_jobs.params` beside the six planned keys, because the promoted asset carries them and #257 checks them.
+  **Why:** the AC, the planner's gate default for empty results, and the cancel race found while testing: a released worker used to crash with `FileNotFoundError` after the cancel deleted its staging (Rule 1, fixed, covered by `test_i_25__m8_cancel`).
+  **Issue:** #256
+- **Decision:** `tests/api_surface_support.CURRENT` moves to `M8`. `PENDING` names the eight M8 `not_yet` rows still to come, each with its story: #259 `/image-prompts`, #260 the five catalog candidate routes, #261/#263 `POST /stories/{id}/images`, #261 the story-image delete. The planned API also gains an `images` OpenAPI tag (C-01 requires every operation to carry a known tag).
+  **Why:** #256 flips the first M8 rows to `present`, and `test_c_15__api_surface` refuses a `present` row from a milestone after `CURRENT`. This is the same mechanism M7 used for its in-progress rows. It is independent of `pyproject`'s `current_milestone`, which stays at 7 until #271 (the run's decision).
+  **Issue:** #256, #259, #260, #261, #263
+- **Decision:** `image_retry_budget` and `staging_ttl` are a new deployment settings section (`ImageJobSettings`, both prospective) with their `SettingsPatch` fields. S-DELETE plants an `image_jobs` row, and `test_a_write_keeps_every_other_section` stores a non-default `image_retry_budget`.
+  **Why:** the planner's Settings line. `test_u_18` requires the REST patch to name every setting, and both tests require every story table and every settings section to be exercised.
+  **Issue:** #256
+- **Decision:** process note. The plan comment on #256 was posted after the exploration and the first code, not before it.
+  **Why:** honesty about the n8-exec order. The plan the comment gives is the one implemented.
+  **Issue:** #256
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

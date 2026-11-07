@@ -103,6 +103,7 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.image_jobs import ImageJobBody
 from epistrel.api.routes.inspect import (
     BeliefsBody,
     DivergencesBody,
@@ -255,6 +256,7 @@ from epistrel.core.stories import (
     StorySpec,
 )
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
+from epistrel.core.tables.images import ImageJobKind
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
@@ -2637,6 +2639,24 @@ def _steps() -> list[Step]:
             lambda e, ids: _offboarding(e, ids["offboarding"]),
             group=PRINCIPAL_GROUP,
         ),
+        # -- image jobs (#256): a story job (written as an enqueue would: no route creates one
+        # before #260/#263), read, cancelled, and read again.
+        Step(
+            "get_image_job",
+            lambda ids: Rest("GET", "/image-jobs/{image_job}"),
+            lambda e, ids: _image_job(e, ids["image_job"]),
+            prepare=_queue_image_job,
+        ),
+        Step(
+            "cancel_image_job",
+            lambda ids: Rest("DELETE", "/image-jobs/{image_job}"),
+            lambda e, ids: _cancel_image_job(e, ids["image_job"]),
+        ),
+        Step(
+            "get_image_job",
+            lambda ids: Rest("GET", "/image-jobs/{image_job}"),
+            lambda e, ids: _image_job(e, ids["image_job"]),
+        ),
         # -- erasure (#124): a dry run of the story's second character (it writes nothing)
         Step(
             "erase",
@@ -3795,6 +3815,29 @@ async def _erasure_boundary(engine: Engine) -> dict[str, Any]:
     from epistrel.api.routes.admin.erasure import ErasureBoundaryBody
 
     return dump(ErasureBoundaryBody.of(await engine.erasure_boundary(CTX)))
+
+
+async def _queue_image_job(engine: Engine, ids: Ids) -> None:
+    """A queued story image job of the story, as ``insert_image_job`` writes it (#256)."""
+    from epistrel.orchestrator.images import jobs as image_jobs
+
+    job = image_jobs.PreparedImageJob(
+        ImageJobKind.STORY,
+        {},
+        {"story_id": ids["story"], "turn": 1, "variant": 1},
+        image_jobs.ImageJobRequest(prompt="a lighthouse at dusk"),
+        PRINCIPAL,
+    )
+    async with engine.db.begin() as conn:
+        ids["image_job"] = (await image_jobs.insert_image_job(conn, job, None)).job_id
+
+
+async def _image_job(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(ImageJobBody.of(await engine.get_image_job(CTX, job_id)))
+
+
+async def _cancel_image_job(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(ImageJobBody.of(await engine.cancel_image_job(CTX, job_id)))
 
 
 async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:

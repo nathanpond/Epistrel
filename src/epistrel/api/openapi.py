@@ -91,6 +91,12 @@ TAGS: list[dict[str, str]] = [
         "for every video (FR-MEDIA-3).",
     },
     {
+        "name": "images",
+        "description": "Image jobs (FR-IMG-3,4): a generation runs as a background job outside "
+        "any turn; its bytes stay in private staging, unreachable, until they pass every check. "
+        "A consumer follows a job with a long-polling read and may cancel it.",
+    },
+    {
         "name": "profiles",
         "description": "Engine profiles: named, versioned sets of capability modules and dials "
         "that set how hard the engine works for a story (FR-PROF-1..4). The schema exposes only "

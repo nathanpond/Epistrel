@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(default=5, ge=1, le=100)
     worker_listen_enabled: bool = True
     worker_concurrency: int = Field(default=2, ge=1, le=64)
+    # Image jobs (#256): at most ``image_worker_concurrency`` image generation jobs run at once
+    # in one worker process, so turn jobs never wait behind them; 0: this process claims none.
+    image_worker_concurrency: int = Field(default=2, ge=0, le=64)
     # Backfills (FR-PROF-8, #229): at most ``backfill_concurrency`` run at once across the
     # deployment; a profile edit's queued backfills wait their turn.
     backfill_concurrency: int = Field(default=1, ge=1, le=8)

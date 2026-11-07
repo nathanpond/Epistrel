@@ -1023,6 +1023,35 @@ class CertificationCanarySettings(BaseModel):
         return self.certification_recertify_interval_s or DEFAULT_CANARY_INTERVAL_S
 
 
+# -- image jobs (FR-IMG-3,4; #256) --------------------------------------------------------------
+
+DEFAULT_IMAGE_RETRY_BUDGET = 2
+IMAGE_RETRY_BUDGET_MAX = 5
+DEFAULT_STAGING_TTL_S = 3_600
+STAGING_TTL_MIN_S = 600
+STAGING_TTL_MAX_S = 86_400
+IMAGE_STAGING_SWEEP_TASK = "image_staging_sweep"
+"""The image staging sweep's recurring task (and job kind; every 10 minutes, #256)."""
+
+
+class ImageJobSettings(BaseModel):
+    """How image jobs run (FR-IMG-3,4; #256), stored under ``deployment_state.settings``:
+    ``image_retry_budget`` (0-5, default 2), how many times a story job generates again after
+    every output of an attempt failed a check (FR-GUARD-6's bound, a key of its own beside the
+    text retry bound); and ``staging_ttl`` (600-86400 seconds, default one hour), the age past
+    which the staging sweep removes what a crashed job left in private staging. Prospective: a
+    job or sweep reads them when it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    image_retry_budget: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_RETRY_BUDGET, ge=0, le=IMAGE_RETRY_BUDGET_MAX
+    )
+    staging_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_STAGING_TTL_S, ge=STAGING_TTL_MIN_S, le=STAGING_TTL_MAX_S
+    )
+
+
 class ModelTiers(BaseModel):
     """The deployment's model tiers (#227): ``strongest`` is the model id a profile's
     ``"@strongest"`` route resolves to (``core.profiles.tiers``); ``null`` (the default): each
@@ -1403,6 +1432,7 @@ class DeploymentSettings(
     ModelTierSettings,
     CertificationCanarySettings,
     RewriteSettings,
+    ImageJobSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

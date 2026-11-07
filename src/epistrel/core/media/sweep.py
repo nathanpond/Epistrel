@@ -18,7 +18,9 @@ The ``media_sweep`` recurring job (``orchestrator.jobs.handlers.media_sweep``, e
    commit): at once for a purged row's checksum, and after an hour for any other blob nothing
    names (left by an upload whose transaction failed after its bytes moved into place). Two
    assets with identical bytes share one blob, so purging one keeps the bytes.
-3. **Staging.** Staged uploads older than an hour (a crashed upload's) are removed.
+3. **Staging.** Staged uploads older than an hour (a crashed upload's) are removed. The
+   generated images' private staging (``tmp/images/``) is skipped: only the
+   ``image_staging_sweep`` removes it (#256).
 4. **Upload sessions** (#107; ``core.media.uploads.sweep_sessions``). Open sessions past their
    expiry (``media_upload_ttl`` after their last part) are aborted and their parts removed;
    completed and aborted sessions are deleted once the idempotency result window has passed

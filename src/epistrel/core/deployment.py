@@ -196,6 +196,8 @@ class SettingsPatch(BaseModel):
     certification_canary_sample_size: StrictInt | None = None
     certification_canary_seeds: StrictInt | None = None
     certification_recertify_interval_s: StrictInt | None = None
+    image_retry_budget: StrictInt | None = None
+    staging_ttl: StrictInt | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None

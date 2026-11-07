@@ -635,7 +635,7 @@
       "item": "images — read an image job",
       "method": "GET",
       "path": "/image-jobs/{job_id}",
-      "status": "not_yet",
+      "status": "present",
       "milestone": "M8"
     },
     {
@@ -663,9 +663,8 @@
       "item": "images — cancel an image job",
       "method": "DELETE",
       "path": "/image-jobs/{job_id}",
-      "status": "not_yet",
-      "milestone": "M8",
-      "note": "docs/02 §9 names no path for the cancel; this one is a placeholder for M8's plan"
+      "status": "present",
+      "milestone": "M8"
     },
     {
       "item": "operations — read status and stages by id",

@@ -12,6 +12,11 @@ Every I-24 M8 part lives in this file (the traceability gate takes one file per 
 milestone): #254's ``test_i_24__m8_data_flow_rows`` moved here from ``tests/test_images_port.py``
 with #257's parts; #258 adds the output check's (``_checker_true_ages`` through the default
 checks, ``_upload_check_payload``), and #259/#263 add theirs.
+
+#263's viewpoint-input clauses (``_viewpoint_inputs``, ``_masked_stranger``) run the real story
+target end to end over REST on ``tests.story_image_generation_support``'s whisper scene, the
+stub ``image_prompt`` model and the stub image adapter, with scripted checks: what the prompt
+model and the image adapter received is what is asserted.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.media.checks import IMAGE_VIEWPOINT_GUARANTEE
 from epistrel.core.tables.images import ImageJobKind
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import jobs as image_jobs
@@ -45,6 +51,8 @@ from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID
 from epistrel.testing.images import TestImageTarget, registered_target
 from epistrel.tools import model_guide
 from tests import perception_support as ps
+from tests import story_image_generation_support as sg
+from tests import story_image_support as si
 from tests.image_job_support import CTX, PRINCIPAL, configure, image_engine, image_settings_for
 from tests.image_safety_support import (
     BOBBY,
@@ -74,6 +82,7 @@ from tests.minors_support import SUBJECTS_HEADING
 from tests.model_support import admin_client
 
 GUIDE = Path(__file__).resolve().parents[2] / "docs" / "models.md"
+OPERATIONS = Path(__file__).resolve().parents[2] / "docs" / "OPERATIONS.md"
 
 ADAPTER = "stub_sync"
 CAST = (BOBBY, JENNI, MARCUS, LILY, WREN)
@@ -486,3 +495,190 @@ async def test_i_24__m8_upload_check_payload(
     for name in CAST:
         if name != LILY:
             assert name not in text_sent, name
+
+
+# -- #263: the viewpoint's inputs (FR-IMG-8, FR-IMG-2, NFR-PRIV-4) -----------------------------
+
+
+def _calls_since(app: sg.GenerationApp, before: int) -> list[str]:
+    return [sg.payload(c) for c in app.prompt_calls()[before:]]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-8,2; NFR-PRIV-4")
+async def test_i_24__m8_viewpoint_inputs(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """In the whisper scene, an image for Bobby after the turn's beats: what the ``image_prompt``
+    model and the image adapter receive is only what Bobby perceived. The whisper is there as an
+    act ("Jenni whispers something to Marcus"), never its words; the protected match passes. The
+    narrator's ``latent`` record of Jenni's affair reaches no character viewpoint's prompt (not
+    Bobby's, not Marcus's). The guard behind the alcove's curtain, in canon, is in no prompt for
+    Bobby, and the parlor is described only as Bobby holds it (its name), not by the world's
+    description of its hidden alcove. Jenni's ``restricted`` tattoo (its reference image and
+    restricted-details prompt) is not sent for Bobby, who knows her, and is sent for
+    ``omniscient``. The prompt builder for Bobby renders the same input and answers the same
+    prompt without generating. A consumer prompt with the whispered words is refused for Bobby
+    (422 ``viewpoint_protected_content``, its field only) and creates no job. An upload for Bobby
+    is filed as given, with no viewpoint check. The API and ``docs/OPERATIONS.md`` state FR-IMG-8's
+    guarantee.
+
+    Complement asserted: the ``omniscient`` image's input does hold the affair, the words, the
+    tattoo and the world's description of the parlor; Marcus, the whisper's addressee, gets its
+    words; the guard's own viewpoint sees the alcove and the guard; the same consumer prompt is
+    accepted for ``omniscient``."""
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine)
+        story, ids, refs = scene.story_id, scene.ids, scene.references
+        at = {"turn": 1, "beat": 4}
+        bobby = sg.character(ids["Bobby"])
+
+        job = await sg.generated(app, story, position=at, audience_viewpoint=bobby)
+        [sent] = _calls_since(app, 0)
+        assert "Jenni whispers something to Marcus" in sent
+        assert sg.LEAN in sent
+        for withheld in ("blue mat", "lovers", "spring fair", "halberd", "helm"):
+            assert withheld not in sent, withheld
+        assert "\n## Location\nthe parlor\n" in sent
+        assert "curtained" not in sent
+        assert sg.TATTOO not in sent
+        assert "serpent" not in sent
+        [received] = app.generator.requests
+        assert received.request.prompt == job["prompt"]
+        assert "blue mat" not in received.request.prompt
+        assert refs["tattoo"] not in received.request.reference_images
+        assert refs["jenni"] in received.request.reference_images
+        assert received.request.n == 1
+
+        # The prompt builder: the same filtered input, the same prompt, nothing generated.
+        before = len(app.prompt_calls())
+        built = await sg.built(app, story, position=at, audience_viewpoint=bobby)
+        assert built.status_code == 200, built.text
+        assert built.json()["prompt"] == job["prompt"]
+        assert built.json()["viewpoint_basis"] == "filtered_inputs"
+        assert _calls_since(app, before) == [sent]
+        assert len(app.generator.requests) == 1
+
+        # Marcus, another character viewpoint: the words he was told, never the affair.
+        before = len(app.prompt_calls())
+        await sg.queued(app, story, position=at, audience_viewpoint=sg.character(ids["Marcus"]))
+        [marcus] = _calls_since(app, before)
+        assert sg.WORDS in marcus
+        assert "lovers" not in marcus
+
+        # The guard's own viewpoint: the alcove, and himself in it.
+        before = len(app.prompt_calls())
+        await sg.queued(app, story, position=at, audience_viewpoint=sg.character(ids["Guard"]))
+        [guard] = _calls_since(app, before)
+        assert "\n## Location\nthe alcove\n" in guard
+        assert "halberd" in guard
+
+        # Omniscient: everything but a ``think``.
+        before = len(app.prompt_calls())
+        omniscient_job = await sg.generated(
+            app, story, position=at, audience_viewpoint="omniscient"
+        )
+        [everything] = _calls_since(app, before)
+        assert sg.AFFAIR in everything
+        assert sg.WORDS in everything
+        assert sg.TATTOO in everything
+        assert sg.PARLOR_DESCRIPTION in everything
+        assert refs["tattoo"] in app.generator.requests[-1].request.reference_images
+        assert omniscient_job["viewpoint"] == "omniscient"
+
+        # A consumer prompt carrying the whispered words: refused for Bobby, nothing written.
+        held = await sg.counts(engine, story)
+        refused = await sg.request(
+            app,
+            story,
+            position=at,
+            audience_viewpoint=bobby,
+            prompt=f"Jenni whispers to Marcus: {sg.WORDS}",
+            depicted_subjects=[],
+        )
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "viewpoint_protected_content"
+        assert refused.json()["error"]["details"] == {"field": "body.prompt"}
+        assert "blue mat" not in refused.text
+        assert await sg.counts(engine, story) == held
+        accepted = await sg.request(
+            app,
+            story,
+            position=at,
+            audience_viewpoint="omniscient",
+            prompt=f"Jenni whispers to Marcus: {sg.WORDS}",
+            depicted_subjects=[],
+        )
+        assert accepted.status_code == 202, accepted.text
+
+        # An upload for Bobby is filed as given: no viewpoint check, no viewpoint basis.
+        StubImageChecker(app.stub).answer({MINORS_POLICY_ID: "pass"})
+        placed = await si.placed(
+            app.client, story, si.meta(at, bobby, caption=f"Jenni says {sg.WORDS}")
+        )
+        assert (placed["source"], placed["viewpoint_basis"]) == ("uploaded", "none")
+
+        # The guarantee, as docs/03 states it, in the API and in OPERATIONS.md.
+        document = (await app.client.get("/openapi.json")).json()
+        operation = document["paths"]["/stories/{story_id}/images"]["post"]
+        assert IMAGE_VIEWPOINT_GUARANTEE in operation["description"]
+        assert set(operation["requestBody"]["content"]) == {
+            "application/json",
+            "multipart/form-data",
+        }
+        images_tag = next(t for t in document["tags"] if t["name"] == "images")
+        assert IMAGE_VIEWPOINT_GUARANTEE in images_tag["description"]
+        assert IMAGE_VIEWPOINT_GUARANTEE in OPERATIONS.read_text()
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-8,2; NFR-PRIV-4")
+async def test_i_24__m8_masked_stranger(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Marcus stands masked in the parlor with Bobby: canon holds that the "masked stranger" is
+    Marcus (``same_as``, visible to Marcus only). Bobby's image describes him only as Bobby
+    perceives him, as the masked stranger: Marcus's appearance, seed and reference image are not
+    sent, his name is not in the scene, and a consumer prompt pairing the stranger with Marcus is
+    refused for Bobby. After Bobby comes to hold ``same_as(stranger, Marcus)``, they are sent.
+
+    Complement asserted: an ``omniscient`` image is sent Marcus's appearance, seed and reference
+    from the start."""
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.stranger_scene(app, engine)
+        story, ids = scene.story_id, scene.ids
+        at = {"turn": 1, "beat": 2}
+        bobby = sg.character(ids["Bobby"])
+
+        job = await sg.generated(app, story, position=at, audience_viewpoint=bobby)
+        [sent] = [sg.payload(c) for c in app.prompt_calls()]
+        assert f"the {sg.STRANGER}" in sent
+        assert sg.MARCUS_LOOK not in sent
+        assert "Marcus" not in sent
+        assert job["params"]["seed"] is None
+        assert job["params"]["reference_image_ids"] == []
+        assert scene.references["marcus"] not in app.generator.requests[-1].request.reference_images
+        paired = await sg.request(
+            app,
+            story,
+            position=at,
+            audience_viewpoint=bobby,
+            prompt=f"The {sg.STRANGER} is Marcus, unmasked.",
+            depicted_subjects=[],
+        )
+        assert paired.status_code == 422, paired.text
+        assert paired.json()["error"]["code"] == "viewpoint_protected_content"
+
+        before = len(app.prompt_calls())
+        everyone = await sg.generated(app, story, position=at, audience_viewpoint="omniscient")
+        assert sg.MARCUS_LOOK in sg.payload(app.prompt_calls()[before])
+        assert everyone["params"]["seed"] == sg.MARCUS_SEED
+        assert everyone["params"]["reference_image_ids"] == [scene.references["marcus"]]
+
+        await sg.learns_identity(engine, scene, ids["Bobby"])
+        before = len(app.prompt_calls())
+        known = await sg.generated(app, story, position=at, audience_viewpoint=bobby)
+        assert sg.MARCUS_LOOK in sg.payload(app.prompt_calls()[before])
+        assert known["params"]["seed"] == sg.MARCUS_SEED
+        assert known["params"]["reference_image_ids"] == [scene.references["marcus"]]
+        assert scene.references["marcus"] in app.generator.requests[-1].request.reference_images

@@ -5,8 +5,8 @@ For a consumer that makes its own images. A thin handler over ``Engine.build_ima
 (``orchestrator.images.prompt_builder``, where the body and answer models live, since the Engine
 takes the route's shape). It needs only the service credential and no image adapter. It is
 non-mutating (``route_flags(mutating=False)``): it creates no job, reservation or cost row, and
-stores nothing under an ``Idempotency-Key``. #263 adds the story variant (``target.kind =
-story``).
+stores nothing under an ``Idempotency-Key``. The story variant (``target.kind = story``, #263)
+builds a story image's prompt from what its audience viewpoint perceived.
 """
 
 from __future__ import annotations
@@ -51,7 +51,17 @@ DESCRIPTION = (
     "(`definition.appearance`). 503 `image_prompt_unavailable` (`details: {purpose: "
     "image_prompt, reason: model_unavailable | invalid_output}`) when the prompt cannot be "
     "written, 503 `model_unavailable` when the prompt check cannot reach its model, and 503 "
-    "`erasure_pending` while a pending catalog-scope erasure reaches the entry."
+    "`erasure_pending` while a pending catalog-scope erasure reaches the entry.\n\n"
+    "A **story** target (`{kind: story, story_id, position, audience_viewpoint, camera_pov?}`, "
+    "no `purpose`) builds the prompt a story image generation request would build (`POST "
+    "/stories/{id}/images` with a JSON body), from the same filtered inputs: only what the "
+    "audience viewpoint perceived at the position. It runs the same protected-content match "
+    "(one rewrite, then 422 `viewpoint_protected_content`) and prompt check, and answers "
+    "`depicted_subjects` and `viewpoint_basis: filtered_inputs` too; `size` and `aspect_ratio` "
+    "are null (the deployment's defaults apply). It is read-only, so it works on a paused story. "
+    "404 for an unknown story; 422 `position_invalid`, `viewpoint_invalid`, "
+    "`camera_pov_invalid`, `camera_pov_not_present`, `viewpoint_perceived_nothing`. A prompt it "
+    "returns and a consumer then submits as `prompt` counts as a consumer prompt."
 )
 
 

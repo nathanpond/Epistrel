@@ -149,8 +149,15 @@ def test_prompt_inputs_carry_no_parameter() -> None:
     never a reference, a seed, an add-on, a size or a negative prompt."""
     payload = prompt_inputs(_view()).model_dump()
     assert payload["subjects"] == [
-        {"description": "a tall woman", "age_band": "mid thirties", "base_appearance_prompt": ""}
+        {
+            "description": "a tall woman",
+            "age_band": "mid thirties",
+            "base_appearance_prompt": "",
+            "label": "",
+        }
     ]
+    # A catalog image has no story sections (#263's beats, location and framing).
+    assert (payload["beats"], payload["location"], payload["camera"]) == ([], "", "")
     dumped = repr(payload)
     for absent in ("r1", "seen", "512x512", "'text'"):
         assert absent not in dumped

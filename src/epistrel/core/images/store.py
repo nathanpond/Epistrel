@@ -359,6 +359,7 @@ async def insert_generated_asset(
     check_model: str | None = None,
     check_endpoint: str | None = None,
     policy_results: Sequence[Mapping[str, Any]] = (),
+    viewpoint_basis: str | None = None,
 ) -> str:
     """A promoted output's ``media_assets`` row (``kind = image``, ``source`` ``generated`` or
     ``generated_from_consumer_prompt``, with its output check's fields, #258) in ``conn``'s
@@ -391,6 +392,7 @@ async def insert_generated_asset(
             check_model=check_model,
             check_endpoint=check_endpoint,
             policy_results=[dict(r) for r in policy_results],
+            viewpoint_basis=viewpoint_basis,
         )
     )
     return asset_id

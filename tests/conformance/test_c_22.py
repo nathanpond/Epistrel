@@ -10,8 +10,9 @@
 
 #257 adds ``test_c_22__m8_prompt`` (the prompt check before any generation); #258 adds
 ``test_c_22__m8_output`` (the output check on generated and uploaded images); #259 adds
-``test_c_22__m8_image_prompt_policy`` (a built catalog prompt refused by a rating policy).
-Every C-22 M8 part lives in this file (the traceability gate takes one file per test ID and
+``test_c_22__m8_image_prompt_policy`` (a built catalog prompt refused by a rating policy); #263
+adds ``test_c_22__m8_story_no_checker`` (a story image request refused before any prompt-model
+call). Every C-22 M8 part lives in this file (the traceability gate takes one file per test ID and
 milestone)."""
 
 from __future__ import annotations
@@ -673,3 +674,42 @@ async def test_c_22__m8_candidate_no_checker(image_settings: Settings, engine: A
         assert accepted.status_code == 202, accepted.text
         assert accepted.headers["location"] == f"/image-jobs/{accepted.json()['job_id']}"
         assert (await _attempt_rows(engine))[0] == before[0] + 1
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-3")
+async def test_c_22__m8_story_no_checker(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A story image request with the image adapter configured and ``image_check`` unset (the
+    seeded minors policy applies) is 409 ``image_check_unconfigured`` before anything else: no
+    ``image_reservations`` row, no ``image_jobs`` row, no ``image_prompt`` call and no adapter
+    call; a consumer prompt is refused the same way.
+
+    Complement asserted: with an ``image_check`` model set, the same request is 202."""
+    from tests import story_image_generation_support as sg
+    from tests.image_job_support import configure as configure_images
+
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine, check=False)
+        story = scene.story_id
+        body: dict[str, Any] = {
+            "position": {"turn": 1, "beat": 3},
+            "audience_viewpoint": sg.character(scene.ids["Bobby"]),
+        }
+        extras: list[dict[str, Any]] = [
+            {},
+            {"prompt": "A lamplit parlor.", "depicted_subjects": []},
+        ]
+        for extra in extras:
+            refused = await sg.request(app, story, **body, **extra)
+            assert refused.status_code == 409, refused.text
+            assert refused.json()["error"]["code"] == "image_check_unconfigured"
+            assert MINORS in refused.json()["error"]["details"]["policy_ids"]
+        assert await sg.counts(engine, story) == {"image_jobs": 0, "image_reservations": 0}
+        assert app.prompt_calls() == []
+        assert app.generator.requests == []
+
+        await configure_images(app.lib, image_settings, sg.ADAPTER, check=True)
+        accepted = await sg.request(app, story, **body)
+        assert accepted.status_code == 202, accepted.text
+        assert len(app.prompt_calls()) == 1

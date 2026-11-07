@@ -1,14 +1,21 @@
-"""A story's images (FR-IMG-5, FR-IMG-10; #261).
+"""A story's images (FR-IMG-5, FR-IMG-8, FR-IMG-10; #261, #263).
 
-- ``POST /stories/{id}/images``: a ``multipart/form-data`` upload, the ``metadata`` part
-  (``StoryImageUpload``) first, then the ``file`` part (an image). 201 with the image as an
-  ``omniscient`` read returns it, its ``operation_id``, ``depicted_subjects`` and any
-  ``warnings``. The image sits at its position for its audience viewpoint only.
+- ``POST /stories/{id}/images``: one operation, two bodies, told apart by ``Content-Type``:
+  - ``application/json`` (``StoryImageRequest``, #263): generate the image at a position for an
+    audience viewpoint from what that viewpoint perceived (or from the consumer's ``prompt``).
+    202 ``{job_id, status: queued}`` with ``Location: /image-jobs/{id}``; the job places the
+    image when it promotes it;
+  - ``multipart/form-data`` (#261): an upload, the ``metadata`` part (``StoryImageUpload``)
+    first, then the ``file`` part (an image). 201 with the image as an ``omniscient`` read
+    returns it, its ``operation_id``, ``depicted_subjects`` and any ``warnings``. Any other
+    body is the upload path's 422.
+  The image sits at its position for its audience viewpoint only.
 - ``GET /stories/{id}/images/{image_id}?viewpoint=``: one image, for its audience viewpoint
   only (404 for any other).
 - ``DELETE /stories/{id}/images/{image_id}``: delete it (204, idempotent).
 
-Every handler makes one ``Engine`` call; reads in history (``GET /stories/{id}/history``) and
+Every handler makes one ``Engine`` call (the generation request reads its body after the
+story's gates, as the upload does); reads in history (``GET /stories/{id}/history``) and
 respond's ``beats`` hold the viewpoint's images in place.
 """
 
@@ -18,15 +25,22 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Request, Response
 from fastapi import status as http_status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
+from python_multipart.multipart import parse_options_header
 
 from epistrel.api import multipart
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered, no_content
 from epistrel.api.responses import MutationResponse
 from epistrel.core.ids import ULID_PATTERN
-from epistrel.core.images.story_images import StoryImageItem, StoryImagePlaced
-from epistrel.core.media.checks import CHECK_STATEMENTS
+from epistrel.core.images.story_images import (
+    StoryImageItem,
+    StoryImagePlaced,
+    parse_request,
+)
+from epistrel.core.media.checks import CHECK_STATEMENTS, IMAGE_VIEWPOINT_GUARANTEE
+from epistrel.orchestrator.images.targets.story import StoryImageQueued
 
 router = APIRouter(prefix="/stories", tags=["images"])
 
@@ -75,38 +89,102 @@ class StoryImageUploadedBody(StoryImageItem, MutationResponse):
         )
 
 
+class StoryImageRequestedBody(MutationResponse):
+    """A story image generation request's answer (202): the job to follow at ``Location``, and
+    the story's unchanged revision (the job places the image in its own operation)."""
+
+    job_id: str
+    status: str
+
+    @classmethod
+    def of(cls, queued: StoryImageQueued) -> StoryImageRequestedBody:
+        return cls(
+            job_id=queued.job_id,
+            status=queued.status,
+            timeline_revision=queued.timeline_revision,
+        )
+
+
+GENERATE = (
+    "An `application/json` body (`StoryImageRequest`) asks Epistrel to **generate** the image "
+    "(FR-IMG-8): `position`, `audience_viewpoint` and `camera_pov` as for an upload (the camera's "
+    "character must also be perceived there by the audience viewpoint), and optionally the "
+    "consumer's own `prompt` (1 to 4000 characters) with its `depicted_subjects` (then required; "
+    "`[]` declares none), `caption` and `alt_text` (stored as given, never generated). Without "
+    "`prompt`, Epistrel builds the prompt and the reference images from what the audience "
+    "viewpoint perceived at the position, and nothing else: its filtered beats of that turn, its "
+    "own location as it holds it, and the characters it perceives as present, each by perceived "
+    "appearance and apparent age band; a character whose identity the viewpoint does not know "
+    "contributes no visual identity, seed or reference image, and `restricted` elements only "
+    "reach `omniscient` images. Under Lite the prompt is built from the message the player was "
+    "shown. Every story image prompt, a consumer's included, carries the scenario's visual style "
+    "and the story rating's image guidance (a consumer's as sections after its text). The "
+    "prompt, negative prompt, caption and alt text then pass the protected-content match for the "
+    "audience viewpoint (no name, alias, protected term or unperceived beat's words it does not "
+    "hold; a built prompt is rewritten once), and the image-prompt policies. One image per "
+    "request. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`; the job stores "
+    "the prompt it was enqueued with and sends exactly that. Refusals, in order, with nothing "
+    "written: 404; 409 `not_configured` (no image adapter), `image_check_unconfigured`; 422 "
+    "`subjects_required` (a `prompt` without `depicted_subjects`), `subjects_not_allowed` "
+    "(`depicted_subjects` without a `prompt`), `position_invalid`, `viewpoint_invalid`, "
+    "`camera_pov_invalid`, `camera_pov_not_present`, `viewpoint_perceived_nothing`, "
+    "`viewpoint_protected_content` (`details: {field}`, never the term), `guardrail_violation`; "
+    "409 `image_limit_reached`, 422 `images_disabled`; 503 `image_prompt_unavailable`. The "
+    "image is stored `source: generated` with `viewpoint_basis: filtered_inputs`, or "
+    "`generated_from_consumer_prompt` with `protected_term_match`."
+)
+
+
 @router.post(
     "/{story_id}/images",
     status_code=http_status.HTTP_201_CREATED,
     response_model=StoryImageUploadedBody,
+    responses={
+        202: {
+            "model": StoryImageRequestedBody,
+            "description": "A generation request (`application/json`) was queued: follow the "
+            "job at the `Location`.",
+        }
+    },
     operation_id="upload_story_image",
-    summary="Upload a story image at a narrative position for one audience viewpoint",
+    summary="Generate or upload a story image at a narrative position for one audience viewpoint",
     description=(
-        "A `multipart/form-data` body: the `metadata` part (JSON: `position` `{turn, beat}` "
-        "after a beat of an active turn, the player input being beat 1, or `{slot_after_turn}` "
-        "in a new inter-turn slot after the story's last completed turn; `audience_viewpoint` "
-        "`character:<id>` or `omniscient`; `camera_pov` `{kind}` (default `third_person`; "
-        "`over_the_shoulder`/`first_person` name a `character_id` present there; composition "
-        "only, it grants no access); `depicted_subjects` (required, `[]` declares none); "
-        "optional `caption`, `alt_text`, `content_rating_id`, default the story's), then the "
-        "`file` part (an image). Refusals, in order: 422 `position_invalid` (an inactive turn, "
-        "a beat it lacks, or a slot after any turn but the last completed one), "
+        f"{IMAGE_VIEWPOINT_GUARANTEE}\n\n{GENERATE}\n\n"
+        "A `multipart/form-data` body **uploads** the image: the `metadata` part (JSON: "
+        "`position` `{turn, beat}` after a beat of an active turn, the player input being beat 1,"
+        " or `{slot_after_turn}` in a new inter-turn slot after the story's last completed turn; "
+        "`audience_viewpoint` `character:<id>` or `omniscient`; `camera_pov` `{kind}` (default "
+        "`third_person`; `over_the_shoulder`/`first_person` name a `character_id` present there; "
+        "composition only, it grants no access); `depicted_subjects` (required, `[]` declares "
+        "none); optional `caption`, `alt_text`, `content_rating_id`, default the story's), then "
+        "the `file` part (an image). Refusals, in order: 422 `position_invalid` (an inactive "
+        "turn, a beat it lacks, or a slot after any turn but the last completed one), "
         "`viewpoint_invalid`, `camera_pov_invalid`, `camera_pov_not_present`, "
         "`subjects_required`; then the image goes through `POST /media`'s upload path (415, 413, "
         "`rating_retired`, with an `image_check` model 422 `guardrail_violation` or 503 "
-        "`image_check_unavailable`, the moderation hook's refusals), and nothing is stored on "
-        "any of them. The asset is stored `source: uploaded`, `viewpoint_basis: none`, owned "
-        "by the story's owner, and the image is placed in one operation; a looser rating than "
-        "the story's answers a `rating_looser` warning. One image per request. Only reads for "
+        "`image_check_unavailable`, the moderation hook's refusals), and nothing is stored on any"
+        " of them. The asset is stored `source: uploaded`, `viewpoint_basis: none`, owned by the "
+        "story's owner, and the image is placed in one operation; a looser rating than the "
+        "story's answers a `rating_looser` warning. One image per request. Only reads for "
         f"its audience viewpoint receive it, in place.{_GATE} {CHECK_STATEMENTS}"
     ),
 )
 async def upload_story_image(
     story_id: StoryId, request: Request, response: Response, ctx: ContextDep, engine: EngineDep
-) -> StoryImageUploadedBody:
+) -> StoryImageUploadedBody | JSONResponse:
     # The story's gates (importing, erasure, the expected revision) answer before the body is
     # read, as every other story route's do.
     await engine.check_expected_revision(ctx, story_id)
+    kind, _ = parse_options_header(request.headers.get("content-type"))
+    if kind == b"application/json":
+        body = parse_request(await request.body())
+        queued = await engine.request_story_image(ctx, story_id, body)
+        answer = answered(
+            StoryImageRequestedBody.of(queued), ctx, response, replayed=queued.replayed
+        )
+        headers: dict[str, Any] = dict(response.headers)
+        headers["Location"] = queued.location
+        return JSONResponse(answer.model_dump(mode="json"), status_code=202, headers=headers)
     form = await multipart.read_story_image(request)
     placed = await engine.upload_story_image(
         ctx,

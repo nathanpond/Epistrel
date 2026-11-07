@@ -1407,6 +1407,8 @@ class ImagePromptSubject(InputSchema):
     base_appearance_prompt: Annotated[
         str, StringConstraints(max_length=2_000), C.VISUAL_DESCRIPTOR
     ] = ""
+    label: Annotated[str, StringConstraints(max_length=64), C.VISUAL_DESCRIPTOR] = ""
+    """A story image's opaque label for the subject (``person 1``; #263): never a name."""
 
 
 class ImagePromptInputs(InputSchema):
@@ -1424,6 +1426,16 @@ class ImagePromptInputs(InputSchema):
     ] = ""
     purpose: Annotated[str, StringConstraints(max_length=200), C.CONSTRAINT] = ""
     """What the image is for (a catalog portrait, a story image at a position)."""
+    beats: Annotated[
+        list[Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX)]], C.SCENE
+    ] = Field(default_factory=list, max_length=200)
+    """A story image's scene (#263): the beats its audience viewpoint perceived, in order."""
+    location: Annotated[str, StringConstraints(max_length=4_000), C.SCENE] = ""
+    """A story image's location as its audience viewpoint perceived it (#263)."""
+    camera: Annotated[str, StringConstraints(max_length=500), C.CONSTRAINT] = ""
+    """A story image's framing (#263): composition only."""
+    instruction: Annotated[str, StringConstraints(max_length=500), C.CONSTRAINT] = ""
+    """A fixed rewrite instruction (#263), never a protected term."""
 
 
 IMAGE_PROMPT_MAX = 2_000

@@ -2854,6 +2854,20 @@ def _steps() -> list[Step]:
             lambda e, ids: _catalog_images(e, ids["scenario"], kind="scenario"),
             status=lambda body: 202,
         ),
+        # #263: a story image generated for the omniscient audience after turn 1's player beat
+        # (the JSON body of the upload's route; the adapter and checker above), and one
+        # declaring subjects without a prompt (422 on both).
+        Step(
+            "request_story_image",
+            lambda ids: Rest("POST", f"{s}/images", STORY_IMAGE_REQUEST),
+            lambda e, ids: _story_image_requested(e, ids["story"], STORY_IMAGE_REQUEST),
+            status=lambda body: 202,
+        ),
+        Step(
+            "request_story_image",
+            lambda ids: Rest("POST", f"{s}/images", STORY_IMAGE_UNPROMPTED),
+            lambda e, ids: _story_image_requested(e, ids["story"], STORY_IMAGE_UNPROMPTED),
+        ),
         Step(
             "list_image_candidates",
             lambda ids: Rest("GET", "/catalog/characters/{character}/images/candidates"),
@@ -3733,6 +3747,26 @@ async def _story_image_uploaded(
         CTX, story_id, request, STORY_IMAGE_BYTES, content_type="image/png"
     )
     return dump(StoryImageUploadedBody.of(placed))
+
+
+STORY_IMAGE_REQUEST = {
+    "position": {"turn": 1, "beat": 1},
+    "audience_viewpoint": "omniscient",
+    "camera_pov": {"kind": "establishing"},
+}
+STORY_IMAGE_UNPROMPTED = {**STORY_IMAGE_REQUEST, "depicted_subjects": []}
+
+
+async def _story_image_requested(
+    engine: Engine, story_id: str, fields: dict[str, Any]
+) -> dict[str, Any]:
+    """#263: the library's generation request, rendered as the route renders it."""
+    from epistrel.api.routes.story_images import StoryImageRequestedBody
+    from epistrel.core.images.story_images import StoryImageRequest
+
+    request = StoryImageRequest.model_validate(fields)
+    queued = await engine.request_story_image(CTX, story_id, request)
+    return dump(StoryImageRequestedBody.of(queued))
 
 
 async def _story_image(engine: Engine, story_id: str, image_id: str) -> dict[str, Any]:
@@ -4676,13 +4710,19 @@ def _status_of(code: int) -> Callable[[dict[str, Any]], int]:
     return status
 
 
+SHARED_ROUTES = {"request_story_image": "upload_story_image"}
+"""Engine operations one route serves beside its own, told apart by the body (#263: ``POST
+/stories/{id}/images`` takes a JSON generation request or a multipart upload)."""
+
+
 def parity_gaps(engine_class: type[Engine], app: FastAPI, steps: list[Step]) -> list[str]:
     """Engine operations that no route serves or no step runs."""
     routed = {route.operation_id for route in api_routes(app) if route.operation_id}
     stepped = {step.operation for step in steps}
     gaps: list[str] = []
     for name in operations(engine_class):
-        has_route = name in routed or any(op.startswith(f"{name}_") for op in routed)
+        served = SHARED_ROUTES.get(name, name)
+        has_route = served in routed or any(op.startswith(f"{served}_") for op in routed)
         if not has_route or name not in stepped:
             gaps.append(name)
     return gaps

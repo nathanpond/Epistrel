@@ -61,8 +61,9 @@ from epistrel.core.bundles.import_job import ImportMetadata
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
-from epistrel.core.images.story_images import StoryImageUpload
+from epistrel.core.images.story_images import StoryImageRequest, StoryImageUpload
 from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
+from epistrel.core.media.checks import IMAGE_VIEWPOINT_GUARANTEE
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.profiles.certification import CertificationRecord
 from epistrel.core.stories import StorySpec
@@ -95,7 +96,8 @@ TAGS: list[dict[str, str]] = [
         "name": "images",
         "description": "Image jobs (FR-IMG-3,4): a generation runs as a background job outside "
         "any turn; its bytes stay in private staging, unreachable, until they pass every check. "
-        "A consumer follows a job with a long-polling read and may cancel it.",
+        "A consumer follows a job with a long-polling read and may cancel it. "
+        + IMAGE_VIEWPOINT_GUARANTEE,
     },
     {
         "name": "profiles",
@@ -388,6 +390,9 @@ ERROR_STATUS: dict[str, int] = {
     "viewpoint_invalid": 422,
     "camera_pov_invalid": 422,
     "camera_pov_not_present": 422,
+    "viewpoint_protected_content": 422,
+    "subjects_not_allowed": 422,
+    "viewpoint_perceived_nothing": 422,
     "transfer_target_invalid": 422,
     "transfer_target_required": 422,
     "unknown_feedback_tag": 422,
@@ -980,6 +985,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "not_found",
         "not_published",
         "draft_stale",
+        # #263: a story target's.
+        "position_invalid",
+        "viewpoint_invalid",
+        "camera_pov_invalid",
+        "camera_pov_not_present",
+        "viewpoint_perceived_nothing",
+        "viewpoint_protected_content",
         "guardrail_violation",
         "image_prompt_unavailable",
         "model_unavailable",
@@ -1077,6 +1089,17 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "use_multipart",
         "story_archived",
         "story_paused",
+        # #263: the JSON body's generation request.
+        "not_configured",
+        "image_check_unconfigured",
+        "subjects_not_allowed",
+        "viewpoint_perceived_nothing",
+        "viewpoint_protected_content",
+        "guardrail_violation",
+        "image_limit_reached",
+        "images_disabled",
+        "image_prompt_unavailable",
+        "model_unavailable",
     ),
     "get_story_image": ("viewpoint_unresolved", "omniscient_required"),
     "delete_story_image": ("story_archived", "story_paused", "erased_subject_referenced"),
@@ -1222,6 +1245,8 @@ DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
 takes a blank story or one from a scenario, #119)."""
 
+JSON_ALTERNATIVES = {"upload_story_image": "StoryImageRequest"}
+"""Multipart operations that also take a JSON body (#263's story image generation request)."""
 MULTIPART_BODIES = {
     "upload_media": "MediaUpload",
     "import_story": "ImportMetadata",
@@ -1456,6 +1481,7 @@ def _extra_components() -> dict[str, Any]:
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
             (StoryImageUpload, "validation"),
+            (StoryImageRequest, "validation"),
             (ImportMetadata, "validation"),
             (CertificationRecord, "validation"),
         ],
@@ -1519,6 +1545,11 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
         operation["requestBody"] = _multipart_body(
             MULTIPART_BODIES[operation_id], poster=operation_id == "upload_media"
         )
+    if operation_id in JSON_ALTERNATIVES:
+        # #263: one operation, two bodies: the JSON generation request beside #261's upload.
+        operation["requestBody"]["content"]["application/json"] = {
+            "schema": {"$ref": REF.format(model=JSON_ALTERNATIVES[operation_id])}
+        }
     if operation_id in RAW_BODIES:
         operation["requestBody"] = {
             "required": True,

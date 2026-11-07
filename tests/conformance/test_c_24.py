@@ -11,8 +11,10 @@
 - The API documentation (the media and image schemas) and ``docs/OPERATIONS.md`` § Images state
   both of FR-IMG-10's sentences verbatim.
 
-#261/#263 add the story-image parts (``viewpoint_basis``) here; every C-24 M8 part lives in this
-file (the traceability gate takes one file per test ID and milestone)."""
+#261/#263 add the story-image parts (``viewpoint_basis``) here: #263's
+``test_c_24__m8_consumer_prompt`` (a consumer-prompted story image's source, basis and declared
+subjects). Every C-24 M8 part lives in this file (the traceability gate takes one file per test
+ID and milestone)."""
 
 from __future__ import annotations
 
@@ -475,3 +477,82 @@ def _turn(story_id: str) -> dict[str, Any]:
     from tests.image_support import story_origin
 
     return story_origin(story_id, turn=3)
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-9,10")
+async def test_c_24__m8_consumer_prompt(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A story image generated from a consumer's prompt for Bobby: the adapter is sent the
+    consumer's text as written (then the style and the guidance), with no visual identity, seed
+    or reference image; the image reads ``source: generated_from_consumer_prompt``,
+    ``viewpoint_basis: protected_term_match`` (its row and its asset), its asset depicts exactly
+    the declared subjects, and its caption and alt text are stored as given. A ``prompt``
+    without ``depicted_subjects`` is 422 ``subjects_required``; ``depicted_subjects`` without a
+    ``prompt`` is 422 ``subjects_not_allowed``; an unknown field (``negative_prompt``) is 422
+    ``validation_error``; none writes a job.
+
+    Complement asserted: the built image at the same position reads ``generated`` /
+    ``filtered_inputs``."""
+    from tests import story_image_generation_support as sg
+
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine)
+        story, ids = scene.story_id, scene.ids
+        bobby = sg.character(ids["Bobby"])
+        at = {"turn": 1, "beat": 3}
+        text_prompt = "A lamplit parlor; a woman leans toward a sailor."
+        declared = [{"kind": "character", "id": ids["Jenni"]}]
+        job = await sg.generated(
+            app,
+            story,
+            position=at,
+            audience_viewpoint=bobby,
+            prompt=text_prompt,
+            depicted_subjects=declared,
+            caption="At the window",
+            alt_text="Two people talking quietly",
+        )
+        [received] = app.generator.requests
+        assert received.request.prompt.startswith(f"{text_prompt}\n\nVisual style: ")
+        assert received.request.reference_images == ()
+        assert job["params"]["seed"] is None
+        [row] = await sg.story_image_rows(engine, story)
+        assert (row["source"], row["viewpoint_basis"]) == (
+            "generated_from_consumer_prompt",
+            "protected_term_match",
+        )
+        assert (row["asset_source"], row["asset_basis"]) == (
+            "generated_from_consumer_prompt",
+            "protected_term_match",
+        )
+        assert row["asset_subjects"] == declared
+        read = await app.client.get(
+            f"/stories/{story}/images/{row['id']}", params={"viewpoint": bobby}, headers=READ
+        )
+        assert read.status_code == 200, read.text
+        assert (read.json()["source"], read.json()["viewpoint_basis"]) == (
+            "generated_from_consumer_prompt",
+            "protected_term_match",
+        )
+        assert (read.json()["caption"], read.json()["alt_text"]) == (
+            "At the window",
+            "Two people talking quietly",
+        )
+
+        held = await sg.counts(engine, story)
+        refusals = (
+            ({"prompt": text_prompt}, "subjects_required", "body.depicted_subjects"),
+            ({"depicted_subjects": declared}, "subjects_not_allowed", "body.depicted_subjects"),
+            ({"negative_prompt": "blurry"}, "validation_error", "body.negative_prompt"),
+        )
+        for extra, code, field_name in refusals:
+            refused = await sg.request(app, story, position=at, audience_viewpoint=bobby, **extra)
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == code
+            assert refused.json()["error"]["details"]["field"] == field_name
+        assert await sg.counts(engine, story) == held
+
+        await sg.generated(app, story, position=at, audience_viewpoint=bobby)
+        built = (await sg.story_image_rows(engine, story))[-1]
+        assert (built["source"], built["viewpoint_basis"]) == ("generated", "filtered_inputs")

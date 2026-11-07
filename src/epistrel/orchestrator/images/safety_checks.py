@@ -203,11 +203,14 @@ def safety_request(check: PromptCheck) -> tuple[SafetyRequest, Position | None]:
             None,
         )
     viewpoint = check.viewpoint or check.origin.get("viewpoint")
+    # The safety path's viewpoint is the audience's character (an actor of #541's presence
+    # rule): ``character:<id>`` names it, ``omniscient`` none (#263).
+    found = None if viewpoint is None else str(viewpoint).removeprefix("character:")
     return (
         replace(
             base,
             story_id=str(check.origin["story_id"]),
-            viewpoint=None if viewpoint is None else str(viewpoint),
+            viewpoint=None if found == "omniscient" else found,
         ),
         image_position(check.origin),
     )

@@ -204,6 +204,66 @@ class StoryImageUpload(BaseModel):
     )
 
 
+PROMPT_MAX = 4_000
+"""The longest consumer prompt a story image generation request takes (#263)."""
+EXAMPLE_REQUEST: dict[str, Any] = {
+    "position": {"turn": 3, "beat": 2},
+    "audience_viewpoint": "character:01J9Z8Q4N5V6W7X8Y9Z0A1B2C5",
+    "camera_pov": {"kind": "over_the_shoulder", "character_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"},
+}
+
+
+class StoryImageRequest(BaseModel):
+    """``POST /stories/{id}/images``' JSON body (FR-IMG-5,8; #263): generate a story image at
+    ``position`` for ``audience_viewpoint`` from what that viewpoint perceived, framed by the
+    optional ``camera_pov`` (default ``{kind: third_person}``; composition only). With
+    ``prompt`` the consumer writes the prompt instead (``generated_from_consumer_prompt``) and
+    must declare ``depicted_subjects`` (``[]`` declares none); without it the prompt builder
+    fills them, so declaring them is 422 ``subjects_not_allowed``. ``caption`` and ``alt_text``
+    are stored as given (never generated)."""
+
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra={"examples": [dict(EXAMPLE_REQUEST)]}
+    )
+
+    position: BeatPosition | SlotPosition
+    audience_viewpoint: StrictStr = Field(min_length=1, max_length=64)
+    camera_pov: dict[str, Any] | None = Field(
+        default=None,
+        description="`{kind}`: `third_person` (the default), `establishing`, or "
+        "`over_the_shoulder`/`first_person` with the `character_id` of a character present at "
+        "the position and perceived there by the audience viewpoint. Composition only.",
+    )
+    prompt: StrictStr | None = Field(default=None, min_length=1, max_length=PROMPT_MAX)
+    depicted_subjects: Annotated[
+        list[media.DepictedSubject] | None, AfterValidator(_deduplicated)
+    ] = Field(
+        default=None,
+        max_length=media.SUBJECTS_MAX,
+        description="With `prompt` only, and then required (`[]` declares none): every subject "
+        "the prompt depicts.",
+    )
+    caption: StrictStr | None = Field(default=None, max_length=media.CAPTION_MAX)
+    alt_text: StrictStr | None = Field(default=None, max_length=media.ALT_TEXT_MAX)
+
+
+_REQUEST: TypeAdapter[StoryImageRequest] = TypeAdapter(StoryImageRequest)
+
+
+def parse_request(raw: bytes) -> StoryImageRequest:
+    """The JSON body, validated as JSON's own types (strict, FR-API-4): 422 ``validation_error``
+    at ``body.<field>``."""
+    try:
+        document = json.loads(raw)
+    except ValueError:
+        raise InvalidRequest("the body is not valid JSON", {"field": "body"}) from None
+    refuse_nul(document, ("body",))
+    try:
+        return _REQUEST.validate_json(raw, strict=True)
+    except ValidationError as exc:
+        raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+
+
 _UPLOAD: TypeAdapter[StoryImageUpload] = TypeAdapter(StoryImageUpload)
 
 
@@ -281,12 +341,16 @@ async def _beat_count(conn: AsyncConnection, operation_id: str) -> int:
     return int(found or 0)
 
 
-def _position_invalid(message: str, **details: Any) -> PositionInvalid:
-    return PositionInvalid(message, {"field": f"{METADATA_FIELD}.position", **details})
+def _position_invalid(message: str, *, at: str = METADATA_FIELD, **details: Any) -> PositionInvalid:
+    return PositionInvalid(message, {"field": f"{at}.position", **details})
 
 
 async def _position(
-    conn: AsyncConnection, story_id: str, position: BeatPosition | SlotPosition
+    conn: AsyncConnection,
+    story_id: str,
+    position: BeatPosition | SlotPosition,
+    *,
+    at: str = METADATA_FIELD,
 ) -> tuple[int, int, int, bool]:
     """``(turn, variant, beat, slot)`` of an active position; 422 ``position_invalid``."""
     if isinstance(position, SlotPosition):
@@ -294,6 +358,7 @@ async def _position(
         if position.slot_after_turn != last:
             raise _position_invalid(
                 "a slot follows only the story's last completed turn",
+                at=at,
                 reason="not_last_completed_turn",
                 last_completed_turn=last,
             )
@@ -305,13 +370,14 @@ async def _position(
     found = await _active_turn(conn, story_id, position.turn)
     if found is None:
         raise _position_invalid(
-            f"turn {position.turn} is not an active committed turn", reason="turn_inactive"
+            f"turn {position.turn} is not an active committed turn", at=at, reason="turn_inactive"
         )
     operation_id, variant = found
     count = await _beat_count(conn, operation_id)
     if position.beat > count:
         raise _position_invalid(
             f"turn {position.turn} has no beat {position.beat}",
+            at=at,
             reason="beat_out_of_range",
             beat_count=count,
         )
@@ -336,7 +402,7 @@ def audience_character(viewpoint: str) -> str | None:
     return None
 
 
-def _audience(viewpoint: str, cast: Collection[str]) -> str:
+def _audience(viewpoint: str, cast: Collection[str], *, at: str = METADATA_FIELD) -> str:
     named = viewpoint.strip()
     if named == OMNISCIENT:
         return OMNISCIENT
@@ -345,14 +411,14 @@ def _audience(viewpoint: str, cast: Collection[str]) -> str:
         return named
     raise ViewpointInvalid(
         "the audience viewpoint must be omniscient or character:<id> of a story character",
-        {"field": f"{METADATA_FIELD}.audience_viewpoint"},
+        {"field": f"{at}.audience_viewpoint"},
     )
 
 
-def camera_of(value: Mapping[str, Any] | None) -> dict[str, Any]:
+def camera_of(value: Mapping[str, Any] | None, *, prefix: str = METADATA_FIELD) -> dict[str, Any]:
     """The stored camera POV of a request's ``camera_pov`` (the default when omitted); 422
     ``camera_pov_invalid`` for an unknown kind or a bad shape."""
-    at = f"{METADATA_FIELD}.camera_pov"
+    at = f"{prefix}.camera_pov"
     if value is None:
         return dict(DEFAULT_CAMERA)
     kind = value.get("kind", CameraKind.THIRD_PERSON.value)
@@ -407,8 +473,22 @@ async def _rating_warning(
     return ({"code": RATING_LOOSER},)
 
 
-async def place(conn: AsyncConnection, story_id: str, request: StoryImageUpload) -> Placement:
-    """The upload's checks, in the module docstring's order, before any byte is checked."""
+async def place_at(
+    conn: AsyncConnection,
+    story_id: str,
+    position: BeatPosition | SlotPosition,
+    audience_viewpoint: str,
+    camera_pov: Mapping[str, Any] | None,
+    *,
+    at: str = METADATA_FIELD,
+    content_rating_id: str | None = None,
+    subjects_declared: bool = True,
+) -> Placement:
+    """A story image's position, audience and camera checked, in the module docstring's order
+    (``position_invalid`` → ``viewpoint_invalid`` → ``camera_pov_invalid`` →
+    ``camera_pov_not_present`` → ``subjects_required`` when ``subjects_declared`` is false),
+    fields reported under ``at``; the rating is ``content_rating_id`` or the story's (422 when
+    neither exists). An upload and a generation request (#263) share it."""
     from epistrel.core.images.safety import present_at
 
     story = (
@@ -420,33 +500,33 @@ async def place(conn: AsyncConnection, story_id: str, request: StoryImageUpload)
     ).one_or_none()
     if story is None:
         raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
-    turn, variant, beat, slot = await _position(conn, story_id, request.position)
+    turn, variant, beat, slot = await _position(conn, story_id, position, at=at)
     cast = await _cast(conn, story_id)
-    audience = _audience(request.audience_viewpoint, cast)
-    camera = camera_of(request.camera_pov)
+    audience = _audience(audience_viewpoint, cast, at=at)
+    camera = camera_of(camera_pov, prefix=at)
     character = camera.get("character_id")
     if character is not None:
-        at = Position(turn, variant, 1, 0, 0) if slot else Position(turn, variant, 0, beat, 0)
+        here = Position(turn, variant, 1, 0, 0) if slot else Position(turn, variant, 0, beat, 0)
         # The audience's character is the actor (#541's rule): the camera's is what is tested.
         actors = [a for a in (audience_character(audience),) if a is not None]
-        present = await present_at(conn, story_id, at, cast, actors) if character in cast else ()
+        present = await present_at(conn, story_id, here, cast, actors) if character in cast else ()
         if character not in present:
             raise CameraPovNotPresent(
                 "the camera's character is not present at the position",
-                {"field": f"{METADATA_FIELD}.camera_pov.character_id"},
+                {"field": f"{at}.camera_pov.character_id"},
             )
-    if request.depicted_subjects is None:
+    if not subjects_declared:
         raise SubjectsRequired(
             "a story image must declare the subjects it depicts: `depicted_subjects` "
             "(an empty list declares none)",
-            {"field": f"{METADATA_FIELD}.depicted_subjects"},
+            {"field": f"{at}.depicted_subjects"},
         )
     story_rating = None if story.content_rating_id is None else str(story.content_rating_id)
-    rating = request.content_rating_id or story_rating
+    rating = content_rating_id or story_rating
     if rating is None:
         raise InvalidRequest(
             "the story has no rating: name the image's content_rating_id",
-            {"field": f"{METADATA_FIELD}.content_rating_id"},
+            {"field": f"{at}.content_rating_id"},
         )
     return Placement(
         story_id=story_id,
@@ -459,6 +539,19 @@ async def place(conn: AsyncConnection, story_id: str, request: StoryImageUpload)
         content_rating_id=rating,
         owner=str(story.owner_principal),
         warnings=await _rating_warning(conn, story_rating, rating),
+    )
+
+
+async def place(conn: AsyncConnection, story_id: str, request: StoryImageUpload) -> Placement:
+    """The upload's checks, in the module docstring's order, before any byte is checked."""
+    return await place_at(
+        conn,
+        story_id,
+        request.position,
+        request.audience_viewpoint,
+        request.camera_pov,
+        content_rating_id=request.content_rating_id,
+        subjects_declared=request.depicted_subjects is not None,
     )
 
 
@@ -792,6 +885,8 @@ def _operation(
     turn: int,
     principal: str,
     idempotency_key: str | None,
+    operation_id: str | None = None,
+    provenance: Provenance = Provenance.CONSUMER,
 ) -> Operation:
     """A beat position's ``story_image`` operation anchored at ``turn`` (it follows the turn),
     or a slot's inter-turn operation after the last completed turn."""
@@ -799,9 +894,10 @@ def _operation(
         return open_inter_turn(
             db,
             story_id,
-            source=Provenance.CONSUMER,
+            source=provenance,
             principal=principal,
             idempotency_key=idempotency_key,
+            operation_id=operation_id,
         )
     return Operation(
         db,
@@ -809,9 +905,10 @@ def _operation(
         kind=OperationKind.STORY_IMAGE,
         principal=principal,
         turn=turn,
-        provenance=Provenance.CONSUMER,
+        provenance=provenance,
         bumps_revision=True,
         idempotency_key=idempotency_key,
+        operation_id=operation_id,
     )
 
 
@@ -931,6 +1028,79 @@ async def upload(
     )
 
 
+async def place_generated(
+    conn: AsyncConnection,
+    placement: Placement,
+    asset_id: str,
+    *,
+    operation_id: str,
+    principal: str,
+    prompt: str,
+    job_id: str,
+    source: MediaSource,
+    viewpoint_basis: ViewpointBasis,
+) -> str:
+    """Place a generated image (#263) in ``conn``'s open transaction, the promotion's: its
+    ``story_image_added`` in the job's own operation (``operation_id``, minted at enqueue),
+    anchored as an upload's is, and the ``story_images`` row naming ``asset_id`` (the asset the
+    promotion inserted in the same transaction), with the stored prompt, the job, ``source``
+    and ``viewpoint_basis``. The image id. The transaction's rollback takes everything back:
+    the operation's ``in_flight`` row included (``Operation.begin_in``). 422
+    ``position_invalid`` when the timeline moved past the position since the enqueue."""
+    image_id = new_ulid()
+    op = _operation(
+        conn.engine,
+        placement.story_id,
+        slot=placement.slot,
+        turn=placement.turn,
+        principal=principal,
+        idempotency_key=None,
+        operation_id=operation_id,
+        provenance=Provenance.ENGINE,
+    )
+
+    async def step(inner: AsyncConnection) -> None:
+        position = _committed_position(op, placement)
+        await insert_derived(
+            inner,
+            story_images,
+            [
+                {
+                    "id": image_id,
+                    "story_id": placement.story_id,
+                    "operation_id": op.operation_id,
+                    "source_event_ids": [
+                        await _event_id(inner, op.operation_id, STORY_IMAGE_ADDED)
+                    ],
+                    "narrative_turn": position.turn,
+                    "turn_variant": position.variant,
+                    **position.columns("at"),
+                    "audience_viewpoint": placement.audience_viewpoint,
+                    "camera_pov": placement.camera_pov,
+                    "asset_id": asset_id,
+                    "prompt": prompt,
+                    "source": source.value,
+                    "viewpoint_basis": viewpoint_basis.value,
+                    "job_id": job_id,
+                    "created_at": clock.now(),
+                    "created_by": principal,
+                }
+            ],
+        )
+        await _index(inner, image_id)
+
+    await op.begin_in(conn)
+    op.append(
+        STORY_IMAGE_ADDED,
+        {"image_id": image_id, "asset_id": asset_id},
+        beat=None if placement.slot else placement.beat,
+    )
+    op.add_commit_step(step)
+    await op.write_in(conn)
+    log.debug("story image generated", story_id=placement.story_id, image_id=image_id)
+    return image_id
+
+
 def replace_item(item: StoryImageItem, **changes: Any) -> StoryImageItem:
     return item.model_copy(update=changes)
 
@@ -1028,6 +1198,7 @@ __all__ = [
     "StoryImageDeletion",
     "StoryImageItem",
     "StoryImagePlaced",
+    "StoryImageRequest",
     "StoryImageUpload",
     "as_recorded",
     "audience_character",
@@ -1041,7 +1212,10 @@ __all__ = [
     "media_request",
     "merge_into_history",
     "parse_metadata",
+    "parse_request",
     "place",
+    "place_at",
+    "place_generated",
     "upload",
     "visible",
 ]

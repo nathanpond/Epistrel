@@ -27,6 +27,15 @@ PASSED_STATEMENT = (
 )
 """FR-IMG-3/10's statement on ``passed``, in the same places (#258)."""
 CHECK_STATEMENTS = f"{UNCHECKED_STATEMENT} {PASSED_STATEMENT}"
+IMAGE_VIEWPOINT_GUARANTEE = (
+    "A generated story image is made only from information its audience viewpoint perceived, "
+    "and the image model is never given anything else. Images are not inspected pixel by "
+    "pixel, so an image model can still produce unperceived content by coincidence. A "
+    "consumer-supplied prompt carries only the protected-term match, and an uploaded image "
+    "carries no viewpoint guarantee."
+)
+"""FR-IMG-8's claim in the form docs/03 requires (#263), verbatim in the story image route's
+and the ``images`` tag's descriptions and in ``docs/OPERATIONS.md`` § Images."""
 
 
 class PolicyCheck(BaseModel):
@@ -78,6 +87,7 @@ def image_check_of(
 
 __all__ = [
     "CHECK_STATEMENTS",
+    "IMAGE_VIEWPOINT_GUARANTEE",
     "PASSED_STATEMENT",
     "UNCHECKED_STATEMENT",
     "ImageCheck",

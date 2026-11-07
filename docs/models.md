@@ -622,10 +622,15 @@ Writes an image prompt from what the image's audience has perceived: the subject
 | `subjects.description` | `visual_descriptor` |
 | `subjects.age_band` | `visual_descriptor` |
 | `subjects.base_appearance_prompt` | `visual_descriptor` |
+| `subjects.label` | `visual_descriptor` |
 | `scene` | `scene` |
 | `visual_style` | `visual_descriptor` |
 | `rating_image_guidance` | `rating_guidance` |
 | `purpose` | `constraint` |
+| `beats` | `scene` |
+| `location` | `scene` |
+| `camera` | `constraint` |
+| `instruction` | `constraint` |
 
 **Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `working_memory`, `retrieved_memories`, `canon_facts`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `image_prompt`, `caption_alt_text`, `reference_image`
 

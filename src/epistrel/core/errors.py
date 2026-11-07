@@ -2020,6 +2020,33 @@ class CameraPovNotPresent(EpistrelError):
     http_status = 422
 
 
+class ViewpointProtectedContent(EpistrelError):
+    """A story image's prompt, negative prompt, caption or alt text holds content its audience
+    viewpoint does not hold (FR-IMG-8, NFR-PRIV-4; #263): a protected name, alias or term
+    (#148), or words of a beat the viewpoint did not perceive. No job is created. ``details``:
+    ``field`` only, never the term."""
+
+    code = "viewpoint_protected_content"
+    http_status = 422
+
+
+class SubjectsNotAllowed(EpistrelError):
+    """A story image generation request declared ``depicted_subjects`` without a consumer
+    ``prompt`` (FR-IMG-9; #263): the prompt builder fills them. ``details``: ``field``."""
+
+    code = "subjects_not_allowed"
+    http_status = 422
+
+
+class ViewpointPerceivedNothing(EpistrelError):
+    """A story image's audience viewpoint perceived nothing at the position (FR-IMG-8; #263):
+    no beat, no one present and no location it holds. Refused before any prompt-model call,
+    reservation or job. ``details``: ``field`` (``body.audience_viewpoint``)."""
+
+    code = "viewpoint_perceived_nothing"
+    http_status = 422
+
+
 class StoryImageNotFound(EpistrelError):
     """The story has no visible image with that id for the read (FR-IMG-5; #261): unknown,
     another story's, discarded or dormant with its turn, deleted, or for another audience

@@ -928,9 +928,10 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"planned": 90}, prepare=_scheduled_event
     ),
     ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(200, prepare=_scheduled_event),
-    # -- stories: its images (#261). The matrix sends JSON, so an upload is 422 for anyone (the
-    # route reads a multipart body); the image the owner uploaded reads and deletes alike.
-    ("POST", f"{S}/images"): Call(422, STORY_IMAGE),
+    # -- stories: its images (#261, #263). The matrix sends JSON: the same route's generation
+    # request (#263), 409 ``not_configured`` for anyone (the matrix configures no image adapter);
+    # the image the owner uploaded reads and deletes alike.
+    ("POST", f"{S}/images"): Call(409, STORY_IMAGE),
     ("GET", f"{S}/images/{{image_id}}"): Call(200, prepare=_story_image),
     ("DELETE", f"{S}/images/{{image_id}}"): Call(204, prepare=_story_image),
     # -- stories: its States (#186), on the story running States at prompt_only (#203)

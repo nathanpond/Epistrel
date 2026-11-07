@@ -1,11 +1,13 @@
 {#- Image prompt (FR-IMG-2; #254, built by #259 and #263): writes the prompt the image adapter
     generates from, using only what the image's audience perceived. Every section is always
     present ("(none)" when empty); the visual style and the rating's image guidance are fixed
-    sections (FR-SCN-11, FR-RATE-4). -#}
+    sections (FR-SCN-11, FR-RATE-4). A story image (#263) adds its location, the beats its
+    audience viewpoint perceived and its framing; a rewrite adds its fixed instruction. -#}
 {% block system %}
 You write prompts for an image-generation model. Describe only what is listed: the subjects
 as they appear, the scene, and the visual style. Follow the rating's image guidance. State each
 subject's apparent age as its band, never a number. Never invent names, ages or story events.
+For a story image, depict what the viewer perceived as visible acts: never quote speech.
 Answer only with a JSON object {"prompt": "..."}.
 {% endblock %}
 {% block user %}
@@ -14,13 +16,33 @@ Answer only with a JSON object {"prompt": "..."}.
 
 ## Subjects
 {% for subject in subjects %}
-- {{ subject.description or "(no description)" }}; apparent age: {{ subject.age_band or "(none)" }}{% if subject.base_appearance_prompt %}; base appearance: {{ subject.base_appearance_prompt }}{% endif +%}
+- {% if subject.label %}{{ subject.label }}: {% endif %}{{ subject.description or "(no description)" }}; apparent age: {{ subject.age_band or "(none)" }}{% if subject.base_appearance_prompt %}; base appearance: {{ subject.base_appearance_prompt }}{% endif +%}
 {% else %}
 (none)
 {% endfor %}
 
 ## Scene
 {{ scene or "(none)" }}
+{% if beats or location or camera %}
+
+## Location
+{{ location or "(none)" }}
+
+## What the viewer perceived
+{% for beat in beats %}
+- {{ beat }}
+{% else %}
+(none)
+{% endfor %}
+
+## Framing
+{{ camera or "(none)" }}
+{% endif %}
+{% if instruction %}
+
+## Instruction
+{{ instruction }}
+{% endif %}
 
 ## Visual style
 {{ visual_style or "(none)" }}

@@ -275,6 +275,10 @@ class PreparedImageJob:
     viewpoint: str | None = None
     safety_context: Mapping[str, Any] | None = None
     """The prompt check's safety context (#257), stored with the job for the output check."""
+    extra_params: Mapping[str, Any] = field(default_factory=dict)
+    """What a target fixes at enqueue beside the request (#263's story image: ``source``,
+    ``viewpoint_basis``, the final ``depicted_subjects``), kept in ``image_jobs.params`` and
+    copied verbatim at promotion."""
 
     @property
     def story_id(self) -> str | None:
@@ -601,6 +605,7 @@ async def prepare_image_job(
     principal: str,
     *,
     viewpoint: str | None = None,
+    extra_params: Mapping[str, Any] | None = None,
 ) -> PreparedImageJob:
     """Every enqueue check, with no transaction open and nothing written (module docstring)."""
     found = check_request(kind, request)
@@ -624,6 +629,7 @@ async def prepare_image_job(
         principal,
         viewpoint,
         None if context is None else context.as_json(),
+        dict(extra_params or {}),
     )
 
 
@@ -647,6 +653,7 @@ async def insert_image_job(
             **request.params(),
             "caption": request.caption,
             "alt_text": request.alt_text,
+            **prepared.extra_params,
         },
         principal=prepared.principal,
         idempotency_key=idempotency_key,
@@ -1562,13 +1569,15 @@ async def insert_output_asset(
     content_rating_version_id: str,
     depicted_subjects: Sequence[Mapping[str, Any]] = (),
     source: MediaSource = MediaSource.GENERATED,
+    viewpoint_basis: str | None = None,
 ) -> str:
     """A target's promote: the output's ``media_assets`` row, its ``generation_metadata``
     holding adapter, model, endpoint, prompt, negative prompt, requested and applied parameters,
     reference image ids, usage and cost, and the output check's fields (#258: ``check_status``,
     the checker's model and endpoint host, the per-policy results; #266 adds the depicted
     subjects). ``source`` is ``generated`` for an Epistrel-built prompt and
-    ``generated_from_consumer_prompt`` for a consumer's (the target knows which, #263)."""
+    ``generated_from_consumer_prompt`` for a consumer's (the target knows which, #263), and a
+    story image's ``viewpoint_basis`` (``filtered_inputs`` or ``protected_term_match``)."""
     verdict = output.verdict
     passed = verdict.check_status == "passed"
     return await store.insert_generated_asset(
@@ -1591,6 +1600,7 @@ async def insert_output_asset(
         check_model=verdict.model if passed else None,
         check_endpoint=verdict.endpoint if passed else None,
         policy_results=verdict.policy_results() if passed else [],
+        viewpoint_basis=viewpoint_basis,
     )
 
 

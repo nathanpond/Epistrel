@@ -9,6 +9,9 @@
 - #259: a catalog character's image prompt built from perceivable inputs and returned without
   generating (``POST /image-prompts``), and its base appearance prompt drafted
   (``tests/image_prompt_support.py``).
+- #263: story images generated from what their audience viewpoint perceived, through the real
+  story target (``tests/story_image_generation_support.py``): the whisper scene, Lite's delivered
+  message, the stored prompt, the rating's guidance and the style, and the camera POV.
 
 Every I-23 M8 part lives in this file (the traceability gate takes one file per test ID and
 milestone)."""
@@ -72,6 +75,7 @@ from epistrel.testing.images import (
 )
 from tests import catalog_image_support as cs
 from tests import image_prompt_support as ip
+from tests import story_image_generation_support as sg
 from tests.auth_support import auth_settings, bearer
 from tests.catalog_support import BASE, read, save
 from tests.conformance.test_c_09 import log_text
@@ -1348,3 +1352,230 @@ async def test_i_23__m8_story_image_anchoring(
         ]
         await _truncate(client, story_id, 1)
         assert si.image_ids(await si.history(client, story_id, si.character(ids[si.BOBBY]))) == []
+
+
+# -- #263: generated story images (FR-IMG-2, FR-IMG-5, FR-IMG-8) ---------------------------------
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-2,5,8")
+async def test_i_23__m8_story_generation(image_settings: Settings, engine: AsyncEngine) -> None:
+    """In the whisper scene, an image for Bobby after Jenni's whisper (turn 1, beat 2): the
+    ``image_prompt`` input describes the whisper as an act and holds none of its words, the
+    adapter is asked for one image (``n = 1``), and the promoted image is in Bobby's history right
+    after that beat, stored ``source: generated``, ``viewpoint_basis: filtered_inputs`` on both
+    its row and its asset, with the stored prompt and job, under a ``story_image_added`` event of
+    the operation minted at enqueue. Under Lite, the scene is built from the delivered message:
+    after the reply the template's beats hold the message the player was shown, as it was shown;
+    after the player's input (beat 1) only the input.
+
+    Complement asserted: Jenni's history holds no image; the Lite image after beat 1 holds no
+    part of the message."""
+    from tests import story_image_support as si
+
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine)
+        story, ids = scene.story_id, scene.ids
+        bobby = sg.character(ids["Bobby"])
+        job = await sg.generated(
+            app, story, position={"turn": 1, "beat": 2}, audience_viewpoint=bobby
+        )
+        [sent] = [sg.payload(c) for c in app.prompt_calls()]
+        assert "- Jenni whispers something to Marcus" in sent
+        assert "blue mat" not in sent
+        assert sg.LEAN not in sent  # beat 3, after the position
+        [received] = app.generator.requests
+        assert received.request.n == 1
+        assert job["params"]["n"] == 1
+
+        [row] = await sg.story_image_rows(engine, story)
+        assert (row["source"], row["viewpoint_basis"]) == ("generated", "filtered_inputs")
+        assert (row["asset_source"], row["asset_basis"]) == ("generated", "filtered_inputs")
+        assert (row["prompt"], str(row["job_id"])) == (job["prompt"], str(job["id"]))
+        assert str(row["operation_id"]) == job["origin"]["operation_id"]
+        assert row["audience_viewpoint"] == bobby
+        assert row["camera_pov"] == {"kind": "third_person"}
+        assert {s["id"] for s in row["asset_subjects"]} >= {ids["Jenni"], ids["Marcus"]}
+        async with engine.connect() as conn:
+            event = await conn.scalar(
+                text(
+                    "SELECT operation_id FROM events WHERE story_id = :s "
+                    "AND type = 'story_image_added'"
+                ),
+                {"s": story},
+            )
+        assert str(event) == job["origin"]["operation_id"]
+
+        items = await si.history(app.client, story, bobby)
+        [image_id] = si.image_ids(items)
+        before = si.after(items, image_id)
+        assert before is not None
+        assert (before["turn"], before["beat"]) == (1, 2)
+        assert si.image_ids(await si.history(app.client, story, sg.character(ids["Jenni"]))) == []
+
+        # Lite: the scene comes from the delivered message.
+        lite, cast = await si.scene(app.client, turns=1)
+        player = sg.character(cast[si.BOBBY])
+        items = await si.history(app.client, lite, player)
+        [message] = [i["text"] for i in items if i["kind"] == "message_rendered"]
+        before_calls = len(app.prompt_calls())
+        await sg.queued(app, lite, position={"turn": 1, "beat": 2}, audience_viewpoint=player)
+        await sg.queued(app, lite, position={"turn": 1, "beat": 1}, audience_viewpoint=player)
+        after_reply, after_input = (sg.payload(c) for c in app.prompt_calls()[before_calls:])
+        assert f"\n- {message}\n" in after_reply
+        assert "Turn 1: who is there?" in after_reply
+        assert "Turn 1: who is there?" in after_input
+        assert message not in after_input
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-8")
+async def test_i_23__m8_story_stored_prompt(image_settings: Settings, engine: AsyncEngine) -> None:
+    """The adapter receives byte for byte the prompt stored on the job at enqueue: the worker
+    never rebuilds it, and the ``image_prompt`` model is called once per job. A built prompt
+    that hits the protected match is rewritten once, with the fixed instruction and never the
+    hit term; one that still hits is 422 ``viewpoint_protected_content`` with no job. A consumer
+    prompt carrying a 4-gram of Jenni's whisper is refused for Bobby.
+
+    Complement asserted: a second job calls the prompt model again; the 4-gram is accepted for
+    ``omniscient``."""
+    from epistrel.orchestrator.images.prompt_builder import REWRITE_INSTRUCTION
+
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine)
+        story, ids = scene.story_id, scene.ids
+        bobby = sg.character(ids["Bobby"])
+        at = {"turn": 1, "beat": 3}
+        first = await sg.queued(app, story, position=at, audience_viewpoint=bobby)
+        assert len(app.prompt_calls()) == 1
+        stored = (await sg.job_row(engine, first))["prompt"]
+        done = await sg.run(app, first)
+        assert done["image_job"] == "promoted", done
+        assert len(app.prompt_calls()) == 1  # the worker never calls the prompt model
+        assert app.adapter_prompts() == [stored]
+        await sg.queued(app, story, position=at, audience_viewpoint=bobby)
+        assert len(app.prompt_calls()) == 2
+
+        # A leaking answer is rewritten once with the fixed instruction.
+        leak = json.dumps({"prompt": "Jenni whispers that the key is under the blue mat."})
+        clean = json.dumps({"prompt": "A woman leans close to a sailor in a lamplit parlor."})
+        app.stub.when(("## What the viewer perceived", REWRITE_INSTRUCTION), clean, sg.PURPOSE)
+        app.stub.when(("## What the viewer perceived",), leak, sg.PURPOSE)
+        before = len(app.prompt_calls())
+        rewritten = await sg.queued(app, story, position=at, audience_viewpoint=bobby)
+        first_try, second_try = (sg.payload(c) for c in app.prompt_calls()[before:])
+        assert REWRITE_INSTRUCTION not in first_try
+        assert REWRITE_INSTRUCTION in second_try
+        assert "blue mat" not in second_try
+        assert (await sg.job_row(engine, rewritten))["prompt"].startswith("A woman leans close")
+
+        # One that still leaks is refused, with nothing written.
+        app.stub.reset()
+        app.stub.when(("## What the viewer perceived",), leak, sg.PURPOSE)
+        held = await sg.counts(engine, story)
+        refused = await sg.request(app, story, position=at, audience_viewpoint=bobby)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "viewpoint_protected_content"
+        assert refused.json()["error"]["details"] == {"field": "prompt"}
+        assert len(app.prompt_calls()) == 2
+        assert await sg.counts(engine, story) == held
+
+        # A consumer prompt with a 4-gram of the whisper.
+        consumer: dict[str, Any] = {
+            "prompt": "A note: under the blue mat.",
+            "depicted_subjects": [],
+        }
+        refused = await sg.request(app, story, position=at, audience_viewpoint=bobby, **consumer)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["details"] == {"field": "body.prompt"}
+        assert await sg.counts(engine, story) == held
+        accepted = await sg.request(
+            app, story, position=at, audience_viewpoint="omniscient", **consumer
+        )
+        assert accepted.status_code == 202, accepted.text
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-2; FR-RATE-4")
+async def test_i_23__m8_story_guidance(image_settings: Settings, engine: AsyncEngine) -> None:
+    """Every story image prompt carries the story rating's image guidance and the scenario's
+    visual style: in the captured adapter request of a built prompt, and of a consumer prompt,
+    where both follow the consumer's text as sections of their own; the style's negative prompt
+    is the request's negative.
+
+    Complement asserted: neither the style nor the image guidance is in any text-generation
+    prompt of the story."""
+    from epistrel.core.seeds.ratings import EVERYONE_ID, SEED_RATINGS
+
+    guidance = next(r.image_guidance for r in SEED_RATINGS if r.id == EVERYONE_ID)
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine)
+        story, ids = scene.story_id, scene.ids
+        at = {"turn": 1, "beat": 3}
+        await sg.generated(app, story, position=at, audience_viewpoint=sg.character(ids["Bobby"]))
+        text_prompt = "Two figures by a window at dusk."
+        await sg.generated(
+            app,
+            story,
+            position=at,
+            audience_viewpoint=sg.character(ids["Bobby"]),
+            prompt=text_prompt,
+            depicted_subjects=[{"kind": "character", "id": ids["Jenni"]}],
+        )
+        built, consumer = (r.request for r in app.generator.requests)
+        for request in (built, consumer):
+            assert sg.STYLE in request.prompt
+            assert guidance.strip() in request.prompt
+            assert request.negative_prompt is not None
+            assert sg.STYLE_NEGATIVE in request.negative_prompt
+        assert consumer.prompt == (
+            f"{text_prompt}\n\nVisual style: {sg.STYLE}\n\nImage guidance: {guidance.strip()}"
+        )
+        text_calls = [c for c in app.stub.calls if c.purpose != sg.PURPOSE]
+        assert text_calls
+        sent = "\n".join(sg.payload(c) for c in text_calls)
+        assert sg.STYLE not in sent
+        assert "All-ages imagery only" not in sent
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-5")
+async def test_i_23__m8_story_camera_pov(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A camera POV is framing only: with it omitted the image is ``third_person``; an
+    ``over_the_shoulder`` of Jenni, present and perceived by Bobby, changes only the template's
+    framing line. A character camera on the guard (behind the curtain: not perceived by Bobby)
+    or on a character of another story is 422 ``camera_pov_not_present`` with no job.
+
+    Complement asserted: the two inputs differ in exactly one line."""
+    async with sg.generation_app(image_settings, engine) as app:
+        scene = await sg.whisper(app, engine)
+        story, ids = scene.story_id, scene.ids
+        bobby = sg.character(ids["Bobby"])
+        at = {"turn": 1, "beat": 3}
+        await sg.queued(app, story, position=at, audience_viewpoint=bobby)
+        await sg.queued(
+            app,
+            story,
+            position=at,
+            audience_viewpoint=bobby,
+            camera_pov={"kind": "over_the_shoulder", "character_id": ids["Jenni"]},
+        )
+        default, shoulder = (sg.payload(c).splitlines() for c in app.prompt_calls())
+        assert "third-person view of the scene" in default
+        changed = [(a, b) for a, b in zip(default, shoulder, strict=True) if a != b]
+        assert len(changed) == 1, changed
+        assert changed[0] == ("third-person view of the scene", "over the shoulder of person 2")
+
+        held = await sg.counts(engine, story)
+        for character_id in (ids["Guard"], "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6"):
+            refused = await sg.request(
+                app,
+                story,
+                position=at,
+                audience_viewpoint=bobby,
+                camera_pov={"kind": "first_person", "character_id": character_id},
+            )
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "camera_pov_not_present"
+        assert await sg.counts(engine, story) == held
+        assert len(app.prompt_calls()) == 2

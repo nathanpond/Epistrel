@@ -1956,7 +1956,7 @@
         "type": "object"
       },
       "BuiltImagePrompt": {
-        "description": "A built image prompt and its parameters, for a consumer that generates its own images\n(FR-IMG-2): the prompt, the negative prompt, the seed, the ``perceivable`` reference image\nids, and exactly one of ``size`` and ``aspect_ratio``; and the resolved ``target``. No\nmodel, fingerprint or add-on.",
+        "description": "A built image prompt and its parameters, for a consumer that generates its own images\n(FR-IMG-2): the prompt, the negative prompt, the seed, the ``perceivable`` reference image\nids, and exactly one of ``size`` and ``aspect_ratio`` (a story image's: neither, the\ndeployment's defaults apply); and the resolved ``target``. A story image's adds the\n``depicted_subjects`` and its ``viewpoint_basis`` (``filtered_inputs``; #263). No model,\nfingerprint or add-on.",
         "properties": {
           "aspect_ratio": {
             "anyOf": [
@@ -1968,6 +1968,20 @@
               }
             ],
             "title": "Aspect Ratio"
+          },
+          "depicted_subjects": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/StoryDepicted"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depicted Subjects"
           },
           "negative_prompt": {
             "anyOf": [
@@ -2014,7 +2028,27 @@
             "title": "Size"
           },
           "target": {
-            "$ref": "#/components/schemas/ResolvedTarget"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedTarget"
+              },
+              {
+                "$ref": "#/components/schemas/StoryImagePromptTarget"
+              }
+            ],
+            "title": "Target"
+          },
+          "viewpoint_basis": {
+            "anyOf": [
+              {
+                "const": "filtered_inputs",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Viewpoint Basis"
           }
         },
         "required": [
@@ -16259,7 +16293,7 @@
       },
       "ImagePromptRequest": {
         "additionalProperties": false,
-        "description": "``POST /image-prompts``'s body: the target and the image's purpose (``primary`` or\n``gallery`` for a character, ``cover`` for a scenario).",
+        "description": "``POST /image-prompts``'s body: the target and, for a catalog target, the image's\npurpose (``primary`` or ``gallery`` for a character, ``cover`` for a scenario). A story\ntarget takes no purpose.",
         "examples": [
           {
             "purpose": "primary",
@@ -16275,32 +16309,65 @@
               "id": "01J8ZQ6T7Y3K5V9W2X4N6P8R0T",
               "kind": "scenario"
             }
+          },
+          {
+            "target": {
+              "audience_viewpoint": "character:01J8ZQ6T7Y3K5V9W2X4N6P8R0W",
+              "kind": "story",
+              "position": {
+                "beat": 2,
+                "turn": 3
+              },
+              "story_id": "01J8ZQ6T7Y3K5V9W2X4N6P8R0V"
+            }
           }
         ],
         "properties": {
           "purpose": {
-            "enum": [
-              "primary",
-              "gallery",
-              "cover"
+            "anyOf": [
+              {
+                "enum": [
+                  "primary",
+                  "gallery",
+                  "cover"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Purpose",
-            "type": "string"
+            "title": "Purpose"
           },
           "target": {
-            "$ref": "#/components/schemas/ImagePromptTarget"
+            "discriminator": {
+              "mapping": {
+                "character": "#/components/schemas/ImagePromptTarget",
+                "scenario": "#/components/schemas/ImagePromptTarget",
+                "story": "#/components/schemas/StoryImagePromptTarget"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ImagePromptTarget"
+              },
+              {
+                "$ref": "#/components/schemas/StoryImagePromptTarget"
+              }
+            ],
+            "title": "Target"
           }
         },
         "required": [
-          "target",
-          "purpose"
+          "target"
         ],
         "title": "ImagePromptRequest",
         "type": "object"
       },
       "ImagePromptTarget": {
         "additionalProperties": false,
-        "description": "What the prompt is for: a catalog character or scenario, at its draft (``draft: true``,\nits current revision), a published ``version``, or with neither its latest published\nversion. #263 adds ``kind: story``.",
+        "description": "What the prompt is for: a catalog character or scenario, at its draft (``draft: true``,\nits current revision), a published ``version``, or with neither its latest published\nversion. A story image's target is ``StoryImagePromptTarget`` (#263).",
         "properties": {
           "draft": {
             "default": false,
@@ -50418,6 +50485,26 @@
         "title": "StoryCreatedBody",
         "type": "object"
       },
+      "StoryDepicted": {
+        "description": "A subject a built story image prompt depicts (FR-IMG-9): a story character, by id.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "character",
+            "default": "character",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "StoryDepicted",
+        "type": "object"
+      },
       "StoryFromScenario": {
         "additionalProperties": false,
         "description": "``POST /stories`` with a ``scenario`` (FR-SCN-6): the scenario (and version), who fills\neach NPC role (``slots``: a ``locked`` role and a ``default`` role kept as pre-filled need\nno entry; re-supplying a locked role's own ``character@version`` is accepted), each\nplayer's principal and persona (``players``, by the scenario's player role), the\npermitted ``overrides`` (dotted paths over ``story_settings_defaults``, and\n``cast.max_characters_at_start``, each named by the scenario's\n``creation_rules.overridable``), an optional content rating, engine profile and\nstarting-cast limit, ``strict`` (refuse on any creation conflict, FR-SCN-7), the story's\n``name`` (default: the scenario's) and ``owner``, the report's ``projection`` (``card``:\ncounts; ``full``: every entry), and ``ignore_warnings`` (FR-PROF-7: create even when the\nprofile leaves a recommended capability unmet). ``characters`` is #50's blank-story field\nand is refused beside a scenario.",
@@ -50790,6 +50877,207 @@
           "created_at"
         ],
         "title": "StoryImageItem",
+        "type": "object"
+      },
+      "StoryImagePromptTarget": {
+        "additionalProperties": false,
+        "description": "A story image's target (``kind: story``; #263): the story, the narrative ``position``\n(``{turn, beat}`` after a beat of an active turn, the player input being beat 1, or\n``{slot_after_turn}`` after the story's last completed turn), the ``audience_viewpoint``\nwhose perception the prompt is built from (``character:<id>`` or ``omniscient``) and the\noptional ``camera_pov`` (composition only).",
+        "properties": {
+          "audience_viewpoint": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Audience Viewpoint",
+            "type": "string"
+          },
+          "camera_pov": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Camera Pov"
+          },
+          "kind": {
+            "const": "story",
+            "title": "Kind",
+            "type": "string"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeatPosition"
+              },
+              {
+                "$ref": "#/components/schemas/SlotPosition"
+              }
+            ],
+            "title": "Position"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Story Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "story_id",
+          "position",
+          "audience_viewpoint"
+        ],
+        "title": "StoryImagePromptTarget",
+        "type": "object"
+      },
+      "StoryImageRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/images``' JSON body (FR-IMG-5,8; #263): generate a story image at\n``position`` for ``audience_viewpoint`` from what that viewpoint perceived, framed by the\noptional ``camera_pov`` (default ``{kind: third_person}``; composition only). With\n``prompt`` the consumer writes the prompt instead (``generated_from_consumer_prompt``) and\nmust declare ``depicted_subjects`` (``[]`` declares none); without it the prompt builder\nfills them, so declaring them is 422 ``subjects_not_allowed``. ``caption`` and ``alt_text``\nare stored as given (never generated).",
+        "examples": [
+          {
+            "audience_viewpoint": "character:01J9Z8Q4N5V6W7X8Y9Z0A1B2C5",
+            "camera_pov": {
+              "character_id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C6",
+              "kind": "over_the_shoulder"
+            },
+            "position": {
+              "beat": 2,
+              "turn": 3
+            }
+          }
+        ],
+        "properties": {
+          "alt_text": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Alt Text"
+          },
+          "audience_viewpoint": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Audience Viewpoint",
+            "type": "string"
+          },
+          "camera_pov": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "`{kind}`: `third_person` (the default), `establishing`, or `over_the_shoulder`/`first_person` with the `character_id` of a character present at the position and perceived there by the audience viewpoint. Composition only.",
+            "title": "Camera Pov"
+          },
+          "caption": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Caption"
+          },
+          "depicted_subjects": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                "maxItems": 50,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "With `prompt` only, and then required (`[]` declares none): every subject the prompt depicts.",
+            "title": "Depicted Subjects"
+          },
+          "position": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BeatPosition"
+              },
+              {
+                "$ref": "#/components/schemas/SlotPosition"
+              }
+            ],
+            "title": "Position"
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt"
+          }
+        },
+        "required": [
+          "position",
+          "audience_viewpoint"
+        ],
+        "title": "StoryImageRequest",
+        "type": "object"
+      },
+      "StoryImageRequestedBody": {
+        "description": "A story image generation request's answer (202): the job to follow at ``Location``, and\nthe story's unchanged revision (the job places the image in its own operation).",
+        "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "job_id",
+          "status"
+        ],
+        "title": "StoryImageRequestedBody",
         "type": "object"
       },
       "StoryImageUpload": {
@@ -75302,7 +75590,7 @@
     },
     "/image-prompts": {
       "post": {
-        "description": "Builds the prompt and parameters Epistrel would generate a catalog image from, and returns them without generating (FR-IMG-2): for a consumer that makes its own images. The `target` is a catalog `character` (purpose `primary` or `gallery`) or `scenario` (purpose `cover`): its draft (`draft: true`, at its current revision), a published `version`, or with neither its latest published version. Archived and unlisted entries work.\n\nA catalog image is public-card content, so its prompt uses only what anyone browsing could see: the character's appearance (with authored exact ages left out), its **apparent age band** (\"mid thirties\"), never its age, its base appearance prompt, and its `perceivable` reference images. A scenario cover uses the public description only and depicts no slot characters. `restricted` reference images and add-ons and the restricted-details prompt never reach it. The visual style (a character's companion scenario's, or the scenario's own) and the entry's rating image guidance shape every image prompt and no text prompt. The `image_prompt` model writes the prompt. The `negative_prompt` (the identity's terms, then the style's, deduplicated), the `seed`, the `reference_image_ids` and the size never pass through the model. Exactly one of `size` and `aspect_ratio` is set: the identity's, else the configured image adapter's default size, else its default aspect ratio, else `1:1` (`primary`, `gallery`) or `16:9` (`cover`). `target` answers the version or draft revision used.\n\nThen the prompt is checked against every image-prompt policy, judged by true ages (#257). A violation is 422 `guardrail_violation` with `violations: [{policy_id, name, message}]`, and the refused prompt is never returned. It needs no image adapter or image checker, creates no job, reservation or cost row, and stores nothing under an `Idempotency-Key`. Two calls may answer different prompts: a generation job builds its prompt once and stores it.\n\n404 for an unknown entry or version. 422 `not_published` (never published, and neither `draft` nor `version` given), and 422 `validation_error` for `draft` with `version`, a purpose the kind's images cannot have (`body.purpose`), or a character without a true age (`definition.true_age`), a content rating (`metadata.content_rating_id`) or an appearance (`definition.appearance`). 503 `image_prompt_unavailable` (`details: {purpose: image_prompt, reason: model_unavailable | invalid_output}`) when the prompt cannot be written, 503 `model_unavailable` when the prompt check cannot reach its model, and 503 `erasure_pending` while a pending catalog-scope erasure reaches the entry.",
+        "description": "Builds the prompt and parameters Epistrel would generate a catalog image from, and returns them without generating (FR-IMG-2): for a consumer that makes its own images. The `target` is a catalog `character` (purpose `primary` or `gallery`) or `scenario` (purpose `cover`): its draft (`draft: true`, at its current revision), a published `version`, or with neither its latest published version. Archived and unlisted entries work.\n\nA catalog image is public-card content, so its prompt uses only what anyone browsing could see: the character's appearance (with authored exact ages left out), its **apparent age band** (\"mid thirties\"), never its age, its base appearance prompt, and its `perceivable` reference images. A scenario cover uses the public description only and depicts no slot characters. `restricted` reference images and add-ons and the restricted-details prompt never reach it. The visual style (a character's companion scenario's, or the scenario's own) and the entry's rating image guidance shape every image prompt and no text prompt. The `image_prompt` model writes the prompt. The `negative_prompt` (the identity's terms, then the style's, deduplicated), the `seed`, the `reference_image_ids` and the size never pass through the model. Exactly one of `size` and `aspect_ratio` is set: the identity's, else the configured image adapter's default size, else its default aspect ratio, else `1:1` (`primary`, `gallery`) or `16:9` (`cover`). `target` answers the version or draft revision used.\n\nThen the prompt is checked against every image-prompt policy, judged by true ages (#257). A violation is 422 `guardrail_violation` with `violations: [{policy_id, name, message}]`, and the refused prompt is never returned. It needs no image adapter or image checker, creates no job, reservation or cost row, and stores nothing under an `Idempotency-Key`. Two calls may answer different prompts: a generation job builds its prompt once and stores it.\n\n404 for an unknown entry or version. 422 `not_published` (never published, and neither `draft` nor `version` given), and 422 `validation_error` for `draft` with `version`, a purpose the kind's images cannot have (`body.purpose`), or a character without a true age (`definition.true_age`), a content rating (`metadata.content_rating_id`) or an appearance (`definition.appearance`). 503 `image_prompt_unavailable` (`details: {purpose: image_prompt, reason: model_unavailable | invalid_output}`) when the prompt cannot be written, 503 `model_unavailable` when the prompt check cannot reach its model, and 503 `erasure_pending` while a pending catalog-scope erasure reaches the entry.\n\nA **story** target (`{kind: story, story_id, position, audience_viewpoint, camera_pov?}`, no `purpose`) builds the prompt a story image generation request would build (`POST /stories/{id}/images` with a JSON body), from the same filtered inputs: only what the audience viewpoint perceived at the position. It runs the same protected-content match (one rewrite, then 422 `viewpoint_protected_content`) and prompt check, and answers `depicted_subjects` and `viewpoint_basis: filtered_inputs` too; `size` and `aspect_ratio` are null (the deployment's defaults apply). It is read-only, so it works on a paused story. 404 for an unknown story; 422 `position_invalid`, `viewpoint_invalid`, `camera_pov_invalid`, `camera_pov_not_present`, `viewpoint_perceived_nothing`. A prompt it returns and a consumer then submits as `prompt` counts as a consumer prompt.",
         "operationId": "build_image_prompt",
         "parameters": [
           {
@@ -75393,7 +75681,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `guardrail_violation`, `not_published`, `validation_error`."
+            "description": "Invalid request; nothing was written: `camera_pov_invalid`, `camera_pov_not_present`, `guardrail_violation`, `not_published`, `position_invalid`, `validation_error`, `viewpoint_invalid`, `viewpoint_perceived_nothing`, `viewpoint_protected_content`."
           },
           "503": {
             "content": {
@@ -86513,7 +86801,7 @@
     },
     "/stories/{story_id}/images": {
       "post": {
-        "description": "A `multipart/form-data` body: the `metadata` part (JSON: `position` `{turn, beat}` after a beat of an active turn, the player input being beat 1, or `{slot_after_turn}` in a new inter-turn slot after the story's last completed turn; `audience_viewpoint` `character:<id>` or `omniscient`; `camera_pov` `{kind}` (default `third_person`; `over_the_shoulder`/`first_person` name a `character_id` present there; composition only, it grants no access); `depicted_subjects` (required, `[]` declares none); optional `caption`, `alt_text`, `content_rating_id`, default the story's), then the `file` part (an image). Refusals, in order: 422 `position_invalid` (an inactive turn, a beat it lacks, or a slot after any turn but the last completed one), `viewpoint_invalid`, `camera_pov_invalid`, `camera_pov_not_present`, `subjects_required`; then the image goes through `POST /media`'s upload path (415, 413, `rating_retired`, with an `image_check` model 422 `guardrail_violation` or 503 `image_check_unavailable`, the moderation hook's refusals), and nothing is stored on any of them. The asset is stored `source: uploaded`, `viewpoint_basis: none`, owned by the story's owner, and the image is placed in one operation; a looser rating than the story's answers a `rating_looser` warning. One image per request. Only reads for its audience viewpoint receive it, in place. 409 `story_archived`, `story_paused` or `revision_conflict`. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
+        "description": "A generated story image is made only from information its audience viewpoint perceived, and the image model is never given anything else. Images are not inspected pixel by pixel, so an image model can still produce unperceived content by coincidence. A consumer-supplied prompt carries only the protected-term match, and an uploaded image carries no viewpoint guarantee.\n\nAn `application/json` body (`StoryImageRequest`) asks Epistrel to **generate** the image (FR-IMG-8): `position`, `audience_viewpoint` and `camera_pov` as for an upload (the camera's character must also be perceived there by the audience viewpoint), and optionally the consumer's own `prompt` (1 to 4000 characters) with its `depicted_subjects` (then required; `[]` declares none), `caption` and `alt_text` (stored as given, never generated). Without `prompt`, Epistrel builds the prompt and the reference images from what the audience viewpoint perceived at the position, and nothing else: its filtered beats of that turn, its own location as it holds it, and the characters it perceives as present, each by perceived appearance and apparent age band; a character whose identity the viewpoint does not know contributes no visual identity, seed or reference image, and `restricted` elements only reach `omniscient` images. Under Lite the prompt is built from the message the player was shown. Every story image prompt, a consumer's included, carries the scenario's visual style and the story rating's image guidance (a consumer's as sections after its text). The prompt, negative prompt, caption and alt text then pass the protected-content match for the audience viewpoint (no name, alias, protected term or unperceived beat's words it does not hold; a built prompt is rewritten once), and the image-prompt policies. One image per request. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`; the job stores the prompt it was enqueued with and sends exactly that. Refusals, in order, with nothing written: 404; 409 `not_configured` (no image adapter), `image_check_unconfigured`; 422 `subjects_required` (a `prompt` without `depicted_subjects`), `subjects_not_allowed` (`depicted_subjects` without a `prompt`), `position_invalid`, `viewpoint_invalid`, `camera_pov_invalid`, `camera_pov_not_present`, `viewpoint_perceived_nothing`, `viewpoint_protected_content` (`details: {field}`, never the term), `guardrail_violation`; 409 `image_limit_reached`, 422 `images_disabled`; 503 `image_prompt_unavailable`. The image is stored `source: generated` with `viewpoint_basis: filtered_inputs`, or `generated_from_consumer_prompt` with `protected_term_match`.\n\nA `multipart/form-data` body **uploads** the image: the `metadata` part (JSON: `position` `{turn, beat}` after a beat of an active turn, the player input being beat 1, or `{slot_after_turn}` in a new inter-turn slot after the story's last completed turn; `audience_viewpoint` `character:<id>` or `omniscient`; `camera_pov` `{kind}` (default `third_person`; `over_the_shoulder`/`first_person` name a `character_id` present there; composition only, it grants no access); `depicted_subjects` (required, `[]` declares none); optional `caption`, `alt_text`, `content_rating_id`, default the story's), then the `file` part (an image). Refusals, in order: 422 `position_invalid` (an inactive turn, a beat it lacks, or a slot after any turn but the last completed one), `viewpoint_invalid`, `camera_pov_invalid`, `camera_pov_not_present`, `subjects_required`; then the image goes through `POST /media`'s upload path (415, 413, `rating_retired`, with an `image_check` model 422 `guardrail_violation` or 503 `image_check_unavailable`, the moderation hook's refusals), and nothing is stored on any of them. The asset is stored `source: uploaded`, `viewpoint_basis: none`, owned by the story's owner, and the image is placed in one operation; a looser rating than the story's answers a `rating_looser` warning. One image per request. Only reads for its audience viewpoint receive it, in place. 409 `story_archived`, `story_paused` or `revision_conflict`. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
         "operationId": "upload_story_image",
         "parameters": [
           {
@@ -86564,6 +86852,11 @@
         ],
         "requestBody": {
           "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryImageRequest"
+              }
+            },
             "multipart/form-data": {
               "encoding": {
                 "metadata": {
@@ -86602,6 +86895,32 @@
               }
             },
             "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryImageRequestedBody"
+                }
+              }
+            },
+            "description": "A generation request (`application/json`) was queued: follow the job at the `Location`.",
             "headers": {
               "Idempotency-Key": {
                 "description": "The request's key, echoed (generated if absent).",
@@ -86665,7 +86984,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `image_check_unconfigured`, `image_limit_reached`, `not_configured`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "413": {
             "content": {
@@ -86695,7 +87014,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `camera_pov_invalid`, `camera_pov_not_present`, `media_retired`, `moderation_rejected`, `position_invalid`, `poster_extraction_failed`, `poster_invalid`, `poster_required`, `rating_retired`, `subjects_required`, `validation_error`, `viewpoint_invalid`."
+            "description": "Invalid request; nothing was written: `camera_pov_invalid`, `camera_pov_not_present`, `guardrail_violation`, `images_disabled`, `media_retired`, `moderation_rejected`, `position_invalid`, `poster_extraction_failed`, `poster_invalid`, `poster_required`, `rating_retired`, `subjects_not_allowed`, `subjects_required`, `validation_error`, `viewpoint_invalid`, `viewpoint_perceived_nothing`, `viewpoint_protected_content`."
           },
           "423": {
             "content": {
@@ -86723,7 +87042,7 @@
                 }
               }
             },
-            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `media_store_unavailable`, `moderation_unavailable`, `original_in_flight_timeout`.",
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `ledger_unavailable`, `media_store_unavailable`, `model_unavailable`, `moderation_unavailable`, `original_in_flight_timeout`.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds to wait before retrying.",
@@ -86739,7 +87058,7 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "Upload a story image at a narrative position for one audience viewpoint",
+        "summary": "Generate or upload a story image at a narrative position for one audience viewpoint",
         "tags": [
           "images"
         ]
@@ -98838,7 +99157,7 @@
       "name": "media"
     },
     {
-      "description": "Image jobs (FR-IMG-3,4): a generation runs as a background job outside any turn; its bytes stay in private staging, unreachable, until they pass every check. A consumer follows a job with a long-polling read and may cancel it.",
+      "description": "Image jobs (FR-IMG-3,4): a generation runs as a background job outside any turn; its bytes stay in private staging, unreachable, until they pass every check. A consumer follows a job with a long-polling read and may cancel it. A generated story image is made only from information its audience viewpoint perceived, and the image model is never given anything else. Images are not inspected pixel by pixel, so an image model can still produce unperceived content by coincidence. A consumer-supplied prompt carries only the protected-term match, and an uploaded image carries no viewpoint guarantee.",
       "name": "images"
     },
     {

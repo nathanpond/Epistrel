@@ -97,6 +97,7 @@ from epistrel.core.erasure import erase as erasure
 from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
+    CameraPovNotPresent,
     EpistrelError,
     InvalidRequest,
     InvalidView,
@@ -106,6 +107,10 @@ from epistrel.core.errors import (
     RewriteApplyFailed,
     StoryNotFound,
     SubjectNotFound,
+    SubjectsNotAllowed,
+    SubjectsRequired,
+    ViewpointPerceivedNothing,
+    ViewpointProtectedContent,
     refuse_nul,
 )
 from epistrel.core.genesis import create as genesis
@@ -124,7 +129,7 @@ from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.images import candidates as image_candidates
 from epistrel.core.images import perceived as image_perceived
-from epistrel.core.images import story_images
+from epistrel.core.images import story_images, story_perceived
 from epistrel.core.media import assets as media
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.media import uploads as media_uploads
@@ -165,8 +170,9 @@ from epistrel.core.tables import characters as characters_table
 from epistrel.core.tables import events
 from epistrel.core.tables import stories as stories_table
 from epistrel.core.tables.images import ImageJobKind
-from epistrel.core.tables.media import MediaKind, MediaState
+from epistrel.core.tables.media import MediaKind, MediaSource, MediaState
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.story_images import ViewpointBasis
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.verify import shadow as verify_shadow
 from epistrel.core.verify import yield_queries
@@ -200,6 +206,7 @@ from epistrel.orchestrator.images.params import ImageGenerationParams
 from epistrel.orchestrator.images.port import MAX_REFERENCE_IMAGES
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.images.targets import catalog as catalog_images
+from epistrel.orchestrator.images.targets import story as story_image_target
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
@@ -364,6 +371,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "create_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten, status=201),
     # #261: a story image uploaded at a position (201) and deleted (204).
     "upload_story_image": ResultCodec.of(story_images.StoryImagePlaced, status=201),
+    # #263: the same route's JSON body, a generation request (202, story-scoped).
+    "request_story_image": ResultCodec.of(story_image_target.StoryImageQueued, status=202),
     "delete_story_image": ResultCodec.of(story_images.StoryImageDeletion, status=204),
     "reschedule_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
     "cancel_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
@@ -631,6 +640,28 @@ def _with_checks(
 def _body(model: Any) -> Any:
     """A validated request body as hashed: its JSON dump with defaults filled."""
     return model.model_dump(mode="json")
+
+
+def _builder_subjects(
+    view: prompt_builder.PerceivedView,
+) -> tuple[image_jobs.DepictedSubject, ...]:
+    """The prompt builder's depicted subjects of a story image (FR-IMG-9, #257's ``depicted``):
+    each cast member's own character id with its label, never a name."""
+    return tuple(
+        image_jobs.DepictedSubject(
+            character_id=s.subject_ids[0],
+            visual_descriptors=tuple(d for d in (s.label,) if d),
+            depicted=True,
+        )
+        for s in view.subjects
+        if s.subject_ids
+    )
+
+
+def _asset_subject_ids(view: prompt_builder.PerceivedView) -> list[str]:
+    """The character ids a built story image's asset depicts (FR-IMG-9): each cast member, and a
+    recognised one's identity partner, in order."""
+    return list(dict.fromkeys(i for s in view.subjects for i in s.subject_ids))
 
 
 _POLICY_ITEMS: TypeAdapter[list[StoryPolicyItem]] = TypeAdapter(list[StoryPolicyItem])
@@ -5631,8 +5662,12 @@ class Engine:
         version; 422 ``not_published``, ``validation_error`` (a purpose the kind's images
         cannot have, a missing true age, rating or appearance) or ``guardrail_violation`` (the
         refused prompt is never returned); 503 ``image_prompt_unavailable``,
-        ``model_unavailable`` or ``erasure_pending``."""
+        ``model_unavailable`` or ``erasure_pending``. A story target (``kind: story``, #263):
+        ``_build_story_image_prompt``."""
         target = request.target
+        if isinstance(target, prompt_builder.StoryImagePromptTarget):
+            return await self._build_story_image_prompt(ctx, target)
+        assert request.purpose is not None  # noqa: S101 - the body's validator requires it
         await self._catalog_gate(target.kind, target.id)
         deployment = await self._image_deployment()
         async with self.db.connect() as conn, conn.begin():
@@ -5681,6 +5716,86 @@ class Engine:
                 draft_revision=resolved.draft_revision,
             ),
         )
+
+    async def _build_story_image_prompt(
+        self, ctx: RequestContext, target: prompt_builder.StoryImagePromptTarget
+    ) -> prompt_builder.BuiltImagePrompt:
+        """A story image's prompt built without generating (FR-IMG-2,8; #263): from the same
+        filtered inputs a generation request builds from, through the same protected match (one
+        rewrite, then 422 ``viewpoint_protected_content``) and #257's prompt check. Read-only:
+        it works on a paused story and takes no key, reservation or job. 404 for an unknown
+        story; 422 ``position_invalid``, ``viewpoint_invalid``, ``camera_pov_invalid``,
+        ``camera_pov_not_present``, ``viewpoint_perceived_nothing``; 503
+        ``erasure_pending``."""
+        await self._erasure_gate(target.story_id)
+        async with self.db.connect() as conn:
+            placement = await story_images.place_at(
+                conn,
+                target.story_id,
+                target.position,
+                target.audience_viewpoint,
+                target.camera_pov,
+                at="body.target",
+            )
+            view, matcher = await self._story_image_view(conn, placement, at="body.target")
+        built = await prompt_builder.write_story_image_prompt(self.models, view, matcher)
+        depicted = _builder_subjects(view)
+        await image_safety.check_image_prompt(
+            self.image_runtime(),
+            image_jobs.PromptCheck(
+                kind=ImageJobKind.STORY,
+                target=story_image_target.target_of(placement),
+                origin=story_image_target.origin_of(
+                    placement,
+                    operation_id=new_ulid(),
+                    timeline_revision=0,
+                    position=target.position,
+                ),
+                request=image_jobs.ImageJobRequest(
+                    prompt=built.prompt,
+                    negative_prompt=built.negative_prompt,
+                    depicted_subjects=depicted,
+                ),
+                principal=ctx.principal or SYSTEM_PRINCIPAL,
+                viewpoint=placement.audience_viewpoint,
+            ),
+        )
+        return prompt_builder.BuiltImagePrompt(
+            prompt=built.prompt,
+            negative_prompt=built.negative_prompt,
+            seed=built.seed,
+            reference_image_ids=list(built.reference_image_ids),
+            size=None,
+            aspect_ratio=None,
+            target=target,
+            depicted_subjects=[
+                prompt_builder.StoryDepicted(id=i) for i in _asset_subject_ids(view)
+            ],
+            viewpoint_basis="filtered_inputs",
+        )
+
+    async def _story_image_view(
+        self, conn: AsyncConnection, placement: story_images.Placement, *, at: str
+    ) -> tuple[prompt_builder.PerceivedView, story_perceived.ViewpointMatcher]:
+        """A placement's perceived inputs as the prompt builder takes them, and the audience
+        viewpoint's protected match: 422 ``camera_pov_not_present`` for a character camera the
+        viewpoint does not perceive there, ``viewpoint_perceived_nothing`` when it perceived
+        nothing at the position."""
+        perceived = await story_perceived.story_perceived_inputs(conn, placement)
+        if not story_perceived.camera_perceived(perceived):
+            raise CameraPovNotPresent(
+                "the camera's character is not one the audience viewpoint perceives there",
+                {"field": f"{at}.camera_pov.character_id"},
+            )
+        if perceived.perceived_nothing:
+            raise ViewpointPerceivedNothing(
+                "the audience viewpoint perceived nothing at this position",
+                {"field": f"{at}.audience_viewpoint"},
+            )
+        matcher = await story_perceived.viewpoint_matcher(
+            conn, placement.story_id, placement.audience_viewpoint
+        )
+        return prompt_builder.story_view(perceived), matcher
 
     async def draft_base_appearance_prompt(
         self, ctx: RequestContext, character_id: str, draft_revision: int | None = None
@@ -6271,6 +6386,137 @@ class Engine:
             )
         finally:
             await media.discard(staged)
+
+    async def request_story_image(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: story_images.StoryImageRequest,
+    ) -> story_image_target.StoryImageQueued:
+        """Generate a story image at a position for an audience viewpoint (FR-IMG-5,8; REST
+        202 on ``POST /stories/{id}/images`` with a JSON body; #263). Without ``prompt`` the
+        prompt and references are built only from what the viewpoint perceived there
+        (``core.images.story_perceived``; the prompt builder's story variant); with it the
+        consumer's prompt is sent as written, the scenario's visual style and the rating's image
+        guidance appended. Either passes the viewpoint's protected-content match and #257's
+        prompt check, outside any transaction, then the reservation (#262) and the ``story``
+        job are written in one transaction, the prompt stored on the job. One image per
+        request. Refusals, in order, with nothing written: 404; 409 ``story_archived``,
+        ``story_paused``; 409 ``not_configured``, ``image_check_unconfigured`` (before any
+        prompt-model call); 422 ``subjects_required``, ``subjects_not_allowed``,
+        ``position_invalid``, ``viewpoint_invalid``, ``camera_pov_invalid``,
+        ``camera_pov_not_present``, ``viewpoint_perceived_nothing``,
+        ``viewpoint_protected_content``, ``guardrail_violation``; 409 ``image_limit_reached``,
+        422 ``images_disabled``; 503 ``image_prompt_unavailable``, ``model_unavailable``.
+        Idempotent under its key (story-scoped)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> story_image_target.StoryImageQueued:
+            revision = await self.check_expected_revision(ctx, story_id)
+            await stories.require_writable(self.db, story_id)
+            await image_jobs.require_generation(self.models, self.db)
+            consumer = request.prompt is not None
+            if consumer and request.depicted_subjects is None:
+                raise SubjectsRequired(
+                    "a consumer prompt must declare the subjects it depicts: "
+                    "`depicted_subjects` (an empty list declares none)",
+                    {"field": "body.depicted_subjects"},
+                )
+            if not consumer and request.depicted_subjects is not None:
+                raise SubjectsNotAllowed(
+                    "only a consumer prompt declares its subjects: the prompt builder fills them",
+                    {"field": "body.depicted_subjects"},
+                )
+            async with self.db.connect() as conn:
+                placement = await story_images.place_at(
+                    conn,
+                    story_id,
+                    request.position,
+                    request.audience_viewpoint,
+                    request.camera_pov,
+                    at=story_image_target.FIELD,
+                )
+                if consumer:
+                    style, style_negative, guidance = await story_perceived.style_and_guidance(
+                        conn, story_id
+                    )
+                    matcher = await story_perceived.viewpoint_matcher(
+                        conn, story_id, placement.audience_viewpoint
+                    )
+                else:
+                    view, matcher = await self._story_image_view(
+                        conn, placement, at=story_image_target.FIELD
+                    )
+            hit = matcher.first_hit(
+                {"prompt": request.prompt, "caption": request.caption, "alt_text": request.alt_text}
+            )
+            if hit is not None:
+                raise ViewpointProtectedContent(
+                    "the request holds content its audience viewpoint does not hold",
+                    {"field": f"body.{hit}"},
+                )
+            if consumer:
+                assert request.prompt is not None  # noqa: S101 - consumer
+                declared = list(request.depicted_subjects or ())
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=prompt_builder.consumer_prompt(request.prompt, style, guidance),
+                    negative_prompt=style_negative,
+                    caption=request.caption,
+                    alt_text=request.alt_text,
+                    depicted_subjects=tuple(
+                        image_jobs.DepictedSubject(character_id=d.id) for d in declared
+                    ),
+                )
+                extra = {
+                    "source": MediaSource.GENERATED_FROM_CONSUMER_PROMPT.value,
+                    "viewpoint_basis": ViewpointBasis.PROTECTED_TERM_MATCH.value,
+                    "depicted_subjects": [d.model_dump(mode="json") for d in declared],
+                }
+            else:
+                built = await prompt_builder.write_story_image_prompt(self.models, view, matcher)
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=built.prompt,
+                    negative_prompt=built.negative_prompt,
+                    seed=built.seed,
+                    reference_image_ids=built.reference_image_ids,
+                    caption=request.caption,
+                    alt_text=request.alt_text,
+                    depicted_subjects=_builder_subjects(view),
+                )
+                extra = {
+                    "source": MediaSource.GENERATED.value,
+                    "viewpoint_basis": ViewpointBasis.FILTERED_INPUTS.value,
+                    "depicted_subjects": [
+                        {"kind": "character", "id": i} for i in _asset_subject_ids(view)
+                    ],
+                    "references_dropped": list(built.references_dropped),
+                }
+            prepared = await image_jobs.prepare_image_job(
+                self.image_runtime(),
+                ImageJobKind.STORY,
+                story_image_target.target_of(placement),
+                story_image_target.origin_of(
+                    placement,
+                    operation_id=new_ulid(),
+                    timeline_revision=revision,
+                    position=request.position,
+                ),
+                job_request,
+                principal,
+                viewpoint=placement.audience_viewpoint,
+                extra_params=extra,
+            )
+            async with self.db.begin() as conn:
+                queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)
+            return story_image_target.StoryImageQueued(queued.job_id, revision)
+
+        return await self._keyed(
+            ctx,
+            "request_story_image",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
 
     @refuses_nul()
     async def get_story_image(

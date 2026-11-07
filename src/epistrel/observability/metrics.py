@@ -54,6 +54,9 @@ The registry holds:
 - ``epistrel_budget_rejected_total`` (#456): calls and queued turns refused 422
   ``budget_below_safety_minimum`` before any model call (counted once per unit of work by
   ``observability.instrument``).
+- ``epistrel_image_counter_drift_total{scope}`` (#262): per ``image_counter_reconcile`` run, one
+  per image limit counter whose stored sums differ from its reservation records' (``deployment``
+  or ``entry``) and one per ``held`` record whose job is terminal or missing (``stuck_held``).
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -322,6 +325,13 @@ BUDGET_REJECTED = Counter(
     "Calls and queued turns refused with budget_below_safety_minimum before any model call "
     "(the budget could not cover the calls the safety reservation needs).",
 )
+IMAGE_COUNTER_DRIFT = Counter(
+    "epistrel_image_counter_drift",
+    "Image limit counters whose stored sums differ from their reservation records' (scope "
+    "deployment or entry), and held records whose job is terminal or missing (stuck_held), "
+    "per reconcile run (#262).",
+    ("scope",),
+)
 _STEP_LABEL = re.compile(r"^[a-z][a-z_]{0,63}$")
 OTHER_STEP = "other"
 
@@ -513,6 +523,7 @@ __all__ = [
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
     "HTTP_DURATION",
+    "IMAGE_COUNTER_DRIFT",
     "LEDGER",
     "MINIMAL_COMMITS",
     "MULTI_TURNS",

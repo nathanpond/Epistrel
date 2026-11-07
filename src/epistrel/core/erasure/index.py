@@ -861,7 +861,10 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "image_jobs": "an image job's prompt, request and outcome (#256); indexing and redacting "
     "what names a subject is #266's, with the images themselves",
     "image_reservations": "one provider attempt per row (#256): tokens, send states, provider "
-    "references, applied parameters and counts, no prompt",
+    "references, applied parameters and counts, no prompt; #262's accounting (counter keys, "
+    "counts, states)",
+    "image_limit_counters": "deployment accounting (#262): limit scopes, keys, dates and counts, "
+    "no story content",
     "image_candidates": "a catalog candidate's ids, slot, draft revision, fingerprint and expiry "
     "(#260), no text; its asset row is #266's, with the images themselves",
     "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "

@@ -239,3 +239,16 @@ A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12
 Without a checker, generation is refused up front while any image-output policy applies (409 `image_check_unconfigured`; the seeded minors policy always applies). Uploads still work, and they are stored `unchecked` after the moderation hook, which is then the control. With a checker, an uploaded image (and a video's poster) is checked in staging before the moderation hook. A violation is 422 `guardrail_violation` and writes an `image_upload_rejected` audit row (the policy ids, never the image or its hash). A checker that cannot answer is 503 `image_check_unavailable`. Nothing is stored in either case. A generated image that fails is deleted from staging and generation retries within `image_retry_budget`.
 
 The checker fingerprint is the first 12 hex digits of the SHA-256 of the canonical JSON of the endpoint's host, the model id, the version the model last reported, and the SHA-256 of the `image_check` prompt template. Changing any of them, including editing the template, makes the checker uncertified until it is certified again.
+
+**Limits (FR-IMG-11).** Epistrel counts output images, every image a provider returns, against two daily limits. Both are deployment settings:
+
+- `image_limit_deployment_day` (default 200) counts every job;
+- `image_limit_entry_day` (default 16) counts a catalog entry's jobs.
+
+A day is the local date in `deployment_time_zone` (an IANA zone, default `UTC`). Each limit is a whole number from 0 to 100000, and 0 turns generation off at that scope. There is no unlimited value, and no per-story or per-turn limit: per-story and per-turn admission is the consumer's to manage. `catalog_candidates_n` can never exceed a non-zero `image_limit_entry_day`.
+
+Every attempt reserves its outputs before the provider call. A request that does not fit is refused at enqueue: 409 `image_limit_reached` names the scope, limit, usage and `resets_at` (the next local midnight), and 422 `images_disabled` names a scope set to 0. A retry that does not fit ends its job `cap_reached`, with `status_detail {scope, period}`. Outputs beyond the requested `n` are counted (`overage`, `extra_outputs`) and discarded unchecked.
+
+The counters are stored sums of the reservation records. The daily `image_counter_reconcile` task compares them. It reports drift through `epistrel_image_counter_drift_total{scope}`, `/health`'s `checks.image_counters: drift` and the logs, and it never rewrites anything. `epistrel images reconcile` runs the same check (exit 1 on drift). `--fix` rewrites drifted counters, releases `held` records whose job has ended, and writes an `image_counters_reconciled` audit row.
+
+Records and counters are deployment accounting. They survive a story's deletion, with `story_id` nulled, and they never travel in a bundle. The daily `image_accounting_retention` task deletes them once their day has been closed for `image_accounting_retention_days` (default 90) and no `held` record names them.

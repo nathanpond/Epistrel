@@ -55,6 +55,10 @@ class AuditKind(StrEnum):
     """#258: an uploaded image (or a video's poster) refused by the output check before anything
     was stored (the entry point, the request's operation id, the media kind; the policy ids).
     Never the image or its hash (FR-GUARD-10)."""
+    IMAGE_COUNTERS_RECONCILED = "image_counters_reconciled"
+    """#262: ``epistrel images reconcile --fix`` rewrote drifted image limit counters and
+    released stuck ``held`` reservation records (actor ``cli:images-reconcile``; a count per
+    scope). Ids and counts only."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

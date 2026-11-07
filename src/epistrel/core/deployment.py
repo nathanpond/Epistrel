@@ -81,7 +81,7 @@ from epistrel.core.config_changes import (
     record_config_change,
     section,
 )
-from epistrel.core.errors import InvalidRequest
+from epistrel.core.errors import InvalidRequest, InvalidTimeZone
 from epistrel.core.idempotency import read_idempotency_settings
 from epistrel.core.profiles import effective, schema
 from epistrel.core.profiles import store as profiles
@@ -102,6 +102,7 @@ from epistrel.core.settings_schema import (
     IdempotencySettings,
     StoryTextCaps,
     flatten,
+    known_time_zone,
     merge_patch,
     setting_class,
 )
@@ -138,6 +139,7 @@ NULLABLE = frozenset(
 moderation hook or base URL (#105), and no starting-cast ceiling (#108)."""
 
 FEEDBACK_TAGS = "feedback_tags"
+TIME_ZONE_SETTING = "deployment_time_zone"
 
 
 class ModelTiersPatch(BaseModel):
@@ -200,6 +202,10 @@ class SettingsPatch(BaseModel):
     staging_ttl: StrictInt | None = None
     candidate_ttl: StrictInt | None = None
     catalog_candidates_n: StrictInt | None = None
+    image_limit_deployment_day: StrictInt | None = None
+    image_limit_entry_day: StrictInt | None = None
+    deployment_time_zone: str | None = None
+    image_accounting_retention_days: StrictInt | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None
@@ -370,7 +376,14 @@ async def apply_settings(
     entry still holds is 409 ``listing_status_in_use``, and a feedback tag a rating or its
     history still carries 409 ``feedback_tag_in_use``. ``profile_defaults`` that are not
     complete, or under which something in use could not run, are 422 (``purposes``: the model
-    purposes a profile may route, which the Engine passes)."""
+    purposes a profile may route, which the Engine passes). A ``deployment_time_zone`` that is
+    no IANA time zone is 422 ``invalid_time_zone`` (#262)."""
+    zone = changes.get(TIME_ZONE_SETTING)
+    if isinstance(zone, str) and not known_time_zone(zone):
+        raise InvalidTimeZone(
+            f"{TIME_ZONE_SETTING} must be an IANA time zone",
+            {"field": f"body.{TIME_ZONE_SETTING}"},
+        )
     async with db.begin() as conn:
         current = await lock_deployment(conn)
         before = current.as_settings()

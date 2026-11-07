@@ -43,7 +43,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
@@ -160,7 +160,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 095 | Every character has a true age; a seeded global policy protects minors at every rating | Amended | 098, 108 |
 | 096 | Global guardrails screen text coming into a story | Current | — |
 | 097 | Images are optional; characters carry a visual identity; large media are delivered in pieces | Amended | 108 |
-| 098 | Image generation is an optional core capability behind a port; image guardrails fail closed | Partly superseded | 100, 101, 102, 104, 108, 109, 110 |
+| 098 | Image generation is an optional core capability behind a port; image guardrails fail closed | Partly superseded | 100, 101, 102, 104, 108, 109, 110, 181 |
 | 099 | Story images are anchored at narrative positions, made for a viewpoint, and follow the timeline | Amended | 100, 101, 103, 105, 110 |
 | 100 | Generated images are staged until checked, and image jobs are bound to their origin | Partly superseded | 104, 109, 110 |
 | 101 | Story-image privacy is a guarantee about the image model's inputs; image checking is a measured backstop | Amended | 105, 110, 108 |
@@ -197,7 +197,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 132 | Reactivated turns are re-checked against the guardrails in effect, including inactive turns from an import | Current | — |
 | 133 | Guardrail calls are counted per text checked; a possible staged turn reserves its outcome step at planning | Current | — |
 | 134 | Delivery runs in seven milestones, each gating the requirements it delivers | Amended | 138, 139, 141, 144 |
-| 135 | Image limits have concrete defaults; zero disables; nothing is unlimited | Amended | 138 |
+| 135 | Image limits have concrete defaults; zero disables; nothing is unlimited | Partly superseded | 138, 181 |
 | 136 | One purpose registry generates the model guide; prompts and payloads use only declared inputs | Amended | 138 |
 | 137 | Capacity claims stop at what has been measured | Amended | 145 |
 | 138 | Milestone gates are scoped per test part; requirements that spanned milestones are split | Amended | 139, 140 |
@@ -243,6 +243,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 178 | A Lite turn handles narrated time skips | Current | — |
 | 179 | M9's quality floors are met on a certified model, on any host tier | Current | — |
 | 180 | A rejected `response_format` probe is recorded as a probe and not counted | Current | — |
+| 181 | Image limits are deployment- and entry-scoped; per-story limits belong to the consumer | Current | — |
 
 ---
 
@@ -1045,9 +1046,9 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-098 — Image generation is an optional core capability behind a port; image guardrails fail closed
 **Status:** Accepted. Builds on ADR-083, ADR-094, and ADR-095.
-**Amended by:** ADR-100 — images are staged until checked and jobs revalidate their origin before promotion; ADR-101 — image checking is a measured backstop with published error rates; ADR-102 — capabilities are discovered per endpoint, and metadata records which parameters were actually applied; ADR-104 — image limits count every provider output, and retries draw from them; ADR-108 — prompts carry apparent age bands, not true ages; ADR-109 — the rating assurance covers only images Epistrel checked; ADR-110 — Consequences restated in narrowed form.
+**Amended by:** ADR-100 — images are staged until checked and jobs revalidate their origin before promotion; ADR-101 — image checking is a measured backstop with published error rates; ADR-102 — capabilities are discovered per endpoint, and metadata records which parameters were actually applied; ADR-104 — image limits count every provider output, and retries draw from them; ADR-108 — prompts carry apparent age bands, not true ages; ADR-109 — the rating assurance covers only images Epistrel checked; ADR-110 — Consequences restated in narrowed form; ADR-181 — there are no per-story caps: the limits are deployment- and entry-scoped.
 **Context:** Consumers could already upload images, but each would have to build prompts that keep characters consistent and within the story's rating, and Epistrel holds the knowledge those prompts need. Text guardrails cannot see pixels.
-**Decision:** An `ImageGenerator` port with one bundled adapter, for OpenRouter's image API — one interface to many image models, with seeds and reference images where the model supports them; more adapters can follow, and none is required, since consumers can generate and upload (FR-IMG-1). Epistrel builds prompts from visual identities, explicitly stated true ages *[superseded by ADR-108: apparent age bands; true ages go only to the safety path]*, the scenario's style, the rating's image guidance, and, for story images, only what the image's viewpoint perceived; a prompt-builder serves consumers that generate themselves (FR-IMG-2). Prompts are checked before generation and outputs by a vision model; if an image-output policy cannot be evaluated, the image is discarded rather than kept (FR-IMG-3). Generation runs as idempotent background jobs outside turn budgets, with per-story caps and cost reporting (FR-IMG-4). Video generation is not provided.
+**Decision:** An `ImageGenerator` port with one bundled adapter, for OpenRouter's image API — one interface to many image models, with seeds and reference images where the model supports them; more adapters can follow, and none is required, since consumers can generate and upload (FR-IMG-1). Epistrel builds prompts from visual identities, explicitly stated true ages *[superseded by ADR-108: apparent age bands; true ages go only to the safety path]*, the scenario's style, the rating's image guidance, and, for story images, only what the image's viewpoint perceived; a prompt-builder serves consumers that generate themselves (FR-IMG-2). Prompts are checked before generation and outputs by a vision model; if an image-output policy cannot be evaluated, the image is discarded rather than kept (FR-IMG-3). Generation runs as idempotent background jobs outside turn budgets, with per-story caps *[superseded by ADR-181: the limits are deployment- and entry-scoped, and per-story admission is the consumer's]* and cost reporting (FR-IMG-4). Video generation is not provided.
 **Consequences:** Epistrel's prompts aim to keep images consistent with their characters and within the story's rating, but it vouches only for images it generated and checked (`passed`), and only to its checker's measured accuracy for each policy; uploads and `unchecked` images carry no rating assurance. Deployments that generate images through Epistrel need a vision model for image checks while the seeded minors policy is on. The bundled adapter is a hosted service; it is optional, and a self-hosted adapter (ComfyUI, for example) is the natural next one. Tests I-23, C-22. *[revised per ADR-101, ADR-105, ADR-109, and ADR-110]*
 
 ### ADR-099 — Story images are anchored at narrative positions, made for a viewpoint, and follow the timeline
@@ -1333,9 +1334,9 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-135 — Image limits have concrete defaults; zero disables; nothing is unlimited
 **Status:** Accepted. Refines ADR-104 and ADR-109.
-**Amended by:** ADR-138 — the limits are admission caps, not a spend ceiling.
+**Amended by:** ADR-138 — the limits are admission caps, not a spend ceiling; ADR-181 — there are no per-turn or per-story limits.
 **Context:** Image limits were "configurable with defaults", but no default values were given, so a default installation had no predictable cost ceiling or contention behavior.
-**Decision:** The defaults are 4 output images per turn, 40 per story per day, 16 per catalog entry per day, and 200 per deployment per day, with four candidates per catalog request. Every limit is a whole number: 0 disables generation at its scope (`images_disabled`), negative or missing values fail configuration validation, and there is no unlimited value. The deployment and entry limits are deployment settings; the per-turn and per-story limits are story settings defaulted from the deployment. Without a configured adapter, generation returns `not_configured` (FR-IMG-11).
+**Decision:** The defaults are 4 output images per turn, 40 per story per day, *[superseded by ADR-181: there are no per-turn or per-story limits]* 16 per catalog entry per day, and 200 per deployment per day, with four candidates per catalog request. Every limit is a whole number: 0 disables generation at its scope (`images_disabled`), negative or missing values fail configuration validation, and there is no unlimited value. The deployment and entry limits are deployment settings; the per-turn and per-story limits are story settings defaulted from the deployment *[superseded by ADR-181: no story setting limits images]*. Without a configured adapter, generation returns `not_configured` (FR-IMG-11).
 **Consequences:** Every deployment that can generate images caps the outputs it admits per day, and operators can switch generation off anywhere by setting a limit to zero. The limits are not a spending cap: reported overage can exceed them, some costs are unknown, and an ambiguous send may be billed twice. Test I-26. *[revised per ADR-138]*
 
 ### ADR-136 — One purpose registry generates the model guide; prompts and payloads use only declared inputs
@@ -1900,6 +1901,18 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 **Consequences:**
 - docs/04 P-09's M2 clause is amended (2026-11-06). NFR-PERF-6 is unchanged: a probe is neither a retry nor a repair.
 - `ModelCall.probe` is in the turn report and the OpenAPI schema. The P-09 assertions in `tests/perf/test_p_09*.py` count the entries without it. Test: `tests/perf/test_p_09.py::test_p_09__format_probe`.
+
+---
+
+### ADR-181 — Image limits are deployment- and entry-scoped; per-story limits belong to the consumer
+**Status:** Accepted. Amends ADR-098 (per-story caps) and ADR-135 (the per-turn and per-story defaults and story settings).
+**Context:** FR-IMG-11 had four limit scopes: per story turn, per story per day, per catalog entry per day and per deployment per day. The per-turn and per-story limits were story settings with deployment defaults, and every reservation locked the counters in the order deployment, story, turn, entry. Planning M8, the owner's round-two answer (R7, 2026-10-10) was: "This is really something I would expect the consumer to manage. No per story limit." A consumer knows its players, sessions and pricing; Epistrel does not. A story's automatic images stay capped by #265's `max_auto_images_per_turn`, a story setting that bounds the illustration points one turn marks, not an accounting limit.
+**Decision:** The owner's decision of 2026-10-10, applied by #262. Epistrel limits output images per deployment per local day (`image_limit_deployment_day`, default 200) and per catalog entry per local day (`image_limit_entry_day`, default 16), automatic and requested images together. There are no per-story or per-turn limits, and no story setting or override sets one: a story's settings refuse `image_limit_story_day` and `image_limit_turn` as unknown keys. Per-story and per-turn admission is the consumer's to manage. A story job charges the deployment counter only and records its `story_id` for usage reports. The counter scopes are `deployment` and `entry`, locked in that order. A reservation record's immutable snapshot names the deployment and, for a catalog job, the entry, each with its local day; it names no story and no turn. The other rules stand: 0 disables a scope, there is no unlimited value, reservations are atomic, and the reconciler checks the stored counters against the records.
+**Alternatives considered:** Keeping per-story limits as an optional story setting (0 meaning none) contradicted "0 disables" and "no unlimited value". Keeping them only as deployment defaults kept a second lock and counter per story that no consumer asked for.
+**Consequences:**
+- docs/03 FR-IMG-11, docs/02 §4.13 (the Jobs and Limits bullets) and docs/04 I-23, I-26 and C-24 are amended (2026-11-07). FR-IMG-11 stays in M8, and no part moves milestone.
+- The reservation records and limit counters are deployment accounting. A story's deletion keeps the records with `story_id` nulled (`STORY_ID_EXCEPTIONS`, owner decision 13), and a story bundle never carries them.
+- Per-story usage and cost are still reported (#269), from the records' `story_id`, with no `limits` block.
 
 ---
 

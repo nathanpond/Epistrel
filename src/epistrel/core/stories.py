@@ -144,6 +144,7 @@ from epistrel.core.tables import (
     guardrail_check_results,
     idempotency_keys,
     image_jobs,
+    image_reservations,
     jobs,
     lite_summary_segments,
     media_assets,
@@ -387,10 +388,14 @@ other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 
-STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name, certification_runs.name})
+STORY_ID_EXCEPTIONS: frozenset[str] = frozenset(
+    {audit_log.name, certification_runs.name, image_reservations.name}
+)
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
-column instead of removing the row. ``audit_log`` (#56) and ``certification_runs`` (#233: a
-story's certification run is a deployment record)."""
+column instead of removing the row. ``audit_log`` (#56), ``certification_runs`` (#233: a
+story's certification run is a deployment record) and ``image_reservations`` (#262, owner
+decision 13: image accounting; the records the story's jobs still hold are released first, and
+the limit counters and the records' ``counter_keys`` are untouched)."""
 
 STORY_DELETE_SETTING = "epistrel.allow_story_delete"
 """The transaction setting the ``events`` trigger reads to let one story's events be deleted."""
@@ -1570,6 +1575,16 @@ async def _refuse_running_job(conn: AsyncConnection, story_id: str) -> None:
         )
         .limit(1)
     )
+    if running is None:
+        # #262: an image job of the story generating or checking is running work too.
+        running = await conn.scalar(
+            select(image_jobs.c.id)
+            .where(
+                image_jobs.c.story_id == story_id,
+                image_jobs.c.status.in_(("generating", "checking")),
+            )
+            .limit(1)
+        )
     if running is not None:
         raise StoryBusy(
             "a background job of the story is running; retry when it finishes",
@@ -1671,9 +1686,13 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
         conn, idempotency_keys.name, [idempotency_id(k.scope, k.scope_id, k.key) for k in keys]
     )
     from epistrel.core.bundles import delete_story_bundles
+    from epistrel.core.images.limits import release_for_story
 
     # #704: the story's exports and their archive files go with it.
     removed["bundle_exports"] = await delete_story_bundles(conn, story_id)
+    # #262: the reservations its image jobs still hold are released and every record of the
+    # story is kept with ``story_id`` nulled (deployment accounting); then the jobs go.
+    await release_for_story(conn, story_id)
     for table in STORY_TABLES:
         result = await conn.execute(delete(table).where(table.c.story_id == story_id))
         removed[table.name] = result.rowcount

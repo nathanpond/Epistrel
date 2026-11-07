@@ -279,11 +279,13 @@ __all__ = [
 IMAGE_TABLES_CLEANUP = (
     "DELETE FROM catalog.image_candidates",
     "DELETE FROM image_reservations",
+    "DELETE FROM image_limit_counters",
     "DELETE FROM image_jobs",
     "DELETE FROM jobs WHERE kind = 'image_job'",
 )
 """What an image job test leaves on the shared database, taken back after it (a queued
-``image_job`` row would otherwise reach a later test's worker)."""
+``image_job`` row would otherwise reach a later test's worker, and #262's counters would carry
+one test's reservations into the next's limits)."""
 
 
 def story_origin(story_id: str, **fields: object) -> dict[str, object]:

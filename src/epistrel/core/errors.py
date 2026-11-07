@@ -525,6 +525,33 @@ class CandidateStale(EpistrelError):
     http_status = 409
 
 
+class ImageLimitReached(EpistrelError):
+    """An image request whose outputs do not fit a limit (FR-IMG-11; #262): ``used + reserved +
+    requested`` would pass ``limit`` at ``scope`` (``deployment`` or ``entry``) for ``period``
+    (the local date). Nothing is written and no job is created. ``details``: ``{scope, limit,
+    used, reserved, requested, period, resets_at}`` for the first failing scope in lock order
+    (deployment, then entry); ``resets_at`` is the next local midnight."""
+
+    code = "image_limit_reached"
+    http_status = 409
+
+
+class ImagesDisabled(EpistrelError):
+    """Image generation is off at a scope its limit sets to 0 (FR-IMG-11; #262), checked before
+    any full scope. Nothing is written. ``details``: ``{scope}``."""
+
+    code = "images_disabled"
+    http_status = 422
+
+
+class InvalidTimeZone(EpistrelError):
+    """A ``deployment_time_zone`` that is not an IANA time zone (#262). Nothing is written.
+    ``details``: ``field``."""
+
+    code = "invalid_time_zone"
+    http_status = 422
+
+
 class ImageCandidateNotFound(EpistrelError):
     """A read or URL of a catalog image candidate that is not the entry's live candidate
     (unknown, another entry's, attached, discarded or expired: indistinguishable; #260).

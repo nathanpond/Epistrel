@@ -25,6 +25,7 @@ def test_health_reports_ok(client: TestClient) -> None:
             "ffmpeg": "ok",
             "ffprobe": "ok",
             "erasure_pending": None,
+            "image_counters": None,
         },
         "content_logging": False,
     }

@@ -15,8 +15,9 @@ its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#2
 ``reservation_expiry`` timer kind that releases an expired State hold (#216), and the late
 settlement of an outcome at the next inter-turn slot, ``outcome_settlement`` (#217). M7 adds
 the on-demand ``certification_run`` (#233) and ``backfill`` (#228). M8 adds ``image_job`` and
-the ``image_staging_sweep`` every 10 minutes (#256), and the hourly ``image_candidate_expiry``
-(#260). A kind
+the ``image_staging_sweep`` every 10 minutes (#256), the hourly ``image_candidate_expiry``
+(#260), and the daily ``image_counter_reconcile`` and ``image_accounting_retention`` (#262). A
+kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -24,6 +25,12 @@ no handler is registered for is refused at enqueue and ends ``failed`` if a work
 
 from __future__ import annotations
 
+from epistrel.orchestrator.images.reconcile import (
+    IMAGE_ACCOUNTING_RETENTION_HANDLER,
+    IMAGE_ACCOUNTING_RETENTION_TASK_DEFINITION,
+    IMAGE_COUNTER_RECONCILE_HANDLER,
+    IMAGE_COUNTER_RECONCILE_TASK_DEFINITION,
+)
 from epistrel.orchestrator.jobs.handlers.backfill import BACKFILL_HANDLER
 from epistrel.orchestrator.jobs.handlers.certification_canary import (
     CERTIFICATION_CANARY_HANDLER,
@@ -146,6 +153,8 @@ for _handler in (
     IMAGE_JOB_HANDLER,
     IMAGE_STAGING_SWEEP_HANDLER,
     IMAGE_CANDIDATE_EXPIRY_HANDLER,
+    IMAGE_COUNTER_RECONCILE_HANDLER,
+    IMAGE_ACCOUNTING_RETENTION_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -164,6 +173,8 @@ for _task in (
     REWRITE_EXPIRY_TASK,
     IMAGE_STAGING_SWEEP_TASK_DEFINITION,
     IMAGE_CANDIDATE_EXPIRY_TASK_DEFINITION,
+    IMAGE_COUNTER_RECONCILE_TASK_DEFINITION,
+    IMAGE_ACCOUNTING_RETENTION_TASK_DEFINITION,
 ):
     register_recurring(_task)
 

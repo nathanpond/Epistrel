@@ -23,8 +23,23 @@ committed before ``submit``, ``accepted`` once an ``async`` adapter acknowledged
 with a ``sync`` adapter's results, ``ambiguous`` for #268), the provider's ``attempt_ref``, the
 attempt's ``idempotency_key``, the ``applied_parameters`` the adapter reported, how many
 ``outputs_returned`` and its ``outcome`` (``promoted``, ``rejected``, ``failed`` or
-``discarded``). #262 adds the accounting columns (and the ``story_id`` attribution) and
-#267/#268 extend it; until then it carries no ``story_id``, and it goes with its job's id.
+``discarded``). #262 adds the accounting columns (FR-IMG-11): the attribution ``story_id``,
+``entry_kind`` and ``entry_id`` (for usage reports, never counter scopes), the immutable
+``counter_keys`` snapshot (``[{scope, scope_key, period}]`` in lock order) and ``requested``,
+then ``used``, ``overage``, ``extra_outputs``, the settlement ``basis`` (``actual``,
+``presumed``, ``corrected``), the ``state`` (``held``, ``settled``, ``released``) and
+``settled_at``. A trigger (``image_reservation_immutable``) refuses any change of ``job_id``,
+``attempt_token``, ``requested``, ``counter_keys``, ``story_id``, ``entry_kind``, ``entry_id``
+or ``created_at``, except that a story's deletion nulls ``story_id`` (the records are deployment
+accounting: ``core.stories.STORY_ID_EXCEPTIONS``). #267/#268 extend it.
+
+``image_limit_counters`` (#262) holds the stored sums of those records per limit scope
+(``deployment`` or ``entry``), ``scope_key`` (``deployment`` or ``<entry_kind>:<entry_id>``)
+and ``period`` (the local date in ``deployment_time_zone`` when the record was made):
+``reserved`` sums ``requested`` over ``held`` records, ``used``, ``overage`` and
+``extra_outputs`` sum over ``settled`` ones. ``limit_value`` is the limit seen at the last
+admission check (informational) and ``last_record_at`` the last record change touching the row.
+``image_jobs.status_detail`` (#262) is a ``cap_reached`` job's ``{scope, period}``.
 
 ``image_jobs.result`` (#260) holds what a successful job made beyond its ``asset_ids``: a catalog
 job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes.
@@ -50,6 +65,7 @@ from sqlalchemy import (
     TIMESTAMP,
     CheckConstraint,
     Column,
+    Date,
     ForeignKey,
     Index,
     Integer,
@@ -108,6 +124,30 @@ class SendState(StrEnum):
     AMBIGUOUS = "ambiguous"
 
 
+class ReservationState(StrEnum):
+    """A reservation record's accounting state (FR-IMG-11; #262)."""
+
+    HELD = "held"
+    SETTLED = "settled"
+    RELEASED = "released"
+
+
+class SettlementBasis(StrEnum):
+    """How a settled record's ``used`` was known: ``actual`` outputs, ``presumed`` (#268) or
+    ``corrected`` once after a presumption (FR-IMG-11)."""
+
+    ACTUAL = "actual"
+    PRESUMED = "presumed"
+    CORRECTED = "corrected"
+
+
+class LimitScope(StrEnum):
+    """An image limit's scope, in lock order (FR-IMG-11 as amended by #262)."""
+
+    DEPLOYMENT = "deployment"
+    ENTRY = "entry"
+
+
 class AttemptOutcome(StrEnum):
     PROMOTED = "promoted"
     REJECTED = "rejected"
@@ -127,6 +167,14 @@ PROMOTED_CHECK = "status <> 'promoted' OR kind = 'story'"
 CANDIDATES_CHECK = "status <> 'candidates_ready' OR kind = 'catalog'"
 SEND_STATE_CHECK = _in("send_state", SendState)
 OUTCOME_CHECK = "outcome IS NULL OR " + _in("outcome", AttemptOutcome)
+STATE_CHECK = _in("state", ReservationState)
+BASIS_CHECK = _in("basis", SettlementBasis)
+SCOPE_CHECK = _in("scope", LimitScope)
+ENTRY_KIND_CHECK = "entry_kind IS NULL OR entry_kind IN ('character', 'scenario')"
+ACCOUNTING_CHECK = "requested >= 0 AND used >= 0 AND overage >= 0 AND extra_outputs >= 0"
+COUNTER_CHECK = "reserved >= 0 AND used >= 0 AND overage >= 0 AND extra_outputs >= 0"
+IMMUTABLE_ERROR = "image_reservation_immutable"
+"""The message the immutability trigger raises (migration 0137)."""
 
 image_jobs = Table(
     "image_jobs",
@@ -152,6 +200,7 @@ image_jobs = Table(
     Column("updated_at", TIMESTAMP(timezone=True), nullable=False),
     Column("safety_context", JSONB, nullable=True),
     Column("result", JSONB, nullable=True),
+    Column("status_detail", JSONB, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STORY_CHECK, name="story"),
@@ -179,9 +228,50 @@ image_reservations = Table(
     Column("outputs_returned", Integer, nullable=True),
     Column("outcome", Text, nullable=True),
     Column("created_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("story_id", ulid_type(), nullable=True),
+    Column("entry_kind", Text, nullable=True),
+    Column("entry_id", ulid_type(), nullable=True),
+    Column("counter_keys", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    Column("requested", Integer, nullable=False, server_default=text("0")),
+    Column("used", Integer, nullable=False, server_default=text("0")),
+    Column("overage", Integer, nullable=False, server_default=text("0")),
+    Column("extra_outputs", Integer, nullable=False, server_default=text("0")),
+    Column("basis", Text, nullable=False, server_default=text("'actual'")),
+    Column("state", Text, nullable=False),
+    Column("settled_at", TIMESTAMP(timezone=True), nullable=True),
     PrimaryKeyConstraint("job_id", "attempt_token", name="pk_image_reservations"),
     CheckConstraint(SEND_STATE_CHECK, name="send_state"),
     CheckConstraint(OUTCOME_CHECK, name="outcome"),
+    CheckConstraint(STATE_CHECK, name="state"),
+    CheckConstraint(BASIS_CHECK, name="basis"),
+    CheckConstraint(ENTRY_KIND_CHECK, name="entry_kind"),
+    CheckConstraint(ACCOUNTING_CHECK, name="accounting"),
+)
+
+Index(
+    "ix_image_reservations_held",
+    image_reservations.c.job_id,
+    postgresql_where=text("state = 'held'"),
+)
+Index("ix_image_reservations_story_id", image_reservations.c.story_id)
+Index("ix_image_reservations_created_at", image_reservations.c.created_at)
+
+image_limit_counters = Table(
+    "image_limit_counters",
+    metadata,
+    Column("scope", Text, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("period", Date, nullable=False),
+    Column("limit_value", Integer, nullable=False),
+    Column("reserved", Integer, nullable=False, server_default=text("0")),
+    Column("used", Integer, nullable=False, server_default=text("0")),
+    Column("overage", Integer, nullable=False, server_default=text("0")),
+    Column("extra_outputs", Integer, nullable=False, server_default=text("0")),
+    Column("last_record_at", TIMESTAMP(timezone=True), nullable=True),
+    PrimaryKeyConstraint("scope", "scope_key", "period", name="pk_image_limit_counters"),
+    CheckConstraint(SCOPE_CHECK, name="scope"),
+    CheckConstraint(COUNTER_CHECK, name="counts"),
+    CheckConstraint("limit_value >= 0", name="limit_value"),
 )
 
 CANDIDATE_KIND_CHECK = "entry_kind IN ('character', 'scenario')"
@@ -219,8 +309,12 @@ __all__ = [
     "AttemptOutcome",
     "ImageJobKind",
     "ImageJobStatus",
+    "LimitScope",
+    "ReservationState",
     "SendState",
+    "SettlementBasis",
     "image_candidates",
     "image_jobs",
+    "image_limit_counters",
     "image_reservations",
 ]

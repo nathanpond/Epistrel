@@ -81,6 +81,8 @@ class ImageJob:
     result: dict[str, Any] | None = None
     """#260: what a successful job made beyond ``asset_ids`` (a catalog job's
     ``{candidate_ids}``)."""
+    status_detail: dict[str, Any] | None = None
+    """#262: a ``cap_reached`` job's ``{scope, period}``."""
 
     @property
     def terminal(self) -> bool:
@@ -137,6 +139,7 @@ def _job(row: Any) -> ImageJob:
         updated_at=m["updated_at"],
         safety_context=None if m["safety_context"] is None else dict(m["safety_context"]),
         result=None if m["result"] is None else dict(m["result"]),
+        status_detail=None if m["status_detail"] is None else dict(m["status_detail"]),
     )
 
 
@@ -179,8 +182,9 @@ async def notify(conn: AsyncConnection, job_id: str, status: ImageJobStatus) -> 
 
 
 async def insert_job(conn: AsyncConnection, job: NewJob) -> tuple[str, str]:
-    """Insert the job (``queued``) and its first attempt's reservation (``prepared``) in
-    ``conn``'s transaction; ``(job id, attempt token)``."""
+    """Insert the job (``queued``) in ``conn``'s transaction; ``(job id, attempt token)``. Its
+    first attempt's reservation record is ``core.images.limits.reserve``'s (#262), in the same
+    transaction."""
     now = clock.now()
     token = new_token()
     await conn.execute(
@@ -206,21 +210,8 @@ async def insert_job(conn: AsyncConnection, job: NewJob) -> tuple[str, str]:
             safety_context=None if job.safety_context is None else dict(job.safety_context),
         )
     )
-    await insert_reservation(conn, job.job_id, token)
     await notify(conn, job.job_id, ImageJobStatus.QUEUED)
     return job.job_id, token
-
-
-async def insert_reservation(conn: AsyncConnection, job_id: str, token: str) -> None:
-    """One more attempt's reservation row (``prepared``)."""
-    await conn.execute(
-        insert(image_reservations).values(
-            job_id=job_id,
-            attempt_token=token,
-            send_state=SendState.PREPARED.value,
-            created_at=clock.now(),
-        )
-    )
 
 
 async def read_job(conn: AsyncConnection, job_id: str, *, lock: bool = False) -> ImageJob | None:
@@ -308,8 +299,9 @@ async def update_reservation(conn: AsyncConnection, job_id: str, token: str, **v
 
 
 async def next_attempt(conn: AsyncConnection, job_id: str, old_token: str) -> str | None:
-    """Give the job a new attempt token and its reservation row (``prepared``), fencing
-    ``old_token``; ``None`` when the job no longer carries ``old_token``."""
+    """Give the job a new attempt token, fencing ``old_token``; ``None`` when the job no longer
+    carries ``old_token``. The new attempt's reservation record is the caller's
+    (``core.images.limits.reserve``, #262), in the same transaction."""
     token = new_token()
     moved = await conn.scalar(
         update(image_jobs)
@@ -319,7 +311,6 @@ async def next_attempt(conn: AsyncConnection, job_id: str, old_token: str) -> st
     )
     if moved is None:
         return None
-    await insert_reservation(conn, job_id, token)
     return token
 
 
@@ -414,7 +405,6 @@ __all__ = [
     "channel",
     "insert_generated_asset",
     "insert_job",
-    "insert_reservation",
     "new_token",
     "next_attempt",
     "notify",

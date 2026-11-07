@@ -5736,7 +5736,10 @@ class Engine:
         unknown entry, 422 ``entry_archived``, 409 ``not_configured`` without an image adapter,
         409 ``image_check_unconfigured`` while an image-output policy applies and
         ``image_check`` is unset, 422 for a ``slot`` the kind's images cannot have, the
-        builder's 422 and 503 and the prompt check's 422 ``guardrail_violation``. Idempotent
+        builder's 422 and 503 and the prompt check's 422 ``guardrail_violation``; and 409
+        ``image_limit_reached`` or 422 ``images_disabled`` when ``n`` outputs do not fit the
+        deployment's or the entry's daily image limit (#262; the reservation is made with the
+        job, in one transaction). Idempotent
         under its key (deployment-scoped); the request never saves or advances the draft."""
         principal = self.require_principal(ctx)
         kind, entry_id = catalog_images.entry_of(character_id, scenario_id)

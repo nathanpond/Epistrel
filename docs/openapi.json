@@ -15088,7 +15088,7 @@
         "type": "object"
       },
       "HealthChecks": {
-        "description": "Each check: the database, the workers, the oldest overdue timer and job (seconds;\n`null`: nothing overdue), whether ffmpeg and ffprobe (video posters and probes) are\nthere (`missing` never changes the status), and the erasure ledger's entries not applied\nto this database yet (`erasure_pending`; above zero: `degraded`).",
+        "description": "Each check: the database, the workers, the oldest overdue timer and job (seconds;\n`null`: nothing overdue), whether ffmpeg and ffprobe (video posters and probes) are\nthere (`missing` never changes the status), and the erasure ledger's entries not applied\nto this database yet (`erasure_pending`; above zero: `degraded`), and what the latest image\ncounter reconcile found (`image_counters`: `ok` or `drift`, never changing the status;\n`null`: none ran yet).",
         "properties": {
           "database": {
             "enum": [
@@ -15127,6 +15127,21 @@
             ],
             "title": "Ffprobe",
             "type": "string"
+          },
+          "image_counters": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ok",
+                  "drift"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Counters"
           },
           "oldest_overdue_job_s": {
             "anyOf": [
@@ -16199,6 +16214,19 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "status_detail": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A `cap_reached` job's `{scope, period}`: the limit scope (`deployment` or `entry`) its retry could not reserve against and the local date (absent otherwise; FR-IMG-11).",
+            "title": "Status Detail"
           },
           "status_reason": {
             "anyOf": [
@@ -40245,6 +40273,13 @@
             "title": "Dependency Search Max Results",
             "type": "integer"
           },
+          "deployment_time_zone": {
+            "default": "UTC",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Deployment Time Zone",
+            "type": "string"
+          },
           "directive_steer_ttl_minutes": {
             "default": 1440,
             "maximum": 43200.0,
@@ -40392,6 +40427,27 @@
             "maximum": 720.0,
             "minimum": 1.0,
             "title": "Idempotency Result Window",
+            "type": "integer"
+          },
+          "image_accounting_retention_days": {
+            "default": 90,
+            "maximum": 3650.0,
+            "minimum": 1.0,
+            "title": "Image Accounting Retention Days",
+            "type": "integer"
+          },
+          "image_limit_deployment_day": {
+            "default": 200,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Image Limit Deployment Day",
+            "type": "integer"
+          },
+          "image_limit_entry_day": {
+            "default": 16,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Image Limit Entry Day",
             "type": "integer"
           },
           "image_retry_budget": {
@@ -41766,6 +41822,17 @@
             ],
             "title": "Dependency Search Max Results"
           },
+          "deployment_time_zone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Time Zone"
+          },
           "directive_steer_ttl_minutes": {
             "anyOf": [
               {
@@ -41978,6 +42045,39 @@
               }
             ],
             "title": "Idempotency Result Window"
+          },
+          "image_accounting_retention_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Accounting Retention Days"
+          },
+          "image_limit_deployment_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Limit Deployment Day"
+          },
+          "image_limit_entry_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Limit Entry Day"
           },
           "image_retry_budget": {
             "anyOf": [
@@ -55507,6 +55607,7 @@
                           "default_safe_fallback",
                           "dependency_search_max_depth",
                           "dependency_search_max_results",
+                          "deployment_time_zone",
                           "directive_steer_ttl_minutes",
                           "embedding_batch_max",
                           "embedding_hnsw_ef_construction",
@@ -55525,6 +55626,9 @@
                           "gate_promotion_min_agreement",
                           "gate_promotion_min_cases",
                           "idempotency_result_window",
+                          "image_accounting_retention_days",
+                          "image_limit_deployment_day",
+                          "image_limit_entry_day",
                           "image_retry_budget",
                           "job_retention_days",
                           "listing_status_values",
@@ -60823,7 +60927,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `invalid_profile`, `profile_deleted`, `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `invalid_profile`, `invalid_time_zone`, `profile_deleted`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -66857,7 +66961,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `not_configured`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `image_limit_reached`, `not_configured`."
           },
           "422": {
             "content": {
@@ -66867,7 +66971,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `entry_archived`, `guardrail_violation`, `validation_error`."
+            "description": "Invalid request; nothing was written: `entry_archived`, `guardrail_violation`, `images_disabled`, `validation_error`."
           },
           "503": {
             "content": {
@@ -70093,7 +70197,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `not_configured`."
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `image_limit_reached`, `not_configured`."
           },
           "422": {
             "content": {
@@ -70103,7 +70207,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `entry_archived`, `guardrail_violation`, `validation_error`."
+            "description": "Invalid request; nothing was written: `entry_archived`, `guardrail_violation`, `images_disabled`, `validation_error`."
           },
           "503": {
             "content": {

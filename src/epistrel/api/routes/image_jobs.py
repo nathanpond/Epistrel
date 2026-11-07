@@ -11,7 +11,7 @@ ownership gates nothing. Thin handlers over ``Engine.get_image_job`` and
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
@@ -57,6 +57,13 @@ class ImageJobBody(BaseModel):
         description="The policies a failed job's outputs violated or that could not be "
         "evaluated (absent otherwise).",
     )
+    status_detail: dict[str, Any] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A `cap_reached` job's `{scope, period}`: the limit scope (`deployment` or "
+        "`entry`) its retry could not reserve against and the local date (absent otherwise; "
+        "FR-IMG-11).",
+    )
 
     @classmethod
     def of(cls, view: ImageJobView) -> ImageJobBody:
@@ -72,6 +79,7 @@ class ImageJobBody(BaseModel):
             created_at=view.created_at,
             updated_at=view.updated_at,
             policy_ids=None if view.policy_ids is None else list(view.policy_ids),
+            status_detail=view.status_detail,
         )
 
 

@@ -26,15 +26,24 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api.app import create_app
+from epistrel.api.openapi import ERROR_STATUS
 from epistrel.config import Settings
+from epistrel.core.errors import ImageLimitReached
 from epistrel.core.ids import new_ulid
 from epistrel.core.media.checks import PASSED_STATEMENT, UNCHECKED_STATEMENT
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
+from epistrel.core.tables.images import ImageJobKind
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images import output_check
 from epistrel.orchestrator.policies.schemas import PolicyFields
-from epistrel.testing.images import TestImageTarget, registered_target
+from epistrel.testing.images import (
+    PASS,
+    ScriptedChecks,
+    TestImageTarget,
+    installed_checks,
+    registered_target,
+)
 from tests.image_job_support import (
     CTX,
     MINORS,
@@ -43,6 +52,7 @@ from tests.image_job_support import (
     image_settings_for,
     insert,
     prepared,
+    staged,
 )
 from tests.image_safety_support import whisper_story
 from tests.image_support import Outputs, StubImageChecker, StubImageGenerator, registered
@@ -349,3 +359,119 @@ async def test_c_24__m8_viewpoint_fields(pg_url: str, engine: AsyncEngine, tmp_p
         (bobby, present["camera_pov"]),
     ]
     assert {(r.viewpoint_basis, r.asset_basis) for r in rows} == {("none", "none")}
+
+
+class _GoneTarget(TestImageTarget):
+    """The test target whose entry disappears during generation: promotion finds it gone."""
+
+    async def promote(self, conn: Any, job: Any, outputs: Any) -> list[str]:
+        raise image_jobs.TargetGone("gone")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-11")
+async def test_c_24__m8_limits(pg_url: str, tmp_path: Path) -> None:
+    """FR-IMG-11's limits as amended by #262:
+
+    - no story-scoped limit exists: ``image_limit_story_day`` and ``image_limit_turn`` in a
+      story's settings are 422 ``validation_error`` (unknown keys, not ignored), and six images
+      for one turn of one story are admitted while the deployment-day allowance lasts; the
+      seventh is 409 ``image_limit_reached`` at the ``deployment`` scope;
+    - a catalog request for four candidates with three remaining on its entry is refused whole
+      at enqueue (409, ``scope: entry``), and no job is written;
+    - a job whose retry would pass the limit ends ``cap_reached`` with its staged results
+      deleted;
+    - outputs discarded by a check, or as stale (``target_gone``), count against the limits.
+
+    Complement asserted: the other entry's request is admitted, and with room left the retry
+    runs (the counter's ``used`` counts every returned output)."""
+    from tests.auth_support import bearer
+    from tests.event_support import new_story
+    from tests.image_limits_support import all_records, assert_clean, deployment, space, today
+    from tests.image_support import catalog_origin
+
+    write = {**bearer(), "X-Epistrel-Principal": "p-images"}
+    async with space(pg_url, tmp_path, "c24_lim") as sp:
+        story = await new_story(sp.db)
+        for key in ("image_limit_story_day", "image_limit_turn"):
+            response = await sp.client.patch(
+                f"/stories/{story}/settings", json={key: 1}, headers=write
+            )
+            assert response.status_code == 422, (key, response.text)
+            assert response.json()["error"]["code"] == "validation_error"
+
+        stub = StubImageGenerator(script=[])
+        with (
+            registered(ADAPTER, stub),
+            registered_target() as target,
+            installed_checks(ScriptedChecks([MINORS], fail_closed=False)),
+        ):
+            await sp.configure()
+            await sp.set(image_limit_deployment_day=6)
+            for _ in range(6):
+                await sp.insert(prepared(story, origin=_turn(story)))
+            with pytest.raises(ImageLimitReached) as full:
+                await sp.insert(prepared(story, origin=_turn(story)))
+            assert (full.value.http_status, full.value.details["scope"]) == (409, "deployment")
+            assert ERROR_STATUS["image_limit_reached"] == 409
+            assert ERROR_STATUS["images_disabled"] == 422
+
+            await sp.set(image_limit_deployment_day=200, image_limit_entry_day=7)
+            entry, other = new_ulid(), new_ulid()
+            await sp.insert(prepared(kind=ImageJobKind.CATALOG, origin=catalog_origin(entry), n=4))
+            async with sp.db.connect() as conn:
+                jobs_before = await conn.scalar(text("SELECT count(*) FROM image_jobs"))
+            with pytest.raises(ImageLimitReached) as entry_full:
+                await sp.insert(
+                    prepared(kind=ImageJobKind.CATALOG, origin=catalog_origin(entry), n=4)
+                )
+            details = entry_full.value.details
+            assert (details["scope"], details["limit"], details["requested"]) == ("entry", 7, 4)
+            assert details["limit"] - details["used"] - details["reserved"] == 3
+            async with sp.db.connect() as conn:
+                assert await conn.scalar(text("SELECT count(*) FROM image_jobs")) == jobs_before
+            await sp.insert(prepared(kind=ImageJobKind.CATALOG, origin=catalog_origin(other), n=4))
+
+            # A retry that would pass the limit: the output is rejected, no unit remains.
+            day = today()
+            totals = await deployment(sp.db, day)
+            await sp.set(image_limit_deployment_day=totals["used"] + totals["reserved"] + 1)
+            capped = await sp.insert(prepared(story))
+            stub.script.append(Outputs())
+            assert (await sp.run(capped)) == {
+                "image_job": "cap_reached",
+                "reason": "image_limit_reached",
+            }
+            view = await sp.lib.get_image_job(CTX, capped)
+            assert view.status_detail == {"scope": "deployment", "period": day}
+            assert staged(sp.lib.media, capped) == []
+            (rejected,) = [r for r in await all_records(sp.db) if r["job_id"] == capped]
+            assert (rejected["used"], rejected["state"]) == (1, "settled")
+            assert target.promoted == []
+
+            # With room, the retry runs and promotes; both outputs count.
+            await sp.set(image_limit_deployment_day=200)
+            retried = await sp.insert(prepared(story))
+            stub.script.extend([Outputs(), Outputs()])
+            with installed_checks(ScriptedChecks([MINORS, PASS], fail_closed=False)):
+                assert (await sp.run(retried))["image_job"] == "promoted"
+            assert sum(r["used"] for r in await all_records(sp.db) if r["job_id"] == retried) == 2
+
+        # Stale: the target is gone at promotion; its output still counts.
+        with (
+            registered(ADAPTER, stub),
+            registered_target(_GoneTarget()),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            used = (await deployment(sp.db, day))["used"]
+            gone = await sp.insert(prepared(story))
+            stub.script.append(Outputs())
+            assert (await sp.run(gone))["image_job"] == "target_gone"
+            assert (await deployment(sp.db, day))["used"] == used + 1
+        await assert_clean(sp.db)
+
+
+def _turn(story_id: str) -> dict[str, Any]:
+    from tests.image_support import story_origin
+
+    return story_origin(story_id, turn=3)

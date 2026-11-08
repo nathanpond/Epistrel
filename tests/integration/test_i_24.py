@@ -333,13 +333,14 @@ def _rows(section: str) -> list[str]:
     return [line.split("|")[1].strip().strip("`") for line in receives.splitlines()[4:] if line]
 
 
-@pytest.mark.part("M8", "FR-IMG-13")
+@pytest.mark.part("M8", "FR-IMG-13; FR-MODEL-13")
 def test_i_24__m8_data_flow_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """The generated guide's rows for ``guardrail_check`` and ``image_check`` list exactly the
     inputs their registry schemas declare (subject labels, true ages and the prompt's visual
     descriptors in both; the image, prompt, caption and alt text in ``image_check``'s) and
-    carry the hosted-provider retention sentence verbatim; the image adapter has a row too,
-    listing the prompt, its parameters and reference images and never the safety context.
+    carry the hosted-provider retention sentence verbatim, and the committed guide is exactly
+    what the registry renders (FR-MODEL-13); the image adapter has a row too, listing the
+    prompt, its parameters and reference images and never the safety context.
 
     Complement, run first: with the sentence removed from the guide's row template, rendering
     fails and ``--check`` exits 1, so the sentence cannot silently drop out."""
@@ -402,7 +403,7 @@ def _checker_input(call: Any) -> tuple[str, tuple[str, ...]]:
 
 
 @pytest.mark.integration
-@pytest.mark.part("M8", "FR-IMG-12,13")
+@pytest.mark.part("M8", "FR-IMG-10,12,13")
 async def test_i_24__m8_checker_true_ages(
     lib: Engine, image_settings: Settings, engine: AsyncEngine, target: TestImageTarget
 ) -> None:
@@ -412,7 +413,7 @@ async def test_i_24__m8_checker_true_ages(
     input carries the image as a ``data:`` URL part, the prompt, the minors policy's text and
     the resolved subjects as labels with their true ages, 34 and 17, and no story text; the
     generator's request carries only the band the prompt uses. The verdict is recorded per
-    policy on the promoted asset.
+    policy on the promoted asset, each policy with its own certification flag (FR-IMG-10).
 
     Complement asserted: the generator's request holds neither age, and the checker's text
     holds no name the prompt lacks (Lily is a label only)."""

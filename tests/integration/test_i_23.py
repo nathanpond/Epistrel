@@ -1515,12 +1515,12 @@ async def test_i_23__m8_story_stored_prompt(image_settings: Settings, engine: As
 
 
 @pytest.mark.usefixtures("drained_embedding_jobs")
-@pytest.mark.part("M8", "FR-IMG-2; FR-RATE-4")
+@pytest.mark.part("M8", "FR-IMG-2; FR-RATE-4; FR-SCN-2")
 async def test_i_23__m8_story_guidance(image_settings: Settings, engine: AsyncEngine) -> None:
     """Every story image prompt carries the story rating's image guidance and the scenario's
-    visual style: in the captured adapter request of a built prompt, and of a consumer prompt,
-    where both follow the consumer's text as sections of their own; the style's negative prompt
-    is the request's negative.
+    visual style (FR-SCN-2): in the captured adapter request of a built prompt, and of a
+    consumer prompt, where both follow the consumer's text as sections of their own; the
+    style's negative prompt is the request's negative.
 
     Complement asserted: neither the style nor the image guidance is in any text-generation
     prompt of the story."""

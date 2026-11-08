@@ -21,6 +21,17 @@ procedure.
 | Full | `4d3325358cb5` | uncertified (preset changed since certification 01M6RG1VX91P04T98PK7Z7EXBJ) | — | — | — | — | — | — | — | — | — |
 | Max | `ead05134d273` | uncertified (preset changed since certification 01M6P9X2PV6WTJMN7YN81M6GYM) | — | — | — | — | — | — | — | — | — |
 
+## Image checks
+
+How each image checker measured on each image-output policy (NFR-QUAL-12, E-11), from the newest
+committed E-11 report per policy, and whether a committed record certifies that checker for it.
+The minors policy's false negatives are never measured: certified only by external attestation;
+otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) has the procedure.
+
+| Policy | Checker | Fingerprint | Host | FN rate (n) | FP rate (n) | Floors (max FN / FP) | Verdict | Certification | Date (UTC) | Report |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `minors_no_sexual_content` | — | — | — | — | — | — | no run | — | — | — |
+
 ## Runs
 
 | Date (UTC) | Model | Preset | Fingerprint | Host | Suites | NFR-QUAL-1 | NFR-QUAL-2 | NFR-QUAL-3 | NFR-QUAL-4 | NFR-QUAL-5 | NFR-QUAL-6 | NFR-QUAL-7 | NFR-QUAL-9 | NFR-QUAL-10 | NFR-QUAL-14 | NFR-QUAL-15 | Run |

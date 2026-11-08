@@ -187,6 +187,17 @@ class Counts:
     violations: int
 
 
+def overgenerated(counts: Counts, percent: int) -> Counts:
+    """``counts`` with ``percent`` more of each kind, rounded up (#271: cases dropped in label
+    review must not push a tag below its coverage minimum or a metric below
+    ``MIN_PER_METRIC``)."""
+
+    def more(n: int) -> int:
+        return -(-n * (100 + percent) // 100)
+
+    return Counts(more(counts.per_age_tag), more(counts.per_adversarial), more(counts.violations))
+
+
 def default_counts(family: str) -> Counts:
     """#270's defaults: 100 clean age-sensitive + 50 adversarial + 100 violation a policy; the
     minors family 300 clean (75 a tag) and no violations."""
@@ -415,6 +426,12 @@ class GeneratorConfig:
     model_version: str | None = None
     server: str = ""
     command: Sequence[str] = ()
+    prompt_check_base_url: str | None = None
+    prompt_check_model: str | None = None
+    prompt_check_api_key: str | None = None
+    """#271: the minors prompt check's model (``guardrail_check``), written into the database the
+    generator uses before it runs (a scratch database: the runbook's); none keeps what that
+    database has configured."""
 
 
 def _check_plan(config: GeneratorConfig, planned: Sequence[PlannedCase]) -> None:
@@ -573,7 +590,51 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         f"(default {safety.MINORS_POLICY_ID}:minors)",
     )
     parser.add_argument("--allow-remote", action="store_true", help="e11: a non-local endpoint")
+    parser.add_argument(
+        "--overgenerate",
+        type=int,
+        default=0,
+        metavar="PERCENT",
+        help="e11 (#271): generate PERCENT more cases of each kind than the defaults, so label "
+        "review can drop some (the runbook uses 20)",
+    )
+    parser.add_argument(
+        "--prompt-check-base-url",
+        help="e11 (#271): the OpenAI-compatible endpoint of the minors prompt check's model "
+        "(guardrail_check), configured in the generator's database before it runs",
+    )
+    parser.add_argument("--prompt-check-model", help="e11 (#271): the prompt check's model")
+    parser.add_argument(
+        "--prompt-check-api-key",
+        default=os.environ.get(PROMPT_CHECK_KEY_ENV) or None,
+        help=f"e11 (#271): the prompt check endpoint's key (default ${PROMPT_CHECK_KEY_ENV})",
+    )
     parser.add_argument("--e11-sets-dir", type=Path, help=argparse.SUPPRESS)
+
+
+SECRET_OPTIONS = frozenset({"--api-key", "--prompt-check-api-key"})
+"""Options whose value never reaches ``generation.json``'s recorded command (it is committed)."""
+PROMPT_CHECK_KEY_ENV = "EPISTREL_EVALS_PROMPT_CHECK_API_KEY"
+
+
+def recorded_command(argv: Sequence[str]) -> list[str]:
+    """The ``author e11`` command line as ``generation.json`` records it: from ``e11`` on, each
+    secret option's value replaced by ``***`` (``--api-key KEY`` and ``--api-key=KEY``)."""
+    if "e11" not in argv:
+        return []
+    found: list[str] = ["python", "-m", "epistrel.evals", "author"]
+    hide = False
+    for arg in argv[list(argv).index("e11") :]:
+        name, eq, _ = arg.partition("=")
+        if hide:
+            found.append("***")
+            hide = False
+        elif eq and name in SECRET_OPTIONS:
+            found.append(f"{name}=***")
+        else:
+            found.append(arg)
+            hide = arg in SECRET_OPTIONS
+    return found
 
 
 def _policies(values: Sequence[str]) -> dict[str, str]:
@@ -611,10 +672,26 @@ def main(args: argparse.Namespace) -> int:
         sets_dir=args.e11_sets_dir or DEFAULT_SETS_DIR,
         model_version=args.model_version,
         server=args.server,
-        command=["python", "-m", "epistrel.evals", "author", *sys.argv[sys.argv.index("e11") :]]
-        if "e11" in sys.argv
-        else [],
+        command=recorded_command(sys.argv),
+        prompt_check_base_url=args.prompt_check_base_url,
+        prompt_check_model=args.prompt_check_model,
+        prompt_check_api_key=args.prompt_check_api_key,
+        counts={
+            slug: overgenerated(default_counts(family), args.overgenerate)
+            for slug, family in policies.items()
+            if family in FAMILIES
+        }
+        if args.overgenerate
+        else {},
     )
+    if not 0 <= args.overgenerate <= 100:
+        print("error: --overgenerate is a percentage from 0 to 100", file=sys.stderr)
+        return 2
+    if bool(args.prompt_check_base_url) != bool(args.prompt_check_model):
+        print(
+            "error: --prompt-check-base-url and --prompt-check-model go together", file=sys.stderr
+        )
+        return 2
     try:
         return asyncio.run(_main(config))
     except NotConfigured as exc:
@@ -647,6 +724,8 @@ async def _main(config: GeneratorConfig) -> int:
     db = make_engine(settings)
     engine = Engine(settings, db)
     try:
+        if config.prompt_check_model:
+            await configure_prompt_check(engine, config)
         flagged, check = await engine_prompt_check(engine, config.policies)
         config.flagged = flagged
         await generate(config, prompt_check=check)
@@ -654,6 +733,23 @@ async def _main(config: GeneratorConfig) -> int:
         await engine.models.aclose()
         await db.dispose()
     return 0
+
+
+async def configure_prompt_check(engine: Any, config: GeneratorConfig) -> None:
+    """Write ``config``'s prompt-check model as the ``guardrail_check`` purpose of ``engine``'s
+    database (#271: the runbook's scratch database)."""
+    from epistrel.orchestrator.images.safety_checks import PURPOSE
+    from epistrel.orchestrator.models import config as model_config
+
+    await model_config.write_config(
+        engine.db,
+        PURPOSE,
+        keybox=engine.models.keybox,
+        principal="system:evals",
+        base_url=(config.prompt_check_base_url or "").rstrip("/") or None,
+        model=config.prompt_check_model,
+        api_key=config.prompt_check_api_key or "lm-studio",
+    )
 
 
 async def engine_prompt_check(
@@ -724,11 +820,14 @@ __all__ = [
     "PlannedCase",
     "add_arguments",
     "as_png",
+    "configure_prompt_check",
     "default_counts",
     "engine_prompt_check",
     "generate",
     "is_local",
     "main",
+    "overgenerated",
     "plan",
     "post_process",
+    "recorded_command",
 ]

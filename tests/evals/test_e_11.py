@@ -14,6 +14,9 @@ generator metadata that would describe one and assert that nothing is generated 
   certifiable.
 - ``test_e_11__certification_records``: the records, their rules and the ``certified`` lookup.
 - ``test_e_11__floors_setting``: ``image_check_floors``'s validation.
+- ``test_e_11__index``, ``test_e_11__preflight``, ``test_e_11__generator_command`` (#271): the
+  index's Image checks table, the preflight and the host's quantization, the recorded command.
+- ``test_committed_image_check_certifications`` (#271): the committed records and reports agree.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import hashlib
 import json
 import secrets
 from collections.abc import AsyncIterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +43,12 @@ from epistrel.core.profiles.certification import (
     InvalidateRequest,
 )
 from epistrel.core.settings_schema import ImageCheckFloor
+from epistrel.evals import cli
 from epistrel.evals import e11_safety as safety
+from epistrel.evals import index as evals_index
 from epistrel.evals.authoring import e11 as generator
 from epistrel.evals.gate import Verdict
+from epistrel.evals.report import index_text, write_index
 from epistrel.evals.runner import AdapterConfig
 from epistrel.evals.sets import provenance_problem
 from epistrel.evals.suites import SUITES, MalformedCase, runnable
@@ -842,3 +849,378 @@ async def test_e_11__floors_setting(e11_space: Space) -> None:
     assert e11.parse_floors(json.dumps({nudity: {"max_fn": 0.05}})) == {
         nudity: ImageCheckFloor(max_fn=0.05)
     }
+
+
+# -- #271: the index's Image checks table, the preflight and the committed records ------------
+
+
+def fixture_report(
+    fingerprint: str,
+    started: datetime,
+    policy: str,
+    *,
+    fn_rate: float = 0.01,
+    extra: Sequence[e11.PolicyResult] = (),
+) -> e11.E11Report:
+    """A committed-looking E-11 report built without a run: the minors policy (FP measured) and
+    ``policy`` (both rates measured, both floors passed), plus ``extra`` rows."""
+
+    def rate(metric: str, value: float, floor: float) -> e11.Rate:
+        return e11.Rate(
+            metric_id=metric,
+            rate=value,
+            bad=round(value * 300),
+            n=100,
+            seeds=3,
+            mean=value,
+            sd=0.0,
+            per_seed=[value] * 3,
+            wilson95=e11.wilson(round(value * 300), 300),
+            floor=floor,
+            verdict=Verdict.passed.value,
+        )
+
+    minors = e11.PolicyResult(
+        policy_id=MINORS,
+        name="No sexual content involving minors",
+        policy_version=1,
+        external_evidence_only=True,
+        cases=360,
+        clean_cases=360,
+        fn=None,
+        fn_status="not_measured",
+        fp=rate(f"nfr_qual_12.{MINORS}.fp", 0.02, 0.15),
+        floors={"max_fn": None, "max_fp": 0.15},
+        verdict=Verdict.passed.value,
+        certification="external_attestation",
+        note=e11.MINORS_NOTE,
+    )
+    measured = e11.PolicyResult(
+        policy_id=policy,
+        name="No nudity",
+        policy_version=1,
+        external_evidence_only=False,
+        cases=300,
+        violation_cases=150,
+        clean_cases=150,
+        fn=rate(f"nfr_qual_12.{policy}.fn", fn_rate, 0.05),
+        fp=rate(f"nfr_qual_12.{policy}.fp", 0.04, 0.10),
+        floors={"max_fn": 0.05, "max_fp": 0.10},
+        verdict=Verdict.passed.value,
+        certification="eval_run",
+    )
+    return e11.E11Report(
+        run_id=f"e11-{fingerprint}-{started.date().isoformat()}",
+        started_at=started,
+        finished_at=started,
+        checker=e11.Checker(model="vision-model", endpoint="localhost", fingerprint=fingerprint),
+        host={"kind": "local", "hardware": "Apple M3 Max, 64 GB", "server_version": "LM Studio"},
+        seeds=[1, 2, 3],
+        set_approved=True,
+        manifest_sha256="c" * 64,
+        policies=[minors, measured, *extra],
+        plays=1980,
+        verdict=Verdict.passed.value,
+    )
+
+
+def commit_report(reports: Path, report: e11.E11Report, records: Path) -> Path:
+    """Write ``report`` into ``reports`` as a run would, and its earned records into
+    ``records/image-check``."""
+    path = reports / f"{report.run_id}.md"
+    text = e11.render_markdown(report)
+    path.write_text(text, encoding="utf-8")
+    for record in e11.records_for(
+        report, f"docs/evals/{path.name}", certification.report_hash(text)
+    ):
+        target = (
+            records / "image-check" / f"{record['policy_id']}-{record['checker_fingerprint']}.json"
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def image_rows(index: str) -> dict[str, list[str]]:
+    """The Image checks table's rows by policy id (each row's cells)."""
+    section = index.split(evals_index.IMAGE_CHECKS_HEADING, 1)[1].split("## Runs", 1)[0]
+    rows: dict[str, list[str]] = {}
+    for line in section.splitlines():
+        if line.startswith("| `"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            rows[cells[0].strip("`")] = cells
+    return rows
+
+
+@pytest.mark.part("M8", "NFR-QUAL-12")
+def test_e_11__index(tmp_path: Path) -> None:
+    """``docs/evals/INDEX.md``'s Image checks table (#271), after Presets: one row per seeded
+    image-output policy and per policy a committed E-11 report names, sorted by policy id, from
+    the newest report that has it. The minors policy's FN reads "not measured" and it stays an
+    uncertified backstop; a policy whose committed record matches the row's checker reads
+    certified; a ``no_set`` row says so; E-11 reports stay out of the Runs table; ``index
+    --check`` is a byte-exact diff, current after ``index`` and stale when a record is added.
+
+    Complement asserted: with no E-11 report the minors policy reads ``no run``, and a report
+    with no summary is listed as unreadable."""
+    reports, records = tmp_path / "reports", tmp_path / "records"
+    reports.mkdir()
+    records.mkdir()
+    empty, unreadable = index_text(reports, records)
+    assert unreadable == []
+    assert image_rows(empty)[MINORS][7] == evals_index.NO_RUN
+    assert empty.index("## Presets") < empty.index("## Image checks") < empty.index("## Runs")
+
+    nudity = "nudity_index"
+    older = fixture_report("a" * 12, datetime(2026, 11, 9, tzinfo=UTC), nudity, fn_rate=0.2)
+    older.policies[1] = older.policies[1].model_copy(update={"verdict": Verdict.failed.value})
+    commit_report(reports, older, records)
+    unset = e11.PolicyResult(
+        policy_id="aaa_unset",
+        name="A policy with no cases",
+        policy_version=1,
+        external_evidence_only=False,
+        status="no_set",
+    )
+    newer = fixture_report("b" * 12, datetime(2026, 11, 10, tzinfo=UTC), nudity, extra=[unset])
+    newest = commit_report(reports, newer, records)
+    assert [p.name for p in (records / "image-check").iterdir()] == [f"{nudity}-{'b' * 12}.json"]
+
+    found, unreadable = index_text(reports, records)
+    assert unreadable == []
+    rows = image_rows(found)
+    assert list(rows) == sorted(["aaa_unset", MINORS, nudity])
+    minors = rows[MINORS]
+    assert minors[1:4] == ["`vision-model`", f"`{'b' * 12}`", "local"]
+    assert minors[4] == "not measured"
+    assert minors[5] == "2.00% (100)"
+    assert minors[6] == "— / 15.00%"
+    assert minors[8] == evals_index.UNCERTIFIED_BACKSTOP
+    assert minors[9:] == ["2026-11-10", f"[{newest.name}]({newest.name})"]
+    rated = rows[nudity]
+    assert rated[4:9] == [
+        "1.00% (100)",
+        "4.00% (100)",
+        "5.00% / 10.00%",
+        "pass",
+        "certified (`eval_run`)",
+    ]
+    assert rows["aaa_unset"][4:8] == ["no_set", "no_set", "— / —", "no_set"]
+    assert "e11-" not in found.split("## Runs", 1)[1]
+
+    assert cli.index_check(reports, records) == 1
+    write_index(reports, records)
+    assert cli.index_check(reports, records) == 0
+    attested = records / "image-check" / f"{MINORS}-{'b' * 12}.json"
+    attested.write_text(
+        json.dumps({"schema_version": 1, **attestation("b" * 12)}), encoding="utf-8"
+    )
+    assert cli.index_check(reports, records) == 1
+    assert image_rows(index_text(reports, records)[0])[MINORS][8] == (
+        "certified (`external_attestation`)"
+    )
+
+    (reports / "e11-broken-2026-11-11.md").write_text("# no summary\n", encoding="utf-8")
+    assert index_text(reports, records)[1] == ["e11-broken-2026-11-11.md"]
+
+
+@pytest.mark.part("M8", "NFR-QUAL-12")
+async def test_e_11__preflight(e11_space: Space, tmp_path: Path) -> None:
+    """``run --suite e11 --preflight`` (#271) sends one 64 by 64 solid-grey PNG through
+    ``check_output`` with the configured checker: a verdict exits 0 and gives the latency and
+    the estimate (cases x seeds x latency x 1.2); the run writes no report. A local run's
+    report header records LM Studio's quantization of the checker, and a hosted one none.
+
+    Complement asserted: a checker that answers ``uncertain`` for every policy (it could not
+    read the image) fails the preflight; a server with no ``/api/v0/models`` gives no
+    quantization; ``--preflight`` is refused outside e11."""
+    sp = e11_space
+    await configure_checker(sp)
+    sets_dir = tmp_path / "sets"
+    write_set(sets_dir, synthetic(await nudity_policy(sp)))
+    passed = await e11.preflight(sp.lib, AdapterConfig(adapter="stub"), sets_dir=sets_dir, seeds=3)
+    assert passed.ok, passed.error
+    assert passed.verdicts[MINORS] == "pass"
+    assert (passed.cases, passed.seeds) == (10, 3)
+    assert passed.estimate_s == pytest.approx(10 * 3 * passed.latency_s * 1.2)
+    calls = [c for c in sp.lib.models.stub.calls if c.purpose == output_check.PURPOSE]
+    assert len(calls) == 1
+    assert len([i for m in calls[0].messages for i in m.images]) == 1
+
+    sp.lib.models.stub.reset()
+    unscripted = await e11.preflight(
+        sp.lib, AdapterConfig(adapter="openai"), sets_dir=tmp_path / "none", seeds=3
+    )
+    assert not unscripted.ok
+    assert unscripted.error is not None
+    assert "uncertain" in unscripted.error
+    assert unscripted.cases == 0
+
+    reports = tmp_path / "out"
+    args = cli.parser().parse_args(
+        [
+            "run",
+            "--suite",
+            "e11",
+            "--preflight",
+            "--adapter",
+            "stub",
+            "--database-url",
+            sp.settings.database_url.get_secret_value(),
+            "--sets-dir",
+            str(sets_dir),
+            "--reports-dir",
+            str(reports),
+            "--json-dir",
+            str(reports),
+        ]
+    )
+    assert await cli._run(args) == 0
+    assert not reports.exists()
+    refused = cli.parser().parse_args(
+        ["run", "--suite", "smoke", "--preflight", "--adapter", "stub"]
+    )
+    assert await cli._run(refused) == cli.EX_USAGE
+
+    def lmstudio(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v0/models":
+            return httpx.Response(
+                200, json={"data": [{"id": "vision-model", "quantization": "Q4_K_M"}]}
+            )
+        return httpx.Response(404)
+
+    probe = httpx.MockTransport(lmstudio)
+    assert (
+        await e11.lmstudio_quantization("http://127.0.0.1:1234/v1", "vision-model", transport=probe)
+        == "Q4_K_M"
+    )
+    assert (
+        await e11.lmstudio_quantization("http://127.0.0.1:1234/v1", "other", transport=probe)
+        is None
+    )
+    gone = httpx.MockTransport(lambda _: httpx.Response(404))
+    assert await e11.lmstudio_quantization("http://x/v1", "vision-model", transport=gone) is None
+
+    sp.lib.models.stub.reset()
+    local = await e11.run_e11(
+        e11.E11Run(
+            engine=sp.lib,
+            config=AdapterConfig(adapter="stub", host="local"),
+            seeds=[1],
+            run_id="e11-local",
+            sets_dir=sets_dir,
+            quantization="Q4_K_M",
+        )
+    )
+    assert local.host["quantization"] == "Q4_K_M"
+    assert "quantization Q4_K_M" in e11.render_markdown(local)
+    sp.lib.models.stub.reset()
+    hosted = await e11.run_e11(
+        e11.E11Run(
+            engine=sp.lib,
+            config=AdapterConfig(adapter="stub", host="hosted"),
+            seeds=[1],
+            run_id="e11-hosted",
+            sets_dir=sets_dir,
+            quantization="Q4_K_M",
+        )
+    )
+    assert "quantization" not in hosted.host
+
+
+@pytest.mark.part("M8", "NFR-QUAL-12")
+async def test_e_11__generator_command(e11_space: Space) -> None:
+    """``generation.json`` records the ``author e11`` command line from ``e11`` on with every
+    key option's value replaced (#271: the file is committed). ``--prompt-check-base-url`` and
+    ``--prompt-check-model`` configure the minors prompt check (``guardrail_check``) in the
+    generator's database.
+
+    Complement asserted: other options keep their values; a command without ``e11`` records
+    nothing."""
+    from epistrel.orchestrator.images.safety_checks import PURPOSE as PROMPT_CHECK
+
+    await generator.configure_prompt_check(
+        e11_space.lib,
+        generator.GeneratorConfig(
+            base_url="http://127.0.0.1:7860",
+            model="sdxl",
+            policies={MINORS: "minors"},
+            prompt_check_base_url="http://127.0.0.1:1234/v1/",
+            prompt_check_model="text-model",
+        ),
+    )
+    configured = await e11_space.lib.models.resolve(PROMPT_CHECK)
+    assert (configured.base_url, configured.model) == ("http://127.0.0.1:1234/v1", "text-model")
+    argv = [
+        "x/epistrel/evals/__main__.py",
+        "author",
+        "e11",
+        "--base-url",
+        "http://127.0.0.1:7860",
+        "--api-key",
+        "sk-secret-1",
+        "--prompt-check-api-key=sk-secret-2",
+        "--model",
+        "sdxl",
+    ]
+    recorded = generator.recorded_command(argv)
+    assert recorded == [
+        "python",
+        "-m",
+        "epistrel.evals",
+        "author",
+        "e11",
+        "--base-url",
+        "http://127.0.0.1:7860",
+        "--api-key",
+        "***",
+        "--prompt-check-api-key=***",
+        "--model",
+        "sdxl",
+    ]
+    assert "sk-secret" not in json.dumps(recorded)
+    assert generator.recorded_command(["author"]) == []
+    # --overgenerate 20 (the runbook's): every kind 20 % more, rounded up.
+    assert generator.overgenerated(generator.default_counts("nudity"), 20) == generator.Counts(
+        per_age_tag=30, per_adversarial=16, violations=120
+    )
+    assert generator.overgenerated(generator.default_counts("minors"), 0) == (
+        generator.default_counts("minors")
+    )
+
+
+def test_committed_image_check_certifications() -> None:
+    """Every committed image-checker record (``seeds/certifications/image-check/``, #271)
+    validates, is named ``<policy_id>-<checker_fingerprint>.json``, and, for an ``eval_run``, is
+    exactly the record its committed E-11 report earns (``records_for``): the report exists, its
+    SHA-256 is ``report_sha256`` and its checker fingerprint is the record's. The minors policy
+    has attestations only. Every committed E-11 report's earned records are committed. With no
+    record and no report it passes vacuously (#271's evidence lands after the M8 merge)."""
+    for path in certification.committed_image_checks():
+        seed = certification.ImageCheckSeed.model_validate(json.loads(path.read_text("utf-8")))
+        assert path.name == f"{seed.policy_id}-{seed.checker_fingerprint}.json", path.name
+        evidence = certification.parse_evidence(seed.evidence_kind, seed.evidence_ref)
+        if seed.policy_id in safety.EXTERNAL_EVIDENCE_ONLY:
+            assert seed.evidence_kind == certification.EXTERNAL_ATTESTATION, path.name
+        if not isinstance(evidence, certification.EvalRunEvidence):
+            continue
+        report_path = certification.REPO_ROOT / evidence.report_path
+        assert report_path.is_file(), (path.name, evidence.report_path)
+        text_ = report_path.read_text("utf-8")
+        assert certification.report_hash(text_) == evidence.report_sha256, path.name
+        report = e11.read_summary(report_path)
+        assert report is not None, evidence.report_path
+        assert report.checker.fingerprint == seed.checker_fingerprint, path.name
+        earned = e11.records_for(report, evidence.report_path, evidence.report_sha256)
+        assert json.loads(path.read_text("utf-8")) in earned, path.name
+    reports_dir = certification.REPO_ROOT / "docs" / "evals"
+    for report_path in sorted(reports_dir.glob(f"{e11.REPORT_PREFIX}*.md")):
+        report = e11.read_summary(report_path)
+        assert report is not None, report_path.name
+        shown = report_path.relative_to(certification.REPO_ROOT).as_posix()
+        digest = certification.report_hash(report_path.read_text("utf-8"))
+        for record in e11.records_for(report, shown, digest):
+            name = f"{record['policy_id']}-{record['checker_fingerprint']}.json"
+            committed = certification.IMAGE_CHECK_SEEDS_DIR / name
+            assert committed.is_file(), (report_path.name, name)
+            assert json.loads(committed.read_text("utf-8")) == record, name

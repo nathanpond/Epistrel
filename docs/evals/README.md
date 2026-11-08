@@ -242,8 +242,15 @@ The run prints the checker's fingerprint. It writes `docs/evals/e11-<fingerprint
 and, for each policy that passed both its floors on an approved, fully reviewed and covered set,
 an `eval_run` certification record under `src/epistrel/core/seeds/certifications/image-check/`.
 The minors policy is certified only by recording the checker vendor's published evaluation:
-`POST /admin/certifications/image-check` with `evidence_kind: external_attestation`. #271's
-runbook (`E11-RUNBOOK.md`) gives the owner's steps.
+`POST /admin/certifications/image-check` with `evidence_kind: external_attestation`.
+
+**The owner's run is [E11-RUNBOOK.md](E11-RUNBOOK.md) (#271).** It covers a scratch database,
+the preflight (`run --suite e11 --preflight`: one synthetic PNG through the checker, plus the
+run's time estimate), the generator through Draw Things (`--backend a1111`) or the localhost
+shim `tools/e11_image_shim.py` (ComfyUI, mflux), the label review with
+`tools/review_e11_set.py`, the PROVENANCE approval, the proposed floors, the run (local or
+hosted) and the follow-up PR `m8-e11-evidence`. `INDEX.md`'s "Image checks" table lists the
+newest E-11 report per image-output policy and whether a committed record certifies its checker.
 
 ## E-09: time estimation (#201)
 

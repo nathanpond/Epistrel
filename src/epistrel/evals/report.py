@@ -61,7 +61,9 @@ SUMMARY_RE = re.compile(r"^<!-- epistrel-eval-report (?P<json>\{.*\}) -->$", re.
 INDEX_NAME = "INDEX.md"
 README_NAME = "README.md"
 DIGEST_NAME = "sets-digest.md"
-NOT_REPORTS = frozenset({INDEX_NAME, README_NAME, DIGEST_NAME})
+RUNBOOK_NAMES = frozenset({"E11-RUNBOOK.md"})
+"""Owner runbooks kept beside the reports (#271), not reports."""
+NOT_REPORTS = frozenset({INDEX_NAME, README_NAME, DIGEST_NAME, *RUNBOOK_NAMES})
 EM_DASH = "—"
 VERDICT_TEXT: Mapping[Verdict, str] = {
     Verdict.passed: "pass",
@@ -656,8 +658,8 @@ def report_files(reports_dir: Path) -> list[Path]:
     sets' review digest (#157)."""
     if not reports_dir.is_dir():
         return []
-    # #270: E-11's image-checker reports (``e11-…``) are not configuration reports; #271's
-    # index gives them a table of their own.
+    # #270: E-11's image-checker reports (``e11-…``) are not configuration reports; the
+    # index's "Image checks" table reads them (#271, ``evals.index.image_checks_section``).
     return sorted(
         p
         for p in reports_dir.glob("*.md")
@@ -677,10 +679,13 @@ the procedure.
 
 
 def render_index(
-    summaries: Iterable[tuple[str, Mapping[str, Any]]], presets: str | None = None
+    summaries: Iterable[tuple[str, Mapping[str, Any]]],
+    presets: str | None = None,
+    image_checks: str | None = None,
 ) -> str:
     """``INDEX.md`` from ``(file name, summary)`` pairs; ``presets`` (#235: the Presets section,
-    ``evals.index.presets_section``) sits at the top, above the runs."""
+    ``evals.index.presets_section``) sits at the top, then ``image_checks`` (#271: the Image
+    checks section, ``evals.index.image_checks_section``), above the runs."""
     rows = sorted(summaries, key=lambda item: (item[1]["date"], item[0]), reverse=True)
     requirements = sorted(
         {req for _, s in rows for req in s.get("requirements", {})},
@@ -700,7 +705,7 @@ def render_index(
     if presets is not None:
         from epistrel.evals.index import RUNS_HEADING
 
-        lines += [presets, RUNS_HEADING, ""]
+        lines += [presets, *([image_checks] if image_checks is not None else []), RUNS_HEADING, ""]
     lines += ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     if not rows:
         lines.append("| " + " | ".join([EM_DASH] * len(header)) + " |")
@@ -725,7 +730,7 @@ def index_text(reports_dir: Path, records_dir: Path | None = None) -> tuple[str,
     """The index the reports in ``reports_dir`` and the certification records in
     ``records_dir`` (default: the committed ones, #235) produce, and the files with no
     summary."""
-    from epistrel.evals.index import presets_section
+    from epistrel.evals.index import image_checks_section, presets_section
 
     if records_dir is None:
         from epistrel.core.profiles.certification import SEEDS_DIR
@@ -740,7 +745,8 @@ def index_text(reports_dir: Path, records_dir: Path | None = None) -> tuple[str,
         else:
             pairs.append((path.name, found))
     presets = presets_section(records_dir, index_dir=reports_dir)
-    return render_index(pairs, presets), unreadable
+    image_checks, unreadable_e11 = image_checks_section(reports_dir, records_dir)
+    return render_index(pairs, presets, image_checks), [*unreadable, *unreadable_e11]
 
 
 def write_index(reports_dir: Path, records_dir: Path | None = None) -> Path:

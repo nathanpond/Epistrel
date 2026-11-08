@@ -38,6 +38,16 @@ its own (``run --suite e11``): ``run --all``, preset certification and certifica
 it out (``Suite.standalone``). Its set is optional (``Suite.set_optional``): until the owner
 generates and approves one (#271), ``--check-sets`` has nothing to check, and every policy reads
 ``no_set``. CI runs it on the stub only, over a synthetic set written at test time.
+
+**Preflight** (#271; ``run --suite e11 --preflight``): one 64 by 64 solid-grey PNG
+(``solid_png``) through ``check_output`` with the configured checker and the global
+image-output policies, before the long run. It passes when a verdict comes back without a
+model error within ``PREFLIGHT_TIMEOUT_S`` and at least one model-judged policy got a definite
+answer (a checker that cannot read the image tends to answer ``uncertain`` for every policy),
+and it gives the latency and the estimate: cases * seeds * latency * ``ESTIMATE_MARGIN``.
+
+**Quantization** (local runs only): LM Studio's ``GET /api/v0/models`` names the loaded model's
+quantization (``lmstudio_quantization``); the report's host records it. A hosted run has none.
 """
 
 from __future__ import annotations
@@ -47,6 +57,7 @@ import hashlib
 import json
 import math
 import random
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -88,6 +99,11 @@ INSUFFICIENT_COVERAGE = "insufficient_coverage"
 NO_SET = "no_set"
 NOT_MEASURED = "not_measured"
 Z95 = 1.959963984540054
+PREFLIGHT_CASE = "e11-preflight"
+PREFLIGHT_SIZE = 64
+PREFLIGHT_TIMEOUT_S = 120.0
+ESTIMATE_MARGIN = 1.2
+PROBE_TIMEOUT_S = 5.0
 
 FN_METRIC = Metric(
     "nfr_qual_12.fn",
@@ -494,6 +510,8 @@ class E11Run:
     otherwise."""
     concurrency: int = 1
     now: datetime | None = None
+    quantization: str | None = None
+    """The checker's quantization (a local run's ``lmstudio_quantization``), for the header."""
 
 
 async def _floors(job: E11Run) -> dict[str, ImageCheckFloor]:
@@ -636,6 +654,9 @@ async def run_e11(job: E11Run) -> E11Report:
             f"{MAX_ERROR_RATE:.0%})"
         )
     host: Host = host_of(job.config)
+    host_fields = host.model_dump(mode="json")
+    if host.kind == "local" and job.quantization:
+        host_fields["quantization"] = job.quantization
     return E11Report(
         run_id=job.run_id,
         started_at=started,
@@ -646,7 +667,7 @@ async def run_e11(job: E11Run) -> E11Report:
             fingerprint=found_checker.fingerprint,
             reported_version=reported,
         ),
-        host=host.model_dump(mode="json"),
+        host=host_fields,
         seeds=list(job.seeds),
         set_approved=loaded.approved,
         manifest_sha256=loaded.combined_sha256,
@@ -786,7 +807,13 @@ def render_markdown(report: E11Report) -> str:
         f"- Checker: `{c.model}` at `{c.endpoint}`, reported version "
         f"`{c.reported_version or 'none'}`, checker fingerprint `{c.fingerprint}`.",
         f"- Host: {report.host.get('kind')}; hardware {report.host.get('hardware') or '-'}; "
-        f"server {report.host.get('server_version') or '-'}.",
+        f"server {report.host.get('server_version') or '-'}"
+        + (
+            f"; quantization {report.host['quantization']}"
+            if report.host.get("quantization")
+            else ""
+        )
+        + ".",
         f"- Seeds: {', '.join(str(s) for s in report.seeds)}; {report.plays} checks, "
         f"{report.errors} model errors ({report.error_rate:.2%}).",
         f"- Set: {'approved by the owner' if report.set_approved else 'not approved'}; "
@@ -864,6 +891,137 @@ def render_markdown(report: E11Report) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+# -- preflight and the host's quantization (#271) --------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Preflight:
+    """The preflight's outcome (module docstring)."""
+
+    ok: bool
+    latency_s: float
+    verdicts: Mapping[str, str]
+    error: str | None
+    cases: int
+    seeds: int
+
+    @property
+    def estimate_s(self) -> float:
+        """The run's expected time: cases * seeds * latency * ``ESTIMATE_MARGIN``."""
+        return self.cases * self.seeds * self.latency_s * ESTIMATE_MARGIN
+
+
+def set_size(sets_dir: Path) -> int:
+    """The cases in the manifest (0 without one)."""
+    manifest = sets_dir / SET_FILE
+    if not manifest.is_file():
+        return 0
+    return sum(1 for line in manifest.read_text("utf-8").splitlines() if line.strip())
+
+
+async def preflight(
+    engine: Engine,
+    config: AdapterConfig,
+    *,
+    sets_dir: Path,
+    seeds: int,
+    timeout_s: float = PREFLIGHT_TIMEOUT_S,
+) -> Preflight:
+    """Send one solid-grey PNG through ``check_output`` (module docstring)."""
+    from epistrel.orchestrator.images import output_check
+    from epistrel.orchestrator.images.registry import ImageCheckUnconfigured
+    from epistrel.orchestrator.models.access import eval_scope
+    from epistrel.orchestrator.models.errors import ModelError
+
+    every, _ = await image_policies(engine)
+    context = SafetyContext(threshold=await _threshold(engine))
+    policies = output_check.output_policies([p for p in every if p.scope is Scope.GLOBAL], context)
+    cases = set_size(sets_dir)
+    found = await output_check.checker(engine.models, engine.db)
+    if found is None:
+        raise ImageCheckUnconfigured([p.id for p in policies])
+    if config.adapter == "stub":
+        engine.models.stub.case(
+            PREFLIGHT_CASE,
+            json.dumps({"verdicts": {p.id: "pass" for p in policies}}),
+            purpose=output_check.PURPOSE,
+        )
+    image = solid_png(PREFLIGHT_SIZE, PREFLIGHT_SIZE)
+    error: str | None = None
+    verdicts: dict[str, str] = {}
+    started = time.monotonic()
+    try:
+        with eval_scope(PREFLIGHT_CASE, 0):
+            verdict = await asyncio.wait_for(
+                output_check.check_output(
+                    engine.models,
+                    engine.db,
+                    image,
+                    "image/png",
+                    prompt=None,
+                    caption=None,
+                    alt_text=None,
+                    safety_context=context,
+                    policies=policies,
+                    found_checker=found,
+                    certified=frozenset(),
+                ),
+                timeout_s,
+            )
+    except TimeoutError:
+        error = f"no verdict within {timeout_s:.0f} s"
+    except ModelError as exc:
+        error = f"the checker failed: {type(exc).__name__}"
+    else:
+        verdicts = {
+            v.policy_id: "uncertain" if v.uncertain else v.result for v in verdict.per_policy
+        }
+        if not verdicts:
+            error = "no image-output policy applies: nothing was checked"
+        elif all(v.uncertain for v in verdict.per_policy):
+            error = (
+                "the checker answered uncertain for every policy: it may not accept image "
+                "input (load a vision model)"
+            )
+    latency = time.monotonic() - started
+    return Preflight(
+        ok=error is None,
+        latency_s=latency,
+        verdicts=verdicts,
+        error=error,
+        cases=cases,
+        seeds=seeds,
+    )
+
+
+async def lmstudio_quantization(
+    base_url: str | None,
+    model: str | None,
+    *,
+    transport: Any = None,
+) -> str | None:
+    """The loaded model's quantization, from LM Studio's ``GET /api/v0/models`` at
+    ``base_url``'s root (``None`` when the server does not answer it or names no such
+    model)."""
+    import httpx2 as httpx
+
+    if not base_url or not model:
+        return None
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT_S, transport=transport) as client:
+            answer = await client.get(f"{root}/api/v0/models")
+            answer.raise_for_status()
+            listed = answer.json().get("data", [])
+    except httpx.HTTPError, ValueError, AttributeError:
+        return None
+    for entry in listed if isinstance(listed, list) else []:
+        if isinstance(entry, dict) and entry.get("id") == model:
+            quantization = entry.get("quantization")
+            return str(quantization) if quantization else None
+    return None
 
 
 def report_name(fingerprint: str, when: datetime, taken: Sequence[Path]) -> str:
@@ -957,10 +1115,13 @@ __all__ = [
     "ImagePolicies",
     "LoadedSet",
     "PolicyResult",
+    "Preflight",
     "Rate",
+    "lmstudio_quantization",
     "load_set",
     "parse_floors",
     "policy_verdict",
+    "preflight",
     "rate_of",
     "read_summary",
     "records_for",
@@ -968,6 +1129,7 @@ __all__ = [
     "report_name",
     "run_e11",
     "safety_context",
+    "set_size",
     "solid_png",
     "stub_answer",
     "wilson",

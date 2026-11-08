@@ -23,6 +23,16 @@ certify``) and the preset constants (#227, ``evals.presets.PRESETS``):
 
 A record that does not parse is left out (the start-up loader logs it; ``evals --check`` lists
 it).
+
+The **Image checks** table (NFR-QUAL-12; #271) follows the Presets: one row per seeded
+image-output policy (``SEEDED_IMAGE_OUTPUT_POLICIES``) and per policy any committed E-11 report
+(``docs/evals/e11-*.md``) names, sorted by ``policy_id``, each from the newest report (by start,
+then file name) that has a row for it. A policy with no report reads ``no run``; a report row
+with no cases reads ``no_set``. Its certification comes from the committed image-checker records
+(``seeds/certifications/image-check/``) for the row's checker fingerprint, never from the
+report's own ``certified`` snapshot: the minors policy reads "uncertified backstop" until an
+external attestation is recorded (ADR-182). An E-11 report with no embedded summary is listed as
+unreadable, as a configuration report is.
 """
 
 from __future__ import annotations
@@ -33,15 +43,21 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from epistrel.core.profiles.certification import (
     SEEDS_DIR,
     CertificationRecord,
+    ImageCheckSeed,
+    committed_image_checks,
     committed_records,
     parse_record,
 )
 from epistrel.core.profiles.fingerprint import ModelIdentity, RuntimeFacts, fingerprint
 from epistrel.evals.presets import PRESET_NAMES, PRESETS, PresetName
+
+if TYPE_CHECKING:
+    from epistrel.evals.suites.e11_image_policies import E11Report, PolicyResult
 
 REFERENCE_MODEL_ID = "cydonia-24b-v4.3"
 """The reference model: the ``local:`` row of ``docs/model-matrix.md`` (#54). A certification
@@ -230,11 +246,184 @@ def presets_section(records_dir: Path = SEEDS_DIR, index_dir: Path | None = None
     return "\n".join(lines) + "\n"
 
 
+# -- Image checks (#271) -----------------------------------------------------------------------
+
+IMAGE_CHECKS_HEADING = "## Image checks"
+IMAGE_CHECKS_DIR = "image-check"
+"""The image-checker records' subdirectory of the records directory."""
+SEEDED_IMAGE_OUTPUT_POLICIES = ("minors_no_sexual_content",)
+"""The image-output policies every deployment is seeded with (migrations 0009 and 0133); a
+deployment's own policies appear once a committed report measures them."""
+IMAGE_CHECKS_INTRO = """\
+How each image checker measured on each image-output policy (NFR-QUAL-12, E-11), from the newest
+committed E-11 report per policy, and whether a committed record certifies that checker for it.
+The minors policy's false negatives are never measured: certified only by external attestation;
+otherwise an uncertified backstop (ADR-182). [E11-RUNBOOK.md](E11-RUNBOOK.md) has the procedure.
+"""
+IMAGE_CHECKS_HEADER = (
+    "Policy",
+    "Checker",
+    "Fingerprint",
+    "Host",
+    "FN rate (n)",
+    "FP rate (n)",
+    "Floors (max FN / FP)",
+    "Verdict",
+    "Certification",
+    "Date (UTC)",
+    "Report",
+)
+NO_RUN = "no run"
+UNCERTIFIED_BACKSTOP = "uncertified backstop (external attestation only)"
+
+
+@dataclass(frozen=True, slots=True)
+class ImageCheckReport:
+    """A committed E-11 report and its embedded summary."""
+
+    name: str
+    report: E11Report
+
+
+def image_check_reports(reports_dir: Path) -> tuple[list[ImageCheckReport], list[str]]:
+    """The committed E-11 reports with a summary, newest first, and the names of those without
+    one."""
+    from epistrel.evals.suites import e11_image_policies as e11
+
+    found: list[ImageCheckReport] = []
+    unreadable: list[str] = []
+    if not reports_dir.is_dir():
+        return found, unreadable
+    for path in sorted(reports_dir.glob(f"{e11.REPORT_PREFIX}*.md")):
+        try:
+            summary = e11.read_summary(path)
+        except ValueError:
+            summary = None
+        if summary is None:
+            unreadable.append(path.name)
+        else:
+            found.append(ImageCheckReport(path.name, summary))
+    found.sort(key=lambda r: (r.report.started_at.astimezone(UTC), r.name), reverse=True)
+    return found, unreadable
+
+
+def image_check_records(directory: Path) -> dict[tuple[str, str], str]:
+    """(checker fingerprint, policy id) → evidence kind of each committed image-checker record
+    that parses (a malformed one is left out: ``test_committed_image_check_certifications``
+    fails on it)."""
+    found: dict[tuple[str, str], str] = {}
+    for path in committed_image_checks(directory):
+        try:
+            seed = ImageCheckSeed.model_validate(json.loads(path.read_text("utf-8")))
+        except ValueError, OSError:
+            continue
+        found[(seed.checker_fingerprint, seed.policy_id)] = seed.evidence_kind
+    return found
+
+
+def _rate_cell(rate: float | None, n: int) -> str:
+    return EM_DASH if rate is None else f"{rate:.2%} ({n})"
+
+
+def _floor_cell(value: float | None) -> str:
+    return EM_DASH if value is None else f"{value:.2%}"
+
+
+def image_check_row(
+    policy_id: str,
+    newest: ImageCheckReport | None,
+    records: Mapping[tuple[str, str], str],
+) -> str:
+    """``policy_id``'s row (see the module docstring)."""
+    if newest is None:
+        cells = [f"`{policy_id}`", *([EM_DASH] * 6), NO_RUN, EM_DASH, EM_DASH, EM_DASH]
+        return _row(cells)
+    report = newest.report
+    row: PolicyResult = next(p for p in report.policies if p.policy_id == policy_id)
+    checker = report.checker
+    kind = records.get((checker.fingerprint, policy_id))
+    if kind is not None:
+        certification = f"certified (`{kind}`)"
+    elif row.external_evidence_only:
+        certification = UNCERTIFIED_BACKSTOP
+    elif row.uncertifiable:
+        certification = f"uncertified (`{row.uncertifiable}`)"
+    else:
+        certification = "uncertified"
+    fn: str
+    fp: str
+    if row.status == "no_set":
+        fn = fp = "no_set"
+    else:
+        fn = (
+            "not measured"
+            if row.fn_status == "not_measured"
+            else _rate_cell(row.fn.rate if row.fn else None, row.fn.n if row.fn else 0)
+        )
+        fp = _rate_cell(row.fp.rate if row.fp else None, row.fp.n if row.fp else 0)
+    floors = f"{_floor_cell(row.floors.get('max_fn'))} / {_floor_cell(row.floors.get('max_fp'))}"
+    return _row(
+        [
+            f"`{policy_id}`",
+            f"`{checker.model}`",
+            f"`{checker.fingerprint}`",
+            str(report.host.get("kind") or EM_DASH),
+            fn,
+            fp,
+            floors,
+            row.status if row.status == "no_set" else row.verdict,
+            certification,
+            report.started_at.astimezone(UTC).strftime("%Y-%m-%d"),
+            f"[{newest.name}]({newest.name})",
+        ]
+    )
+
+
+def image_checks_section(
+    reports_dir: Path, records_dir: Path | None = None
+) -> tuple[str, list[str]]:
+    """The Image checks section, and the E-11 reports with no summary. ``records_dir`` is the
+    certification records' directory (default: the committed one); the image-checker records
+    are its ``image-check/``."""
+    found, unreadable = image_check_reports(reports_dir)
+    records = image_check_records((records_dir or SEEDS_DIR) / IMAGE_CHECKS_DIR)
+    policies = sorted(
+        {*SEEDED_IMAGE_OUTPUT_POLICIES, *(p.policy_id for r in found for p in r.report.policies)}
+    )
+    rows = [
+        image_check_row(
+            policy_id,
+            next(
+                (r for r in found if any(p.policy_id == policy_id for p in r.report.policies)), None
+            ),
+            records,
+        )
+        for policy_id in policies
+    ]
+    lines = [
+        IMAGE_CHECKS_HEADING,
+        "",
+        IMAGE_CHECKS_INTRO,
+        _row(IMAGE_CHECKS_HEADER),
+        "|" + "---|" * len(IMAGE_CHECKS_HEADER),
+        *rows,
+    ]
+    return "\n".join(lines) + "\n", unreadable
+
+
 __all__ = [
+    "IMAGE_CHECKS_HEADING",
+    "NO_RUN",
     "REFERENCE_MODEL_ID",
+    "SEEDED_IMAGE_OUTPUT_POLICIES",
     "Committed",
+    "ImageCheckReport",
     "current_fingerprint",
     "floor_cells",
+    "image_check_records",
+    "image_check_reports",
+    "image_check_row",
+    "image_checks_section",
     "preset_row",
     "preset_rows",
     "presets_section",

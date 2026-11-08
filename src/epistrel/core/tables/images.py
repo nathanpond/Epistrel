@@ -39,7 +39,11 @@ and ``period`` (the local date in ``deployment_time_zone`` when the record was m
 ``reserved`` sums ``requested`` over ``held`` records, ``used``, ``overage`` and
 ``extra_outputs`` sum over ``settled`` ones. ``limit_value`` is the limit seen at the last
 admission check (informational) and ``last_record_at`` the last record change touching the row.
-``image_jobs.status_detail`` (#262) is a ``cap_reached`` job's ``{scope, period}``.
+``image_jobs.status_detail`` (#262) is a ``cap_reached`` job's ``{scope, period}``, a
+``stale`` one's ``{cause, policy_ids, amendment_id}`` and a story job waiting on a paused
+story's ``{waiting_on, next_check_at}`` (#264). #264 adds ``wait_started_at`` (the first wait on
+a paused story, set once) and ``checked_policies`` (the story's image policy set,
+``[[policy_id, version], …]``, at the job's last prompt and output check).
 
 ``image_jobs.result`` (#260) holds what a successful job made beyond its ``asset_ids``: a catalog
 job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes.
@@ -201,6 +205,8 @@ image_jobs = Table(
     Column("safety_context", JSONB, nullable=True),
     Column("result", JSONB, nullable=True),
     Column("status_detail", JSONB, nullable=True),
+    Column("wait_started_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("checked_policies", JSONB, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STORY_CHECK, name="story"),

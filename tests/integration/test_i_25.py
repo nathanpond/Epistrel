@@ -25,6 +25,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import engine as engine_module
@@ -49,13 +50,19 @@ from epistrel.orchestrator.images.jobs import (
     ImageJobRequest,
     PreparedImageJob,
 )
+from epistrel.orchestrator.images.targets.story import AGE_PREDICATE_ID
 from epistrel.testing.images import (
+    PASS,
     ScriptedChecks,
     installed_checks,
     registered_target,
 )
 from tests import catalog_image_support as cs
+from tests import erasure_support as e
 from tests import image_prompt_support as ip
+from tests import story_image_generation_support as sg
+from tests import story_image_support as si
+from tests import story_revalidation_support as rv
 from tests.auth_support import auth_settings
 from tests.catalog_support import PRINCIPAL as CATALOG_PRINCIPAL
 from tests.image_job_support import (
@@ -86,7 +93,9 @@ from tests.image_support import (
 from tests.media_support import OPERATOR as MEDIA_OPERATOR
 from tests.media_support import set_media
 from tests.model_support import admin_client
-from tests.respond_support import body, new_story, played, respond_client
+from tests.projection_support import swap, truncate, untruncate
+from tests.respond_support import body, new_story, played, respond_client, until
+from tests.story_support import WRITE
 
 
 @pytest.fixture
@@ -903,3 +912,380 @@ async def test_i_25__m8_candidate_discard(image_settings: Settings, engine: Asyn
             public_card={"images": {"gallery": [{"candidate_id": ids[2]}]}},
         )
         assert sibling.status_code == 200, sibling.text
+
+
+# -- #264: story revalidation (FR-IMG-4; FR-ADMIN-9) ------------------------------------------
+
+
+async def _promoted(app: sg.GenerationApp, story: str, job_id: str) -> list[dict[str, Any]]:
+    found = [r for r in await sg.story_image_rows(app.lib.db, story) if r["job_id"] == job_id]
+    return found
+
+
+async def _ended_stale(
+    app: sg.GenerationApp, story: str, job_id: str, reason: str, **detail: Any
+) -> dict[str, Any]:
+    """The job ended ``stale`` with ``reason`` (and ``detail``): nothing attached, its staging
+    deleted, its reservation released or settled, an audit row naming the reason; the read
+    answers the reason and its detail."""
+    row = await rv.job(app.lib.db, job_id)
+    assert (row["status"], row["status_reason"]) == ("stale", reason), row
+    for key, value in detail.items():
+        assert (row["status_detail"] or {}).get(key) == value, row["status_detail"]
+    assert await _promoted(app, story, job_id) == []
+    assert rv.staging(app, job_id) == []
+    assert "held" not in await rv.reservations(app.lib.db, job_id)
+    audit = await rv.audit_reason(app.lib.db, job_id)
+    assert audit is not None, job_id
+    assert audit["reason"] == reason, audit
+    read = await app.client.get(f"/image-jobs/{job_id}", headers=HEADERS)
+    assert read.status_code == 200, read.text
+    assert read.json()["status_reason"] == reason
+    assert read.json()["asset_ids"] == []
+    return row
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4; FR-ADMIN-9")
+async def test_i_25__m8_story_races(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """While a story image is being made (its provider call stalled), the story changes under
+    it; at promotion the job revalidates inside the attaching transaction and attaches nothing:
+
+    - its turn truncated → ``stale``, ``target_inactive``, ``cause: truncated``; swapped away
+      → ``cause: swapped``; regenerated → ``cause: regenerated``, and no job is queued again
+      for the new variant (#265 queues its own);
+    - an amendment to a fact about a depicted character (the story predicate ``hair_colour``)
+      → ``stale``, ``amended``, naming the amendment;
+    - a tightening check started (the story paused under a stricter rating): the job waits,
+      ``checking`` with ``waiting_on: pause``, its staged bytes and reservation kept; once the
+      check ends it evaluates the new rating's policy, and is attached when the image passes
+      it, or ends ``stale`` with ``policy_changed`` naming it when it fails;
+    - a depicted subject erased → ``stale``, ``erased``;
+    - the story gone → ``target_gone`` (a story's deletion is refused while its image is being
+      made, 423 ``story_busy``, and removes its jobs with it: the job is pointed at a story that
+      no longer exists).
+
+    Every ending deletes the staged bytes, holds no reservation, attaches nothing and writes an
+    ``image_job_ended`` audit row with the reason.
+
+    Complement asserted for every race: the same job with no race promotes; an amendment to a
+    fact about an undepicted character, and an ``age`` amendment about the depicted one, leave
+    the image valid."""
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await rv.lite_scene(app)
+        # The complement: no race, the image is attached at its position.
+        quiet = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        assert (await quiet.finished())["image_job"] == "promoted"
+        assert len(await _promoted(app, story, quiet.job_id)) == 1
+
+        # Truncated while it is being made.
+        cut = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        assert await truncate(app.lib.db, story, 1) is not None
+        assert (await cut.finished())["image_job"] == "stale"
+        await _ended_stale(app, story, cut.job_id, "target_inactive", cause="truncated")
+
+        # Swapped away: turn 2 written again (variant 2), then the old variant swapped back.
+        await si.turn(app.client, story, ids)
+        swapped = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        assert (await rv.job(engine, swapped.job_id))["origin"]["variant"] == 2
+        assert await swap(app.lib.db, story) is not None
+        assert (await swapped.finished())["image_job"] == "stale"
+        await _ended_stale(app, story, swapped.job_id, "target_inactive", cause="swapped")
+
+        # Regenerated: a newer variant is active at the turn, and nothing queues itself again.
+        regenerated = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        jobs_before = (await sg.counts(engine, story))["image_jobs"]
+        again = await app.client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE)
+        assert again.status_code == 200, again.text
+        assert (await regenerated.finished())["image_job"] == "stale"
+        await _ended_stale(app, story, regenerated.job_id, "target_inactive", cause="regenerated")
+        assert (await sg.counts(engine, story))["image_jobs"] == jobs_before
+
+        # The complement after the races: the regenerated turn's own image promotes.
+        fresh = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        assert (await fresh.finished())["image_job"] == "promoted"
+
+        # Amendments made while it is being made.
+        jenni, marcus = ids["Jenni"], ids["Marcus"]
+        hair = await rv.story_predicate(engine, story, "hair_colour")
+        for subject, predicate, value, stales in (
+            (marcus, hair, "grey", False),  # an undepicted character's fact
+            (jenni, AGE_PREDICATE_ID, 31, False),  # the depicted one's true age
+            (jenni, hair, "red", True),  # a non-age fact of the depicted one
+        ):
+            amended = await rv.started(app, story, **rv.consumer(2, [jenni]))
+            amendment_id = await rv.amend_fact(engine, story, subject, predicate, value)
+            done = await amended.finished()
+            if stales:
+                assert done["image_job"] == "stale", done
+                await _ended_stale(app, story, amended.job_id, "amended", amendment_id=amendment_id)
+            else:
+                assert done["image_job"] == "promoted", (subject, predicate, done)
+
+        # A tightening check starts while it is being checked: it waits, then the new rating's
+        # policy judges it.
+        for outcome in ("promoted", "stale"):
+            await _tightening(app, engine, ids, outcome)
+
+        # A depicted subject erased while it is being made.
+        erased_story, erased_ids = await si.scene(app.client, 1)
+        erased = await rv.started(app, erased_story, **rv.consumer(1, [erased_ids["Jenni"]]))
+        await e.erase(app.client, "character", erased_ids["Jenni"], erased_story, confirm_all=True)
+        assert (await erased.finished())["image_job"] == "stale"
+        await _ended_stale(app, erased_story, erased.job_id, "erased")
+        kept = await rv.started(app, erased_story, **rv.consumer(1, [erased_ids["Marcus"]]))
+        assert (await kept.finished())["image_job"] == "promoted"
+
+        # The story gone: its deletion waits for the image being made, and would take the job
+        # with it, so the job is pointed at a story that no longer exists.
+        gone = await rv.started(app, story, **rv.consumer(2, [jenni]))
+        busy = await app.client.delete(f"/stories/{story}", headers=WRITE)
+        assert busy.status_code == 423, busy.text
+        assert busy.json()["error"]["details"]["reason"] == "job_running"
+        await rv.point_at_missing_story(engine, gone.job_id)
+        assert (await gone.finished())["image_job"] == "target_gone"
+        row = await rv.job(engine, gone.job_id)
+        assert row["status"] == "target_gone"
+        assert rv.staging(app, gone.job_id) == []
+        assert (await rv.audit_reason(engine, gone.job_id) or {}).get("outcome") == "target_gone"
+
+
+async def _tightening(
+    app: sg.GenerationApp, engine: AsyncEngine, ids: dict[str, str], outcome: str
+) -> None:
+    """A story paused by a tightening while its image is checked: the job waits through the
+    pause, then is attached (``promoted``) or ends ``stale`` (``policy_changed``) on the new
+    rating's policy."""
+    story, cast = await si.scene(app.client, 1)
+    rating_id, policy = await rv.image_policy_rating(app.lib, engine)
+    release = asyncio.Event()
+    app.checks.stall, app.checks.stalled = release, asyncio.Event()
+    app.checks.script = [PASS, PASS if outcome == "promoted" else policy.id]
+    job_id = await sg.queued(app, story, **rv.consumer(1, [cast["Jenni"]]))
+    app.generator.script.append(Outputs(size=sg.next_size()))
+    task = rv.run_in_background(app, job_id)
+    await until(app.checks.stalled.is_set, "the output check")
+    await rv.tightened(engine, story, rating_id)
+    release.set()
+    waited = await asyncio.wait_for(task, 60)
+    app.checks.stall = None
+    assert (waited["image_job"], waited["waiting_on"], waited["requeue_in"]) == (
+        "checking",
+        "pause",
+        30,
+    )
+    row = await rv.job(engine, job_id)
+    assert row["status"] == "checking"
+    assert row["status_detail"]["waiting_on"] == "pause"
+    assert row["wait_started_at"] is not None
+    assert len(rv.staging(app, job_id)) == 1
+    assert await rv.reservations(engine, job_id) == ["settled"]
+    read = (await app.client.get(f"/image-jobs/{job_id}", headers=HEADERS)).json()
+    assert (read["status"], read["waiting_on"]) == ("checking", "pause")
+    assert read["next_check_at"] is not None
+    # Still paused: it waits again, with no check (no model call under a pause).
+    checked = len(app.checks.checked)
+    assert (await rv.rerun(app, job_id))["waiting_on"] == "pause"
+    assert len(app.checks.checked) == checked
+    assert (await rv.job(engine, job_id))["wait_started_at"] == row["wait_started_at"]
+    # The check ends: the new rating's policy is in force, and the image is judged by it.
+    await rv.set_status(engine, story, "active")
+    done = await rv.rerun(app, job_id)
+    assert len(app.checks.checked) == checked + 1
+    checked_policies = {p[0] for p in (await rv.job(engine, job_id))["checked_policies"]}
+    assert policy.id in checked_policies
+    if outcome == "promoted":
+        assert done["image_job"] == "promoted", done
+        assert len(await _promoted(app, story, job_id)) == 1
+        assert (
+            "waiting_on"
+            not in (await app.client.get(f"/image-jobs/{job_id}", headers=HEADERS)).json()
+        )
+    else:
+        assert done["image_job"] == "stale", done
+        row = await _ended_stale(app, story, job_id, "policy_changed", policy_ids=[policy.id])
+        assert row["attempts"] == 1, "no regeneration"
+    app.checks.script = [PASS]
+
+
+@pytest.mark.integration
+async def test_revalidate_unrelated_amendment(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """An amendment (#221) correcting a beat of another turn leaves the image of turn 2 valid:
+    it promotes.
+
+    Complement asserted: the same correction to a beat of turn 2 itself ends the job ``stale``
+    with ``amended``."""
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await rv.lite_scene(app)
+        for turn, stales in ((1, False), (2, True)):
+            running = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+            event_id = await rv.reply_event(engine, story, turn)
+            amendment_id = await rv.amend_record(engine, story, "events", event_id)
+            done = await running.finished()
+            if stales:
+                assert done["image_job"] == "stale", done
+                await _ended_stale(app, story, running.job_id, "amended", amendment_id=amendment_id)
+            else:
+                assert done["image_job"] == "promoted", done
+
+
+@pytest.mark.integration
+async def test_pause_max_wait(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A job waiting on its paused story ends ``stale`` with ``paused_too_long`` once it has
+    waited longer than ``image_pause_max_wait_s`` (default 24 h) in total, counted from its
+    first wait. Each wait, run through the ``image_job`` handler, puts its ``jobs`` row back due
+    in ``image_pause_recheck_s`` (``requeue_in``).
+
+    Complement asserted: just inside the bound it still waits, keeping its staged bytes; and a
+    story whose image job waits on it can be deleted (the job holds no lease), its job going
+    with it."""
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await rv.lite_scene(app)
+        running = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        await rv.set_status(engine, story, "paused")
+        assert (await running.finished())["waiting_on"] == "pause"
+        started_at = (await rv.job(engine, running.job_id))["wait_started_at"]
+        # Through the ``image_job`` handler, a wait is #70's ``requeue_in``, not a failure.
+        output = await rv.handled(app, running.job_id)
+        assert output.requeue_in == 30
+        assert output.result == {"image_job": "checking", "waiting_on": "pause"}
+        with clock.frozen_at(started_at + timedelta(seconds=86_400)):
+            assert (await rv.rerun(app, running.job_id))["waiting_on"] == "pause"
+        assert len(rv.staging(app, running.job_id)) == 1
+        with clock.frozen_at(started_at + timedelta(seconds=86_401)):
+            assert (await rv.rerun(app, running.job_id))["image_job"] == "stale"
+        await _ended_stale(app, story, running.job_id, "paused_too_long")
+
+        waiting_story, cast = await si.scene(app.client, 1)
+        waiting = await rv.started(app, waiting_story, **rv.consumer(1, [cast["Jenni"]]))
+        await rv.set_status(engine, waiting_story, "paused")
+        assert (await waiting.finished())["waiting_on"] == "pause"
+        deleted = await app.client.delete(f"/stories/{waiting_story}", headers=WRITE)
+        assert deleted.status_code in (200, 204), deleted.text
+        assert (await sg.counts(engine, waiting_story))["image_jobs"] == 0
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_revalidate_point_in_time(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Revalidation is point in time: a turn truncated and untruncated while its image is being
+    made is active at promotion, and the image is attached.
+
+    Complement asserted: truncated alone, it ends ``stale`` with ``target_inactive``
+    (``truncated``), and an untruncate afterwards never revives the ended job."""
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await rv.lite_scene(app, 3)
+        back = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        assert await truncate(app.lib.db, story, 1) is not None
+        assert await untruncate(app.lib.db, story) is not None
+        assert (await back.finished())["image_job"] == "promoted"
+        assert len(await _promoted(app, story, back.job_id)) == 1
+
+        cut = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        assert await truncate(app.lib.db, story, 1) is not None
+        assert (await cut.finished())["image_job"] == "stale"
+        await _ended_stale(app, story, cut.job_id, "target_inactive", cause="truncated")
+        assert await untruncate(app.lib.db, story) is not None
+        assert (await rv.rerun(app, cut.job_id))["image_job"] == "stale"
+        assert await _promoted(app, story, cut.job_id) == []
+
+
+class _LockSpy(ScriptedChecks):
+    """Scripted checks that record, at each output check, whether the story's row could be
+    locked by another transaction (``FOR UPDATE NOWAIT``): no check runs under its lock."""
+
+    def __init__(self, engine: AsyncEngine, story_id: str, script: list[str]) -> None:
+        super().__init__(script, fail_closed=False)
+        self.engine, self.story_id = engine, story_id
+        self.unlocked: list[bool] = []
+        self.before_check: list[Any] = []
+
+    async def check_output(
+        self, runtime: image_jobs.ImageRuntime, job: Any, output: image_jobs.StagedOutput
+    ) -> image_jobs.OutputVerdict:
+        async with self.engine.connect() as conn:
+            try:
+                await conn.execute(
+                    text("SELECT id FROM stories WHERE id = :s FOR UPDATE NOWAIT"),
+                    {"s": self.story_id},
+                )
+                self.unlocked.append(True)
+            except DBAPIError:
+                self.unlocked.append(False)
+            await conn.rollback()
+        for hook in self.before_check:
+            await hook()
+        self.before_check.clear()
+        return await super().check_output(runtime, job, output)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_missing_policy_outside_lock(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A policy that comes into force while the image is checked has no result for it at
+    promotion: the revalidation answers ``needs_evaluation``, the transaction ends without
+    attaching, and the policy is evaluated with no lock on the story's row (the spy's
+    ``FOR UPDATE NOWAIT`` succeeds at every check); then the job is attached when the image
+    passes it.
+
+    Complement asserted: when the image fails the new policy, the job ends ``stale`` with
+    ``policy_changed`` naming it, and is not generated again."""
+    async with sg.generation_app(image_settings, engine) as app:
+        for outcome in ("promoted", "stale"):
+            story, ids = await si.scene(app.client, 1)
+            await app.configure()
+            rating_id, policy = await rv.image_policy_rating(app.lib, engine)
+            spy = _LockSpy(engine, story, [PASS, PASS if outcome == "promoted" else policy.id])
+            spy.before_check.append(lambda s=story, r=rating_id: rv.rated(engine, s, r))
+            with installed_checks(spy):
+                job_id = await sg.queued(app, story, **rv.consumer(1, [ids["Jenni"]]))
+                done = await sg.run(app, job_id)
+            assert spy.unlocked == [True, True], spy.unlocked
+            checked = {p[0] for p in (await rv.job(engine, job_id))["checked_policies"]}
+            assert policy.id in checked
+            assert done["image_job"] == outcome, done
+            if outcome == "stale":
+                row = await _ended_stale(
+                    app, story, job_id, "policy_changed", policy_ids=[policy.id]
+                )
+                assert row["attempts"] == 1
+            else:
+                assert len(await _promoted(app, story, job_id)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-3,4")
+async def test_i_25__m8_wait_exempt_from_staging_sweep(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A job waiting on its paused story past ``staging_ttl`` keeps its staged bytes through the
+    staging sweep (its job is not terminal), and is attached from them once the story resumes.
+
+    Complement asserted: a terminal job's leftover staging prefix of the same age is swept."""
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await rv.lite_scene(app)
+        store = app.lib.image_runtime().media
+        leftover = await rv.ended_leftover(app, story, ids)
+        running = await rv.started(app, story, **rv.consumer(2, [ids["Jenni"]]))
+        await rv.set_status(engine, story, "paused")
+        assert (await running.finished())["waiting_on"] == "pause"
+        ttl = 600
+        backdate(store.image_staging_dir(running.job_id), ttl + 60)
+        backdate(store.image_staging_dir(leftover), ttl + 60)
+        swept = await image_jobs.sweep_staging(engine, store, ttl_s=ttl)
+        assert swept["skipped_running"] >= 1
+        assert len(rv.staging(app, running.job_id)) == 1
+        assert rv.staging(app, leftover) == []
+        await rv.set_status(engine, story, "active")
+        assert (await rv.rerun(app, running.job_id))["image_job"] == "promoted"
+        assert len(await _promoted(app, story, running.job_id)) == 1

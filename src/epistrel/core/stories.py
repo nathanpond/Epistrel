@@ -1576,12 +1576,17 @@ async def _refuse_running_job(conn: AsyncConnection, story_id: str) -> None:
         .limit(1)
     )
     if running is None:
-        # #262: an image job of the story generating or checking is running work too.
+        # #262: an image job of the story generating or checking is running work too; #264:
+        # one waiting on the paused story is not (it holds no lease, and goes with the story).
         running = await conn.scalar(
             select(image_jobs.c.id)
             .where(
                 image_jobs.c.story_id == story_id,
                 image_jobs.c.status.in_(("generating", "checking")),
+                or_(
+                    image_jobs.c.status_detail.is_(None),
+                    image_jobs.c.status_detail["waiting_on"].astext.is_(None),
+                ),
             )
             .limit(1)
         )

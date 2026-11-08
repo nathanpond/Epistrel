@@ -82,7 +82,22 @@ class ImageJob:
     """#260: what a successful job made beyond ``asset_ids`` (a catalog job's
     ``{candidate_ids}``)."""
     status_detail: dict[str, Any] | None = None
-    """#262: a ``cap_reached`` job's ``{scope, period}``."""
+    """#262: a ``cap_reached`` job's ``{scope, period}``; #264: a ``stale`` job's ``{cause,
+    policy_ids, amendment_id}``, a waiting one's ``{waiting_on, next_check_at}``."""
+    wait_started_at: datetime | None = None
+    """#264: when the job first waited on a paused story (set once)."""
+    checked_policies: list[list[Any]] | None = None
+    """#264: the story's image policy set (``[[policy_id, version], …]``) at the job's last
+    prompt and output check; ``None`` before the first."""
+
+    @property
+    def waiting(self) -> bool:
+        """Whether the job is waiting on a paused story (#264)."""
+        return (
+            self.status is ImageJobStatus.CHECKING
+            and self.status_detail is not None
+            and self.status_detail.get("waiting_on") is not None
+        )
 
     @property
     def terminal(self) -> bool:
@@ -140,6 +155,10 @@ def _job(row: Any) -> ImageJob:
         safety_context=None if m["safety_context"] is None else dict(m["safety_context"]),
         result=None if m["result"] is None else dict(m["result"]),
         status_detail=None if m["status_detail"] is None else dict(m["status_detail"]),
+        wait_started_at=m["wait_started_at"],
+        checked_policies=None
+        if m["checked_policies"] is None
+        else [list(p) for p in m["checked_policies"]],
     )
 
 
@@ -314,6 +333,14 @@ async def next_attempt(conn: AsyncConnection, job_id: str, old_token: str) -> st
     return token
 
 
+async def update_job(conn: AsyncConnection, job_id: str, **values: Any) -> None:
+    """Write ``values`` on the job's row without moving its status (#264's safety context
+    refresh, checked policy set and wait), in ``conn``'s transaction."""
+    await conn.execute(
+        update(image_jobs).where(image_jobs.c.id == job_id).values(updated_at=clock.now(), **values)
+    )
+
+
 async def set_result(conn: AsyncConnection, job_id: str, result: Mapping[str, Any]) -> None:
     """Record what the job made (``image_jobs.result``; #260), in ``conn``'s transaction."""
     await conn.execute(
@@ -416,5 +443,6 @@ __all__ = [
     "reservations",
     "set_result",
     "set_status",
+    "update_job",
     "update_reservation",
 ]

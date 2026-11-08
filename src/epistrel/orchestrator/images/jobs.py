@@ -40,6 +40,19 @@ usable output (none returned, or none that decodes as an image) ends ``failed`` 
 bytes with #70's backoff, then ``failed``/``image_check_unavailable``. ``image_check`` unset
 while an image-output policy applies fails closed: ``failed``/``image_check_unconfigured``.
 
+**Revalidation** (#264). A target with ``refresh`` and an outcome-answering ``revalidate`` (the
+story target) is revalidated against its source: before its outputs are checked (a pause, a gone
+target or an erasure ends or defers the work before any model call) and inside the promotion's
+transaction, before the job row is locked (the target takes its own row first, #47's lock
+order). ``revalidate`` answers ``Ok``, ``Wait`` (the job stays ``checking`` with its staged
+bytes and reservation, ``status_detail {waiting_on, next_check_at}``, and its ``jobs`` row is
+due again then: ``requeue_in``), ``NeedsEvaluation`` (a policy in force has no result: the
+transaction ends, the prompt and output checks run again outside any lock and the promotion
+starts over, at most ``MAX_EVALUATIONS`` times before #70 backs off), ``Stale`` or ``Gone``.
+``refresh`` re-runs the prompt check with a fresh safety context and records the policy set it
+was checked under. An output that fails a check after it had passed is ``stale`` with
+``policy_changed``: no regeneration.
+
 **Endings.** ``failed``, ``cancelled``, ``stale``, ``target_gone`` and ``cap_reached`` delete
 the job's staging directory once their transaction commits (a failed delete is logged and left
 to ``image_staging_sweep``); so does a successful ending. Rejected outputs, fail-closed,
@@ -81,7 +94,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import psycopg
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock
@@ -110,6 +123,7 @@ from epistrel.core.tables.images import (
     image_jobs,
 )
 from epistrel.core.tables.media import CheckStatus, MediaSource, MediaState
+from epistrel.observability.metrics import count_revalidation
 from epistrel.orchestrator.images import errors as adapter_errors
 from epistrel.orchestrator.images.params import (
     ImageGenerationParams,
@@ -192,6 +206,17 @@ class TargetGone(Exception):
     """The job's target no longer exists (a catalog entry deleted, #260; a story, #263): raised
     by a target's ``revalidate`` (at claim and before each provider call) or its ``promote``,
     it ends the job ``target_gone`` with nothing promoted and its staging deleted."""
+
+
+class TargetStale(Exception):
+    """The job's source changed under it (#264): raised by a target's ``promote`` when the
+    placement fails in its transaction, it ends the job ``stale`` with ``reason`` and
+    ``detail``, nothing attached."""
+
+    def __init__(self, reason: str, detail: Mapping[str, Any] | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.detail = dict(detail or {})
 
 
 class ImageCheckUnavailable(Exception):
@@ -423,12 +448,91 @@ class ImageTarget(Protocol):
     async def result_ids(self, conn: AsyncConnection, job: ImageJob) -> tuple[str, list[str]]: ...
 
 
-async def revalidate(target: ImageTarget, conn: AsyncConnection, job: ImageJob) -> None:
+@dataclass(frozen=True, slots=True)
+class Ok:
+    """``revalidate``: the target still holds; promotion proceeds (#264)."""
+
+    @property
+    def outcome(self) -> str:
+        return "ok"
+
+
+@dataclass(frozen=True, slots=True)
+class Wait:
+    """``revalidate``: the target is paused; look again at ``next_check_at`` (``recheck_s``
+    from now), keeping the staged bytes and the reservation (#264)."""
+
+    next_check_at: datetime
+    recheck_s: int
+
+    @property
+    def outcome(self) -> str:
+        return "wait"
+
+
+@dataclass(frozen=True, slots=True)
+class NeedsEvaluation:
+    """``revalidate``: policies now in force have no result for the job (#264); they are
+    evaluated outside any lock, then revalidation starts over."""
+
+    policy_ids: tuple[str, ...]
+
+    @property
+    def outcome(self) -> str:
+        return "needs_evaluation"
+
+
+@dataclass(frozen=True, slots=True)
+class Stale:
+    """``revalidate``: the source changed (#264); the job ends ``stale`` with ``reason``
+    (``target_inactive``, ``amended``, ``erased``, ``policy_changed``, ``paused_too_long``) and
+    ``detail`` (``{cause, policy_ids, amendment_id}``, ids only)."""
+
+    reason: str
+    detail: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def outcome(self) -> str:
+        return "stale"
+
+
+@dataclass(frozen=True, slots=True)
+class Gone:
+    """``revalidate``: the target no longer exists; the job ends ``target_gone``."""
+
+    @property
+    def outcome(self) -> str:
+        return "target_gone"
+
+
+type Revalidation = Ok | Wait | NeedsEvaluation | Stale | Gone
+"""What a target's outcome-answering ``revalidate(conn, job)`` returns (#264)."""
+OK = Ok()
+MAX_EVALUATIONS = 3
+"""How many times one run re-evaluates policies that came into force during a promotion before
+it backs off (#70) and tries again later."""
+EARLY_STALE = frozenset({"erased", "paused_too_long"})
+"""The stale reasons acted on before the outputs are checked: no later state undoes them. The
+others are decided at promotion, where only the state then counts (FR-IMG-4)."""
+
+
+async def revalidate(target: ImageTarget, conn: AsyncConnection, job: ImageJob) -> Revalidation:
     """The target's optional ``revalidate(conn, job)`` (#260): raises ``TargetGone`` when the
-    target no longer exists. A target without one is never gone before promotion."""
+    target no longer exists (a catalog target raises it; a story target answers ``Gone``,
+    #264). A target without one is never gone before promotion: ``Ok``."""
     check = getattr(target, "revalidate", None)
-    if check is not None:
-        await check(conn, job)
+    if check is None:
+        return OK
+    found = await check(conn, job)
+    if isinstance(found, Gone):
+        raise TargetGone(f"job {job.id}")
+    return found if found is not None else OK
+
+
+def revalidates(target: ImageTarget) -> bool:
+    """Whether ``target`` revalidates against its source before checks and at promotion
+    (#264): it has ``refresh``, the story target."""
+    return getattr(target, "refresh", None) is not None
 
 
 class ImageChecks(Protocol):
@@ -653,6 +757,8 @@ async def insert_image_job(
             **request.params(),
             "caption": request.caption,
             "alt_text": request.alt_text,
+            # #264: the subjects the prompt check was given, so revalidation re-runs it as is.
+            "prompt_subjects": [s.model_dump(mode="json") for s in request.depicted_subjects],
             **prepared.extra_params,
         },
         principal=prepared.principal,
@@ -706,6 +812,11 @@ AUDITED_ENDINGS: frozenset[ImageJobStatus] = frozenset(
 )
 """Endings that write an ``image_job_ended`` audit row (a fail-closed ``failed`` does too)."""
 FAIL_CLOSED = "image_check_unconfigured"
+WAITING_ON_PAUSE = "pause"
+"""``status_detail.waiting_on`` of a story job waiting on its paused story (#264)."""
+REQUEUE_IN = "requeue_in"
+"""The run result's key asking #70 to run the job again in that many seconds (a wait, #264);
+the handler moves it to ``JobOutput.requeue_in``."""
 
 
 async def _delete_staging(media: BlobStore, job_id: str) -> None:
@@ -726,9 +837,11 @@ async def end_job(
     policy_ids: Sequence[str] = (),
     outcome: AttemptOutcome | None = None,
     asset_ids: Sequence[str] | None = None,
+    detail: Mapping[str, Any] | None = None,
 ) -> bool:
     """End the job ``status`` in one transaction (while it still carries ``token``, when
-    given): the reason, the policy results of a fail-closed ending, the current attempt's
+    given): the reason and its ``status_detail``, the policy results of a fail-closed ending, the
+    current attempt's
     outcome, every reservation it still holds released (#262), the target's ``on_terminal``,
     the audit row and the notification; then, once committed, its staging is deleted. ``False``
     when the job had already ended or was fenced."""
@@ -742,6 +855,7 @@ async def end_job(
             policy_ids=policy_ids,
             outcome=outcome,
             asset_ids=asset_ids,
+            detail=detail,
         )
     if not ended:
         return False
@@ -796,18 +910,21 @@ async def _end_in(
         assert ended is not None  # noqa: S101 - locked above
         await handler.on_terminal(conn, ended)
     if status in AUDITED_ENDINGS or reason == FAIL_CLOSED:
+        details: dict[str, Any] = {
+            "job_id": job_id,
+            "attempt_token": job.attempt_token,
+            "outcome": status.value,
+            "reason": reason,
+        }
+        if status is ImageJobStatus.STALE and detail:
+            details["detail"] = dict(detail)
         await audit.record(
             conn,
             AuditKind.IMAGE_JOB_ENDED,
             principal=SYSTEM_PRINCIPAL,
             story_id=job.story_id,
             policy_ids=list(policy_ids),
-            details={
-                "job_id": job_id,
-                "attempt_token": job.attempt_token,
-                "outcome": status.value,
-                "reason": reason,
-            },
+            details=details,
         )
     return True
 
@@ -960,6 +1077,9 @@ class ImageJobRunner:
         self.rt = runtime
         self.job_id = job_id
         self.failures = failures
+        self.settings = ImageJobSettings()
+        self.evaluations = 0
+        """How many times this run re-evaluated policies at promotion (#264)."""
 
     @property
     def last_try(self) -> bool:
@@ -984,6 +1104,7 @@ class ImageJobRunner:
             await end_job(self.rt, job.id, ImageJobStatus.FAILED, reason="not_configured")
             return {"image_job": ImageJobStatus.FAILED.value}
         settings = await read_section(self.rt.db, ImageJobSettings)
+        self.settings = settings
         config = await self.rt.models.images.config()
         params = config.image_params or ImageGenerationParams()
         begun = await self._resume_or_begin(job)
@@ -1323,6 +1444,16 @@ class ImageJobRunner:
         settings: ImageJobSettings,
         handle: ImageGeneratorHandle,
     ) -> dict[str, Any] | _Attempt:
+        rechecking = False
+        if revalidates(target):
+            early = await self._before_checks(job, attempt, target)
+            if early is not None:
+                return early
+            fresh = await self.read()
+            if fresh is None or fresh.terminal or fresh.attempt_token != attempt.token:
+                return {"image_job": None if fresh is None else "fenced"}
+            job = fresh
+            rechecking = _passed_before(job, attempt.token)
         checks = image_checks()
         passing: list[tuple[StagedOutput, OutputVerdict]] = []
         results: list[dict[str, Any]] = []
@@ -1372,9 +1503,99 @@ class ImageJobRunner:
             )
         async with self.rt.db.begin() as conn:
             await store.append_policy_results(conn, job.id, results)
+        if rechecking and rejected:
+            # #264: an output that had passed fails the policies in force now: the source
+            # changed, so the job ends ``stale`` and nothing is generated again.
+            return await self._stale(
+                job, attempt, Stale("policy_changed", {"policy_ids": list(rejected)})
+            )
         if passing:
             return await self._promote(job, attempt, target, passing, handle)
         return await self._retry_or_fail(job, attempt, settings, rejected)
+
+    # -- revalidation (#264) ----------------------------------------------------------------
+
+    async def _before_checks(
+        self, job: ImageJob, attempt: _Attempt, target: ImageTarget
+    ) -> dict[str, Any] | None:
+        """Before a revalidating target's outputs are checked: its revalidation (a gone target,
+        a pause or a stale ending no later state undoes ends or defers the work before any
+        model call), then its ``refresh`` (the prompt check again, a fresh safety context and
+        the policy set it ran under). The run's result when it stops here, else ``None``."""
+        waited: dict[str, Any] | None = None
+        async with self.rt.db.begin() as conn:
+            try:
+                found = await revalidate(target, conn, job)
+            except TargetGone:
+                found = Gone()
+            if isinstance(found, Wait):
+                waited = await self._wait_in(conn, job, attempt.token, found)
+            elif job.waiting:
+                await store.update_job(conn, job.id, status_detail=None)  # the pause is over
+        if isinstance(found, Gone):
+            await end_job(
+                self.rt,
+                job.id,
+                ImageJobStatus.TARGET_GONE,
+                token=attempt.token,
+                outcome=AttemptOutcome.DISCARDED,
+            )
+            return {"image_job": ImageJobStatus.TARGET_GONE.value}
+        if waited is not None:
+            return waited
+        if isinstance(found, Stale) and found.reason in EARLY_STALE:
+            return await self._stale(job, attempt, found)
+        refresh = getattr(target, "refresh")  # noqa: B009 - an optional seam (``revalidates``)
+        try:
+            stale = await refresh(self.rt, job)
+        except Exception as exc:
+            return await self._check_unavailable(job, attempt, exc)
+        if stale is not None:
+            return await self._stale(job, attempt, stale)
+        return None
+
+    async def _wait_in(
+        self, conn: AsyncConnection, job: ImageJob, token: str, wait: Wait
+    ) -> dict[str, Any]:
+        """Defer the job in ``conn``'s transaction (``Wait``): ``checking`` with ``status_detail
+        {waiting_on: pause, next_check_at}``, its first wait's time kept, its staged bytes and
+        reservation untouched; the run's result asks #70 to run it again in ``recheck_s``."""
+        moved = await store.set_status(
+            conn,
+            job.id,
+            ImageJobStatus.CHECKING,
+            token=token,
+            status_detail={
+                "waiting_on": WAITING_ON_PAUSE,
+                "next_check_at": wait.next_check_at.isoformat(),
+            },
+            wait_started_at=func.coalesce(image_jobs.c.wait_started_at, clock.now()),
+        )
+        if not moved:
+            return {"image_job": "fenced"}
+        logger.info("image job %s waits on its paused story (%d s)", job.id, wait.recheck_s)
+        return {
+            "image_job": ImageJobStatus.CHECKING.value,
+            "waiting_on": WAITING_ON_PAUSE,
+            REQUEUE_IN: wait.recheck_s,
+        }
+
+    async def _stale(self, job: ImageJob, attempt: _Attempt, stale: Stale) -> dict[str, Any]:
+        """End the job ``stale`` (its reason and detail, staged bytes deleted, reservations
+        released, an audit row): nothing is attached."""
+        ended = await end_job(
+            self.rt,
+            job.id,
+            ImageJobStatus.STALE,
+            reason=stale.reason,
+            token=attempt.token,
+            policy_ids=list(stale.detail.get("policy_ids") or ()),
+            outcome=AttemptOutcome.DISCARDED,
+            detail=stale.detail,
+        )
+        if not ended:
+            return {"image_job": "fenced"}
+        return {"image_job": ImageJobStatus.STALE.value, "reason": stale.reason}
 
     async def _check_unavailable(
         self, job: ImageJob, attempt: _Attempt, exc: Exception
@@ -1490,7 +1711,12 @@ class ImageJobRunner:
             )
         asset_ids: list[str] = []
         try:
-            fenced, asset_ids = await self._promote_in_transaction(job, attempt, target, promotable)
+            fenced, asset_ids, outcome = await self._promote_in_transaction(
+                job, attempt, target, promotable
+            )
+        except TargetStale as exc:
+            # Nothing was attached (the transaction rolled back): the placement failed.
+            return await self._stale(job, attempt, Stale(exc.reason, exc.detail))
         except TargetGone:
             # Nothing was promoted (the transaction rolled back); the blobs already copied to
             # their keys are left to the media sweep's orphan step.
@@ -1506,6 +1732,33 @@ class ImageJobRunner:
             logger.info("image job %s: promotion refused, the attempt was fenced", job.id)
             await asyncio.to_thread(self._remove_attempt, job.id, attempt.token)
             return {"image_job": "fenced"}
+        if isinstance(outcome, Wait):
+            return {
+                "image_job": ImageJobStatus.CHECKING.value,
+                "waiting_on": WAITING_ON_PAUSE,
+                REQUEUE_IN: outcome.recheck_s,
+            }
+        if isinstance(outcome, Stale):
+            await _delete_staging(self.rt.media, job.id)
+            logger.info("image job %s ended stale (%s)", job.id, outcome.reason)
+            return {"image_job": ImageJobStatus.STALE.value, "reason": outcome.reason}
+        if isinstance(outcome, NeedsEvaluation):
+            self.evaluations += 1
+            if self.evaluations > MAX_EVALUATIONS:
+                raise ImageJobRetry("needs_evaluation")
+            logger.info(
+                "image job %s: %d policy(ies) to evaluate before promotion",
+                job.id,
+                len(outcome.policy_ids),
+            )
+            attempt.outputs = [output for output, _ in passing]
+            current = await self.read()
+            if current is None or current.terminal or current.attempt_token != attempt.token:
+                return {"image_job": "fenced"}
+            ended = await self._check_and_promote(current, attempt, target, self.settings, handle)
+            if isinstance(ended, _Attempt):  # a story job never retries a passed output
+                raise ImageJobRetry("needs_evaluation")
+            return ended
         await _delete_staging(self.rt.media, job.id)
         logger.info("image job %s promoted %d output(s)", job.id, len(asset_ids))
         return {"image_job": target.success_status.value, "assets": len(asset_ids)}
@@ -1516,11 +1769,19 @@ class ImageJobRunner:
         attempt: _Attempt,
         target: ImageTarget,
         promotable: Sequence[PromotableOutput],
-    ) -> tuple[bool, list[str]]:
-        """The promotion's one transaction: ``(fenced, asset_ids)``. ``TargetGone`` from the
-        target's ``promote`` rolls it back."""
+    ) -> tuple[bool, list[str], Revalidation]:
+        """The promotion's one transaction: ``(fenced, asset_ids, revalidation)``. A
+        revalidating target is revalidated first (it locks its own row before the job's, #47's
+        order): ``Gone`` raises ``TargetGone``, ``Wait`` defers the job and ``Stale`` ends it in
+        this transaction, ``NeedsEvaluation`` attaches nothing. ``TargetGone`` or
+        ``TargetStale`` from the target's ``promote`` rolls it back."""
         asset_ids: list[str] = []
         async with self.rt.db.begin() as conn:
+            outcome: Revalidation = OK
+            check = getattr(target, "revalidate", None) if revalidates(target) else None
+            if check is not None:
+                outcome = await check(conn, job)
+                count_revalidation(outcome.outcome)
             current = await store.read_job(conn, job.id, lock=True)
             if (
                 current is None
@@ -1529,6 +1790,25 @@ class ImageJobRunner:
                 or current.status is not ImageJobStatus.CHECKING
             ):
                 fenced = True
+            elif isinstance(outcome, Gone):
+                raise TargetGone(f"job {job.id}")
+            elif isinstance(outcome, Wait):
+                fenced = (await self._wait_in(conn, current, attempt.token, outcome)).get(
+                    "image_job"
+                ) == "fenced"
+            elif isinstance(outcome, Stale):
+                fenced = not await _end_in(
+                    conn,
+                    job.id,
+                    ImageJobStatus.STALE,
+                    reason=outcome.reason,
+                    token=attempt.token,
+                    policy_ids=list(outcome.detail.get("policy_ids") or ()),
+                    outcome=AttemptOutcome.DISCARDED,
+                    detail=outcome.detail,
+                )
+            elif isinstance(outcome, NeedsEvaluation):
+                fenced = False
             else:
                 fenced = False
                 for ready in promotable:
@@ -1541,6 +1821,7 @@ class ImageJobRunner:
                     token=attempt.token,
                     asset_ids=asset_ids,
                     status_reason=None,
+                    status_detail=None,
                 )
                 await store.update_reservation(
                     conn, job.id, attempt.token, outcome=AttemptOutcome.PROMOTED.value
@@ -1550,7 +1831,15 @@ class ImageJobRunner:
                 assert ended is not None  # noqa: S101 - locked above
                 await target.on_terminal(conn, ended)
                 crash.hit("images.promote.before_commit")
-        return fenced, asset_ids
+        return fenced, asset_ids, outcome
+
+
+def _passed_before(job: ImageJob, token: str) -> bool:
+    """Whether an output of the attempt ``token`` has already passed its checks (#264: a
+    re-check that fails it is ``stale``, never a regeneration)."""
+    return any(
+        r.get("attempt_token") == token and r.get("result") == "pass" for r in job.policy_results
+    )
 
 
 async def run_image_job(runtime: ImageRuntime, job_id: str, failures: int) -> dict[str, Any]:
@@ -1625,6 +1914,10 @@ class ImageJobView:
     policy_ids: tuple[str, ...] | None = None
     replayed: bool = False
     status_detail: dict[str, Any] | None = None
+    waiting_on: str | None = None
+    """#264: ``pause`` while a story job waits on its paused story (status ``checking``)."""
+    next_check_at: datetime | None = None
+    """#264: when a waiting job revalidates next."""
 
 
 def _default_result(job: ImageJob) -> tuple[str, list[str]]:
@@ -1645,6 +1938,13 @@ async def read_view(conn: AsyncConnection, job_id: str) -> ImageJobView:
     if job.status not in (ImageJobStatus.PROMOTED, ImageJobStatus.CANDIDATES_READY):
         ids = []
     policy_ids = job.policy_ids if job.status is ImageJobStatus.FAILED else []
+    detail = job.status_detail if job.status in DETAILED_ENDINGS else None
+    waiting_on = next_check_at = None
+    if job.waiting:
+        assert job.status_detail is not None  # noqa: S101 - waiting
+        waiting_on = str(job.status_detail["waiting_on"])
+        found = job.status_detail.get("next_check_at")
+        next_check_at = None if found is None else datetime.fromisoformat(str(found))
     return ImageJobView(
         job_id=job.id,
         kind=job.kind.value,
@@ -1656,10 +1956,16 @@ async def read_view(conn: AsyncConnection, job_id: str) -> ImageJobView:
         created_at=job.created_at,
         updated_at=job.updated_at,
         policy_ids=tuple(policy_ids) if policy_ids else None,
-        status_detail=job.status_detail if job.status is ImageJobStatus.CAP_REACHED else None,
+        status_detail=detail,
+        waiting_on=waiting_on,
+        next_check_at=next_check_at,
     )
 
 
+DETAILED_ENDINGS: frozenset[ImageJobStatus] = frozenset(
+    {ImageJobStatus.CAP_REACHED, ImageJobStatus.STALE}
+)
+"""Endings whose ``status_detail`` a read answers: ``cap_reached`` (#262), ``stale`` (#264)."""
 STATUSES: frozenset[str] = frozenset(s.value for s in ImageJobStatus)
 
 
@@ -1855,10 +2161,14 @@ __all__ = [
     "IMAGE_JOB_CODEC",
     "IMAGE_JOB_KIND",
     "JOB_LOCATION",
+    "MAX_EVALUATIONS",
     "MAX_WAITERS",
     "PRE_COMMIT_HOOKS",
+    "REQUEUE_IN",
+    "WAITING_ON_PAUSE",
     "DepictedSubject",
     "FailClosedChecks",
+    "Gone",
     "ImageCheckRequired",
     "ImageCheckUnavailable",
     "ImageChecks",
@@ -1870,14 +2180,20 @@ __all__ = [
     "ImageJobWaiters",
     "ImageRuntime",
     "ImageTarget",
+    "NeedsEvaluation",
+    "Ok",
     "OutputVerdict",
     "PolicyVerdict",
     "PreparedImageJob",
     "PromotableOutput",
     "PromptCheck",
+    "Revalidation",
     "StagedOutput",
+    "Stale",
     "TargetGone",
+    "TargetStale",
     "TooManyWaiters",
+    "Wait",
     "bind",
     "bound",
     "cancel_job",
@@ -1896,6 +2212,7 @@ __all__ = [
     "require_generation",
     "require_image_checker",
     "revalidate",
+    "revalidates",
     "run_image_job",
     "set_image_checks",
     "sweep_staging",

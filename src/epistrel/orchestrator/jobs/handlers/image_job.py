@@ -5,8 +5,10 @@
 process's ``Engine.start_workers`` binds (``images.jobs.bind``): outside any turn, its own
 transitions committed as it goes, so it records no operation. A retryable provider error or an
 unavailable checker raises ``ImageJobRetry`` and #70 backs off; a process with no runtime bound
-fails the attempt the same way. A worker process runs at most ``image_worker_concurrency`` of
-them at once (``WorkerConfig.kind_caps``).
+fails the attempt the same way. A story job waiting on its paused story (#264) goes back to
+``queued``, due again in its recheck interval (``JobOutput.requeue_in``), which is no failure.
+A worker process runs at most ``image_worker_concurrency`` of them at once
+(``WorkerConfig.kind_caps``).
 
 ``image_staging_sweep`` (every 10 minutes, ``register_recurring``, #71) deletes the private
 staging directories a crashed job left: older than ``staging_ttl`` and of a job that is terminal
@@ -50,7 +52,9 @@ async def _run(ctx: JobContext) -> JobOutput:
         raise NoImageRuntime("no image runtime is bound in this process")
     assert isinstance(ctx.payload, ImageJobPayload)  # noqa: S101 - the handler's payload model
     result = await image_jobs.run_image_job(runtime, ctx.payload.image_job_id, ctx.job.failures)
-    return JobOutput(result=result)
+    # #264: a story job waiting on its paused story is due again in ``requeue_in`` seconds.
+    requeue_in = result.pop(image_jobs.REQUEUE_IN, None)
+    return JobOutput(result=result, requeue_in=None if requeue_in is None else float(requeue_in))
 
 
 async def _sweep(ctx: JobContext) -> JobOutput:

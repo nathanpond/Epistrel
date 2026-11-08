@@ -57,6 +57,9 @@ The registry holds:
 - ``epistrel_image_counter_drift_total{scope}`` (#262): per ``image_counter_reconcile`` run, one
   per image limit counter whose stored sums differ from its reservation records' (``deployment``
   or ``entry``) and one per ``held`` record whose job is terminal or missing (``stuck_held``).
+- ``epistrel_image_revalidation_total{outcome}`` (#264): each story image job's revalidation
+  inside its attaching transaction, by outcome (``ok``, ``wait``, ``needs_evaluation``,
+  ``stale``, ``target_gone``).
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -332,6 +335,23 @@ IMAGE_COUNTER_DRIFT = Counter(
     "per reconcile run (#262).",
     ("scope",),
 )
+IMAGE_REVALIDATION = Counter(
+    "epistrel_image_revalidation",
+    "Story image jobs' revalidations at promotion, by outcome (ok, wait, needs_evaluation, "
+    "stale, target_gone; #264).",
+    ("outcome",),
+)
+IMAGE_REVALIDATION_OUTCOMES = frozenset({"ok", "wait", "needs_evaluation", "stale", "target_gone"})
+
+
+def count_revalidation(outcome: str) -> None:
+    """Count one story image revalidation (``epistrel_image_revalidation_total{outcome}``;
+    #264); an outcome outside the five is a programming error."""
+    if outcome not in IMAGE_REVALIDATION_OUTCOMES:
+        raise ValueError(f"unknown image revalidation outcome {outcome}")
+    IMAGE_REVALIDATION.labels(outcome=outcome).inc()
+
+
 _STEP_LABEL = re.compile(r"^[a-z][a-z_]{0,63}$")
 OTHER_STEP = "other"
 
@@ -524,6 +544,8 @@ __all__ = [
     "HOT_SCOPES",
     "HTTP_DURATION",
     "IMAGE_COUNTER_DRIFT",
+    "IMAGE_REVALIDATION",
+    "IMAGE_REVALIDATION_OUTCOMES",
     "LEDGER",
     "MINIMAL_COMMITS",
     "MULTI_TURNS",
@@ -548,6 +570,7 @@ __all__ = [
     "count_degradation",
     "count_perception_repair",
     "count_repair",
+    "count_revalidation",
     "render_metrics",
     "router",
     "step_label",

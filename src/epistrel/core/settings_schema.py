@@ -1054,6 +1054,14 @@ IMAGE_COUNTER_RECONCILE_TASK = "image_counter_reconcile"
 """The image limit counters' reconciler (recurring task and job kind; daily, #262)."""
 IMAGE_ACCOUNTING_RETENTION_TASK = "image_accounting_retention"
 """The image accounting retention (recurring task and job kind; daily, #262)."""
+DEFAULT_IMAGE_PAUSE_RECHECK_S = 30
+IMAGE_PAUSE_RECHECK_MIN_S = 5
+IMAGE_PAUSE_RECHECK_MAX_S = 3_600
+DEFAULT_IMAGE_PAUSE_MAX_WAIT_S = 86_400
+IMAGE_PAUSE_MAX_WAIT_MIN_S = 60
+IMAGE_PAUSE_MAX_WAIT_MAX_S = 604_800
+"""#264: how often a story image job waiting on a paused story revalidates, and how long in
+total it may wait (FR-IMG-4)."""
 
 
 class ImageJobSettings(BaseModel):
@@ -1111,6 +1119,22 @@ class ImageJobSettings(BaseModel):
     )
     """Days a closed period's limit counters and reservation records are kept once every record
     naming them is settled or released (FR-IMG-11; #262; default 90, 1 to 3650). Prospective."""
+    image_pause_recheck_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_PAUSE_RECHECK_S,
+        ge=IMAGE_PAUSE_RECHECK_MIN_S,
+        le=IMAGE_PAUSE_RECHECK_MAX_S,
+    )
+    """How often a story image job whose story is paused (a rating or reactivation check, a
+    backfill) revalidates while it waits, in seconds (FR-IMG-4; #264; default 30, 5 to 3600).
+    Prospective: the next wait uses it."""
+    image_pause_max_wait_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_PAUSE_MAX_WAIT_S,
+        ge=IMAGE_PAUSE_MAX_WAIT_MIN_S,
+        le=IMAGE_PAUSE_MAX_WAIT_MAX_S,
+    )
+    """How long in total a story image job may wait on a paused story, counted from its first
+    wait, before it ends ``stale`` with ``paused_too_long`` (FR-IMG-4; #264; default 86400, 60
+    to 604800). Prospective."""
 
     @field_validator("candidate_ttl")
     @classmethod

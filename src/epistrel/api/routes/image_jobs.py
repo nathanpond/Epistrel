@@ -33,7 +33,12 @@ STATUS_TEXT = (
     "`provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and "
     "null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` "
     "and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts "
-    "its provider attempts. A job that failed on a policy also answers `policy_ids`. Until an "
+    "its provider attempts. A job that failed on a policy also answers `policy_ids`. A story job "
+    "is revalidated against its story before its image is attached (FR-IMG-4): it ends "
+    "`target_gone` when the story was deleted, or `stale` when its source changed "
+    "(`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or "
+    "`paused_too_long`, with `status_detail`). While its story is paused it stays `checking` "
+    "with `waiting_on: pause` and `next_check_at`. Until an "
     "image has passed every check it has no media asset, URL or history entry: nothing a "
     "consumer can reach."
 )
@@ -61,8 +66,23 @@ class ImageJobBody(BaseModel):
         default=None,
         exclude_if=lambda v: v is None,
         description="A `cap_reached` job's `{scope, period}`: the limit scope (`deployment` or "
-        "`entry`) its retry could not reserve against and the local date (absent otherwise; "
-        "FR-IMG-11).",
+        "`entry`) its retry could not reserve against and the local date (FR-IMG-11). A "
+        "`stale` job's `{cause, policy_ids, amendment_id}`, as its reason has them: `cause` "
+        "`truncated`, `swapped`, `regenerated` or `advanced` for `target_inactive`, the "
+        "amendment for `amended`, the policies for `policy_changed` (FR-IMG-4). Absent "
+        "otherwise; never a name.",
+    )
+    waiting_on: Literal["pause"] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="`pause` while a `checking` story job waits on its paused story (a rating, "
+        "reactivation or backfill check): its staged image and reservation are kept, and it "
+        "revalidates at `next_check_at` (absent otherwise; FR-IMG-4).",
+    )
+    next_check_at: datetime | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="When a waiting job revalidates next (absent otherwise).",
     )
 
     @classmethod
@@ -80,6 +100,8 @@ class ImageJobBody(BaseModel):
             updated_at=view.updated_at,
             policy_ids=None if view.policy_ids is None else list(view.policy_ids),
             status_detail=view.status_detail,
+            waiting_on="pause" if view.waiting_on == "pause" else None,
+            next_check_at=view.next_check_at,
         )
 
 

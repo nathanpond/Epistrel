@@ -16230,6 +16230,19 @@
             "title": "Kind",
             "type": "string"
           },
+          "next_check_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When a waiting job revalidates next (absent otherwise).",
+            "title": "Next Check At"
+          },
           "policy_ids": {
             "anyOf": [
               {
@@ -16259,7 +16272,7 @@
                 "type": "null"
               }
             ],
-            "description": "A `cap_reached` job's `{scope, period}`: the limit scope (`deployment` or `entry`) its retry could not reserve against and the local date (absent otherwise; FR-IMG-11).",
+            "description": "A `cap_reached` job's `{scope, period}`: the limit scope (`deployment` or `entry`) its retry could not reserve against and the local date (FR-IMG-11). A `stale` job's `{cause, policy_ids, amendment_id}`, as its reason has them: `cause` `truncated`, `swapped`, `regenerated` or `advanced` for `target_inactive`, the amendment for `amended`, the policies for `policy_changed` (FR-IMG-4). Absent otherwise; never a name.",
             "title": "Status Detail"
           },
           "status_reason": {
@@ -16277,6 +16290,19 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "waiting_on": {
+            "anyOf": [
+              {
+                "const": "pause",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`pause` while a `checking` story job waits on its paused story (a rating, reactivation or backfill check): its staged image and reservation are kept, and it revalidates at `next_check_at` (absent otherwise; FR-IMG-4).",
+            "title": "Waiting On"
           }
         },
         "required": [
@@ -40517,6 +40543,20 @@
             "title": "Image Limit Entry Day",
             "type": "integer"
           },
+          "image_pause_max_wait_s": {
+            "default": 86400,
+            "maximum": 604800.0,
+            "minimum": 60.0,
+            "title": "Image Pause Max Wait S",
+            "type": "integer"
+          },
+          "image_pause_recheck_s": {
+            "default": 30,
+            "maximum": 3600.0,
+            "minimum": 5.0,
+            "title": "Image Pause Recheck S",
+            "type": "integer"
+          },
           "image_retry_budget": {
             "default": 2,
             "maximum": 5.0,
@@ -42145,6 +42185,28 @@
               }
             ],
             "title": "Image Limit Entry Day"
+          },
+          "image_pause_max_wait_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Pause Max Wait S"
+          },
+          "image_pause_recheck_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Pause Recheck S"
           },
           "image_retry_budget": {
             "anyOf": [
@@ -55917,6 +55979,8 @@
                           "image_accounting_retention_days",
                           "image_limit_deployment_day",
                           "image_limit_entry_day",
+                          "image_pause_max_wait_s",
+                          "image_pause_recheck_s",
                           "image_retry_budget",
                           "job_retention_days",
                           "listing_status_values",
@@ -75335,7 +75399,7 @@
     },
     "/image-jobs/{job_id}": {
       "delete": {
-        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
         "operationId": "cancel_image_job",
         "parameters": [
           {
@@ -75454,7 +75518,7 @@
         "x-epistrel-mutating": false
       },
       "get": {
-        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
         "operationId": "get_image_job",
         "parameters": [
           {

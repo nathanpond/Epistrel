@@ -206,6 +206,8 @@ class SettingsPatch(BaseModel):
     image_limit_entry_day: StrictInt | None = None
     deployment_time_zone: str | None = None
     image_accounting_retention_days: StrictInt | None = None
+    image_pause_recheck_s: StrictInt | None = None
+    image_pause_max_wait_s: StrictInt | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None

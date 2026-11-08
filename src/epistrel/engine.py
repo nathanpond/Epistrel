@@ -426,6 +426,14 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "import_certification": ResultCodec.of(
         certification.CertificationImported, revision_field=_CONFIG
     ),
+    "record_image_check_certification": ResultCodec.of(
+        certification.ImageCheckRecorded,
+        status=lambda found: 201 if found.stored else 200,
+        revision_field=_CONFIG,
+    ),
+    "invalidate_image_check_certification": ResultCodec.of(
+        certification.ImageCheckInvalidated, revision_field=_CONFIG
+    ),
     "invalidate_certification": ResultCodec.of(
         certification.CertificationInvalidated, revision_field=_CONFIG
     ),
@@ -707,10 +715,13 @@ def library_only[F: Callable[..., Any]](reason: str) -> Callable[[F], F]:
     return mark
 
 
-SHARED_ROUTES: Mapping[str, str] = {"request_story_image": "upload_story_image"}
+SHARED_ROUTES: Mapping[str, str] = {
+    "request_story_image": "upload_story_image",
+    "list_image_check_certifications": "list_certifications",
+}
 """Engine operations a route of another operation serves, told apart by the body (#263: ``POST
-/stories/{id}/images`` takes a JSON generation request or a multipart upload): operation →
-the route's ``operation_id``."""
+/stories/{id}/images`` takes a JSON generation request or a multipart upload) or the query
+(#270: ``GET /certifications?subject=image_check``): operation → the route's ``operation_id``."""
 
 
 def operations(engine_class: type[Engine] | None = None) -> list[str]:
@@ -792,6 +803,8 @@ it never stops the start."""
 
 async def _load_certifications(conn: AsyncConnection) -> None:
     await certification.load_committed(conn)
+    # #270: the committed image-checker records (``seeds/certifications/image-check/``).
+    await certification.load_committed_image_checks(conn)
 
 
 LITE_NO_RECONCILIATION = "lite_no_reconciliation"
@@ -7122,6 +7135,78 @@ class Engine:
             run,
             material={"certification_id": certification_id, **request.model_dump()},
         )
+
+    async def record_image_check_certification(
+        self, ctx: RequestContext, request: certification.ImageCheckCertificationRequest
+    ) -> certification.ImageCheckRecorded:
+        """Record an image checker's certification for one policy (NFR-QUAL-12, FR-PROF-15;
+        #270, ADR-182): an E-11 report's row that passed both floors, or for the
+        ``external_evidence_only`` minors policy only, an external attestation. ``stored`` is
+        false when the same evidence was recorded before. 422 ``invalid_evidence``,
+        ``attestation_not_allowed`` or ``eval_run_not_allowed``, and nothing is written."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.ImageCheckRecorded:
+            async with self.db.begin() as conn:
+                found, stored = await certification.record_image_check(
+                    conn, request, principal=principal
+                )
+                revision = await profiles.config_revision(conn)
+            return certification.ImageCheckRecorded(found, stored, revision)
+
+        return await self._keyed(
+            ctx,
+            "record_image_check_certification",
+            run,
+            material={"request": request.model_dump(mode="json")},
+        )
+
+    async def invalidate_image_check_certification(
+        self,
+        ctx: RequestContext,
+        certification_id: str,
+        request: certification.InvalidateRequest,
+    ) -> certification.ImageCheckInvalidated:
+        """Withdraw an image-checker certification (#270): ``stale`` with ``invalidated_*``; one
+        already stale answers unchanged. Images checked before keep the flag they were checked
+        with. 404 ``certification_not_found``. The note is not stored or logged."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.ImageCheckInvalidated:
+            async with self.db.begin() as conn:
+                found, changed = await certification.invalidate_image_check(
+                    conn, certification_id, request, principal=principal
+                )
+                revision = await profiles.config_revision(conn)
+            return certification.ImageCheckInvalidated(found, changed, revision)
+
+        return await self._keyed(
+            ctx,
+            "invalidate_image_check_certification",
+            run,
+            material={"certification_id": certification_id, **request.model_dump()},
+        )
+
+    @refuses_nul()
+    async def list_image_check_certifications(
+        self,
+        ctx: RequestContext,
+        *,
+        checker_fingerprint: str | None = None,
+        policy_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> certification.ImageCheckCertificationPage:
+        """Image-checker certifications, newest first (stale ones included), narrowed by
+        ``checker_fingerprint`` and ``policy_id`` when given (#270)."""
+        async with self.db.connect() as conn:
+            return await certification.list_image_check_certifications(
+                conn,
+                checker_fingerprint=checker_fingerprint,
+                policy_id=policy_id,
+                limit=limit,
+                cursor=cursor,
+            )
 
     @refuses_nul()
     async def get_profile_guarantees(

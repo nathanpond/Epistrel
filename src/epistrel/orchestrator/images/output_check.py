@@ -21,9 +21,11 @@ and answers an ``OutputVerdict``:
   ``violation`` is ``block``, ``pass`` is ``allow``): ``block`` → a violation, ``allow`` → a
   stored pass with ``uncertain: true``.
 - **Certification** (NFR-QUAL-12): each result says whether the checker is certified for that
-  policy: a ``valid`` ``image_check_certifications`` row for ``(checker_fingerprint,
-  policy_id)`` (``core.profiles.certification.image_check_certified``; empty until #270, so
-  ``false``). Never one status for the checker. ``checker_fingerprint`` is the first 12 hex of the
+  policy: the newest ``valid`` ``image_check_certifications`` record for ``(checker_fingerprint,
+  policy_id)`` (``core.profiles.certification.image_check_certified``; #270: an E-11 run at the
+  policy's current version, or for the minors policy an external attestation, ADR-182). The
+  stored flag is a snapshot of check time: a later invalidation changes only later checks.
+  Never one status for the checker. ``checker_fingerprint`` is the first 12 hex of the
   SHA-256 of ``canonical_json({base_url_host, model, reported_version, template_sha256})``: the
   endpoint's host, the model id, the version the Model Access Layer last recorded for that model
   (``reported_version.latest``; ``null`` when none was reported) and the SHA-256 of
@@ -339,7 +341,10 @@ async def check_output(
     if certified is None:
         async with db.connect() as conn:
             certified = await image_check_certified(
-                conn, found.fingerprint, [p.id for p in policies]
+                conn,
+                found.fingerprint,
+                [p.id for p in policies],
+                {p.id: p.version for p in policies},
             )
     return OutputVerdict(
         per_policy=tuple(
@@ -393,7 +398,12 @@ class OutputChecks:
         hit = self._certified.get(key)
         if hit is None:
             async with db.connect() as conn:
-                hit = await image_check_certified(conn, found.fingerprint, [p.id for p in policies])
+                hit = await image_check_certified(
+                    conn,
+                    found.fingerprint,
+                    [p.id for p in policies],
+                    {p.id: p.version for p in policies},
+                )
             self._certified[key] = hit
             while len(self._certified) > CACHE_JOBS:
                 self._certified.popitem(last=False)

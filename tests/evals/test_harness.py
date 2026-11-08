@@ -60,6 +60,7 @@ from epistrel.evals.runner import (
     story_rows,
     sweep,
 )
+from epistrel.evals.suites import runnable
 from tests.evals.support import (
     LEAK,
     ZERO_METRIC,
@@ -256,7 +257,8 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
     before = await story_rows(engine)
     async with stub_engine(pg_url, engine) as lib:
         report = await run_suites(
-            list(SUITES.values()),
+            # #270: a standalone suite (E-11, an image checker's) runs only on its own.
+            runnable(),
             AdapterConfig(),
             SEEDS,
             engine=lib,
@@ -274,7 +276,8 @@ async def test_harness_stub_run(pg_url: str, engine: AsyncEngine, tmp_path: Path
     assert re.match(FINGERPRINT_PATTERN, report.fingerprint)
     assert report.fingerprint == run_fingerprint("stub")
     assert report.host.kind in {"ci", "local"}
-    assert {s.name for s in report.suites} == set(SUITES)
+    assert {s.name for s in report.suites} == {s.name for s in runnable()}
+    assert {name for name, s in SUITES.items() if s.standalone} == {"e11"}
     assert report.harness_errors == []
     for suite in report.suites:
         assert suite.cases > 0

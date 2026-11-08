@@ -92,6 +92,7 @@ from epistrel.api.routes.certifications import (
     CertificationImportedBody,
     CertificationInvalidatedBody,
     CertificationRunBody,
+    ImageCheckCertificationBody,
     StoryCertificationRunBody,
 )
 from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
@@ -227,7 +228,7 @@ from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.outbox import CompensateRequest, ResolveRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
-from epistrel.core.profiles.certification import InvalidateRequest
+from epistrel.core.profiles.certification import ImageCheckCertificationRequest, InvalidateRequest
 from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import (
     ProfileCopy,
@@ -873,6 +874,19 @@ CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
 _REPORT = "# Parity certification\n\nOne floor passed.\n"
 CERTIFIED = "01JC0000000000000000000C01"
 DRIFT = {"reason": "drift", "note": "the provider confirmed a silent update"}
+IMAGE_ATTESTATION: dict[str, Any] = {
+    "checker_fingerprint": "0123456789ab",
+    "policy_id": "minors_no_sexual_content",
+    "evidence_kind": "external_attestation",
+    "evidence_ref": {
+        "title": "C-03 fixture model card",
+        "url": "https://example.com/c-03-model-card",
+        "publisher": "Example Labs",
+        "publication_date": "2026-01-01",
+        "figure": {"metric": "recall", "value": 0.99, "n": 1000},
+    },
+}
+"""#270: a fictional vendor's evaluation for the minors policy (the only attestable one)."""
 CERTIFICATION_RECORD: dict[str, Any] = {
     "schema_version": 1,
     "certification_id": CERTIFIED,
@@ -3164,6 +3178,37 @@ def _steps() -> list[Step]:
                 e.invalidate_certification(CTX, CERTIFIED, InvalidateRequest(**DRIFT))
             ),
         ),
+        # #270: an image checker's certification: the minors policy's external attestation,
+        # listed, then withdrawn.
+        Step(
+            "record_image_check_certification",
+            lambda ids: Rest("POST", "/admin/certifications/image-check", IMAGE_ATTESTATION),
+            lambda e, ids: _image_check_recorded(
+                e.record_image_check_certification(
+                    CTX, ImageCheckCertificationRequest(**IMAGE_ATTESTATION)
+                )
+            ),
+            capture=lambda body, ids: ids.update(image_check=body["certification"]["id"]),
+            status=lambda body: 201 if body.get("stored") else 200,
+        ),
+        Step(
+            "list_image_check_certifications",
+            lambda ids: Rest("GET", "/certifications", params={"subject": "image_check"}),
+            lambda e, ids: _dumped(e.list_image_check_certifications(CTX)),
+            # ``list_certifications``'s route serves it (``SHARED_ROUTES``).
+            status=lambda body: 200,
+        ),
+        Step(
+            "invalidate_image_check_certification",
+            lambda ids: Rest(
+                "POST", f"/admin/certifications/image-check/{ids['image_check']}/invalidate", DRIFT
+            ),
+            lambda e, ids: _image_check_invalidated(
+                e.invalidate_image_check_certification(
+                    CTX, ids["image_check"], InvalidateRequest(**DRIFT)
+                )
+            ),
+        ),
         # #532: the eval runs (the committed reports; the harness is installed above).
         Step(
             "list_eval_runs",
@@ -4464,6 +4509,14 @@ async def _certification_imported(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _certification_invalidated(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CertificationInvalidatedBody.of(await call))
+
+
+async def _image_check_recorded(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ImageCheckCertificationBody.recorded(await call))
+
+
+async def _image_check_invalidated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ImageCheckCertificationBody.invalidated(await call))
 
 
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:

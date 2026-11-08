@@ -656,7 +656,13 @@ def report_files(reports_dir: Path) -> list[Path]:
     sets' review digest (#157)."""
     if not reports_dir.is_dir():
         return []
-    return sorted(p for p in reports_dir.glob("*.md") if p.name not in NOT_REPORTS)
+    # #270: E-11's image-checker reports (``e11-…``) are not configuration reports; #271's
+    # index gives them a table of their own.
+    return sorted(
+        p
+        for p in reports_dir.glob("*.md")
+        if p.name not in NOT_REPORTS and not p.name.startswith("e11-")
+    )
 
 
 INDEX_INTRO = """\

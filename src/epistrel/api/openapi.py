@@ -228,6 +228,10 @@ ERROR_STATUS: dict[str, int] = {
     "fact_not_found": 404,
     "certification_not_found": 404,
     "certification_not_valid": 409,
+    "invalid_evidence": 422,
+    "attestation_not_allowed": 422,
+    "eval_run_not_allowed": 422,
+    "invalid_setting": 422,
     "backfill_not_found": 404,
     "rewrite_session_not_found": 404,
     "rewrite_session_closed": 409,
@@ -685,6 +689,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "invalidate_certification": ("certification_not_found", "certification_not_valid"),
     "get_eval_run": ("eval_run_not_found",),
     "import_certification": ("invalid_certification_record", "certification_record_conflict"),
+    # #270: an image checker's certification (ADR-182).
+    "record_image_check_certification": (
+        "invalid_evidence",
+        "attestation_not_allowed",
+        "eval_run_not_allowed",
+    ),
+    "invalidate_image_check_certification": ("certification_not_found",),
     "list_state_proposals": ("module_off",),
     "approve_state_proposal": (
         "story_archived",
@@ -952,6 +963,7 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "listing_status_in_use",
         "feedback_tag_in_use",
         "invalid_time_zone",
+        "invalid_setting",
     ),
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
     # A policy of a blocked story (#363), or one whose text a pending catalog-scope erasure

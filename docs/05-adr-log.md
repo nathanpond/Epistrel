@@ -39,17 +39,17 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 182 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
@@ -163,7 +163,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 098 | Image generation is an optional core capability behind a port; image guardrails fail closed | Partly superseded | 100, 101, 102, 104, 108, 109, 110, 181 |
 | 099 | Story images are anchored at narrative positions, made for a viewpoint, and follow the timeline | Amended | 100, 101, 103, 105, 110 |
 | 100 | Generated images are staged until checked, and image jobs are bound to their origin | Partly superseded | 104, 109, 110 |
-| 101 | Story-image privacy is a guarantee about the image model's inputs; image checking is a measured backstop | Amended | 105, 110, 108 |
+| 101 | Story-image privacy is a guarantee about the image model's inputs; image checking is a measured backstop | Partly superseded | 105, 110, 108, 182 |
 | 102 | The image adapter discovers capabilities per endpoint and records what it actually applied | Amended | 118, 131 |
 | 103 | Images declare who they depict; erasure reaches images only through declared or named subjects | Current | — |
 | 104 | Image limits count every provider output; catalog results are candidates attached deliberately | Amended | 109, 135, 138 |
@@ -244,6 +244,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 179 | M9's quality floors are met on a certified model, on any host tier | Current | — |
 | 180 | A rejected `response_format` probe is recorded as a probe and not counted | Current | — |
 | 181 | Image limits are deployment- and entry-scoped; per-story limits belong to the consumer | Current | — |
+| 182 | Image minors-policy certification uses external evidence; Epistrel holds no violating images | Current | — |
 
 ---
 
@@ -1069,9 +1070,9 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-101 — Story-image privacy is a guarantee about the image model's inputs; image checking is a measured backstop
 **Status:** Accepted. Refines ADR-098 and ADR-099; follows ADR-077.
-**Amended by:** ADR-105 — check status and viewpoint basis are returned with every image; ADR-110 — checker certification is reported per policy; ADR-108 — the image safety path knows true ages; the image model gets only what the audience perceives
+**Amended by:** ADR-105 — check status and viewpoint basis are returned with every image; ADR-110 — checker certification is reported per policy; ADR-108 — the image safety path knows true ages; the image model gets only what the audience perceives; ADR-182 — the minors policy is certified only by external evidence, and Epistrel never measures its false negatives
 **Context:** The documents said a story image "never depicts" what its viewpoint did not perceive, but only the prompt was filtered, an image model can ignore or embellish its prompt, uploads were unchecked, and the vision checker had only stub tests and no quality floor.
-**Decision:** The privacy claim matches text privacy (NFR-PRIV-4). Everything the image model receives for a story image — prompt and reference images — comes only from what the viewpoint perceived. Characters of unknown identity get no visual identity or references, and the prompt passes the deterministic protected-content match. Images are not inspected for unperceived content, and consumer-prompted and uploaded images carry the consumer's guarantee only (FR-IMG-8). The prompt-side check is the primary safety control. The vision checker is a backstop measured on a labeled set with age-sensitive and adversarial cases, with false-negative and false-positive rates published per policy and model, and the minors policy gated under the observed-zero rule (NFR-QUAL-12). Uncertified checkers are labeled as such on every image *[per policy — ADR-110]*.
+**Decision:** The privacy claim matches text privacy (NFR-PRIV-4). Everything the image model receives for a story image — prompt and reference images — comes only from what the viewpoint perceived. Characters of unknown identity get no visual identity or references, and the prompt passes the deterministic protected-content match. Images are not inspected for unperceived content, and consumer-prompted and uploaded images carry the consumer's guarantee only (FR-IMG-8). The prompt-side check is the primary safety control. The vision checker is a backstop measured on a labeled set with age-sensitive and adversarial cases, with false-negative and false-positive rates published per policy and model, and the minors policy gated under the observed-zero rule *[superseded by ADR-182: the minors policy's false negatives are never measured by Epistrel; a checker is certified for it only by a recorded external attestation, and its false positives are measured]* (NFR-QUAL-12). Uncertified checkers are labeled as such on every image *[per policy — ADR-110]*.
 **Consequences:** Documents promise only what the engine enforces. Tests I-24, E-11.
 
 ---
@@ -1913,6 +1914,18 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - docs/03 FR-IMG-11, docs/02 §4.13 (the Jobs and Limits bullets) and docs/04 I-23, I-26 and C-24 are amended (2026-11-07). FR-IMG-11 stays in M8, and no part moves milestone.
 - The reservation records and limit counters are deployment accounting. A story's deletion keeps the records with `story_id` nulled (`STORY_ID_EXCEPTIONS`, owner decision 13), and a story bundle never carries them.
 - Per-story usage and cost are still reported (#269), from the records' `story_id`, with no `limits` block.
+
+---
+
+### ADR-182 — Image minors-policy certification uses external evidence; Epistrel holds no violating images
+**Status:** Accepted. Amends ADR-101 (the minors policy's observed-zero gate).
+**Context:** NFR-QUAL-12 asked E-11 to measure the minors policy's false-negative rate under the observed-zero rule, on at least 300 positive cases: sexual images involving minors. Epistrel must never generate, collect or store such an image, for testing or for anything else, so that measurement could not be made legally or safely. Planning M8, the owner chose option (c) in round one (2026-10-10).
+**Decision:** The owner's decision, round one, 2026-10-10, applied by #270. E-11 has no minors-policy positive cases, and its loader refuses any minors case labeled a violation. An image checker counts as certified for the minors policy only when documented third-party evidence (the checker vendor's own published evaluation) is recorded for its exact checker fingerprint as an **external attestation** (`evidence_kind: external_attestation`: title, https URL, publisher, publication date and the quoted figure). That evidence is accepted only for policies flagged `external_evidence_only`, a seeded and immutable flag true only for `minors_no_sexual_content`. Otherwise the checker is an uncertified backstop for that policy, and every image says so. The minors check's false-positive rate is still measured, on non-sexual age-sensitive cases (adults with youthful features, minors in ordinary scenes, ambiguous ages, true-versus-apparent mismatches) and their adversarial variants. Every other image-output policy is certified only by an E-11 run (`evidence_kind: eval_run`) that passed both its false-negative and false-positive floors on owner-reviewed labels. Every eval case, whatever its policy, follows one safety rule: a sexual or nude case shows only clearly adult subjects with no youthful or ambiguous appearance. The decomposed self-measurement on legal data is v2 (#253).
+**Alternatives considered:** (a) measuring the minors false negatives on synthetic positives was refused outright: it would mean generating the material the policy exists to stop. (b) Measuring a proxy (sexual-content detection on adults, plus age estimation on non-sexual images) and composing the two rates is #253's v2 work. It needs its own validity argument and is not a certification.
+**Consequences:**
+- docs/03 NFR-QUAL-12 and NFR-QUAL-8, docs/04 E-11 and §8 (the gate-rule prose and the minors threshold row) are amended, and docs/02 §4.13 is annotated (2026-11-08).
+- A minors certification is only as good as the vendor's evidence. Epistrel records the quoted figure as given and applies no threshold or date limit. Because the record binds to the exact checker fingerprint, a self-hosted or quantized copy needs its own evidence.
+- The E-11 report shows the minors false-negative rate as "not measured" and states "certified only by external attestation; otherwise an uncertified backstop". Tests: `tests/evals/test_e_11.py`, `tests/integration/test_image_check_certifications.py`.
 
 ---
 

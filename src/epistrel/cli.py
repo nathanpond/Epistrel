@@ -65,6 +65,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "audit row",
     )
     reconciling.add_argument("--fix", action="store_true", help="rewrite what drifted")
+    models = sub.add_parser(
+        "models", help="model configuration: `epistrel models fingerprint --purpose image_check`"
+    )
+    model_actions = models.add_subparsers(dest="models_command")
+    fingerprinting = model_actions.add_parser(
+        "fingerprint",
+        help="print the configured image checker's fingerprint (#270: the key its E-11 "
+        "certifications are recorded under); exit 1 when no image_check model is configured",
+    )
+    fingerprinting.add_argument("--purpose", choices=("image_check",), default="image_check")
     sub.add_parser(
         "moderation-secret",
         help="print the secret a media moderation hook verifies X-Epistrel-Signature with "
@@ -222,6 +232,35 @@ def images_reconcile(*, fix: bool) -> int:
     return asyncio.run(run())
 
 
+def models_fingerprint() -> int:
+    """``epistrel models fingerprint --purpose image_check`` (#270): the configured checker's
+    fingerprint on its own line; 1 without an ``image_check`` model, 78 for a configuration
+    error."""
+    from epistrel.core.db import make_engine
+    from epistrel.engine import Engine
+    from epistrel.orchestrator.images import output_check
+
+    settings = _load()
+    if settings is None:
+        return EX_CONFIG
+
+    async def run() -> int:
+        db = make_engine(settings)
+        engine = Engine(settings, db)
+        try:
+            found = await output_check.checker(engine.models, db)
+        finally:
+            await engine.models.aclose()
+            await db.dispose()
+        if found is None:
+            print("no image_check model is configured", file=sys.stderr)
+            return 1
+        print(found.fingerprint)
+        return 0
+
+    return asyncio.run(run())
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = sys.argv[1:] if argv is None else list(argv)
     if raw[:1] == ["evals"]:
@@ -239,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.images_command == "reconcile":
             return images_reconcile(fix=args.fix)
         print("usage: epistrel images reconcile [--fix]", file=sys.stderr)
+        return 2
+    if args.command == "models":
+        if args.models_command == "fingerprint":
+            return models_fingerprint()
+        print("usage: epistrel models fingerprint --purpose image_check", file=sys.stderr)
         return 2
     if args.command == "serve":
         return serve(args.host, args.port, args.mode, args.concurrency)

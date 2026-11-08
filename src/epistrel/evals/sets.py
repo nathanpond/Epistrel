@@ -12,6 +12,11 @@ lint job) and ``python -m epistrel.evals digest``.
   (``EPISTREL_REQUIRE_APPROVED_SETS=1``: CI on ``main``), so no unapproved set reaches a release;
 - ``docs/evals/sets-digest.md`` is not what ``digest`` writes.
 
+A suite whose set is optional (``Suite.set_optional``: #270's E-11, whose images are generated
+on the owner's machine and never committed) is skipped while its set file is absent, and held
+to every rule above once it exists: its ``PROVENANCE.md`` still fails on ``main`` while it is
+``pending``. E-11's rows are shown by ``case_id`` and label (a manifest, no images).
+
 The digest is what the owner reviews: per set its size, its counts by family and by label, and
 20 cases drawn by a fixed seed (a scenario's turns shown by their lines and expected
 interventions; scripted stub answers left out).
@@ -80,13 +85,22 @@ def provenance_problem(directory: Path, *, require_approved: bool) -> str | None
     return f"{directory.name}: {PROVENANCE} has no 'approved by owner YYYY-MM-DD' line"
 
 
+def _optional(set_file: str) -> bool:
+    return any(s.set_optional and s.set_file == set_file for s in labeled_suites())
+
+
+def _row_id(row: dict[str, Any]) -> str:
+    """A row's id: ``id``, or an E-11 manifest line's ``case_id``."""
+    return str(row.get("id", row.get("case_id", "")))
+
+
 def _shown(row: dict[str, Any]) -> dict[str, Any]:
     """A row as the digest shows it: no id, family or scripted stub answer; a scenario's turns
     by their line and expected interventions."""
     shown = {
         k: v
         for k, v in row.items()
-        if k not in ("id", "family", "stub_answer") and not k.startswith("stub")
+        if k not in ("id", "case_id", "family", "stub_answer") and not k.startswith("stub")
     }
     if isinstance(shown.get("turns"), list):
         shown["turns"] = [
@@ -162,6 +176,8 @@ def digest_text(sets_dir: Path) -> str:
         sharing = [s.name for s in labeled_suites() if s.set_file == set_file]
         owner = ", ".join(sharing) or owner
         path = sets_dir / set_file
+        if not path.is_file() and _optional(set_file):
+            continue
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
         families = Counter(str(r.get("family", "")) for r in rows)
         labels = Counter(_row_label(r) for r in rows)
@@ -179,9 +195,9 @@ def digest_text(sets_dir: Path) -> str:
             picked = stratified(rows, rnd)
         else:
             picked = rnd.sample(rows, min(DIGEST_SAMPLES, len(rows)))
-        for row in sorted(picked, key=lambda r: str(r["id"])):
+        for row in sorted(picked, key=_row_id):
             shown = _shown(row)
-            lines.append(f"- `{row['id']}`: `{json.dumps(shown, ensure_ascii=False)}`")
+            lines.append(f"- `{_row_id(row)}`: `{json.dumps(shown, ensure_ascii=False)}`")
         lines.append("")
     return "\n".join(lines)
 
@@ -204,6 +220,8 @@ def problems(
     found: list[str] = []
     directories: set[Path] = set()
     for suite in labeled_suites(suites):
+        if suite.set_optional and not (sets_dir / suite.set_file).is_file():
+            continue
         try:
             cases = suite.load(sets_dir)
         except MalformedCase as exc:

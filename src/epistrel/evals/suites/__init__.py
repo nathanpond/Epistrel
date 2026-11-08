@@ -132,6 +132,14 @@ class Suite:
     ``ModelError`` ended observes it as bad and nothing else, so an error is never scored as a
     disclosure, and every completed case observes it as good (the runner fills it in). ``None``
     (M4's suites): a model error is bad on every metric (#134)."""
+    standalone: ClassVar[bool] = False
+    """A suite that certifies something other than an engine configuration (#270's E-11: an
+    image checker) runs only on its own (``run --suite <name>``, its own runner): ``run --all``,
+    preset certification and certification runs leave it out (``runnable``)."""
+    set_optional: ClassVar[bool] = False
+    """Whether ``--check-sets`` accepts the suite's set being absent (#270's E-11: its set is
+    generated and approved on the owner's machine and committed with the run's evidence, #271);
+    a set that exists is held to every rule."""
     judge_purposes: ClassVar[tuple[str, ...]] = ()
     """The purposes the suite's harness-side judge calls use (#475): E-03's ``entailment``,
     E-12/E-13's ``quality_judge``. A suite that names any is a **judged suite**. Its judge calls
@@ -220,10 +228,16 @@ def register[S: type[Suite]](cls: S) -> S:
 
 
 def get_suites(names: Sequence[str] | None = None) -> list[Suite]:
-    """The named suites (every registered one for ``None``); ``KeyError`` for an unknown name."""
+    """The named suites (for ``None``: every registered one but the standalone suites, which
+    run only when named); ``KeyError`` for an unknown name."""
     if names is None:
-        return list(SUITES.values())
+        return runnable()
     return [SUITES[name] for name in names]
+
+
+def runnable() -> list[Suite]:
+    """Every registered suite a configuration's run plays: all but the ``standalone`` ones."""
+    return [suite for suite in SUITES.values() if not suite.standalone]
 
 
 # The suites shipped with the engine register on import.
@@ -237,6 +251,7 @@ from epistrel.evals.suites import e06_conformance as _e06  # noqa: E402, F401
 from epistrel.evals.suites import e07_structured_output as _e07  # noqa: E402, F401
 from epistrel.evals.suites import e09_time_estimation as _e09  # noqa: E402, F401
 from epistrel.evals.suites import e10_claim_detection as _e10  # noqa: E402, F401
+from epistrel.evals.suites import e11_image_policies as _e11  # noqa: E402, F401
 from epistrel.evals.suites import e12_interventions as _e12  # noqa: E402, F401
 from epistrel.evals.suites import e13_signals as _e13  # noqa: E402, F401
 from epistrel.evals.suites import priv_think_leak as _think  # noqa: E402, F401
@@ -259,4 +274,5 @@ __all__ = [
     "Value",
     "get_suites",
     "register",
+    "runnable",
 ]

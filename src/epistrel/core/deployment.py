@@ -85,6 +85,7 @@ from epistrel.core.errors import InvalidRequest, InvalidTimeZone
 from epistrel.core.idempotency import read_idempotency_settings
 from epistrel.core.profiles import effective, schema
 from epistrel.core.profiles import store as profiles
+from epistrel.core.profiles.certification import require_image_check_floors
 from epistrel.core.profiles.schema import ProfileSettings, Purposes, SettingsDocument
 from epistrel.core.profiles.tiers import STRONGEST_SETTING
 from epistrel.core.ratings import require_assignable
@@ -140,6 +141,7 @@ moderation hook or base URL (#105), and no starting-cast ceiling (#108)."""
 
 FEEDBACK_TAGS = "feedback_tags"
 TIME_ZONE_SETTING = "deployment_time_zone"
+IMAGE_CHECK_FLOORS = "image_check_floors"
 
 
 class ModelTiersPatch(BaseModel):
@@ -211,6 +213,7 @@ class SettingsPatch(BaseModel):
     image_attempt_grace_s: StrictInt | None = None
     image_status_poll_s: StrictInt | None = None
     image_confirm_wait_max_s: StrictInt | None = None
+    image_check_floors: dict[str, dict[str, StrictFloat | StrictInt | None] | None] | None = None
     default_engine_profile_id: str | None = None
     lite_summary_chunk: StrictInt | None = None
     max_pinned_memories: StrictInt | None = None
@@ -382,7 +385,9 @@ async def apply_settings(
     history still carries 409 ``feedback_tag_in_use``. ``profile_defaults`` that are not
     complete, or under which something in use could not run, are 422 (``purposes``: the model
     purposes a profile may route, which the Engine passes). A ``deployment_time_zone`` that is
-    no IANA time zone is 422 ``invalid_time_zone`` (#262)."""
+    no IANA time zone is 422 ``invalid_time_zone`` (#262). ``image_check_floors`` naming an
+    unknown or non-image-output policy, or a ``max_fn`` for an ``external_evidence_only`` one,
+    is 422 ``invalid_setting`` (#270)."""
     zone = changes.get(TIME_ZONE_SETTING)
     if isinstance(zone, str) and not known_time_zone(zone):
         raise InvalidTimeZone(
@@ -419,6 +424,10 @@ async def apply_settings(
             await feedback.refuse_tag_removal(conn, before.feedback_tags, wanted.feedback_tags)
         if PROFILE_DEFAULTS in changed:
             await effective.runnable_under(conn, wanted.profile_defaults, purposes=purposes)
+        if IMAGE_CHECK_FLOORS in changed:
+            await require_image_check_floors(
+                conn, {k: v.model_dump() for k, v in wanted.image_check_floors.items()}
+            )
         if STRONGEST_SETTING in changed and wanted.model_tiers.strongest is not None:
             await _require_listed_model(conn, wanted.model_tiers.strongest)
         revision = await bump_config_revision(conn, current)

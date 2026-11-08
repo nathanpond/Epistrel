@@ -32,9 +32,18 @@ configuration (``RuntimeFacts.quality``). Any other fingerprint is ``uncertified
 comes from #234 alone. "Meeting a floor" is never stored apart from a record: ``floors_met``
 is computed from the matching certification only.
 
-**Image checkers** (NFR-QUAL-12; #258) are certified per policy, not per configuration:
-``image_check_certified`` answers which image-output policies a checker fingerprint has a
-``valid`` ``image_check_certifications`` row for. #270 writes those rows from E-11's runs.
+**Image checkers** (NFR-QUAL-12; #258, #270, ADR-182) are certified per policy, not per
+configuration. A record (``image_check_certifications``) names the checker fingerprint, the policy
+and its evidence: an ``eval_run`` (one policy's row of a committed E-11 report that passed both
+its floors on reviewed labels) for any image-output policy but the ``external_evidence_only``
+one, or an ``external_attestation`` (the checker vendor's published evaluation: title, https URL,
+publisher, date and the quoted figure) for that one alone, the seeded minors policy, whose false
+negatives Epistrel never measures. ``record_image_check`` (``POST
+/admin/certifications/image-check``, and ``load_committed_image_checks`` at start-up over
+``seeds/certifications/image-check/``) stores one per distinct evidence (the same evidence again
+stores nothing, whatever its status); ``invalidate_image_check`` withdraws one. The newest
+``valid`` record for the pair decides ``image_check_certified``: an attestation certifies; an
+``eval_run`` certifies while the policy's version is the one its report measured.
 """
 
 from __future__ import annotations
@@ -42,29 +51,37 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError, field_validator
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from epistrel.core import audit
 from epistrel.core.errors import (
+    AttestationNotAllowed,
     CertificationNotFound,
     CertificationNotValid,
     CertificationRecordConflict,
     CertificationUnavailable,
+    EvalRunNotAllowed,
     InvalidCertificationRecord,
+    InvalidEvidence,
+    InvalidSetting,
 )
-from epistrel.core.ids import ULID_PATTERN
+from epistrel.core.ids import ULID_PATTERN, new_ulid
 from epistrel.core.profiles.fingerprint import (
     FINGERPRINT_PATTERN,
     QualityStatus,
     QualityStatusValue,
+    canonical_json,
 )
 from epistrel.core.profiles.schema import ProfileSettings
-from epistrel.core.tables import image_check_certifications, profile_certifications
+from epistrel.core.tables import image_check_certifications, policies, profile_certifications
+from epistrel.core.tables.audit_log import AuditKind
 from epistrel.observability.logging import get_logger
 
 log = get_logger(__name__)
@@ -574,29 +591,6 @@ def floors_met(fingerprint_value: str, status: QualityStatus) -> FloorsMet:
     )
 
 
-async def image_check_certified(
-    conn: AsyncConnection, checker_fingerprint: str, policy_ids: Sequence[str]
-) -> frozenset[str]:
-    """The ids among ``policy_ids`` that the image checker ``checker_fingerprint`` is certified
-    for (NFR-QUAL-12; #258): a ``valid`` ``image_check_certifications`` row for the pair. One
-    indexed query; empty until #270 records E-11's runs, so every result reads ``certified:
-    false`` until then."""
-    wanted = sorted(set(policy_ids))
-    if not wanted:
-        return frozenset()
-    t = image_check_certifications.c
-    rows = await conn.execute(
-        select(t.policy_id)
-        .where(
-            t.checker_fingerprint == checker_fingerprint,
-            t.policy_id.in_(wanted),
-            t.status == VALID,
-        )
-        .distinct()
-    )
-    return frozenset(str(row.policy_id) for row in rows)
-
-
 def committed_records(directory: Path = SEEDS_DIR) -> list[Path]:
     """The committed record files, in name order (none when the directory is absent)."""
     if not directory.is_dir():
@@ -841,13 +835,559 @@ def harness_or_none() -> Harness | None:
     return _HARNESS[0] if _HARNESS else None
 
 
+# -- image checkers (NFR-QUAL-12; #258, #270, ADR-182) ------------------------------------------
+
+EVAL_RUN = "eval_run"
+EXTERNAL_ATTESTATION = "external_attestation"
+IMAGE_CHECK_SCHEMA_VERSION = 1
+IMAGE_CHECK_SEEDS_DIR = SEEDS_DIR / "image-check"
+"""The committed image-checker records (#271 writes them): a subdirectory, which the preset
+loader's non-recursive glob never reads."""
+REPO_ROOT = Path(__file__).resolve().parents[4]
+"""The checkout an ``eval_run``'s repo-relative ``report_path`` resolves against (in an installed
+package it names no report, and the hash is trusted)."""
+CHECKER_FINGERPRINT_PATTERN = r"^[0-9a-f]{12}$"
+REPORT_PATH_PATTERN = r"^[A-Za-z0-9_-][A-Za-z0-9._/-]{0,496}\.md$"
+"""A repo-relative Markdown path (no ``..`` segment: ``EvalRunEvidence``)."""
+SEED_PRINCIPAL = "system:certification-seeds"
+IMAGE_OUTPUT = "image_output"
+MINORS_POLICY = "minors_no_sexual_content"
+
+
+class RateEvidence(BaseModel):
+    """A measured rate and the cases behind it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    rate: float | None = Field(ge=0.0, le=1.0)
+    n: int = Field(ge=0)
+
+
+class EvalRunEvidence(BaseModel):
+    """An ``eval_run``'s ``evidence_ref``: one policy's row of a committed E-11 report."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    report_path: str = Field(pattern=REPORT_PATH_PATTERN)
+    report_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    checker_fingerprint: str = Field(pattern=CHECKER_FINGERPRINT_PATTERN)
+    policy_id: str = Field(min_length=1, max_length=200)
+    policy_version: int = Field(ge=1)
+    verdict: str = Field(min_length=1, max_length=40)
+    fn: RateEvidence | None
+    fp: RateEvidence
+    floors: dict[str, float | None]
+    uncertifiable: str | None = Field(default=None, max_length=80)
+
+    @field_validator("report_path")
+    @classmethod
+    def _inside(cls, value: str) -> str:
+        if ".." in value.split("/"):
+            raise ValueError("report_path is repo-relative and never leaves the checkout")
+        return value
+
+
+class QuotedFigure(BaseModel):
+    """The figure an attestation quotes from the vendor's evaluation, as published."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    metric: str = Field(min_length=1, max_length=100)
+    value: float = Field(ge=0.0, le=1.0)
+    n: int | None = Field(default=None, gt=0)
+
+
+class AttestationEvidence(BaseModel):
+    """An ``external_attestation``'s ``evidence_ref``: the vendor's published evaluation (its URL
+    is recorded, never fetched)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str = Field(min_length=1, max_length=300)
+    url: str = Field(pattern=r"^https://[^\s]+$", max_length=2048)
+    publisher: str = Field(min_length=1, max_length=200)
+    publication_date: date
+    figure: QuotedFigure
+
+    @field_validator("publication_date")
+    @classmethod
+    def _not_future(cls, value: date) -> date:
+        if value > datetime.now(UTC).date():
+            raise ValueError("the publication date is in the future")
+        return value
+
+
+class ImageCheckCertificationRequest(BaseModel):
+    """``POST /admin/certifications/image-check`` (#270): the checker, the policy and the
+    evidence (``evidence_ref``: ``EvalRunEvidence`` or ``AttestationEvidence`` by kind)."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "checker_fingerprint": "0123456789ab",
+                    "policy_id": MINORS_POLICY,
+                    "evidence_kind": EXTERNAL_ATTESTATION,
+                    "evidence_ref": {
+                        "title": "Vision safety model card",
+                        "url": "https://example.com/model-card",
+                        "publisher": "Example Labs",
+                        "publication_date": "2026-09-01",
+                        "figure": {"metric": "recall", "value": 0.99, "n": 5000},
+                    },
+                }
+            ]
+        },
+    )
+
+    checker_fingerprint: str = Field(pattern=CHECKER_FINGERPRINT_PATTERN)
+    policy_id: str = Field(min_length=1, max_length=200)
+    evidence_kind: Literal["eval_run", "external_attestation"]
+    evidence_ref: dict[str, Any]
+
+
+class ImageCheckCertification(BaseModel):
+    """One image-checker certification record (``image_check_certifications``)."""
+
+    id: str
+    checker_fingerprint: str
+    policy_id: str
+    policy_version: int | None
+    evidence_kind: str
+    evidence_ref: dict[str, Any]
+    recorded_by: str
+    recorded_at: datetime
+    status: str
+    invalidated_at: datetime | None = None
+    invalidated_by: str | None = None
+    invalidated_reason: str | None = None
+
+
+class ImageCheckCertificationPage(BaseModel):
+    """A page of image-checker certifications, newest first."""
+
+    items: list[ImageCheckCertification]
+    next_cursor: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ImageCheckRecorded:
+    """A recorded (or already recorded) image-checker certification: ``stored`` is false when
+    the same evidence was recorded before (whatever its status now)."""
+
+    certification: ImageCheckCertification
+    stored: bool
+    config_revision: int = 0
+    replayed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ImageCheckInvalidated:
+    """An invalidated image-checker certification (``changed`` false: it was stale already)."""
+
+    certification: ImageCheckCertification
+    changed: bool
+    config_revision: int = 0
+    replayed: bool = False
+
+
+def _schema_errors(exc: ValidationError) -> list[dict[str, str]]:
+    return [{"loc": ".".join(str(p) for p in e["loc"]), "type": e["type"]} for e in exc.errors()]
+
+
+def parse_evidence(kind: str, ref: Mapping[str, Any]) -> EvalRunEvidence | AttestationEvidence:
+    """``ref`` as ``kind``'s evidence; 422 ``invalid_evidence`` (``reason: schema``)."""
+    model: type[EvalRunEvidence] | type[AttestationEvidence] = (
+        EvalRunEvidence if kind == EVAL_RUN else AttestationEvidence
+    )
+    try:
+        return model.model_validate(ref)
+    except ValidationError as exc:
+        raise InvalidEvidence(
+            "the evidence does not validate", {"reason": "schema", "errors": _schema_errors(exc)}
+        ) from None
+
+
+def evidence_hash(
+    checker_fingerprint: str,
+    policy_id: str,
+    kind: str,
+    evidence: EvalRunEvidence | AttestationEvidence,
+) -> str:
+    """The record's content hash: the canonical JSON of what it certifies and why (never who
+    recorded it or when)."""
+    document = {
+        "checker_fingerprint": checker_fingerprint,
+        "policy_id": policy_id,
+        "evidence_kind": kind,
+        "evidence_ref": evidence.model_dump(mode="json"),
+    }
+    return hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
+
+
+async def _image_policy(conn: AsyncConnection, policy_id: str) -> Any:
+    t = policies.c
+    row = (
+        await conn.execute(
+            select(t.id, t.version, t.applies_to, t.external_evidence_only).where(t.id == policy_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise InvalidEvidence(
+            "no such policy", {"reason": "unknown_policy", "policy_id": policy_id}
+        )
+    if IMAGE_OUTPUT not in (row.applies_to or ()) and policy_id != MINORS_POLICY:
+        raise InvalidEvidence(
+            "the policy does not apply to image outputs",
+            {"reason": "not_image_output", "policy_id": policy_id},
+        )
+    return row
+
+
+def _check_eval_run(
+    request: ImageCheckCertificationRequest, evidence: EvalRunEvidence, repo_root: Path
+) -> None:
+    if (evidence.checker_fingerprint, evidence.policy_id) != (
+        request.checker_fingerprint,
+        request.policy_id,
+    ):
+        raise InvalidEvidence(
+            "the report's checker or policy is not the record's", {"reason": "mismatch"}
+        )
+    if evidence.uncertifiable is not None:
+        raise InvalidEvidence(
+            "the report marks this policy uncertifiable",
+            {"reason": "uncertifiable", "uncertifiable": evidence.uncertifiable},
+        )
+    if evidence.verdict != "pass":
+        raise InvalidEvidence(
+            "an eval run certifies a policy only when it passed both floors",
+            {"reason": "verdict", "verdict": evidence.verdict},
+        )
+    if evidence.fn is None or evidence.floors.get("max_fn") is None:
+        raise InvalidEvidence("the run set no false-negative floor", {"reason": "verdict"})
+    if evidence.floors.get("max_fp") is None:
+        raise InvalidEvidence("the run set no false-positive floor", {"reason": "verdict"})
+    found = repo_root / evidence.report_path
+    if found.is_file() and report_hash(found.read_text("utf-8")) != evidence.report_sha256:
+        raise InvalidEvidence(
+            "the report does not match its report_sha256", {"reason": "report_hash"}
+        )
+
+
+def _image_certification(row: Any) -> ImageCheckCertification:
+    return ImageCheckCertification.model_validate(
+        {key: getattr(row, key) for key in ImageCheckCertification.model_fields}
+    )
+
+
+async def _image_row(conn: AsyncConnection, certification_id: str) -> Any:
+    t = image_check_certifications
+    row = (await conn.execute(select(t).where(t.c.id == certification_id))).one_or_none()
+    if row is None:
+        raise CertificationNotFound(
+            "no such image-check certification", {"certification_id": certification_id}
+        )
+    return row
+
+
+async def record_image_check(
+    conn: AsyncConnection,
+    request: ImageCheckCertificationRequest,
+    *,
+    principal: str,
+    repo_root: Path = REPO_ROOT,
+) -> tuple[ImageCheckCertification, bool]:
+    """Record an image checker's certification for one policy (NFR-QUAL-12, ADR-182): the
+    record, and whether a row was written (``False``: this evidence was recorded before, in any
+    status). An ``external_attestation`` only for an ``external_evidence_only`` policy (else 422
+    ``attestation_not_allowed``), an ``eval_run`` only for any other image-output policy (else
+    422 ``eval_run_not_allowed``), and only one whose report passed both floors on reviewed
+    labels; 422 ``invalid_evidence`` for anything else that does not hold. An ``eval_run``'s
+    report is re-hashed when its path names a readable file of the checkout; otherwise its hash
+    is trusted."""
+    policy = await _image_policy(conn, request.policy_id)
+    if request.evidence_kind == EXTERNAL_ATTESTATION and not policy.external_evidence_only:
+        raise AttestationNotAllowed(
+            "an external attestation certifies only an external-evidence-only policy",
+            {"policy_id": request.policy_id},
+        )
+    if request.evidence_kind == EVAL_RUN and policy.external_evidence_only:
+        raise EvalRunNotAllowed(
+            "this policy is certified only by an external attestation (ADR-182)",
+            {"policy_id": request.policy_id},
+        )
+    evidence = parse_evidence(request.evidence_kind, request.evidence_ref)
+    if isinstance(evidence, EvalRunEvidence):
+        _check_eval_run(request, evidence, repo_root)
+    content = evidence_hash(
+        request.checker_fingerprint, request.policy_id, request.evidence_kind, evidence
+    )
+    t = image_check_certifications
+    found = (await conn.execute(select(t).where(t.c.content_hash == content))).one_or_none()
+    if found is not None:
+        return _image_certification(found), False
+    values: dict[str, Any] = {
+        "id": new_ulid(),
+        "checker_fingerprint": request.checker_fingerprint,
+        "policy_id": request.policy_id,
+        "policy_version": policy.version,
+        "metrics": {},
+        "report_sha256": None,
+        "recorded_via": "import",
+        "evidence_kind": request.evidence_kind,
+        "evidence_ref": evidence.model_dump(mode="json"),
+        "content_hash": content,
+        "recorded_by": principal,
+    }
+    if isinstance(evidence, EvalRunEvidence):
+        values["policy_version"] = evidence.policy_version
+        values["report_sha256"] = evidence.report_sha256
+        values["metrics"] = {
+            "fn": None if evidence.fn is None else evidence.fn.model_dump(mode="json"),
+            "fp": evidence.fp.model_dump(mode="json"),
+        }
+    inserted = await conn.execute(
+        pg_insert(t).values(**values).on_conflict_do_nothing(index_elements=["content_hash"])
+    )
+    row = (await conn.execute(select(t).where(t.c.content_hash == content))).one()
+    if not inserted.rowcount:
+        return _image_certification(row), False
+    await audit.record(
+        conn,
+        AuditKind.IMAGE_CHECK_CERTIFICATION_RECORDED,
+        principal=principal,
+        policy_ids=[request.policy_id],
+        details={
+            "certification_id": values["id"],
+            "checker_fingerprint": request.checker_fingerprint,
+            "evidence_kind": request.evidence_kind,
+        },
+    )
+    log.info(
+        "image check certification recorded",
+        certification_id=values["id"],
+        policy_id=request.policy_id,
+        evidence_kind=request.evidence_kind,
+    )
+    return _image_certification(row), True
+
+
+async def invalidate_image_check(
+    conn: AsyncConnection, certification_id: str, request: InvalidateRequest, *, principal: str
+) -> tuple[ImageCheckCertification, bool]:
+    """Withdraw an image-checker certification (``stale``, with when, who and why; the note is
+    never stored or logged): the record and whether it changed. A stale one answers unchanged;
+    404 ``certification_not_found``. Images checked before keep the ``certified`` they were
+    checked with: the flag is a snapshot of check time."""
+    row = await _image_row(conn, certification_id)
+    if row.status != VALID:
+        return _image_certification(row), False
+    t = image_check_certifications
+    await conn.execute(
+        t.update()
+        .where(t.c.id == certification_id, t.c.status == VALID)
+        .values(
+            status=STALE,
+            invalidated_at=func.transaction_timestamp(),
+            invalidated_by=principal,
+            invalidated_reason=request.reason,
+        )
+    )
+    await audit.record(
+        conn,
+        AuditKind.IMAGE_CHECK_CERTIFICATION_INVALIDATED,
+        principal=principal,
+        policy_ids=[str(row.policy_id)],
+        details={"certification_id": certification_id, "reason": request.reason},
+    )
+    log.info(
+        "image check certification invalidated",
+        certification_id=certification_id,
+        reason=request.reason,
+    )
+    return _image_certification(await _image_row(conn, certification_id)), True
+
+
+async def list_image_check_certifications(
+    conn: AsyncConnection,
+    *,
+    checker_fingerprint: str | None = None,
+    policy_id: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> ImageCheckCertificationPage:
+    """Image-checker certifications, newest recorded first (stale ones included), narrowed by
+    the filters given (ANDed)."""
+    t = image_check_certifications
+    query = select(t).order_by(t.c.id.desc()).limit(limit + 1)
+    if checker_fingerprint is not None:
+        query = query.where(t.c.checker_fingerprint == checker_fingerprint)
+    if policy_id is not None:
+        query = query.where(t.c.policy_id == policy_id)
+    if cursor is not None:
+        query = query.where(t.c.id < cursor)
+    rows = list(await conn.execute(query))
+    items = [_image_certification(r) for r in rows[:limit]]
+    return ImageCheckCertificationPage(
+        items=items, next_cursor=items[-1].id if len(rows) > limit and items else None
+    )
+
+
+async def image_check_certified(
+    conn: AsyncConnection,
+    checker_fingerprint: str,
+    policy_ids: Sequence[str],
+    versions: Mapping[str, int] | None = None,
+) -> frozenset[str]:
+    """The ids among ``policy_ids`` that the image checker ``checker_fingerprint`` is certified
+    for (NFR-QUAL-12; #258, #270): the newest ``valid`` record for the pair decides. An
+    attestation certifies (it exists only for an ``external_evidence_only`` policy); an
+    ``eval_run`` certifies while the policy's current version (``versions``, by id) is the one
+    its report measured, so a policy edited since reads uncertified until a new run. One indexed
+    query."""
+    wanted = sorted(set(policy_ids))
+    if not wanted:
+        return frozenset()
+    t = image_check_certifications.c
+    rows = await conn.execute(
+        select(t.policy_id, t.evidence_kind, t.policy_version)
+        .where(
+            t.checker_fingerprint == checker_fingerprint,
+            t.policy_id.in_(wanted),
+            t.status == VALID,
+        )
+        .order_by(t.policy_id, t.recorded_at.desc(), t.id.desc())
+    )
+    found: set[str] = set()
+    seen: set[str] = set()
+    for row in rows:
+        key = str(row.policy_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        current = None if versions is None else versions.get(key)
+        if (
+            row.evidence_kind == EXTERNAL_ATTESTATION
+            or current is None
+            or row.policy_version == current
+        ):
+            found.add(key)
+    return frozenset(found)
+
+
+async def require_image_check_floors(
+    conn: AsyncConnection, floors: Mapping[str, Mapping[str, float | None]]
+) -> None:
+    """422 ``invalid_setting`` unless every policy ``floors`` names exists and applies to image
+    outputs, and no ``external_evidence_only`` policy has a ``max_fn`` (its false negatives are
+    never measured; ADR-182): the deployment setting's rule (#270), and ``evals run --floors``'s.
+    """
+    if not floors:
+        return
+    t = policies.c
+    rows = {
+        str(r.id): r
+        for r in await conn.execute(
+            select(t.id, t.applies_to, t.external_evidence_only, t.retired_at).where(
+                t.id.in_(sorted(floors))
+            )
+        )
+    }
+    for policy_id in sorted(floors):
+        field = f"body.image_check_floors.{policy_id}"
+        row = rows.get(policy_id)
+        if row is None or row.retired_at is not None:
+            raise InvalidSetting(
+                "no such policy",
+                {"field": field, "policy_id": policy_id, "reason": "unknown_policy"},
+            )
+        if IMAGE_OUTPUT not in (row.applies_to or ()) and policy_id != MINORS_POLICY:
+            raise InvalidSetting(
+                "the policy does not apply to image outputs",
+                {"field": field, "policy_id": policy_id, "reason": "not_image_output"},
+            )
+        if row.external_evidence_only and floors[policy_id].get("max_fn") is not None:
+            raise InvalidSetting(
+                "this policy's false negatives are never measured: it takes max_fp only",
+                {"field": f"{field}.max_fn", "policy_id": policy_id, "reason": "fn_not_measurable"},
+            )
+
+
+class ImageCheckSeed(BaseModel):
+    """A committed image-checker record (``seeds/certifications/image-check/*.json``; #271)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal[1]
+    checker_fingerprint: str = Field(pattern=CHECKER_FINGERPRINT_PATTERN)
+    policy_id: str = Field(min_length=1, max_length=200)
+    evidence_kind: Literal["eval_run", "external_attestation"]
+    evidence_ref: dict[str, Any]
+
+    def request(self) -> ImageCheckCertificationRequest:
+        return ImageCheckCertificationRequest(
+            checker_fingerprint=self.checker_fingerprint,
+            policy_id=self.policy_id,
+            evidence_kind=self.evidence_kind,
+            evidence_ref=dict(self.evidence_ref),
+        )
+
+
+def committed_image_checks(directory: Path = IMAGE_CHECK_SEEDS_DIR) -> list[Path]:
+    """The committed image-checker record files, in name order (none without the directory)."""
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("*.json"))
+
+
+async def load_committed_image_checks(
+    conn: AsyncConnection,
+    directory: Path = IMAGE_CHECK_SEEDS_DIR,
+    *,
+    repo_root: Path = REPO_ROOT,
+) -> tuple[int, list[str]]:
+    """Record every committed image-checker record (idempotent by content: one recorded before,
+    even since invalidated, is left as it is): how many rows it wrote, and the files it skipped
+    (malformed, or evidence that does not hold), each logged as an error. Records reach the
+    database only through this loader or the admin route, never by themselves."""
+    import json
+
+    written = 0
+    skipped: list[str] = []
+    for path in committed_image_checks(directory):
+        try:
+            seed = ImageCheckSeed.model_validate(json.loads(path.read_text("utf-8")))
+            async with conn.begin_nested():
+                _, made = await record_image_check(
+                    conn, seed.request(), principal=SEED_PRINCIPAL, repo_root=repo_root
+                )
+            written += int(made)
+        except (
+            InvalidEvidence,
+            AttestationNotAllowed,
+            EvalRunNotAllowed,
+            ValidationError,
+            ValueError,
+            OSError,
+        ):
+            log.error("image check certification record skipped", file=path.name)
+            skipped.append(path.name)
+    return written, skipped
+
+
 __all__ = [
     "CANARY_HELD",
     "CANARY_INCONCLUSIVE",
     "CANARY_MISSED",
+    "EVAL_RUN",
+    "EXTERNAL_ATTESTATION",
+    "IMAGE_CHECK_SEEDS_DIR",
     "QUALITY_14",
     "SCHEMA_VERSION",
     "SEEDS_DIR",
+    "AttestationEvidence",
     "Certification",
     "CertificationImported",
     "CertificationInvalidated",
@@ -855,21 +1395,32 @@ __all__ = [
     "CertificationRecord",
     "EvalMetric",
     "EvalRun",
+    "EvalRunEvidence",
     "EvalRunPage",
     "FloorResult",
     "FloorsMet",
     "Harness",
     "HarnessOutcome",
     "HarnessRequest",
+    "ImageCheckCertification",
+    "ImageCheckCertificationPage",
+    "ImageCheckCertificationRequest",
+    "ImageCheckInvalidated",
+    "ImageCheckRecorded",
+    "ImageCheckSeed",
     "InvalidateRequest",
+    "QuotedFigure",
+    "RateEvidence",
     "RunEstimate",
     "canary_outcome",
     "canary_verdicts",
     "certified",
     "check_report",
+    "committed_image_checks",
     "committed_records",
     "eval_run",
     "eval_runs",
+    "evidence_hash",
     "floors_met",
     "get_certification",
     "get_eval_run",
@@ -879,12 +1430,18 @@ __all__ = [
     "import_record",
     "install_harness",
     "invalidate",
+    "invalidate_image_check",
     "list_certifications",
+    "list_image_check_certifications",
     "load_committed",
+    "load_committed_image_checks",
     "mark_stale",
     "page_eval_runs",
+    "parse_evidence",
     "parse_record",
     "quality_status",
+    "record_image_check",
     "report_hash",
+    "require_image_check_floors",
     "store_record",
 ]

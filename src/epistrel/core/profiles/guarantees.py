@@ -53,6 +53,10 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import flatten
 
 UNMEASURED = "unmeasured"
+MINORS_IMAGE_CHECK_LINE = (
+    "certified only by external attestation; otherwise an uncertified backstop"
+)
+"""C-14 (M8, ADR-182): how the image check's row states the minors policy's certification."""
 """The metric of a model-dependent step no NFR-QUAL requirement measures yet."""
 BOUNDARY = "The model proposes; the engine validates structured claims, effects, and permissions."
 """FR-VERIFY-15's boundary sentence."""
@@ -516,11 +520,13 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         "image_check",
         "image check",
         M,
-        UNMEASURED,
+        "NFR-QUAL-12",
         purposes=("image_check",),
         in_story=False,
         note="A vision model checks each image against the image-output policies; with none "
-        "configured, an image a policy applies to fails closed (FR-IMG-3).",
+        "configured, an image a policy applies to fails closed (FR-IMG-3). Measured per policy "
+        "by E-11's false-negative and false-positive rates (`nfr_qual_12.<policy>.fn|fp`); a "
+        "checker is certified per policy. The minors policy: " + MINORS_IMAGE_CHECK_LINE + ".",
     ),
     _row(
         "image_generation",

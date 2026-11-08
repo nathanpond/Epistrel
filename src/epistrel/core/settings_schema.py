@@ -1096,6 +1096,17 @@ IMAGE_CONFIRM_WAIT_MAX_MAX_S = 86_400
 total it may wait (FR-IMG-4)."""
 
 
+class ImageCheckFloor(BaseModel):
+    """One image-output policy's E-11 floors (NFR-QUAL-12; #270): the highest false-negative
+    and false-positive rates (fractions 0-1) a checker may show and still pass; either may be
+    absent (that rate is then report-only, and the policy cannot be certified by a run)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_fn: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_fp: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
 class ImageJobSettings(BaseModel):
     """How image jobs run (FR-IMG-3,4; #256), stored under ``deployment_state.settings``:
     ``image_retry_budget`` (0-5, default 2), how many times a story job generates again after
@@ -1190,6 +1201,24 @@ class ImageJobSettings(BaseModel):
     """How long after a stalled attempt's horizon a job waits for a definitive status before it
     falls back to the non-confirming rule (FR-IMG-11; #267; default 1800, 60 to 86400): the
     deadline is the horizon plus this. Prospective: a wait's deadline is fixed when it starts."""
+
+    image_check_floors: Annotated[dict[str, ImageCheckFloor], PROSPECTIVE] = Field(
+        default_factory=dict
+    )
+    """E-11's floors per image-output policy, by policy id (NFR-QUAL-12; #270): ``{policy_id:
+    {max_fn, max_fp}}``, empty by default, so every policy's rates are ``report_only`` and no
+    run certifies one. A write naming an unknown or non-image-output policy, or a ``max_fn``
+    for an ``external_evidence_only`` policy (the minors policy, whose false negatives are
+    never measured; ADR-182), is 422 ``invalid_setting``. Prospective: the next E-11 run reads
+    it (``evals run --floors`` overrides it for one run)."""
+
+    @field_validator("image_check_floors")
+    @classmethod
+    def _floor_ids(cls, value: dict[str, ImageCheckFloor]) -> dict[str, ImageCheckFloor]:
+        for key in value:
+            if not 1 <= len(key) <= 200:
+                raise ValueError("image_check_floors keys are policy ids (1 to 200 characters)")
+        return value
 
     @field_validator("candidate_ttl")
     @classmethod

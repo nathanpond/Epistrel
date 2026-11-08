@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     TIMESTAMP,
+    Boolean,
     CheckConstraint,
     Column,
     Index,
@@ -61,6 +62,7 @@ policies = Table(
     Column("retired_at", TIMESTAMP(timezone=True), nullable=True),
     Column("retired_by", Text, nullable=True),
     Column("idempotency_key", Text, nullable=True),
+    Column("external_evidence_only", Boolean, nullable=False, server_default=text("false")),
     CheckConstraint("scope IN ('global', 'rating', 'story', 'character')", name="scope"),
     CheckConstraint("(scope = 'global') = (scope_id IS NULL)", name="scope_id"),
     CheckConstraint("(scope IN ('story', 'character')) = (story_id IS NOT NULL)", name="story_id"),
@@ -71,7 +73,14 @@ policies = Table(
         "ARRAY['text_input', 'text_output', 'image_prompt', 'image_output']::text[]",
         name="applies_to",
     ),
+    CheckConstraint(
+        "NOT external_evidence_only OR id = 'minors_no_sexual_content'",
+        name="external_evidence_only",
+    ),
 )
+"""``external_evidence_only`` (#270, migration 0143; ADR-182): true only for the seeded minors
+policy, and immutable (a trigger refuses a change; no admin route writes it). An image checker is
+certified for such a policy only by a recorded external attestation, never by an E-11 run."""
 
 # Names are unique among live policies of one scope, ignoring case.
 Index(

@@ -990,6 +990,16 @@
       "why": "#234: declare a certification stale (drift)"
     },
     {
+      "method": "POST",
+      "path": "/admin/certifications/image-check",
+      "why": "#270: record an image checker's certification for one policy (NFR-QUAL-12, ADR-182)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/certifications/image-check/{certification_id}/invalidate",
+      "why": "#270: withdraw an image checker's certification"
+    },
+    {
       "method": "GET",
       "path": "/admin/evals/runs",
       "why": "#532: the eval runs (committed reports and certification runs)"

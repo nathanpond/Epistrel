@@ -16464,6 +16464,272 @@
         "title": "ImageCheck",
         "type": "object"
       },
+      "ImageCheckCertification": {
+        "description": "One image-checker certification record (``image_check_certifications``).",
+        "properties": {
+          "checker_fingerprint": {
+            "title": "Checker Fingerprint",
+            "type": "string"
+          },
+          "evidence_kind": {
+            "title": "Evidence Kind",
+            "type": "string"
+          },
+          "evidence_ref": {
+            "additionalProperties": true,
+            "title": "Evidence Ref",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "invalidated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated At"
+          },
+          "invalidated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated By"
+          },
+          "invalidated_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invalidated Reason"
+          },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Version"
+          },
+          "recorded_at": {
+            "format": "date-time",
+            "title": "Recorded At",
+            "type": "string"
+          },
+          "recorded_by": {
+            "title": "Recorded By",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "checker_fingerprint",
+          "policy_id",
+          "policy_version",
+          "evidence_kind",
+          "evidence_ref",
+          "recorded_by",
+          "recorded_at",
+          "status"
+        ],
+        "title": "ImageCheckCertification",
+        "type": "object"
+      },
+      "ImageCheckCertificationBody": {
+        "description": "An image checker's certification record, as recorded or withdrawn (#270); ``stored``:\nwhether this request wrote it (``false``: the same evidence was recorded before).",
+        "properties": {
+          "certification": {
+            "$ref": "#/components/schemas/ImageCheckCertification"
+          },
+          "changed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "stored": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stored"
+          }
+        },
+        "required": [
+          "config_revision",
+          "certification"
+        ],
+        "title": "ImageCheckCertificationBody",
+        "type": "object"
+      },
+      "ImageCheckCertificationPage": {
+        "description": "A page of image-checker certifications, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImageCheckCertification"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ImageCheckCertificationPage",
+        "type": "object"
+      },
+      "ImageCheckCertificationRequest": {
+        "additionalProperties": false,
+        "description": "``POST /admin/certifications/image-check`` (#270): the checker, the policy and the\nevidence (``evidence_ref``: ``EvalRunEvidence`` or ``AttestationEvidence`` by kind).",
+        "examples": [
+          {
+            "checker_fingerprint": "0123456789ab",
+            "evidence_kind": "external_attestation",
+            "evidence_ref": {
+              "figure": {
+                "metric": "recall",
+                "n": 5000,
+                "value": 0.99
+              },
+              "publication_date": "2026-09-01",
+              "publisher": "Example Labs",
+              "title": "Vision safety model card",
+              "url": "https://example.com/model-card"
+            },
+            "policy_id": "minors_no_sexual_content"
+          }
+        ],
+        "properties": {
+          "checker_fingerprint": {
+            "pattern": "^[0-9a-f]{12}$",
+            "title": "Checker Fingerprint",
+            "type": "string"
+          },
+          "evidence_kind": {
+            "enum": [
+              "eval_run",
+              "external_attestation"
+            ],
+            "title": "Evidence Kind",
+            "type": "string"
+          },
+          "evidence_ref": {
+            "additionalProperties": true,
+            "title": "Evidence Ref",
+            "type": "object"
+          },
+          "policy_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Policy Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "checker_fingerprint",
+          "policy_id",
+          "evidence_kind",
+          "evidence_ref"
+        ],
+        "title": "ImageCheckCertificationRequest",
+        "type": "object"
+      },
+      "ImageCheckFloor": {
+        "additionalProperties": false,
+        "description": "One image-output policy's E-11 floors (NFR-QUAL-12; #270): the highest false-negative\nand false-positive rates (fractions 0-1) a checker may show and still pass; either may be\nabsent (that rate is then report-only, and the policy cannot be certified by a run).",
+        "properties": {
+          "max_fn": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Fn"
+          },
+          "max_fp": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Fp"
+          }
+        },
+        "title": "ImageCheckFloor",
+        "type": "object"
+      },
       "ImageGenerationParams": {
         "additionalProperties": false,
         "description": "The ``image_generation`` row's ``params``: replaced in full by a ``PUT``; ``None``\ntakes the built-in default (module docs).",
@@ -41201,6 +41467,13 @@
             "title": "Image Attempt Grace S",
             "type": "integer"
           },
+          "image_check_floors": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ImageCheckFloor"
+            },
+            "title": "Image Check Floors",
+            "type": "object"
+          },
           "image_confirm_wait_max_s": {
             "default": 1800,
             "maximum": 86400.0,
@@ -42860,6 +43133,40 @@
               }
             ],
             "title": "Image Attempt Grace S"
+          },
+          "image_check_floors": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": {
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "integer"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "type": "object"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Check Floors"
           },
           "image_confirm_wait_max_s": {
             "anyOf": [
@@ -49419,6 +49726,9 @@
           },
           "effect": {
             "type": "string"
+          },
+          "external_evidence_only": {
+            "type": "boolean"
           },
           "id": {
             "type": "string"
@@ -56441,6 +56751,339 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/admin/certifications/image-check": {
+      "post": {
+        "description": "Record an image checker's certification for one policy: 201 with the record, or 200 with the stored one when the same evidence (checker, policy, kind and evidence, never who or when) was recorded before, whatever its status. An image checker (its `checker_fingerprint`: 12 hex of its endpoint host, model, reported version and `image_check` template) is certified per image-output policy (NFR-QUAL-12, ADR-182). `evidence_kind: eval_run` takes one policy's row of a committed E-11 report (`report_path`, `report_sha256`, `checker_fingerprint`, `policy_id`, `policy_version`, `verdict`, `fn`, `fp`, `floors`, `uncertifiable`): it certifies only a report that passed both its false-negative and false-positive floors on reviewed labels (else 422 `invalid_evidence`), and the report is re-hashed when its path names a file here. `evidence_kind: external_attestation` takes the checker vendor's published evaluation (`title`, an https `url`, never fetched, `publisher`, a `publication_date` not in the future and the quoted `figure {metric, value 0-1, n?}`); it is accepted only for a policy flagged `external_evidence_only`, which only the seeded minors policy is (else 422 `attestation_not_allowed`), and an `eval_run` is refused for that policy (422 `eval_run_not_allowed`): Epistrel never measures its false negatives. The newest valid record for a checker and policy decides `certified` on the images checked afterwards; images checked before keep the flag they were checked with.",
+        "operationId": "record_image_check_certification",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageCheckCertificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageCheckCertificationBody"
+                }
+              }
+            },
+            "description": "Recorded before.",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageCheckCertificationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `attestation_not_allowed`, `eval_run_not_allowed`, `invalid_evidence`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record an image checker's certification",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/certifications/image-check/{certification_id}/invalidate": {
+      "post": {
+        "description": "Mark an image checker's certification `stale` (`reason: drift` or `manual`, a `note` required and never stored), with `invalidated_at`, `invalidated_by` and `invalidated_reason`. The policy then reads `certified: false` for that checker on images checked afterwards, unless another valid record certifies it. One already stale answers unchanged (`changed: false`). 404 `certification_not_found`.",
+        "operationId": "invalidate_image_check_certification",
+        "parameters": [
+          {
+            "description": "The certification's id.",
+            "in": "path",
+            "name": "certification_id",
+            "required": true,
+            "schema": {
+              "description": "The certification's id.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Certification Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvalidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageCheckCertificationBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `certification_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Withdraw an image checker's certification",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/certifications/import": {
       "post": {
         "description": "Store a certification record as `epistrel evals` writes it (a hand run's, #235): `schema_version` 1, the record's fields and its Markdown report in `report_md`. The record is validated (extra fields refused) and the report's SHA-256 (LF line ends, one trailing newline) must equal its `report_sha256`, else 422 `invalid_certification_record` and nothing is stored. It is stored by its `certification_id`: the same record again stores nothing (`stored: false`), and other content under that id is 409 `certification_record_conflict`. A record whose fingerprint matches no profile version is stored all the same.",
@@ -56803,6 +57446,7 @@
                           "idempotency_result_window",
                           "image_accounting_retention_days",
                           "image_attempt_grace_s",
+                          "image_check_floors",
                           "image_confirm_wait_max_s",
                           "image_limit_deployment_day",
                           "image_limit_entry_day",
@@ -62221,7 +62865,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `invalid_profile`, `invalid_time_zone`, `profile_deleted`, `rating_retired`, `validation_error`."
+            "description": "Invalid request; nothing was written: `invalid_profile`, `invalid_setting`, `invalid_time_zone`, `profile_deleted`, `rating_retired`, `validation_error`."
           },
           "503": {
             "content": {
@@ -73452,9 +74096,25 @@
     },
     "/certifications": {
       "get": {
-        "description": "Certification records (FR-PROF-15), newest first, stale ones included, narrowed by `fingerprint` and `profile_id` when given (both: ANDed). `cursor` continues a page from its `next_cursor`.",
+        "description": "Certification records (FR-PROF-15), newest first, stale ones included, narrowed by `fingerprint` and `profile_id` when given (both: ANDed). `cursor` continues a page from its `next_cursor`. With `subject=image_check` (#270): the image checkers' certifications instead (NFR-QUAL-12), narrowed by `checker_fingerprint` and `policy_id`, each with its evidence (`eval_run` or, for the minors policy only, `external_attestation`) and status.",
         "operationId": "list_certifications",
         "parameters": [
+          {
+            "description": "Which certifications: configurations' (default) or image checkers'.",
+            "in": "query",
+            "name": "subject",
+            "required": false,
+            "schema": {
+              "default": "profile",
+              "description": "Which certifications: configurations' (default) or image checkers'.",
+              "enum": [
+                "profile",
+                "image_check"
+              ],
+              "title": "Subject",
+              "type": "string"
+            }
+          },
           {
             "description": "A configuration fingerprint.",
             "in": "query",
@@ -73491,6 +74151,45 @@
               ],
               "description": "A profile's id.",
               "title": "Profile Id"
+            }
+          },
+          {
+            "description": "An image checker's fingerprint.",
+            "in": "query",
+            "name": "checker_fingerprint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An image checker's fingerprint.",
+              "title": "Checker Fingerprint"
+            }
+          },
+          {
+            "description": "An image-output policy.",
+            "in": "query",
+            "name": "policy_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "An image-output policy.",
+              "title": "Policy Id"
             }
           },
           {
@@ -73532,7 +74231,15 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CertificationPage"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/CertificationPage"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ImageCheckCertificationPage"
+                    }
+                  ],
+                  "title": "Response List Certifications"
                 }
               }
             },

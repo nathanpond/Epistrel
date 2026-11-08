@@ -55,6 +55,9 @@ GENERATORS: Mapping[str, Callable[[], list[dict[str, Any]]]] = MappingProxyType(
     }
 )
 """Each generated set's path under ``evals/sets`` and the function that authors it."""
+E11_MANIFEST = "e11/cases.jsonl"
+"""E-11's manifest (#270): written by ``author e11`` (``authoring.e11``) from a local image
+model, never regenerated here."""
 
 
 def render(cases: list[dict[str, Any]]) -> str:
@@ -74,13 +77,30 @@ def write(sets_dir: Path) -> list[Path]:
 
 
 def stale(sets_dir: Path) -> list[str]:
-    """The generated sets whose committed file differs from their module's output."""
+    """The generated sets whose committed file differs from their module's output. E-11's set
+    (#270) is exempt: its images come from a model and are never committed, so it cannot be
+    regenerated here; instead every line of its manifest, when there is one, must validate
+    (the schema and the safety rule, ``evals.e11_safety``)."""
     found = []
     for relative, generate in GENERATORS.items():
         path = sets_dir / relative
         if not path.is_file() or path.read_text(encoding="utf-8") != render(generate()):
             found.append(f"{relative} differs from what its authoring module generates")
-    return found
+    return found + e11_manifest_problems(sets_dir)
 
 
-__all__ = ["GENERATORS", "render", "stale", "write"]
+def e11_manifest_problems(sets_dir: Path) -> list[str]:
+    """Why E-11's committed manifest does not validate (nothing when it is absent)."""
+    from epistrel.evals import e11_safety
+
+    path = sets_dir / E11_MANIFEST
+    if not path.is_file():
+        return []
+    try:
+        e11_safety.parse_lines(path)
+    except e11_safety.SafetyRefusal as exc:
+        return [f"{E11_MANIFEST}: {problem}" for problem in exc.problems]
+    return []
+
+
+__all__ = ["E11_MANIFEST", "GENERATORS", "e11_manifest_problems", "render", "stale", "write"]

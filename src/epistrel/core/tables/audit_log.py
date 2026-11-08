@@ -59,6 +59,12 @@ class AuditKind(StrEnum):
     """#262: ``epistrel images reconcile --fix`` rewrote drifted image limit counters and
     released stuck ``held`` reservation records (actor ``cli:images-reconcile``; a count per
     scope). Ids and counts only."""
+    IMAGE_CHECK_CERTIFICATION_RECORDED = "image_check_certification_recorded"
+    """#270: an image checker's certification recorded for one policy (the record's id, the
+    checker fingerprint, the evidence kind; the policy id). Ids only."""
+    IMAGE_CHECK_CERTIFICATION_INVALIDATED = "image_check_certification_invalidated"
+    """#270: an image checker's certification withdrawn (the record's id and the reason code;
+    the policy id). Never the note."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

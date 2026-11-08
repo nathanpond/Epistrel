@@ -52,7 +52,12 @@ def test_every_set_loads_meets_its_size_and_is_approved_or_pending() -> None:
     """The NFR-QUAL suites' sets load under their schemas, meet #157's (and #158's) sizes,
     match their authoring modules, carry a provenance line, and the review digest is current;
     #158's judge calibration set holds at least 200 pairs."""
-    suites = labeled.labeled_suites()
+    # #270: E-11's set is optional until the owner commits it (#271); absent, it is not checked.
+    suites = [
+        s
+        for s in labeled.labeled_suites()
+        if not (s.set_optional and not (SETS / s.set_file).is_file())
+    ]
     assert {s.name for s in suites} == set(SIZES)
     for suite in suites:
         assert suite.min_cases >= SIZES[suite.name], suite.name

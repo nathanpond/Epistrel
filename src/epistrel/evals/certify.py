@@ -203,13 +203,15 @@ class EvalHarness:
         self.adapter = adapter or AdapterConfig()
 
     def suites(self) -> list[str]:
-        return sorted(SUITES)
+        # A standalone suite (#270's E-11) certifies an image checker, not a configuration.
+        return sorted(name for name, suite in SUITES.items() if not suite.standalone)
 
     def applicable(self, settings: ProfileSettings) -> list[str]:
         return sorted(
             name
             for name, suite in SUITES.items()
-            if not needs_of(
+            if not suite.standalone
+            and not needs_of(
                 settings,
                 requires=suite.requires,
                 guarantees=suite.guarantees,
@@ -237,8 +239,11 @@ class EvalHarness:
         return sorted(
             name
             for name, suite in SUITES.items()
-            if (name == E12 and QUALITY_14 in wanted)
-            or any(requirement_id(m.id) in wanted for m in suite.metrics)
+            if not suite.standalone
+            and (
+                (name == E12 and QUALITY_14 in wanted)
+                or any(requirement_id(m.id) in wanted for m in suite.metrics)
+            )
         )
 
     async def run(self, request: HarnessRequest) -> HarnessOutcome:

@@ -7,6 +7,10 @@
 - ``GET /certifications`` and ``GET /certifications/{id}``: the certification records.
 - ``POST /admin/certifications/import``: import a hand run's record (``admin_router``).
 - ``POST /admin/certifications/{id}/invalidate``: declare a certification stale (#234).
+- ``POST /admin/certifications/image-check`` and ``POST
+  /admin/certifications/image-check/{id}/invalidate``: record and withdraw an image checker's
+  certification for one policy (NFR-QUAL-12; #270, ADR-182); ``GET
+  /certifications?subject=image_check`` lists them.
 
 Every handler makes one ``Engine`` call (``core.profiles.certification`` holds the rules, and
 ``orchestrator.jobs.handlers.certification_run`` the run).
@@ -14,7 +18,7 @@ Every handler makes one ``Engine`` call (``core.profiles.certification`` holds t
 
 from __future__ import annotations
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 
 from fastapi import APIRouter, Body, Path, Query, Response
 from fastapi.responses import JSONResponse
@@ -32,6 +36,11 @@ from epistrel.core.profiles.certification import (
     CertificationPage,
     EvalRun,
     EvalRunPage,
+    ImageCheckCertification,
+    ImageCheckCertificationPage,
+    ImageCheckCertificationRequest,
+    ImageCheckInvalidated,
+    ImageCheckRecorded,
     InvalidateRequest,
     RunEstimate,
 )
@@ -205,29 +214,51 @@ async def get_certification_run(
 
 @router.get(
     "/certifications",
-    response_model=CertificationPage,
+    response_model=CertificationPage | ImageCheckCertificationPage,
     operation_id="list_certifications",
     summary="List certifications",
     description=(
         "Certification records (FR-PROF-15), newest first, stale ones included, narrowed by "
         "`fingerprint` and `profile_id` when given (both: ANDed). `cursor` continues a page "
-        "from its `next_cursor`."
+        "from its `next_cursor`. With `subject=image_check` (#270): the image checkers' "
+        "certifications instead (NFR-QUAL-12), narrowed by `checker_fingerprint` and "
+        "`policy_id`, each with its evidence (`eval_run` or, for the minors policy only, "
+        "`external_attestation`) and status."
     ),
 )
 async def list_certifications(
     ctx: ContextDep,
     engine: EngineDep,
+    subject: Annotated[
+        Literal["profile", "image_check"],
+        Query(description="Which certifications: configurations' (default) or image checkers'."),
+    ] = "profile",
     fingerprint: Annotated[
         str | None, Query(pattern=FINGERPRINT_PATTERN, description="A configuration fingerprint.")
     ] = None,
     profile_id: Annotated[
         str | None, Query(pattern=ULID_PATTERN, description="A profile's id.")
     ] = None,
+    checker_fingerprint: Annotated[
+        str | None,
+        Query(pattern=r"^[0-9a-f]{12}$", description="An image checker's fingerprint."),
+    ] = None,
+    policy_id: Annotated[
+        str | None, Query(min_length=1, max_length=200, description="An image-output policy.")
+    ] = None,
     limit: Annotated[int, Query(ge=1, le=200, description="At most this many.")] = 50,
     cursor: Annotated[
         str | None, Query(pattern=ULID_PATTERN, description="The previous page's next_cursor.")
     ] = None,
-) -> CertificationPage:
+) -> CertificationPage | ImageCheckCertificationPage:
+    if subject == "image_check":
+        return await engine.list_image_check_certifications(
+            ctx,
+            checker_fingerprint=checker_fingerprint,
+            policy_id=policy_id,
+            limit=limit,
+            cursor=cursor,
+        )
     return await engine.list_certifications(
         ctx, fingerprint=fingerprint, profile_id=profile_id, limit=limit, cursor=cursor
     )
@@ -334,6 +365,102 @@ async def invalidate_certification(
 ) -> CertificationInvalidatedBody:
     found = await engine.invalidate_certification(ctx, certification_id, body)
     return answered(CertificationInvalidatedBody.of(found), ctx, response, replayed=found.replayed)
+
+
+class ImageCheckCertificationBody(DeploymentMutationResponse):
+    """An image checker's certification record, as recorded or withdrawn (#270); ``stored``:
+    whether this request wrote it (``false``: the same evidence was recorded before)."""
+
+    certification: ImageCheckCertification
+    stored: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    changed: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @classmethod
+    def recorded(cls, found: ImageCheckRecorded) -> ImageCheckCertificationBody:
+        return cls(
+            certification=found.certification,
+            stored=found.stored,
+            config_revision=found.config_revision,
+        )
+
+    @classmethod
+    def invalidated(cls, found: ImageCheckInvalidated) -> ImageCheckCertificationBody:
+        return cls(
+            certification=found.certification,
+            changed=found.changed,
+            config_revision=found.config_revision,
+        )
+
+
+_IMAGE_CHECK_RULES = (
+    "An image checker (its `checker_fingerprint`: 12 hex of its endpoint host, model, reported "
+    "version and `image_check` template) is certified per image-output policy (NFR-QUAL-12, "
+    "ADR-182). `evidence_kind: eval_run` takes one policy's row of a committed E-11 report "
+    "(`report_path`, `report_sha256`, `checker_fingerprint`, `policy_id`, `policy_version`, "
+    "`verdict`, `fn`, `fp`, `floors`, `uncertifiable`): it certifies only a report that passed "
+    "both its false-negative and false-positive floors on reviewed labels (else 422 "
+    "`invalid_evidence`), and the report is re-hashed when its path names a file here. "
+    "`evidence_kind: external_attestation` takes the checker vendor's published evaluation "
+    "(`title`, an https `url`, never fetched, `publisher`, a `publication_date` not in the "
+    "future and the quoted `figure {metric, value 0-1, n?}`); it is accepted only for a policy "
+    "flagged `external_evidence_only`, which only the seeded minors policy is (else 422 "
+    "`attestation_not_allowed`), and an `eval_run` is refused for that policy (422 "
+    "`eval_run_not_allowed`): Epistrel never measures its false negatives. The newest valid "
+    "record for a checker and policy decides `certified` on the images checked afterwards; "
+    "images checked before keep the flag they were checked with."
+)
+
+
+@admin_router.post(
+    "/image-check",
+    response_model=ImageCheckCertificationBody,
+    status_code=201,
+    responses={200: {"model": ImageCheckCertificationBody, "description": "Recorded before."}},
+    operation_id="record_image_check_certification",
+    summary="Record an image checker's certification",
+    description=(
+        "Record an image checker's certification for one policy: 201 with the record, or 200 "
+        "with the stored one when the same evidence (checker, policy, kind and evidence, never "
+        "who or when) was recorded before, whatever its status. " + _IMAGE_CHECK_RULES
+    ),
+)
+async def record_image_check_certification(
+    body: ImageCheckCertificationRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ImageCheckCertificationBody:
+    found = await engine.record_image_check_certification(ctx, body)
+    response.status_code = 201 if found.stored else 200
+    return answered(
+        ImageCheckCertificationBody.recorded(found), ctx, response, replayed=found.replayed
+    )
+
+
+@admin_router.post(
+    "/image-check/{certification_id}/invalidate",
+    response_model=ImageCheckCertificationBody,
+    operation_id="invalidate_image_check_certification",
+    summary="Withdraw an image checker's certification",
+    description=(
+        "Mark an image checker's certification `stale` (`reason: drift` or `manual`, a `note` "
+        "required and never stored), with `invalidated_at`, `invalidated_by` and "
+        "`invalidated_reason`. The policy then reads `certified: false` for that checker on "
+        "images checked afterwards, unless another valid record certifies it. One already "
+        "stale answers unchanged (`changed: false`). 404 `certification_not_found`."
+    ),
+)
+async def invalidate_image_check_certification(
+    certification_id: CertificationId,
+    body: InvalidateRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> ImageCheckCertificationBody:
+    found = await engine.invalidate_image_check_certification(ctx, certification_id, body)
+    return answered(
+        ImageCheckCertificationBody.invalidated(found), ctx, response, replayed=found.replayed
+    )
 
 
 @evals_router.get(

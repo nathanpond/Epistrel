@@ -1799,6 +1799,43 @@ class CertificationRecordConflict(EpistrelError):
     http_status = 409
 
 
+class InvalidEvidence(EpistrelError):
+    """An image-checker certification's evidence does not hold (NFR-QUAL-12; #270), and nothing
+    was recorded. ``details``: ``reason`` (``schema`` with ``errors``, ``unknown_policy``,
+    ``not_image_output``, ``mismatch``, ``verdict``, ``uncertifiable``, ``report_path``,
+    ``report_hash``)."""
+
+    code = "invalid_evidence"
+    http_status = 422
+
+
+class AttestationNotAllowed(EpistrelError):
+    """An external attestation for a policy that is not ``external_evidence_only`` (#270, ADR-182):
+    such a policy is certified only by an E-11 run. ``details``: ``policy_id``."""
+
+    code = "attestation_not_allowed"
+    http_status = 422
+
+
+class EvalRunNotAllowed(EpistrelError):
+    """An eval run for a policy flagged ``external_evidence_only`` (the seeded minors policy; #270,
+    ADR-182): Epistrel never measures its false negatives, so only an external attestation
+    certifies it. ``details``: ``policy_id``."""
+
+    code = "eval_run_not_allowed"
+    http_status = 422
+
+
+class InvalidSetting(EpistrelError):
+    """A deployment setting whose value the stored data refuses (#270's ``image_check_floors``:
+    an unknown or non-image-output policy, or ``max_fn`` on an ``external_evidence_only``
+    policy). Nothing is written. ``details``: ``field``, ``policy_id`` and ``reason``
+    (``unknown_policy``, ``not_image_output``, ``fn_not_measurable``)."""
+
+    code = "invalid_setting"
+    http_status = 422
+
+
 class CertificationRunInProgress(EpistrelError):
     """A certification run for this fingerprint is queued or running (#233): ``details``:
     ``run_id``, ``fingerprint``."""

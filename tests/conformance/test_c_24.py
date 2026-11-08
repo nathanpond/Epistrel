@@ -33,6 +33,8 @@ from epistrel.config import Settings
 from epistrel.core.errors import ImageLimitReached
 from epistrel.core.ids import new_ulid
 from epistrel.core.media.checks import PASSED_STATEMENT, UNCHECKED_STATEMENT
+from epistrel.core.profiles import certification
+from epistrel.core.profiles.certification import ImageCheckCertificationRequest
 from epistrel.core.ratings import RatingFields, RatingReplacement, create_rating, update_rating
 from epistrel.core.tables.images import ImageJobKind
 from epistrel.engine import Engine
@@ -209,24 +211,45 @@ async def test_c_24__m8_certified(
 
         before = await uploaded(client, content_rating_id=rating)
         assert certified(before) == {MINORS: False, policy_id: False}
-        record = new_ulid()
-        other = new_ulid()
+        # #270: records go through the recording rules (the table is append-only and refuses
+        # DELETE), with evidence unique to this run; they are withdrawn afterwards.
+        run = new_ulid()
+        version = 1  # the rating's policy was created above and never edited
+        attestation = ImageCheckCertificationRequest(
+            checker_fingerprint=found.fingerprint,
+            policy_id=MINORS,
+            evidence_kind="external_attestation",
+            evidence_ref={
+                "title": f"C-24 fixture evaluation {run}",
+                "url": "https://example.com/c-24",
+                "publisher": "Example Labs",
+                "publication_date": "2026-01-01",
+                "figure": {"metric": "recall", "value": 0.99},
+            },
+        )
+        elsewhere = ImageCheckCertificationRequest(
+            checker_fingerprint="0" * 12,
+            policy_id=policy_id,
+            evidence_kind="eval_run",
+            evidence_ref={
+                "report_path": f"build/c-24-{run}.md",
+                "report_sha256": "a" * 64,
+                "checker_fingerprint": "0" * 12,
+                "policy_id": policy_id,
+                "policy_version": version,
+                "verdict": "pass",
+                "fn": {"rate": 0.0, "n": 100},
+                "fp": {"rate": 0.0, "n": 100},
+                "floors": {"max_fn": 0.1, "max_fp": 0.1},
+                "uncertifiable": None,
+            },
+        )
+        recorded: list[str] = []
         try:
             async with engine.begin() as conn:
-                await conn.execute(
-                    text(
-                        "INSERT INTO image_check_certifications (id, checker_fingerprint, "
-                        "policy_id) VALUES (:i, :f, :p), (:o, :x, :q)"
-                    ),
-                    {
-                        "i": record,
-                        "f": found.fingerprint,
-                        "p": MINORS,
-                        "o": other,
-                        "x": "0" * 12,
-                        "q": policy_id,
-                    },
-                )
+                for request in (attestation, elsewhere):
+                    row, _ = await certification.record_image_check(conn, request, principal="c-24")
+                    recorded.append(row.id)
             after = await uploaded(client, content_rating_id=rating)
             assert certified(after) == {MINORS: True, policy_id: False}
             names = {p["policy_id"]: p["name"] for p in after["check"]["policies"]}
@@ -235,10 +258,13 @@ async def test_c_24__m8_certified(
             assert "certified" not in after["check"]
         finally:
             async with engine.begin() as conn:
-                await conn.execute(
-                    text("DELETE FROM image_check_certifications WHERE id IN (:i, :o)"),
-                    {"i": record, "o": other},
-                )
+                for row_id in recorded:
+                    await certification.invalidate_image_check(
+                        conn,
+                        row_id,
+                        certification.InvalidateRequest(reason="manual", note="c-24 cleanup"),
+                        principal="c-24",
+                    )
 
 
 def _schemas_with(document: Any, name: str, path: str = "") -> list[tuple[str, dict[str, Any]]]:

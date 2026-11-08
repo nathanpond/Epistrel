@@ -23,6 +23,7 @@ indexed as a medium (``records.media_record``) and its declared subjects pass th
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import clock
 from epistrel.core.ids import new_ulid
+from epistrel.core.images.errors import FencedToken
 from epistrel.core.tables.images import (
     TERMINAL_STATUSES,
     AttemptOutcome,
@@ -46,6 +48,9 @@ from epistrel.core.tables.images import (
     image_reservations,
 )
 from epistrel.core.tables.media import CheckStatus, MediaKind, MediaSource, MediaState, media_assets
+from epistrel.observability.metrics import count_attempt_outcome
+
+logger = logging.getLogger(__name__)
 
 CHANNEL_PREFIX = "image_job_"
 
@@ -97,6 +102,13 @@ class ImageJob:
     checked_policies: list[list[Any]] | None = None
     """#264: the story's image policy set (``[[policy_id, version], …]``) at the job's last
     prompt and output check; ``None`` before the first."""
+    waiting_for_horizon: bool = False
+    """#267: a lease expiry fenced an attempt in flight; no attempt starts before its horizon."""
+    confirm_deadline_at: datetime | None = None
+    """#267: when a ``confirms_completion`` adapter's status polling gives up."""
+    confirm_fallback: bool = False
+    """#267 (sticky): the job fell back to the non-confirming rule after
+    ``image_confirm_wait_max_s``."""
 
     @property
     def waiting(self) -> bool:
@@ -136,6 +148,10 @@ class Reservation:
     outcome: AttemptOutcome | None
     started_at: datetime | None
     created_at: datetime
+    horizon_at: datetime | None = None
+    """#267: ``started_at + request_timeout_s + image_attempt_grace_s``."""
+    cancel_result: str | None = None
+    last_status: str | None = None
 
 
 def _job(row: Any) -> ImageJob:
@@ -167,6 +183,9 @@ def _job(row: Any) -> ImageJob:
         checked_policies=None
         if m["checked_policies"] is None
         else [list(p) for p in m["checked_policies"]],
+        waiting_for_horizon=bool(m["waiting_for_horizon"]),
+        confirm_deadline_at=m["confirm_deadline_at"],
+        confirm_fallback=bool(m["confirm_fallback"]),
     )
 
 
@@ -182,6 +201,9 @@ def _reservation(row: Any) -> Reservation:
         outcome=None if m["outcome"] is None else AttemptOutcome(m["outcome"]),
         started_at=m["started_at"],
         created_at=m["created_at"],
+        horizon_at=m["horizon_at"],
+        cancel_result=m["cancel_result"],
+        last_status=m["last_status"],
     )
 
 
@@ -349,15 +371,35 @@ async def set_status(
 
 
 async def update_reservation(conn: AsyncConnection, job_id: str, token: str, **values: Any) -> None:
-    """Write ``values`` on one attempt's row."""
-    await conn.execute(
+    """Write ``values`` on one attempt's row. A written ``outcome`` is counted
+    (``epistrel_image_attempt_outcomes_total{outcome}``, #267) and logged with ids only."""
+    written = await conn.scalar(
         update(image_reservations)
         .where(
             image_reservations.c.job_id == job_id,
             image_reservations.c.attempt_token == token,
         )
         .values(**values)
+        .returning(image_reservations.c.job_id)
     )
+    outcome = values.get("outcome")
+    if written is not None and isinstance(outcome, str):
+        count_attempt_outcome(outcome)
+        logger.info("image job %s attempt %s: %s", job_id, token, outcome)
+
+
+async def require_token(conn: AsyncConnection, job_id: str, token: str) -> None:
+    """Refuse a fenced caller (#267): the job's row, locked, must still carry ``token``
+    (``UPDATE … WHERE id = :id AND attempt_token = :t`` with a rowcount check); otherwise
+    ``FencedToken``. Promotion, attachment and every counter change except the settlement path
+    call it first, in their own transaction."""
+    found = await conn.execute(
+        update(image_jobs)
+        .where(image_jobs.c.id == job_id, image_jobs.c.attempt_token == token)
+        .values(attempt_token=image_jobs.c.attempt_token)
+    )
+    if found.rowcount != 1:
+        raise FencedToken(job_id, token)
 
 
 async def next_attempt(conn: AsyncConnection, job_id: str, old_token: str) -> str | None:
@@ -414,7 +456,8 @@ async def cancel_in(conn: AsyncConnection, job_id: str, *, reason: str = ERASED_
     await update_reservation(
         conn, job_id, job.attempt_token, outcome=AttemptOutcome.DISCARDED.value
     )
-    await limits.release_all(conn, job_id)
+    # #267: an attempt a lease expiry fenced stays held until its horizon (its timer releases it).
+    await limits.release_all(conn, job_id, current_token=job.attempt_token)
     await conn.execute(
         update(jobs_table)
         .where(
@@ -563,6 +606,7 @@ __all__ = [
     "read_job",
     "read_reservation",
     "read_statuses",
+    "require_token",
     "reservations",
     "set_result",
     "set_status",

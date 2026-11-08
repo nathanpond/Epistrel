@@ -32,8 +32,15 @@ STATUS_TEXT = (
     "`image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, "
     "`provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and "
     "null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` "
-    "and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts "
-    "its provider attempts. A job that failed on a policy also answers `policy_ids`. A story job "
+    "and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists "
+    "its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it "
+    "`requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. "
+    "A worker that stalls past its lease is fenced: no attempt starts before the stalled "
+    "call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never "
+    "shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). With an adapter that "
+    "confirms completion, the job asks the provider until `confirm_deadline_at`, then falls "
+    "back to retrying (`confirm_fallback`). A job that failed on a policy also answers "
+    "`policy_ids`. A story job "
     "is revalidated against its story before its image is attached (FR-IMG-4): it ends "
     "`target_gone` when the story was deleted, or `stale` when its source changed "
     "(`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or "
@@ -42,6 +49,29 @@ STATUS_TEXT = (
     "image has passed every check it has no media asset, URL or history entry: nothing a "
     "consumer can reach."
 )
+
+
+class AttemptBody(BaseModel):
+    """One provider attempt (FR-IMG-11; #267)."""
+
+    attempt_token: str
+    outcome: str | None = Field(
+        description="Null while in flight; then `promoted`, `rejected`, `failed`, `discarded`, "
+        "`settled`, `adopted`, `cancelled`, `released_at_horizon`, `abandoned_fallback`, "
+        "`late_discarded` or `late_after_horizon`."
+    )
+    requested: int = Field(description="The outputs the attempt reserved.")
+    used: int | None = Field(description="Outputs counted as usage; null while held.")
+    overage: int | None = Field(
+        description="Outputs counted past the reservation; null while held."
+    )
+    extra_outputs: int | None = Field(
+        description="Outputs beyond what was requested, discarded unchecked; null while held."
+    )
+    cost: dict[str, str] | Literal["unknown"] | None = Field(
+        description="`{amount, currency}` in the provider's currency, `unknown` when the "
+        "provider gave none (never 0), or null before the attempt returned."
+    )
 
 
 class ImageJobBody(BaseModel):
@@ -53,7 +83,7 @@ class ImageJobBody(BaseModel):
     status_reason: str | None
     asset_ids: list[str] | None = Field(default=None, exclude_if=lambda v: v is None)
     candidate_ids: list[str] | None = Field(default=None, exclude_if=lambda v: v is None)
-    attempts: int
+    attempts: list[AttemptBody]
     created_at: datetime
     updated_at: datetime
     policy_ids: list[str] | None = Field(
@@ -84,6 +114,21 @@ class ImageJobBody(BaseModel):
         exclude_if=lambda v: v is None,
         description="When a waiting job revalidates next (absent otherwise).",
     )
+    waiting_for_horizon: bool = Field(
+        default=False,
+        description="A worker stalled past its lease with a provider call in flight: no attempt "
+        "starts before that call's horizon (its timeout plus `image_attempt_grace_s`).",
+    )
+    confirm_deadline_at: datetime | None = Field(
+        default=None,
+        description="With an adapter that confirms completion: when the job stops asking the "
+        "provider about a stalled call and retries (null otherwise).",
+    )
+    confirm_fallback: bool = Field(
+        default=False,
+        description="The job fell back to retrying with no definitive answer about a stalled "
+        "call (sticky).",
+    )
 
     @classmethod
     def of(cls, view: ImageJobView) -> ImageJobBody:
@@ -95,13 +140,27 @@ class ImageJobBody(BaseModel):
             status_reason=view.status_reason,
             asset_ids=ids if view.result_field == "asset_ids" else None,
             candidate_ids=ids if view.result_field == "candidate_ids" else None,
-            attempts=view.attempts,
+            attempts=[
+                AttemptBody(
+                    attempt_token=a.attempt_token,
+                    outcome=a.outcome,
+                    requested=a.requested,
+                    used=a.used,
+                    overage=a.overage,
+                    extra_outputs=a.extra_outputs,
+                    cost=a.cost,
+                )
+                for a in view.attempts
+            ],
             created_at=view.created_at,
             updated_at=view.updated_at,
             policy_ids=None if view.policy_ids is None else list(view.policy_ids),
             status_detail=view.status_detail,
             waiting_on="pause" if view.waiting_on == "pause" else None,
             next_check_at=view.next_check_at,
+            waiting_for_horizon=view.waiting_for_horizon,
+            confirm_deadline_at=view.confirm_deadline_at,
+            confirm_fallback=view.confirm_fallback,
         )
 
 

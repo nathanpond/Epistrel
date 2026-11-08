@@ -11,8 +11,12 @@
   ``async`` stub acknowledges at once and answers them from ``collect``.
 - ``Fail(exc)``: raise ``exc`` (from ``submit``; from ``collect`` with ``at="collect"``).
 - ``Stall(event, then)``: wait until ``event`` is set (a test releases it), then do ``then``.
+  An ``async`` stub stalls in ``collect``; its ``then`` may be a ``StatusSeq`` (#267: a stalled
+  call the provider can report on).
 - ``StatusSeq(states, outputs)``: an ``async`` confirming stub: ``submit`` acknowledges, and each
-  ``status`` call answers the next state (the last repeats), with ``outputs`` on ``succeeded``.
+  ``status`` call answers the next state (the last repeats), with ``status_outputs`` (default
+  ``outputs``) on ``succeeded``, and their cost unless ``status_cost`` is off; ``collect``
+  answers ``outputs``.
 
 An exhausted script raises ``StubScriptExhausted``. ``requests`` records every
 ``(request, idempotency_key as received, attempt_ref)``; refs are ``stub-1``, ``stub-2`` …
@@ -96,15 +100,17 @@ class Fail:
 
 
 @dataclass(frozen=True)
-class Stall:
-    event: asyncio.Event
-    then: Outputs | Fail = field(default_factory=Outputs)
-
-
-@dataclass(frozen=True)
 class StatusSeq:
     states: Sequence[AttemptState]
     outputs: Outputs = field(default_factory=Outputs)
+    status_outputs: Outputs | None = None
+    status_cost: bool = True
+
+
+@dataclass(frozen=True)
+class Stall:
+    event: asyncio.Event
+    then: Outputs | Fail | StatusSeq = field(default_factory=Outputs)
 
 
 type Step = Outputs | Fail | Stall | StatusSeq
@@ -149,6 +155,7 @@ class StubImageGenerator:
         self.closed = 0
         self._pending: dict[str, Step] = {}
         self._statuses: dict[str, list[AttemptState]] = {}
+        self._reports: dict[str, StatusSeq] = {}
 
     # -- the factory ------------------------------------------------------------------------
 
@@ -183,8 +190,12 @@ class StubImageGenerator:
         if self._capabilities.submission == "async":
             if isinstance(step, Fail) and step.at == "submit":
                 raise step.exc
-            if isinstance(step, StatusSeq):
-                self._statuses[ref] = list(step.states)
+            final: Step = step
+            while isinstance(final, Stall):
+                final = final.then
+            if isinstance(final, StatusSeq):
+                self._statuses[ref] = list(final.states)
+                self._reports[ref] = final
             self._pending[ref] = step
             return SubmitResult(attempt_ref=ref)
         done = await self._settle(step)
@@ -203,10 +214,11 @@ class StubImageGenerator:
         state = states.pop(0) if len(states) > 1 else states[0]
         if state != "succeeded":
             return StatusResult(state)
-        step = self._pending.get(attempt_ref)
-        done = step.outputs if isinstance(step, StatusSeq) else Outputs()
+        report = self._reports.get(attempt_ref)
+        done = Outputs() if report is None else (report.status_outputs or report.outputs)
         images = done.images()
-        return StatusResult(state, images, ImageUsage(len(images)), done.cost)
+        cost = done.cost if report is None or report.status_cost else None
+        return StatusResult(state, images, ImageUsage(len(images)), cost)
 
     async def cancel(self, attempt_ref: str) -> CancelResult:
         self.cancelled.append(attempt_ref)

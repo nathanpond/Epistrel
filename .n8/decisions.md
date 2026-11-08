@@ -12976,6 +12976,54 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #792 is fixed at the source. The image fixtures' catalog character (`tests/image_prompt_support.character_body` and `APPEARANCE`, which `catalog_image_support` reuses) is renamed from "Wren Calloway" to "Odessa Thornquist", a name no erasure test uses. The M7 erasure test is unchanged. The sweep of the other M8 image support modules found no other catalog record that collides. Their Wren, Lily, Marcus, Jenni and Bobby are a story-scoped cast, or a story's catalog snapshots, which no catalog-scope erasure reads. `image_subject_support`'s catalog names ("Ysolde Quillfeather", "Perpetua Hawksmoor") match nothing.
   **Why:** the orchestrator's instruction and the issue's first option. A catalog-scope dry run lists every catalog mention of the name, so the fixture is what must not share it.
   **Issue:** #792
+- **Decision:** #267's per-kind lease-expiry hook is a `JobHandler.on_lease_expired` field, `(conn, row id, payload) -> due_at | None`. `queue.reap` calls it inside a SAVEPOINT, in the transaction that flips the lease. A hook that raises is logged and leaves its row running and lapsed for the next reap, so the rest of the batch is still requeued. The `image_job` kind and the new `image_status_poll` kind both register `attempts.on_lease_expired`.
+  **Why:** the AC asks for a hook per kind in `reap`, and the handler registry is already per kind. A failing hook must not requeue an image job without fencing it, because two provider calls could then overlap.
+  **Issue:** #267
+- **Decision:** the fence is the existing `image_jobs.attempt_token`, which `on_lease_expired` advances. If an attempt is in flight (`sending` or `accepted`, with no outcome), the hook also sets `waiting_for_horizon`, schedules `image_attempt_horizon` (target `job_id:old_token`, no `story_id`, because the timer is deployment accounting) and returns `horizon_at`, so the jobs row is parked until then. Otherwise the job is due at once. If the lease is lost during the checks or the promotion, the next run begins a new reserved attempt instead of reusing the abandoned staged outputs, as the AC's "advances the token without a horizon" requires.
+  **Why:** the AC's Tokens and Horizon bullets. Reusing staged outputs under a new token would need a new resume protocol, which the AC doesn't ask for.
+  **Issue:** #267
+- **Decision:** `FencedToken` lives in `core/images/errors.py`. `store.require_token` makes the rowcount compare (`UPDATE image_jobs SET attempt_token = attempt_token WHERE id AND attempt_token = :t`). `limits.reserve` calls it first, and the promotion transaction calls it before `target.promote`. `ImageTarget.promote` keeps its signature, because the job it receives was read under lock and token-checked in the same transaction. The planner line asked for a new required `attempt_token` parameter, but that would change every target (catalog, story, test) and check nothing more.
+  **Why:** the AC's "compare and refuse (`FencedToken`)" is enforced at the transaction that attaches. Planner discretion.
+  **Issue:** #267
+- **Decision:** the settlement path is `attempts.settle_attempt[_in](job_id, token, outputs, cost, usage)`. It locks the record and branches on its state:
+  - `held` → `late_discarded`;
+  - `released` → `late_after_horizon`, or the `adopted`, `failed` or `cancelled` that the confirmation passes. The new `released → settled` branch of `limits.counter_deltas` gives the deltas, and `limits.settle` now accepts it;
+  - `settled` → `late_duplicate`, which is reported (metric and log) but never stored over the record's outcome, so an adopted record keeps reading `adopted`.
+
+  Cost lives in `image_reservations.applied_parameters.cost` (`{amount, currency}` or `"unknown"`) until #269's `image_costs`. The one-time fill-in only moves an `unknown` or null cost to a known one.
+  **Why:** storing `late_duplicate` would erase the outcome that explains the counters, and #269 owns the cost table.
+  **Issue:** #267, #269
+- **Decision:** endings (`_end_in`, `cancel_job`, erasure's `store.cancel_in`) and the promotion call `limits.release_all(current_token=…)`. It keeps a held record of another token that is in flight before its horizon, and the horizon timer releases it. `limits._stuck` does not count such a record as stuck before its horizon. A normal cancel during a call (same token, no lease expiry) still releases at once, and that call's later return is now settled as `late_after_horizon`. Before #267 it was only logged.
+  **Why:** the planner's "consumer cancel during a wait ... the reservation stays held until the horizon timer releases it, and late results still settle", and the AC's "reconciler reports no drift after every step".
+  **Issue:** #267
+- **Decision:** after a lease expiry, the runner's `_after_fence` handles a current token with no record:
+  - it releases any never-sent record of an old token (`discarded`);
+  - before the stalled record's horizon it returns `waiting_for_horizon` with `requeue_in`;
+  - at the horizon it releases the stalled record if it is still held (`released_at_horizon`, cost `unknown`). This is idempotent with the timer;
+  - then it calls `attempts.confirm` for a `confirms_completion` adapter, or else begins a new reservation under the current token (`_begin_current`). A refused reservation ends the job `cap_reached`.
+
+  `confirm` calls `cancel` once and stores the answer (`accepted`, `not_supported` or `error`) in `cancel_result`, along with `confirm_deadline_at = horizon + image_confirm_wait_max_s`. Each run then polls `status` once and stores `last_status`. What follows depends on the status: adopt; settle and retry; fall back; or schedule `image_status_poll` (target `job_id`) for `image_status_poll_s` later, capped at the deadline. The `image_status_poll` handler runs the same `run_image_job`.
+  **Why:** the AC's Confirming bullets ("the image job handler, not the reaper").
+  **Issue:** #267
+- **Decision:** adoption stages the first `n` outputs under the current token. It does so on an attempt row that reserves nothing (`limits.insert_unreserved_record`, `send_state = returned`, no `started_at`). That row carries the checks' `rejected` or `promoted` outcome, so a rejected adoption counts against `image_retry_budget` like any violation. The old record's seed is written at the `sending` commit, so the adopted outputs' metadata names the seed that was really sent. If a late return settled the record first, the job retries instead of adopting.
+  **Why:** the planner's "adopted outputs that fail the image check retry like any violation". Without a row on the current token, the checks and the promotion would have no attempt to record against.
+  **Issue:** #267
+- **Decision:** in `GET /image-jobs/{id}` and `ImageJobView`, `attempts` is now a list, replacing the old integer count: `[{attempt_token, outcome, requested, used, overage, extra_outputs, cost}]`. It holds every record with a `started_at`, ordered by it, and `used`, `overage` and `extra_outputs` are null while the record is `held`. The view also gains `waiting_for_horizon`, `confirm_deadline_at` and `confirm_fallback`, which are always present. The `image_jobs.attempts` column is unchanged. C-22's two `view.attempts` assertions now use `len(...)`, and `openapi.json` is regenerated.
+  **Why:** the AC's Reported bullet names the field `attempts`. The Console reads this field, so this is a Console-visible change.
+  **Issue:** #267
+- **Decision:** `Capabilities.request_timeout_s` keeps its default of 120 (`ge=1`) and is not made required. The horizon uses the `image_generation` row's `request_timeout_s` override when it is set, and the adapter's value otherwise; that is the same value the OpenRouter adapter's HTTP timeout uses. No cost-lookup method is added to the port.
+  **Why:** the "> 0" half of the planner line is already enforced. Making the field required would churn every adapter and test without changing any horizon.
+  **Issue:** #267
+- **Decision:** the new settings are `image_attempt_grace_s` (0–3600, default 60), `image_status_poll_s` (5–600, default 15) and `image_confirm_wait_max_s` (60–86400, default 1800). A poll interval above the wait is a 422 `validation_error`, whichever of the two is changed. Migration `0140_image_attempt_fencing` adds `image_jobs.waiting_for_horizon`, `confirm_deadline_at` and `confirm_fallback`, adds `image_reservations.cancel_result` and `last_status`, and extends the outcome CHECK. Its downgrade maps `adopted` to `promoted` and the other new outcomes to `discarded`. The new metric `epistrel_image_attempt_outcomes_total{outcome}` is counted in `store.update_reservation` whenever it writes an outcome. #256's legacy resume branch no longer rewrites an outcome that is already set.
+  **Why:** the planner's settings and mechanics lines.
+  **Issue:** #267
+- **Decision:** the tests:
+  - `test_i_26__m8_late_returns` (`part("M8", "FR-IMG-1,11")`) runs on one scratch space. The sync stub covers the non-confirming, pre-horizon and never-returns clauses, then the port switches to an async confirming stub. Horizons are backdated in SQL, `horizon_reached` is called directly, and the settings bounds are checked over REST.
+  - `test_x_07__m8_horizon` (`part("M8", "NFR-REL-5")`) runs `recovery_pass` twice and drains jobs with a `Worker`. It asserts exactly one release: the `released_at_horizon` metric rises by one, from either the job's own run or the timer, whichever runs first. It also asserts exactly one fallback.
+  - The stub's `Stall` may wrap a `StatusSeq`, for an async call that stalls in `collect` and can be reported on. `StatusSeq` gains `status_outputs` and `status_cost`.
+
+  **Why:** the test plan and the planner's test lines.
+  **Issue:** #267
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

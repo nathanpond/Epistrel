@@ -17,9 +17,9 @@ requesting ``principal``. A story job generates one image (``params.n = 1``); on
 is ``promoted`` and only a catalog job is ``candidates_ready``.
 
 ``image_reservations`` holds one row per provider attempt, unique on ``(job_id,
-attempt_token)``: when it was ``started_at`` and its ``horizon_at`` (null until the worker sends;
-#267 fills the horizon), its ``send_state`` (``prepared`` until the worker sends, ``sending``
-committed before ``submit``, ``accepted`` once an ``async`` adapter acknowledged it, ``returned``
+attempt_token)``: when it was ``started_at`` and its ``horizon_at`` (null until the worker
+sends), its ``send_state`` (``prepared`` until the worker sends, ``sending`` committed before
+``submit``, ``accepted`` once an ``async`` adapter acknowledged it, ``returned``
 with a ``sync`` adapter's results, ``ambiguous`` for #268), the provider's ``attempt_ref``, the
 attempt's ``idempotency_key``, the ``applied_parameters`` the adapter reported, how many
 ``outputs_returned`` and its ``outcome`` (``promoted``, ``rejected``, ``failed`` or
@@ -45,6 +45,14 @@ story's ``{waiting_on, next_check_at}`` (#264). #264 adds ``wait_started_at`` (t
 a paused story, set once) and ``checked_policies`` (the story's image policy set,
 ``[[policy_id, version], …]``, at the job's last prompt and output check).
 
+#267 (FR-IMG-11's late returns) adds ``image_jobs.waiting_for_horizon`` (a lease expiry fenced
+an attempt in flight, and no attempt starts before its horizon), ``confirm_deadline_at`` (when a
+``confirms_completion`` adapter's status polling gives up: the horizon plus
+``image_confirm_wait_max_s``) and ``confirm_fallback`` (sticky: the job fell back to the
+non-confirming rule), and ``image_reservations.cancel_result`` (what the one ``cancel`` after the
+horizon answered: ``accepted``, ``not_supported`` or ``error``) and ``last_status`` (the last
+``status`` answer). ``horizon_at`` is ``started_at + request_timeout_s + image_attempt_grace_s``.
+
 ``image_jobs.result`` (#260) holds what a successful job made beyond its ``asset_ids``: a catalog
 job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes.
 
@@ -67,6 +75,7 @@ from enum import StrEnum
 
 from sqlalchemy import (
     TIMESTAMP,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -153,10 +162,27 @@ class LimitScope(StrEnum):
 
 
 class AttemptOutcome(StrEnum):
+    """What became of one provider attempt (``image_reservations.outcome``, null while it is in
+    flight). #256's four, then #267's: ``settled`` (its record settled with no other outcome),
+    ``adopted`` (a confirming adapter's ``succeeded`` taken over by the job after the horizon),
+    ``cancelled`` (the provider confirmed the cancel), ``released_at_horizon`` (it never returned
+    by its horizon), ``abandoned_fallback`` (``image_confirm_wait_max_s`` passed with no
+    definitive status), and the fenced worker's late returns: ``late_discarded`` (before the
+    horizon), ``late_after_horizon`` (after it) and ``late_duplicate`` (onto a settled record;
+    reported, never stored over the earlier outcome)."""
+
     PROMOTED = "promoted"
     REJECTED = "rejected"
     FAILED = "failed"
     DISCARDED = "discarded"
+    SETTLED = "settled"
+    ADOPTED = "adopted"
+    CANCELLED = "cancelled"
+    RELEASED_AT_HORIZON = "released_at_horizon"
+    ABANDONED_FALLBACK = "abandoned_fallback"
+    LATE_DISCARDED = "late_discarded"
+    LATE_AFTER_HORIZON = "late_after_horizon"
+    LATE_DUPLICATE = "late_duplicate"
 
 
 def _in(column: str, values: type[StrEnum]) -> str:
@@ -209,6 +235,9 @@ image_jobs = Table(
     Column("status_detail", JSONB, nullable=True),
     Column("wait_started_at", TIMESTAMP(timezone=True), nullable=True),
     Column("checked_policies", JSONB, nullable=True),
+    Column("waiting_for_horizon", Boolean, nullable=False, server_default=text("false")),
+    Column("confirm_deadline_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("confirm_fallback", Boolean, nullable=False, server_default=text("false")),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(STATUS_CHECK, name="status"),
     CheckConstraint(STORY_CHECK, name="story"),
@@ -247,6 +276,8 @@ image_reservations = Table(
     Column("basis", Text, nullable=False, server_default=text("'actual'")),
     Column("state", Text, nullable=False),
     Column("settled_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("cancel_result", Text, nullable=True),
+    Column("last_status", Text, nullable=True),
     PrimaryKeyConstraint("job_id", "attempt_token", name="pk_image_reservations"),
     CheckConstraint(SEND_STATE_CHECK, name="send_state"),
     CheckConstraint(OUTCOME_CHECK, name="outcome"),

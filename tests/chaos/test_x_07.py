@@ -1832,3 +1832,139 @@ async def test_x_07__m8_candidate_ttl(quiet: Probe, pg_url: str, engine: AsyncEn
             engine, "DELETE FROM catalog.image_candidates WHERE entry_id = :e", e=entry_id
         )
         await _execute(engine, "DELETE FROM media_assets WHERE id = :a", a=asset_id)
+
+
+# -- image attempt horizons (M8, #267) ----------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_horizon(pg_url: str, tmp_path: Path) -> None:
+    """#267: a confirming adapter's call stalls, the worker loses its lease, and the reaper
+    fences the attempt and schedules its ``image_attempt_horizon`` timer. With no worker running
+    the clock moves past the horizon and past ``image_confirm_wait_max_s``. The restart's
+    recovery pass fires the overdue timer, and the drained jobs release the reservation once and
+    run the overdue fallback once: one ``cancel``, ``confirm_fallback`` set, the record
+    ``abandoned_fallback``, one retry. A second recovery pass and drain change nothing.
+
+    Complements asserted: before the restart the record is still held and nothing was retried,
+    and the counters reconcile after each pass."""
+    from epistrel.core.tables.images import ImageJobKind
+    from epistrel.observability.metrics import IMAGE_ATTEMPT_OUTCOMES
+    from epistrel.orchestrator.images import attempts
+    from epistrel.orchestrator.images import jobs as image_jobs
+    from epistrel.testing.images import ScriptedChecks, installed_checks, registered_target
+    from tests.image_job_support import configure, prepared
+    from tests.image_limits_support import CatalogTarget, assert_clean, records, space
+    from tests.image_support import Outputs, Stall, StatusSeq, StubImageGenerator, registered
+    from tests.image_support import catalog_origin as origin_of
+
+    def releases() -> float:
+        return float(IMAGE_ATTEMPT_OUTCOMES.labels(outcome="released_at_horizon")._value.get())
+
+    async def fenced_record() -> Any:
+        found = [r for r in await records(sp.db, job_id) if r.attempt_token == old]
+        assert len(found) == 1
+        return found[0]
+
+    async with space(pg_url, tmp_path, "x07_horizon") as sp:
+        gate = asyncio.Event()
+        stub = StubImageGenerator(
+            submission="async",
+            confirms_completion=True,
+            script=[Stall(gate, StatusSeq(["running"], Outputs(2))), Outputs(2)],
+        )
+        with (
+            registered("stub_async", stub),
+            registered_target(CatalogTarget(), kind=ImageJobKind.CATALOG),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            await configure(sp.lib, sp.settings, "stub_async")
+            job_id = await sp.insert(
+                prepared(kind=ImageJobKind.CATALOG, origin=origin_of(new_ulid()), n=2)
+            )
+            stalled = asyncio.create_task(sp.run(job_id))
+            try:
+                await _wait_for(lambda: _sent_one(stub), within=10)
+                old = await _scalar(
+                    sp.db, "SELECT attempt_token::text FROM image_jobs WHERE id = :j", j=job_id
+                )
+
+                async def accepted() -> bool:
+                    return bool((await fenced_record()).send_state.value == "accepted")
+
+                await _wait_for(accepted, within=10)
+                await _execute(
+                    sp.db,
+                    "UPDATE jobs SET status = 'running', lease_until = now() - interval '1 second'"
+                    " WHERE kind = 'image_job' AND payload->>'image_job_id' = :j",
+                    j=job_id,
+                )
+                assert len(await queue.reap(sp.db)) == 1
+                # Workers down for three hours: past the horizon and past confirm_wait_max.
+                for sql in (
+                    "UPDATE image_reservations SET horizon_at = now() - interval '3 hours' "
+                    "WHERE job_id = :j",
+                    "UPDATE timers SET due_at = now() - interval '3 hours' WHERE target LIKE :p",
+                    "UPDATE jobs SET due_at = now() - interval '3 hours' "
+                    "WHERE payload->>'image_job_id' = :j",
+                ):
+                    await _execute(sp.db, sql, j=job_id, p=f"{job_id}:%")
+                assert (await fenced_record()).state.value == "held"
+                assert len(stub.requests) == 1
+                await assert_clean(sp.db)
+
+                released_before = releases()
+                image_jobs.bind(sp.lib.image_runtime())
+                worker = Worker(sp.db, _config())
+                try:
+                    first = await recovery_pass(sp.db)
+                    assert attempts.HORIZON_TIMER in first.fired
+                    await _drain(sp.db, worker)
+                    record = await fenced_record()
+                    assert (record.state.value, record.used) == ("released", 0)
+                    assert stub.cancelled == ["stub-1"]
+                    assert len(stub.requests) == 2, "one retry, after the fallback"
+                    row = await _scalar(
+                        sp.db,
+                        "SELECT confirm_fallback FROM image_jobs WHERE id = :j",
+                        j=job_id,
+                    )
+                    assert row is True
+                    outcome = await _scalar(
+                        sp.db,
+                        "SELECT outcome FROM image_reservations "
+                        "WHERE job_id = :j AND attempt_token = :t",
+                        j=job_id,
+                        t=old,
+                    )
+                    assert outcome == "abandoned_fallback"
+                    # Released once: by the job's own run or by the timer, whichever ran first.
+                    assert releases() == released_before + 1
+                    horizons = await _jobs_of(sp.db, attempts.HORIZON_TIMER)
+                    assert len(horizons) == 1
+                    assert horizons[0].result["outcome"] in ("released", "skipped")
+                    await assert_clean(sp.db)
+
+                    second = await recovery_pass(sp.db)
+                    assert attempts.HORIZON_TIMER not in second.fired
+                    await _drain(sp.db, worker)
+                    assert stub.cancelled == ["stub-1"]
+                    assert len(stub.requests) == 2
+                    assert len(await _jobs_of(sp.db, attempts.HORIZON_TIMER)) == 1
+                    assert releases() == released_before + 1
+                    status = await _scalar(
+                        sp.db, "SELECT status FROM image_jobs WHERE id = :j", j=job_id
+                    )
+                    assert status == "candidates_ready"
+                    await assert_clean(sp.db)
+                finally:
+                    image_jobs.bind(None)
+            finally:
+                stalled.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stalled
+
+
+async def _sent_one(stub: Any) -> bool:
+    return len(stub.requests) >= 1

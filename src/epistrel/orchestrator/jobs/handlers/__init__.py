@@ -16,7 +16,8 @@ its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#2
 settlement of an outcome at the next inter-turn slot, ``outcome_settlement`` (#217). M7 adds
 the on-demand ``certification_run`` (#233) and ``backfill`` (#228). M8 adds ``image_job`` and
 the ``image_staging_sweep`` every 10 minutes (#256), the hourly ``image_candidate_expiry``
-(#260), and the daily ``image_counter_reconcile`` and ``image_accounting_retention`` (#262). A
+(#260), the daily ``image_counter_reconcile`` and ``image_accounting_retention`` (#262), and
+the ``image_attempt_horizon`` and ``image_status_poll`` timer kinds (#267). A
 kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
@@ -49,9 +50,11 @@ from epistrel.orchestrator.jobs.handlers.image_candidate_expiry import (
     IMAGE_CANDIDATE_EXPIRY_TASK_DEFINITION,
 )
 from epistrel.orchestrator.jobs.handlers.image_job import (
+    IMAGE_ATTEMPT_HORIZON_HANDLER,
     IMAGE_JOB_HANDLER,
     IMAGE_STAGING_SWEEP_HANDLER,
     IMAGE_STAGING_SWEEP_TASK_DEFINITION,
+    IMAGE_STATUS_POLL_HANDLER,
 )
 from epistrel.orchestrator.jobs.handlers.importance import IMPORTANCE_HANDLER, IMPORTANCE_TASK
 from epistrel.orchestrator.jobs.handlers.lite_summary import (
@@ -151,6 +154,8 @@ for _handler in (
     STORY_EXPORT_HANDLER,
     STORY_IMPORT_HANDLER,
     IMAGE_JOB_HANDLER,
+    IMAGE_STATUS_POLL_HANDLER,
+    IMAGE_ATTEMPT_HORIZON_HANDLER,
     IMAGE_STAGING_SWEEP_HANDLER,
     IMAGE_CANDIDATE_EXPIRY_HANDLER,
     IMAGE_COUNTER_RECONCILE_HANDLER,

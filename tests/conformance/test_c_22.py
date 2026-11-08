@@ -235,7 +235,7 @@ async def test_c_22__m8_retry_budget(
             "guardrail_violation",
             (MINORS,),
         )
-        assert view.attempts == 3
+        assert len(view.attempts) == 3
 
         with installed_checks(ScriptedChecks([MINORS, PASS])):
             seeded = await insert(lib, prepared(seed=7))
@@ -297,7 +297,7 @@ async def test_c_22__m8_retry_budget(
         last = await _run(lib, unavailable, failures=lib.settings.job_max_attempts - 1)
         assert last["image_job"] == "failed"
         view = await lib.get_image_job(CTX, unavailable)
-        assert (view.status_reason, view.attempts, view.policy_ids) == (
+        assert (view.status_reason, len(view.attempts), view.policy_ids) == (
             "provider_unavailable",
             2,
             None,

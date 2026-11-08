@@ -642,3 +642,504 @@ class _cli_settings:
 
     def __exit__(self, *exc: object) -> None:
         cli._load = self._load
+
+
+# -- late returns after lease expiry (#267) ---------------------------------------------------
+
+ASYNC_ADAPTER = "stub_async"
+GRACE_S = 60
+"""``image_attempt_grace_s``'s default: a stub attempt's horizon is ``started_at + 120 + 60``."""
+
+
+async def _sent(stub: StubImageGenerator, count: int) -> None:
+    """Until the stub has received ``count`` requests (a stalled run is blocked in its call)."""
+    for _ in range(500):
+        if len(stub.requests) >= count:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"the stub never received request {count}")
+
+
+async def _expire_lease(sp: Space, job_id: str) -> list[str]:
+    """The job's ``jobs`` row as a claim whose lease lapsed, then #70's reaper."""
+    async with sp.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE jobs SET status = 'running', lease_until = now() - interval '1 second', "
+                "attempt = attempt + 1 WHERE kind = 'image_job' "
+                "AND payload->>'image_job_id' = :j"
+            ),
+            {"j": job_id},
+        )
+    return await queue.reap(sp.db)
+
+
+async def _one(sp: Space, sql: str, **params: Any) -> Any:
+    async with sp.db.connect() as conn:
+        return (await conn.execute(text(sql), params)).one()
+
+
+async def _token(sp: Space, job_id: str) -> str:
+    return str((await _one(sp, "SELECT attempt_token FROM image_jobs WHERE id = :j", j=job_id))[0])
+
+
+async def _past_horizon(sp: Space, job_id: str, token: str) -> None:
+    """The attempt's horizon (and its timer, and the parked ``jobs`` row) moved into the past,
+    as if the clock had run past it."""
+    async with sp.db.begin() as conn:
+        await conn.execute(
+            text(
+                "UPDATE image_reservations SET horizon_at = now() - interval '1 second' "
+                "WHERE job_id = :j AND attempt_token = :t"
+            ),
+            {"j": job_id, "t": token},
+        )
+        await conn.execute(
+            text("UPDATE timers SET due_at = now() - interval '1 second' WHERE target = :t"),
+            {"t": f"{job_id}:{token}"},
+        )
+
+
+async def _record(sp: Space, job_id: str, token: str) -> limits.ReservationRecord:
+    async with sp.db.connect() as conn:
+        found = await limits.read_record(conn, job_id, token)
+    assert found is not None
+    return found
+
+
+async def _outcome(sp: Space, job_id: str, token: str) -> tuple[str | None, Any]:
+    row = await _one(
+        sp,
+        "SELECT outcome, applied_parameters->'cost' AS cost FROM image_reservations "
+        "WHERE job_id = :j AND attempt_token = :t",
+        j=job_id,
+        t=token,
+    )
+    return row.outcome, row.cost
+
+
+def _counts(record: limits.ReservationRecord) -> tuple[Any, ...]:
+    return (
+        record.state.value,
+        record.requested,
+        record.used,
+        record.overage,
+        record.extra_outputs,
+    )
+
+
+async def _stalled_start(
+    sp: Space, stub: StubImageGenerator, job_id: str
+) -> tuple[asyncio.Task[dict[str, Any]], str]:
+    """The job run until its provider call stalls, then its lease lost: the stalled run and its
+    (now fenced) attempt token."""
+    sent = len(stub.requests)
+    task = asyncio.create_task(sp.run(job_id))
+    await _sent(stub, sent + 1)
+    token = await _token(sp, job_id)
+    wanted = "accepted" if stub.capabilities().submission == "async" else "sending"
+    for _ in range(500):
+        if (await _record(sp, job_id, token)).send_state.value == wanted:
+            break
+        await asyncio.sleep(0.01)
+    assert await _expire_lease(sp, job_id)
+    assert await _token(sp, job_id) != token
+    return task, token
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-1,11")
+async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
+    """I-26's "Late returns after lease expiry" clauses, with the stub's stall and status
+    scripts and backdated horizons:
+
+    - the reaper advances the attempt token and parks the ``jobs`` row at the horizon
+      (``started_at + request_timeout_s + image_attempt_grace_s``), with the
+      ``image_attempt_horizon`` timer scheduled; the stalled token's promotion and counter
+      changes are refused (``FencedToken``), and so is settling a record that is not its own;
+    - before the horizon no retry starts (``waiting_for_horizon``, one provider call);
+    - non-confirming: the record is released at the horizon with cost ``unknown``; a retry starts
+      then, and the old call's late result is settled as overage (``late_after_horizon``)
+      without touching the retry's record or candidates;
+    - a stalled call returning before its horizon settles its own record (``late_discarded``:
+      ``requested = 2``, one returned → ``used = 1``, ``overage = 0``, 2 off ``reserved``),
+      nothing promoted, its bytes deleted; settling it again changes nothing
+      (``late_duplicate``);
+    - a call that never returns is released at the horizon with cost ``unknown``; returning
+      after it with 3 outputs pushes the deployment counter past its limit by those 3, and new
+      reservations are refused (the job ends ``cap_reached``, a request 409);
+    - confirming: a cancel answering ``accepted`` while status says ``running`` keeps the
+      retry waiting (``image_status_poll`` timer); ``cancelled`` settles the old record with no
+      outputs and lets the retry start; ``succeeded`` with 2 outputs for ``n = 2`` is adopted
+      (``released → settled``, ``used = overage = 2``, the counter's ``used`` and ``overage`` up
+      by exactly 2 with ``reserved`` unchanged), checked and promoted under the current token
+      with no second call, and the fenced worker's duplicate return is ``late_duplicate`` with
+      no counter change; 3 outputs for ``n = 2`` → two checked, ``used = overage = 3``,
+      ``extra_outputs = 1``, and a status with no cost is filled in once by the duplicate
+      return; ``failed`` → retried; ``unknown`` is not definitive; ``running`` past
+      ``image_confirm_wait_max_s`` falls back (``confirm_fallback``, ``abandoned_fallback``),
+      the retry runs while the old call still reports ``running``, and its later output is
+      ``late_after_horizon``, never adopted;
+    - the reconciler reports no drift after every step.
+
+    Complement asserted: the current token passes ``require_token``, a run before the horizon
+    sends nothing, and a confirmed ``running`` never retries."""
+    from epistrel.core.images import store as image_store
+    from epistrel.core.images.errors import FencedToken
+    from epistrel.orchestrator.images import attempts
+    from tests.image_support import STUB_COST, Stall, StatusSeq
+
+    async with space(pg_url, tmp_path, "i26_late") as sp:
+        stub = StubImageGenerator(script=[])
+        confirming = StubImageGenerator(submission="async", confirms_completion=True, script=[])
+        catalog = CatalogTarget()
+        with (
+            registered(ADAPTER, stub),
+            registered(ASYNC_ADAPTER, confirming),
+            registered_target(),
+            registered_target(catalog, kind=ImageJobKind.CATALOG),
+            installed_checks(ScriptedChecks(fail_closed=False)) as checks,
+        ):
+            await sp.configure()
+            day = today()
+
+            # -- non-confirming: fenced, parked, released at the horizon, retried, overage --
+            gate = asyncio.Event()
+            stub.script.extend([Stall(gate, Outputs(2)), Outputs(2)])
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, stub, job_id)
+            sent = await _one(
+                sp,
+                "SELECT started_at, horizon_at, send_state FROM image_reservations "
+                "WHERE job_id = :j AND attempt_token = :t",
+                j=job_id,
+                t=old,
+            )
+            assert sent.send_state == "sending"
+            assert sent.horizon_at == sent.started_at + timedelta(seconds=120 + GRACE_S)
+            parked = await _one(
+                sp, "SELECT due_at FROM jobs WHERE payload->>'image_job_id' = :j", j=job_id
+            )
+            assert parked.due_at == sent.horizon_at
+            timer = await _one(
+                sp,
+                "SELECT due_at FROM timers WHERE kind = :k AND target = :t",
+                k=attempts.HORIZON_TIMER,
+                t=f"{job_id}:{old}",
+            )
+            assert timer.due_at == sent.horizon_at
+            current = await _token(sp, job_id)
+            async with sp.db.begin() as conn:
+                with pytest.raises(FencedToken):
+                    await image_store.require_token(conn, job_id, old)
+                await image_store.require_token(conn, job_id, current)  # complement
+                job = await image_store.read_job(conn, job_id)
+                assert job is not None
+                with pytest.raises(FencedToken):
+                    await limits.reserve(conn, job, old, 1)
+            stranger = image_store.new_token()
+            assert await attempts.settle_attempt(sp.db, job_id, stranger, 2, cost=STUB_COST) is None
+            view = await sp.lib.get_image_job(CTX, job_id)
+            assert view.waiting_for_horizon is True
+            assert [(a.attempt_token, a.outcome, a.used) for a in view.attempts] == [
+                (old, None, None)
+            ]
+            await assert_clean(sp.db)
+
+            waited = await sp.run(job_id)
+            assert waited["waiting_for_horizon"] is True
+            assert waited[image_jobs.REQUEUE_IN] > 0
+            assert len(stub.requests) == 1, "no retry before the horizon"
+            await assert_clean(sp.db)
+
+            before = await deployment(sp.db, day)
+            await _past_horizon(sp, job_id, old)
+            assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "released"
+            assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "skipped"
+            assert _counts(await _record(sp, job_id, old)) == ("released", 2, 0, 0, 0)
+            assert await _outcome(sp, job_id, old) == ("released_at_horizon", "unknown")
+            assert (await deployment(sp.db, day))["reserved"] == before["reserved"] - 2
+            await assert_clean(sp.db)
+
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert len(stub.requests) == 2
+            retry = await _token(sp, job_id)
+            assert _counts(await _record(sp, job_id, retry)) == ("settled", 2, 2, 0, 0)
+            view = await sp.lib.get_image_job(CTX, job_id)
+            kept = list(view.result_ids)
+            assert len(kept) == 2
+            assert view.waiting_for_horizon is False
+            mid = await deployment(sp.db, day)
+            gate.set()
+            late = await asyncio.wait_for(task, 30)
+            assert late == {"image_job": "fenced", "late": "late_after_horizon"}, late
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 2, 2, 0)
+            after = await deployment(sp.db, day)
+            assert (after["used"], after["overage"], after["reserved"]) == (
+                mid["used"] + 2,
+                mid["overage"] + 2,
+                mid["reserved"],
+            )
+            assert _counts(await _record(sp, job_id, retry)) == ("settled", 2, 2, 0, 0)
+            view = await sp.lib.get_image_job(CTX, job_id)
+            assert (view.status, list(view.result_ids)) == ("candidates_ready", kept)
+            assert [(a.attempt_token, a.outcome, a.used, a.overage) for a in view.attempts] == [
+                (old, "late_after_horizon", 2, 2),
+                (retry, "promoted", 2, 0),
+            ]
+            assert staged(sp.lib.media, job_id) == []
+            await assert_clean(sp.db)
+
+            # -- a return before the horizon: late_discarded; twice: late_duplicate --
+            gate = asyncio.Event()
+            stub.script.append(Stall(gate, Outputs(1)))
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, stub, job_id)
+            before = await deployment(sp.db, day)
+            gate.set()
+            late = await asyncio.wait_for(task, 30)
+            assert late == {"image_job": "fenced", "late": "late_discarded"}, late
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 1, 0, 0)
+            assert (await _outcome(sp, job_id, old))[0] == "late_discarded"
+            after = await deployment(sp.db, day)
+            assert (after["used"], after["reserved"]) == (
+                before["used"] + 1,
+                before["reserved"] - 2,
+            )
+            assert (await sp.lib.get_image_job(CTX, job_id)).result_ids == ()
+            assert staged(sp.lib.media, job_id) == []
+            again = await attempts.settle_attempt(sp.db, job_id, old, 1, cost=STUB_COST)
+            assert again is not None
+            assert again.value == "late_duplicate"
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 1, 0, 0)
+            assert await deployment(sp.db, day) == after
+            await assert_clean(sp.db)
+            await image_jobs.cancel_job(sp.lib.image_runtime(), job_id)
+            await assert_clean(sp.db)
+
+            # -- never returns: released at the horizon, cost unknown; then 3 after it --
+            used = (await deployment(sp.db, day))["used"]
+            await sp.set(image_limit_deployment_day=used + 1)
+            gate = asyncio.Event()
+            stub.script.append(Stall(gate, Outputs(3)))
+            job_id = await sp.insert(_story())
+            task, old = await _stalled_start(sp, stub, job_id)
+            await _past_horizon(sp, job_id, old)
+            assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "released"
+            assert _counts(await _record(sp, job_id, old)) == ("released", 1, 0, 0, 0)
+            assert await _outcome(sp, job_id, old) == ("released_at_horizon", "unknown")
+            await assert_clean(sp.db)
+            gate.set()
+            late = await asyncio.wait_for(task, 30)
+            assert late["late"] == "late_after_horizon", late
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 1, 3, 3, 2)
+            totals = await deployment(sp.db, day)
+            assert totals["used"] == used + 3  # past the limit of used + 1 by those outputs
+            ended = await sp.run(job_id)
+            assert ended == {"image_job": "cap_reached", "reason": "image_limit_reached"}, ended
+            with pytest.raises(ImageLimitReached):
+                await sp.insert(_story())
+            await assert_clean(sp.db)
+            await sp.set(image_limit_deployment_day=200)
+
+            # -- confirming: accepted cancel + running waits; cancelled lets the retry go --
+            await configure_adapter(sp, ASYNC_ADAPTER)
+            gate = asyncio.Event()
+            confirming.script.extend(
+                [Stall(gate, StatusSeq(["running", "cancelled"], Outputs(2))), Outputs(2)]
+            )
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, confirming, job_id)
+            sent = await _record(sp, job_id, old)
+            assert sent.send_state.value == "accepted"
+            await _past_horizon(sp, job_id, old)
+            polled = await sp.run(job_id)
+            assert polled["waiting_on_confirmation"] is True, polled
+            assert confirming.cancelled == ["stub-1"]
+            assert len(confirming.requests) == 1, "an accepted cancel and running: no retry"
+            row = await _one(
+                sp,
+                "SELECT cancel_result, last_status FROM image_reservations "
+                "WHERE job_id = :j AND attempt_token = :t",
+                j=job_id,
+                t=old,
+            )
+            assert (row.cancel_result, row.last_status) == ("accepted", "running")
+            view = await sp.lib.get_image_job(CTX, job_id)
+            horizon = (await _record(sp, job_id, old)).horizon_at
+            assert horizon is not None
+            assert view.confirm_deadline_at == horizon + timedelta(seconds=1800)
+            poll = await _one(
+                sp,
+                "SELECT count(*) AS n FROM timers WHERE kind = :k AND target = :j",
+                k=attempts.STATUS_POLL,
+                j=job_id,
+            )
+            assert poll.n == 1
+            await assert_clean(sp.db)
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert confirming.cancelled == ["stub-1"], "cancel is called once"
+            assert len(confirming.requests) == 2
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 0, 0, 0)
+            assert (await _outcome(sp, job_id, old))[0] == "cancelled"
+            task.cancel()
+            await assert_clean(sp.db)
+
+            # -- succeeded with 2 for n = 2: adopted, no retry; the duplicate changes nothing --
+            gate = asyncio.Event()
+            confirming.script.append(Stall(gate, StatusSeq(["succeeded"], Outputs(2))))
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            sent_before = len(confirming.requests)
+            task, old = await _stalled_start(sp, confirming, job_id)
+            await _past_horizon(sp, job_id, old)
+            before = await deployment(sp.db, day)
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert len(confirming.requests) == sent_before + 1, "adopted without retrying"
+            record = await _record(sp, job_id, old)
+            assert _counts(record) == ("settled", 2, 2, 2, 0)
+            assert await _outcome(sp, job_id, old) == (
+                "adopted",
+                {"amount": "0.04", "currency": "USD"},
+            )
+            after = await deployment(sp.db, day)
+            # Released at the horizon (2 off reserved), then adopted: used and overage + 2.
+            assert (after["used"], after["overage"], after["reserved"]) == (
+                before["used"] + 2,
+                before["overage"] + 2,
+                before["reserved"] - 2,
+            )
+            adopted = list((await sp.lib.get_image_job(CTX, job_id)).result_ids)
+            assert len(adopted) == 2
+            assert [c for c in checks.checked if c[0] == job_id] == [(job_id, 0), (job_id, 1)]
+            gate.set()
+            late = await asyncio.wait_for(task, 30)
+            assert late == {"image_job": "fenced", "late": "late_duplicate"}, late
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 2, 2, 0)
+            assert await deployment(sp.db, day) == after
+            assert list((await sp.lib.get_image_job(CTX, job_id)).result_ids) == adopted
+            assert staged(sp.lib.media, job_id) == []
+            await assert_clean(sp.db)
+
+            # -- 3 for n = 2, no cost in the status: filled in once by the duplicate --
+            gate = asyncio.Event()
+            confirming.script.append(
+                Stall(gate, StatusSeq(["succeeded"], Outputs(3), status_cost=False))
+            )
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, confirming, job_id)
+            await _past_horizon(sp, job_id, old)
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert [c for c in checks.checked if c[0] == job_id] == [(job_id, 0), (job_id, 1)]
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 3, 3, 1)
+            assert await _outcome(sp, job_id, old) == ("adopted", "unknown")
+            gate.set()
+            assert (await asyncio.wait_for(task, 30))["late"] == "late_duplicate"
+            filled = {"amount": "0.04", "currency": "USD"}
+            assert await _outcome(sp, job_id, old) == ("adopted", filled)
+            from decimal import Decimal
+
+            from epistrel.orchestrator.images.port import Cost
+
+            await attempts.settle_attempt(sp.db, job_id, old, 3, cost=Cost(Decimal("9"), "USD"))
+            assert await _outcome(sp, job_id, old) == ("adopted", filled), "filled in once"
+            await assert_clean(sp.db)
+
+            # -- failed: settled with no outputs, then retried --
+            gate = asyncio.Event()
+            confirming.script.extend([Stall(gate, StatusSeq(["failed"], Outputs(2))), Outputs(2)])
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, confirming, job_id)
+            sent_before = len(confirming.requests)
+            await _past_horizon(sp, job_id, old)
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert len(confirming.requests) == sent_before + 1
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 0, 0, 0)
+            assert (await _outcome(sp, job_id, old))[0] == "failed"
+            task.cancel()
+            await assert_clean(sp.db)
+
+            # -- unknown is not definitive; running past the wait falls back, overlap allowed --
+            gate = asyncio.Event()
+            confirming.script.extend(
+                [Stall(gate, StatusSeq(["unknown", "running"], Outputs(2))), Outputs(2)]
+            )
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, confirming, job_id)
+            sent_before = len(confirming.requests)
+            await _past_horizon(sp, job_id, old)
+            assert (await sp.run(job_id))["waiting_on_confirmation"] is True
+            assert (await sp.run(job_id))["waiting_on_confirmation"] is True
+            assert len(confirming.requests) == sent_before, "unknown and running never retry"
+            async with sp.db.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE image_jobs SET confirm_deadline_at = now() - interval '1 second' "
+                        "WHERE id = :j"
+                    ),
+                    {"j": job_id},
+                )
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert len(confirming.requests) == sent_before + 1
+            assert (await confirming.status("stub-" + str(sent_before))).state == "running"
+            assert (await _outcome(sp, job_id, old))[0] == "abandoned_fallback"
+            retry = await _token(sp, job_id)
+            kept = list((await sp.lib.get_image_job(CTX, job_id)).result_ids)
+            gate.set()
+            late = await asyncio.wait_for(task, 30)
+            assert late == {"image_job": "fenced", "late": "late_after_horizon"}, late
+            assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 2, 2, 0)
+            assert _counts(await _record(sp, job_id, retry)) == ("settled", 2, 2, 0, 0)
+            view = await sp.lib.get_image_job(CTX, job_id)
+            assert (view.confirm_fallback, list(view.result_ids)) == (True, kept)
+            await assert_clean(sp.db)
+
+        # The settings: defaults, bounds, and the poll never above the wait (either side).
+        found = (await sp.client.get("/admin/settings", headers=_READ)).json()
+        assert {k: found[k] for k in _ATTEMPT_DEFAULTS} == _ATTEMPT_DEFAULTS
+        for name, bad in (
+            ("image_attempt_grace_s", -1),
+            ("image_attempt_grace_s", 3_601),
+            ("image_status_poll_s", 4),
+            ("image_status_poll_s", 601),
+            ("image_confirm_wait_max_s", 59),
+            ("image_confirm_wait_max_s", 86_401),
+        ):
+            response = await sp.client.put("/admin/settings", json={name: bad}, headers=_WRITE)
+            assert response.status_code == 422, (name, bad, response.text)
+        poll = {"image_status_poll_s": 100}
+        assert (
+            await sp.client.put("/admin/settings", json=poll, headers=_WRITE)
+        ).status_code == 200
+        for body in (
+            {"image_confirm_wait_max_s": 60},
+            {"image_status_poll_s": 600, "image_confirm_wait_max_s": 300},
+        ):
+            response = await sp.client.put("/admin/settings", json=body, headers=_WRITE)
+            assert response.status_code == 422, (body, response.text)
+            assert response.json()["error"]["code"] == "validation_error"
+        response = await sp.client.put(
+            "/admin/settings",
+            json={"image_status_poll_s": 60, "image_confirm_wait_max_s": 60},
+            headers=_WRITE,
+        )
+        assert response.status_code == 200, response.text
+
+
+_ATTEMPT_DEFAULTS = {
+    "image_attempt_grace_s": 60,
+    "image_status_poll_s": 15,
+    "image_confirm_wait_max_s": 1800,
+}
+
+
+async def configure_adapter(sp: Space, adapter: str) -> None:
+    """The space's ``image_generation`` port switched to ``adapter``."""
+    from tests.image_job_support import configure
+
+    await configure(sp.lib, sp.settings, adapter)

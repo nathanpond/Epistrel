@@ -50,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import clock
 from epistrel.core.config_changes import read_section
 from epistrel.core.errors import ImageLimitReached, ImagesDisabled
+from epistrel.core.images import store
 from epistrel.core.images.store import ImageJob
 from epistrel.core.settings_schema import ImageJobSettings
 from epistrel.core.tables.images import (
@@ -72,8 +73,8 @@ STUCK_HELD = "stuck_held"
 
 
 class InvalidReservationTransition(Exception):
-    """``settle`` or ``release`` on a record that is not ``held`` (#267 adds ``released →
-    settled``)."""
+    """``settle`` on a record that is already ``settled``, or ``release`` on one that is not
+    ``held``."""
 
 
 # -- keys -----------------------------------------------------------------------------------
@@ -183,8 +184,11 @@ def counter_deltas(
     """docs/02 §4.13's counter maintenance. Inserting a ``held`` record adds its ``requested`` to
     ``reserved``. ``held → released`` takes it back. ``held → settled`` with *m* outputs takes it
     back and adds ``used = m``, ``overage = m - min(m, requested)`` and ``extra_outputs =
-    max(0, m - requested)``. A presumed settlement (#268) is ``m = requested``. Any other
-    transition raises ``InvalidReservationTransition`` (#267 adds ``released → settled``)."""
+    max(0, m - requested)``. A presumed settlement (#268) is ``m = requested``. ``released →
+    settled`` (#267: a late return after the record was released at its horizon, or a
+    confirming adapter's adopted outputs) leaves ``reserved`` alone and adds ``used = m``,
+    ``overage = m`` (nothing was reserved for them any more) and ``extra_outputs = max(0, m -
+    requested)``. Any other transition raises ``InvalidReservationTransition``."""
     if old_state is None and new_state is ReservationState.HELD:
         return Deltas(reserved=requested)
     if old_state is ReservationState.HELD and new_state is ReservationState.RELEASED:
@@ -198,6 +202,10 @@ def counter_deltas(
             overage=m - min(m, requested),
             extra_outputs=max(0, m - requested),
         )
+    if old_state is ReservationState.RELEASED and new_state is ReservationState.SETTLED:
+        if m < 0:
+            raise ValueError("a settlement returns at least 0 outputs")
+        return Deltas(used=m, overage=m, extra_outputs=max(0, m - requested))
     raise InvalidReservationTransition(
         f"no counter transition from {old_state} to {new_state.value}"
     )
@@ -225,6 +233,8 @@ class ReservationRecord:
     send_state: SendState
     created_at: datetime
     settled_at: datetime | None
+    horizon_at: datetime | None = None
+    """#267: ``started_at + request_timeout_s + image_attempt_grace_s`` once sent."""
 
 
 def _record(row: Any) -> ReservationRecord:
@@ -248,6 +258,7 @@ def _record(row: Any) -> ReservationRecord:
         send_state=SendState(m["send_state"]),
         created_at=m["created_at"],
         settled_at=m["settled_at"],
+        horizon_at=m["horizon_at"],
     )
 
 
@@ -323,6 +334,8 @@ async def reserve(
     should keep (its transaction or savepoint rolls the upserts back). ``k ≥ 1``."""
     if k < 1:
         raise ValueError("a reservation reserves at least one output")
+    # #267: a counter change for a fenced attempt token is refused (``FencedToken``).
+    await store.require_token(conn, job.id, attempt_token)
     found = settings if settings is not None else await read_section(conn, ImageJobSettings)
     tz = zone(found)
     now = clock.now()
@@ -442,8 +455,10 @@ async def settle(
 ) -> ReservationRecord:
     """Settle a ``held`` record with ``m`` returned outputs, in ``conn``'s transaction:
     ``used = m``, ``overage = m - min(m, requested)``, ``extra_outputs = max(0, m -
-    requested)``, state ``settled``, and the deltas applied to its snapshot's counters. Raises
-    ``InvalidReservationTransition`` unless the record (re-read under lock) is ``held``."""
+    requested)``, state ``settled``, and the deltas applied to its snapshot's counters. A
+    ``released`` record settles too (#267's late return or adoption: ``overage = m``).
+    Raises ``InvalidReservationTransition`` when the record (re-read under lock) is already
+    ``settled``."""
     current = await read_record(conn, record.job_id, record.attempt_token, lock=True)
     if current is None:
         raise InvalidReservationTransition("the reservation record does not exist")
@@ -495,9 +510,15 @@ async def release(
     return released
 
 
-async def release_all(conn: AsyncConnection, job_id: str) -> int:
+async def release_all(
+    conn: AsyncConnection, job_id: str, *, current_token: str | None = None
+) -> int:
     """Release every record the job still holds (any ending, #256's terminal transitions, and a
-    story's deletion), in ``conn``'s transaction; how many."""
+    story's deletion), in ``conn``'s transaction; how many. With ``current_token`` (the job's
+    token before the ending), a record of another token that is still in flight before its
+    horizon is kept: a lease expiry fenced it (#267), and its horizon timer releases it, so a
+    late return still settles inside its reservation."""
+    now = clock.now()
     held = await conn.execute(
         select(image_reservations)
         .where(
@@ -509,9 +530,23 @@ async def release_all(conn: AsyncConnection, job_id: str) -> int:
     )
     count = 0
     for row in held.all():
-        await release(conn, _record(row))
+        record = _record(row)
+        if current_token is not None and fenced_in_flight(record, current_token, now):
+            continue
+        await release(conn, record)
         count += 1
     return count
+
+
+def fenced_in_flight(record: ReservationRecord, current_token: str, now: datetime) -> bool:
+    """Whether ``record`` is an attempt a lease expiry fenced that may still return before its
+    horizon (#267): another token than the job's current one, sent, and its horizon ahead."""
+    return (
+        record.attempt_token != current_token
+        and record.send_state in (SendState.SENDING, SendState.ACCEPTED)
+        and record.horizon_at is not None
+        and record.horizon_at > now
+    )
 
 
 async def release_for_story(conn: AsyncConnection, story_id: str) -> int:
@@ -617,6 +652,8 @@ async def _stored(conn: AsyncConnection) -> dict[CounterKey, dict[str, int]]:
 
 
 async def _stuck(conn: AsyncConnection) -> list[StuckRecord]:
+    """``held`` records whose job is terminal or missing; a record held to its horizon (#267:
+    sent, its horizon still ahead) is not stuck until then."""
     r, j = image_reservations, image_jobs
     rows = await conn.execute(
         select(r.c.job_id, r.c.attempt_token, j.c.status)
@@ -624,6 +661,7 @@ async def _stuck(conn: AsyncConnection) -> list[StuckRecord]:
         .where(
             r.c.state == ReservationState.HELD.value,
             (j.c.id.is_(None)) | j.c.status.in_([s.value for s in TERMINAL_STATUSES]),
+            r.c.horizon_at.is_(None) | (r.c.horizon_at <= clock.now()),
         )
         .order_by(r.c.job_id, r.c.attempt_token)
     )
@@ -798,6 +836,7 @@ __all__ = [
     "counter_keys",
     "current_period",
     "entry_key",
+    "fenced_in_flight",
     "fix_counters",
     "insert_unreserved_record",
     "limit_for",

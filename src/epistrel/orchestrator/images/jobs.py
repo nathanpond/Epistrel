@@ -40,6 +40,12 @@ usable output (none returned, or none that decodes as an image) ends ``failed`` 
 bytes with #70's backoff, then ``failed``/``image_check_unavailable``. ``image_check`` unset
 while an image-output policy applies fails closed: ``failed``/``image_check_unconfigured``.
 
+**Late returns** (#267, ``attempts``). A lease expiry advances the job's token. A return for a
+token that is no longer current goes through the settlement path only, and its bytes are
+deleted unpromoted. A run that finds no record on the current token waits until the stalled
+attempt's horizon, then releases its record, and either asks a confirming adapter (adopt, retry
+or poll) or begins a new attempt.
+
 **Revalidation** (#264). A target with ``refresh`` and an outcome-answering ``revalidate`` (the
 story target) is revalidated against its source: before its outputs are checked (a pause, a gone
 target or an erasure ends or defers the work before any model call) and inside the promotion's
@@ -110,6 +116,7 @@ from epistrel.core.errors import (
 from epistrel.core.idempotency import ResultCodec
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.images import limits, store
+from epistrel.core.images.errors import FencedToken
 from epistrel.core.images.store import ImageJob
 from epistrel.core.media import probe
 from epistrel.core.media.assets import lock_checksum
@@ -130,6 +137,7 @@ from epistrel.core.tables.images import (
 )
 from epistrel.core.tables.media import CheckStatus, MediaSource, MediaState
 from epistrel.observability.metrics import count_revalidation
+from epistrel.orchestrator.images import attempts
 from epistrel.orchestrator.images import errors as adapter_errors
 from epistrel.orchestrator.images.params import (
     ImageGenerationParams,
@@ -909,7 +917,8 @@ async def _end_in(
         )
     if outcome is not None:
         await store.update_reservation(conn, job_id, job.attempt_token, outcome=outcome.value)
-    await limits.release_all(conn, job_id)
+    # #267: an attempt a lease expiry fenced stays held until its horizon (its timer releases it).
+    await limits.release_all(conn, job_id, current_token=job.attempt_token)
     handler = target_for(job.kind)
     if handler is not None:
         ended = await store.read_job(conn, job_id)
@@ -958,7 +967,8 @@ async def cancel_job(runtime: ImageRuntime, job_id: str) -> ImageJob:
         await store.update_reservation(
             conn, job_id, job.attempt_token, outcome=AttemptOutcome.DISCARDED.value
         )
-        await limits.release_all(conn, job_id)
+        # #267: polling stops, but a fenced attempt stays held until its horizon timer.
+        await limits.release_all(conn, job_id, current_token=job.attempt_token)
         await conn.execute(
             update(jobs_table)
             .where(
@@ -1121,7 +1131,7 @@ class ImageJobRunner:
             job = await self.read()
             if job is None or job.terminal:
                 return {"image_job": None if job is None else job.status.value}
-        begun = await self._resume_or_begin(job)
+        begun = await self._resume_or_begin(job, handle)
         if isinstance(begun, dict):
             return begun
         attempt: _Attempt | None = begun
@@ -1312,15 +1322,23 @@ class ImageJobRunner:
             return int(requested), "requested"
         return secrets.randbelow(SEED_LIMIT), "engine"
 
-    async def _resume_or_begin(self, job: ImageJob) -> _Attempt | dict[str, Any] | None:
+    async def _resume_or_begin(
+        self, job: ImageJob, handle: ImageGeneratorHandle
+    ) -> _Attempt | dict[str, Any] | None:
         """The attempt this run starts with: the current one when it was never sent; the
         current one's staged outputs when a previous run staged them and stopped before its
-        checks finished (a checker retry); otherwise (a crash after the send, which #268
-        recovers) the attempt is discarded with its staged bytes and a new one begins, reserved
-        before its call (#262). Until #268, a discarded attempt the provider may have received
-        (``sending``, ``accepted``) is settled as presumed (its requested outputs counted), and
-        any other record it still holds is released. The run's result when the new attempt
-        could not reserve and the job ended ``cap_reached``; ``None`` when fenced."""
+        checks finished (a checker retry); with no record on the current token (a lease expiry
+        fenced the last one, #267), what ``_after_fence`` decides; otherwise (a crash after the
+        send, which #268 recovers) the attempt is discarded with its staged bytes and a new one
+        begins, reserved before its call (#262). Until #268, a discarded attempt the provider
+        may have received (``sending``, ``accepted``) is settled as presumed (its requested
+        outputs counted), and any other record it still holds is released. The run's result
+        when it stops here (a horizon or confirmation wait, or ``cap_reached``); ``None`` when
+        fenced."""
+        async with self.rt.db.connect() as conn:
+            fenced = await store.read_reservation(conn, job.id, job.attempt_token) is None
+        if fenced:
+            return await self._after_fence(job, handle)
         async with self.rt.db.begin() as conn:
             current = await store.read_reservation(conn, job.id, job.attempt_token)
             if current is None:
@@ -1342,10 +1360,13 @@ class ImageJobRunner:
                         applied,
                         attempt_ref=current.attempt_ref,
                     )
-            values: dict[str, Any] = {"outcome": current.outcome or AttemptOutcome.DISCARDED.value}
+            values: dict[str, Any] = {}
+            if current.outcome is None:
+                values["outcome"] = AttemptOutcome.DISCARDED.value
             if current.send_state is SendState.SENDING:
                 values["send_state"] = SendState.AMBIGUOUS.value
-            await store.update_reservation(conn, job.id, job.attempt_token, **values)
+            if values:
+                await store.update_reservation(conn, job.id, job.attempt_token, **values)
             record = await limits.read_record(conn, job.id, job.attempt_token, lock=True)
             if record is not None and record.state is ReservationState.HELD:
                 if current.send_state in (SendState.SENDING, SendState.ACCEPTED):
@@ -1362,6 +1383,159 @@ class ImageJobRunner:
             return begun
         seed, source = self._seed(job)
         return _Attempt(begun, seed, source)
+
+    # -- after a lease expiry (#267) ---------------------------------------------------------
+
+    async def _after_fence(
+        self, job: ImageJob, handle: ImageGeneratorHandle
+    ) -> _Attempt | dict[str, Any] | None:
+        """The job's current token has no record: a lease expiry fenced its last attempt
+        (``attempts.on_lease_expired``). A record fenced before it was sent is released. A
+        stalled attempt in flight holds the job until its horizon (``waiting_for_horizon``; the
+        run asks #70 to come back then). At the horizon its record is released if it is still
+        held, and then a ``confirms_completion`` adapter is asked (``attempts.confirm``): adopt,
+        retry, or poll again later. Otherwise, and on a retry, a new attempt begins under the
+        current token (``_begin_current``)."""
+        now = clock.now()
+        async with self.rt.db.begin() as conn:
+            locked = await store.read_job(conn, job.id, lock=True)
+            if locked is None or locked.terminal:
+                return {"image_job": None if locked is None else locked.status.value}
+            if locked.attempt_token != job.attempt_token:
+                return None
+            if await store.read_reservation(conn, job.id, job.attempt_token) is not None:
+                return None  # another run began the attempt meanwhile
+            await attempts.release_unsent(conn, locked)
+            stalled = await attempts.stalled_record(conn, locked)
+            if stalled is not None:
+                horizon = stalled.horizon_at or now
+                if now < horizon:
+                    await attempts.set_waiting(conn, job.id, True)
+                    left = max(1, int((horizon - now).total_seconds()) + 1)
+                    logger.info("image job %s waits for its stalled attempt's horizon", job.id)
+                    return {
+                        "image_job": locked.status.value,
+                        "waiting_for_horizon": True,
+                        REQUEUE_IN: left,
+                    }
+                await attempts.set_waiting(conn, job.id, False)
+                await attempts.release_at_horizon_in(conn, job.id, stalled.attempt_token)
+        if (
+            stalled is not None
+            and stalled.attempt_ref is not None
+            and handle.capabilities().confirms_completion
+        ):
+            fresh = await self.read()
+            if fresh is None or fresh.terminal or fresh.attempt_token != job.attempt_token:
+                return {"image_job": "fenced"}
+            decided = await attempts.confirm(self.rt.db, fresh, stalled, handle, self.settings)
+            if isinstance(decided, attempts.Poll):
+                return {
+                    "image_job": fresh.status.value,
+                    "waiting_on_confirmation": True,
+                    "next_poll_at": decided.next_at.isoformat(),
+                }
+            if isinstance(decided, attempts.Adopt):
+                return await self._adopt(fresh, stalled, decided.status)
+        return await self._begin_current(job)
+
+    async def _adopt(
+        self, job: ImageJob, stalled: store.Reservation, status: Any
+    ) -> _Attempt | dict[str, Any] | None:
+        """A confirming adapter's ``succeeded`` after the horizon: the stalled attempt's record
+        is settled through the settlement path (``adopted``: all its outputs count as used and
+        overage), and its first ``n`` outputs are staged under the job's current token, on an
+        attempt row that reserves nothing (``limits.insert_unreserved_record``), for the checks,
+        revalidation and promotion. Outputs beyond ``n`` are ``extra_outputs``, never staged.
+        When the record was settled already (a late return got there first), the job retries
+        instead."""
+        outputs = list(status.outputs or ())
+        n = requested_outputs(job)
+        token = job.attempt_token
+        written = await asyncio.to_thread(self._stage, job.id, token, outputs[:n])
+        applied = dict(stalled.applied_parameters or {})
+        cost, usage = attempts.cost_json(status.cost), attempts.usage_json(status.usage)
+        adopted = False
+        async with self.rt.db.begin() as conn:
+            locked = await store.read_job(conn, job.id, lock=True)
+            if locked is not None and not locked.terminal and locked.attempt_token == token:
+                outcome = await attempts.settle_attempt_in(
+                    conn,
+                    job.id,
+                    stalled.attempt_token,
+                    len(outputs),
+                    cost=status.cost,
+                    usage=status.usage,
+                    released=AttemptOutcome.ADOPTED,
+                )
+                if outcome is AttemptOutcome.ADOPTED and written:
+                    await limits.insert_unreserved_record(conn, locked, token)
+                    await store.update_reservation(
+                        conn,
+                        job.id,
+                        token,
+                        send_state=SendState.RETURNED.value,
+                        attempt_ref=stalled.attempt_ref,
+                        applied_parameters={**applied, "usage": usage, "cost": cost},
+                        outputs_returned=len(outputs),
+                    )
+                    adopted = await store.set_status(
+                        conn, job.id, ImageJobStatus.CHECKING, token=token
+                    )
+        if not adopted:
+            await asyncio.to_thread(self._remove_attempt, job.id, token)
+            fresh = await self.read()
+            if fresh is None or fresh.terminal or fresh.attempt_token != token:
+                return {"image_job": "fenced"}
+            return await self._begin_current(fresh)
+        logger.info("image job %s adopted %d output(s) after the horizon", job.id, len(written))
+        return _Attempt(
+            token,
+            int(applied.get("seed", 0)),
+            applied.get("seed_source", "engine"),
+            written,
+            applied,
+            usage=usage,
+            cost=cost,
+            attempt_ref=stalled.attempt_ref,
+        )
+
+    async def _begin_current(self, job: ImageJob) -> _Attempt | dict[str, Any] | None:
+        """A new attempt under the job's current token (which has no record yet), reserved
+        before its call in a SAVEPOINT (#262): the attempt, or the run's result when it could
+        not reserve and the job ended ``cap_reached``; ``None`` when fenced."""
+        capped: dict[str, Any] | None = None
+        async with self.rt.db.begin() as conn:
+            locked = await store.read_job(conn, job.id, lock=True)
+            if (
+                locked is None
+                or locked.terminal
+                or locked.attempt_token != job.attempt_token
+                or await store.read_reservation(conn, job.id, job.attempt_token) is not None
+            ):
+                return None
+            try:
+                async with conn.begin_nested():
+                    await limits.reserve(
+                        conn, locked, locked.attempt_token, requested_outputs(locked)
+                    )
+            except (ImageLimitReached, ImagesDisabled) as exc:
+                period = exc.details.get("period") or await limits.current_period(conn)
+                await _end_in(
+                    conn,
+                    job.id,
+                    ImageJobStatus.CAP_REACHED,
+                    reason=exc.code,
+                    token=locked.attempt_token,
+                    detail={"scope": exc.details.get("scope"), "period": period},
+                )
+                capped = {"image_job": ImageJobStatus.CAP_REACHED.value, "reason": exc.code}
+        if capped is not None:
+            await _delete_staging(self.rt.media, job.id)
+            logger.info("image job %s ended cap_reached (%s)", job.id, capped["reason"])
+            return capped
+        seed, source = self._seed(job)
+        return _Attempt(job.attempt_token, seed, source)
 
     async def _next_attempt(
         self, conn: AsyncConnection, job: ImageJob, old_token: str
@@ -1463,7 +1637,13 @@ class ImageJobRunner:
         params: ImageGenerationParams,
     ) -> dict[str, Any] | None:
         """Send the attempt and stage its outputs; the run's result when the job ended (or
-        was fenced), else ``None`` with ``attempt.outputs`` filled."""
+        was fenced), else ``None`` with ``attempt.outputs`` filled. The ``sending`` commit fixes
+        the attempt's horizon (#267: ``started_at + request_timeout_s +
+        image_attempt_grace_s``) and its seed. A return for a token a lease expiry, a retry or a
+        cancel replaced goes through the settlement path only (``attempts``), and its bytes are
+        deleted unpromoted."""
+        capabilities = handle.capabilities()
+        started = clock.now()
         async with self.rt.db.begin() as conn:
             moved = await store.set_status(
                 conn,
@@ -1479,10 +1659,13 @@ class ImageJobRunner:
                 job.id,
                 attempt.token,
                 send_state=SendState.SENDING.value,
-                started_at=clock.now(),
+                started_at=started,
+                horizon_at=attempts.horizon_of(
+                    started, attempts.request_timeout_s(params, capabilities), self.settings
+                ),
+                applied_parameters={"seed": attempt.seed, "seed_source": attempt.seed_source},
             )
         request = _image_request(job, attempt.seed, params)
-        capabilities = handle.capabilities()
         try:
             result = await handle.submit(request, None)
             outputs: Sequence[ImageOutput] = result.outputs or ()
@@ -1511,6 +1694,19 @@ class ImageJobRunner:
         written = await asyncio.to_thread(self._stage, job.id, attempt.token, list(outputs))
         staged = [o for o in written if o.index < n]
         extras = [o for o in written if o.index >= n]
+        late: AttemptOutcome | None = None
+        fenced = False
+        async with self.rt.db.begin() as conn:
+            current = await store.read_job(conn, job.id, lock=True)
+            if current is None or current.terminal or current.attempt_token != attempt.token:
+                # #267: the one thing a fenced worker may do is settle its own attempt.
+                fenced = True
+                late = await attempts.settle_attempt_in(
+                    conn, job.id, attempt.token, len(outputs), cost=cost, usage=usage
+                )
+        if fenced:
+            await asyncio.to_thread(self._remove_attempt, job.id, attempt.token)
+            return {"image_job": "fenced", "late": None if late is None else late.value}
         async with self.rt.db.begin() as conn:
             await store.update_reservation(
                 conn,
@@ -1559,6 +1755,26 @@ class ImageJobRunner:
     async def _adapter_failed(
         self, job: ImageJob, attempt: _Attempt, exc: adapter_errors.ImageAdapterError
     ) -> dict[str, Any]:
+        async with self.rt.db.begin() as conn:
+            current = await store.read_job(conn, job.id, lock=True)
+            if current is None or current.terminal or current.attempt_token != attempt.token:
+                # #267: a fenced attempt whose call failed: no result arrived, so a record still
+                # held is released; nothing else is touched.
+                record = await limits.read_record(conn, job.id, attempt.token, lock=True)
+                if record is not None and record.state is ReservationState.HELD:
+                    await limits.release(conn, record)
+                    await store.update_reservation(
+                        conn,
+                        job.id,
+                        attempt.token,
+                        send_state=SendState.RETURNED.value,
+                        outcome=AttemptOutcome.FAILED.value,
+                    )
+                fenced = True
+            else:
+                fenced = False
+        if fenced:
+            return {"image_job": "fenced", "error": exc.code}
         async with self.rt.db.begin() as conn:
             await store.update_reservation(
                 conn,
@@ -1874,6 +2090,8 @@ class ImageJobRunner:
             fenced, asset_ids, outcome = await self._promote_in_transaction(
                 job, attempt, target, promotable
             )
+        except FencedToken:
+            fenced, outcome = True, OK
         except TargetStale as exc:
             # Nothing was attached (the transaction rolled back): the placement failed.
             return await self._stale(job, attempt, Stale(exc.reason, exc.detail))
@@ -1971,6 +2189,8 @@ class ImageJobRunner:
                 fenced = False
             else:
                 fenced = False
+                # #267: promotion and attachment refuse a fenced token (``FencedToken``).
+                await store.require_token(conn, job.id, attempt.token)
                 for ready in promotable:
                     await lock_checksum(conn, ready.sha256)
                 asset_ids = await target.promote(conn, current, promotable)
@@ -1986,7 +2206,7 @@ class ImageJobRunner:
                 await store.update_reservation(
                     conn, job.id, attempt.token, outcome=AttemptOutcome.PROMOTED.value
                 )
-                await limits.release_all(conn, job.id)
+                await limits.release_all(conn, job.id, current_token=attempt.token)
                 ended = await store.read_job(conn, job.id)
                 assert ended is not None  # noqa: S101 - locked above
                 await target.on_terminal(conn, ended)
@@ -2063,10 +2283,28 @@ async def insert_output_asset(
 
 
 @dataclass(frozen=True, slots=True)
+class AttemptView:
+    """One provider attempt as a job read reports it (#267): its token, its outcome (``None``
+    while in flight), what it reserved, and once settled what it used, its overage and extra
+    outputs (``None`` while ``held``), and its cost (``{amount, currency}``, ``"unknown"``, or
+    ``None`` before it is known; #269 reshapes it)."""
+
+    attempt_token: str
+    outcome: str | None
+    requested: int
+    used: int | None
+    overage: int | None
+    extra_outputs: int | None
+    cost: Any
+    started_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class ImageJobView:
     """``GET /image-jobs/{id}``: the job's state. A story job answers ``asset_ids``, a catalog
     job ``candidate_ids`` (``result_field``), always ``[]`` until it succeeds; ``policy_ids``
-    when it failed on a policy."""
+    when it failed on a policy. ``attempts`` lists every provider attempt by ``started_at``
+    (#267)."""
 
     job_id: str
     kind: str
@@ -2074,7 +2312,7 @@ class ImageJobView:
     status_reason: str | None
     result_field: Literal["asset_ids", "candidate_ids"]
     result_ids: tuple[str, ...]
-    attempts: int
+    attempts: tuple[AttemptView, ...]
     created_at: datetime
     updated_at: datetime
     policy_ids: tuple[str, ...] | None = None
@@ -2084,6 +2322,36 @@ class ImageJobView:
     """#264: ``pause`` while a story job waits on its paused story (status ``checking``)."""
     next_check_at: datetime | None = None
     """#264: when a waiting job revalidates next."""
+    waiting_for_horizon: bool = False
+    """#267: a lease expiry fenced an attempt in flight; no attempt starts before its horizon."""
+    confirm_deadline_at: datetime | None = None
+    """#267: when a confirming adapter's status polling for a stalled attempt gives up."""
+    confirm_fallback: bool = False
+    """#267 (sticky): the job fell back to the non-confirming rule."""
+
+
+async def attempt_views(conn: AsyncConnection, job_id: str) -> tuple[AttemptView, ...]:
+    """The job's provider attempts (records with a ``started_at``), by ``started_at``."""
+    records = {r.attempt_token: r for r in await limits.records(conn, job_id)}
+    found = [r for r in await store.reservations(conn, job_id) if r.started_at is not None]
+    found.sort(key=lambda r: (r.started_at or r.created_at, r.attempt_token))
+    views: list[AttemptView] = []
+    for row in found:
+        record = records.get(row.attempt_token)
+        held = record is None or record.state is ReservationState.HELD
+        views.append(
+            AttemptView(
+                attempt_token=row.attempt_token,
+                outcome=None if row.outcome is None else row.outcome.value,
+                requested=0 if record is None else record.requested,
+                used=None if held or record is None else record.used,
+                overage=None if held or record is None else record.overage,
+                extra_outputs=None if held or record is None else record.extra_outputs,
+                cost=(row.applied_parameters or {}).get("cost"),
+                started_at=row.started_at,
+            )
+        )
+    return tuple(views)
 
 
 def _default_result(job: ImageJob) -> tuple[str, list[str]]:
@@ -2118,13 +2386,16 @@ async def read_view(conn: AsyncConnection, job_id: str) -> ImageJobView:
         status_reason=job.status_reason,
         result_field="candidate_ids" if field_name == "candidate_ids" else "asset_ids",
         result_ids=tuple(ids),
-        attempts=job.attempts,
+        attempts=await attempt_views(conn, job.id),
         created_at=job.created_at,
         updated_at=job.updated_at,
         policy_ids=tuple(policy_ids) if policy_ids else None,
         status_detail=detail,
         waiting_on=waiting_on,
         next_check_at=next_check_at,
+        waiting_for_horizon=job.waiting_for_horizon,
+        confirm_deadline_at=job.confirm_deadline_at,
+        confirm_fallback=job.confirm_fallback,
     )
 
 
@@ -2332,6 +2603,7 @@ __all__ = [
     "PRE_COMMIT_HOOKS",
     "REQUEUE_IN",
     "WAITING_ON_PAUSE",
+    "AttemptView",
     "DepictedSubject",
     "FailClosedChecks",
     "Gone",
@@ -2360,6 +2632,7 @@ __all__ = [
     "TargetStale",
     "TooManyWaiters",
     "Wait",
+    "attempt_views",
     "bind",
     "bound",
     "cancel_job",

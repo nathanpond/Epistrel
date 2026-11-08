@@ -60,6 +60,11 @@ The registry holds:
 - ``epistrel_image_revalidation_total{outcome}`` (#264): each story image job's revalidation
   inside its attaching transaction, by outcome (``ok``, ``wait``, ``needs_evaluation``,
   ``stale``, ``target_gone``).
+- ``epistrel_image_attempt_outcomes_total{outcome}`` (#267): each outcome written on an image
+  provider attempt (``image_reservations.outcome``: ``promoted``, ``rejected``, ``failed``,
+  ``discarded``, ``settled``, ``adopted``, ``cancelled``, ``released_at_horizon``,
+  ``abandoned_fallback``, ``late_discarded``, ``late_after_horizon``), and each
+  ``late_duplicate`` return, which is reported but never stored.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -352,6 +357,38 @@ def count_revalidation(outcome: str) -> None:
     IMAGE_REVALIDATION.labels(outcome=outcome).inc()
 
 
+IMAGE_ATTEMPT_OUTCOMES = Counter(
+    "epistrel_image_attempt_outcomes",
+    "Image provider attempts' outcomes, as written on their records, and late duplicate "
+    "returns (#267).",
+    ("outcome",),
+)
+IMAGE_ATTEMPT_OUTCOME_VALUES = frozenset(
+    {
+        "promoted",
+        "rejected",
+        "failed",
+        "discarded",
+        "settled",
+        "adopted",
+        "cancelled",
+        "released_at_horizon",
+        "abandoned_fallback",
+        "late_discarded",
+        "late_after_horizon",
+        "late_duplicate",
+    }
+)
+
+
+def count_attempt_outcome(outcome: str) -> None:
+    """Count one image attempt outcome (``epistrel_image_attempt_outcomes_total{outcome}``;
+    #267); an outcome outside ``IMAGE_ATTEMPT_OUTCOME_VALUES`` is a programming error."""
+    if outcome not in IMAGE_ATTEMPT_OUTCOME_VALUES:
+        raise ValueError(f"unknown image attempt outcome {outcome}")
+    IMAGE_ATTEMPT_OUTCOMES.labels(outcome=outcome).inc()
+
+
 IMAGE_AUTO_JOBS_QUEUED = Counter(
     "epistrel_image_auto_jobs_queued",
     "Automatic illustration jobs queued in a turn's commit, by pipeline (lite, structured; #265).",
@@ -582,6 +619,8 @@ __all__ = [
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
     "HTTP_DURATION",
+    "IMAGE_ATTEMPT_OUTCOMES",
+    "IMAGE_ATTEMPT_OUTCOME_VALUES",
     "IMAGE_AUTO_HINTS_DROPPED",
     "IMAGE_AUTO_JOBS_QUEUED",
     "IMAGE_AUTO_POINTS_DROPPED",
@@ -609,6 +648,7 @@ __all__ = [
     "THUNKS",
     "TURN_DEGRADATION",
     "SchedulerGauges",
+    "count_attempt_outcome",
     "count_auto_hints_dropped",
     "count_auto_points_dropped",
     "count_auto_queued",

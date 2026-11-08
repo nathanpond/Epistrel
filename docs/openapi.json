@@ -904,6 +904,98 @@
         "title": "ApproveRequest",
         "type": "object"
       },
+      "AttemptBody": {
+        "description": "One provider attempt (FR-IMG-11; #267).",
+        "properties": {
+          "attempt_token": {
+            "title": "Attempt Token",
+            "type": "string"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "const": "unknown",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`{amount, currency}` in the provider's currency, `unknown` when the provider gave none (never 0), or null before the attempt returned.",
+            "title": "Cost"
+          },
+          "extra_outputs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Outputs beyond what was requested, discarded unchecked; null while held.",
+            "title": "Extra Outputs"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null while in flight; then `promoted`, `rejected`, `failed`, `discarded`, `settled`, `adopted`, `cancelled`, `released_at_horizon`, `abandoned_fallback`, `late_discarded` or `late_after_horizon`.",
+            "title": "Outcome"
+          },
+          "overage": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Outputs counted past the reservation; null while held.",
+            "title": "Overage"
+          },
+          "requested": {
+            "description": "The outputs the attempt reserved.",
+            "title": "Requested",
+            "type": "integer"
+          },
+          "used": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Outputs counted as usage; null while held.",
+            "title": "Used"
+          }
+        },
+        "required": [
+          "attempt_token",
+          "outcome",
+          "requested",
+          "used",
+          "overage",
+          "extra_outputs",
+          "cost"
+        ],
+        "title": "AttemptBody",
+        "type": "object"
+      },
       "Audience": {
         "description": "Who may see a reference image's subject: ``perceivable`` (only what anyone who meets the\ncharacter can see) or ``restricted`` (hidden details, a true form, the real face behind a\ndisguise). There is no default.",
         "enum": [
@@ -16241,8 +16333,11 @@
             "title": "Asset Ids"
           },
           "attempts": {
+            "items": {
+              "$ref": "#/components/schemas/AttemptBody"
+            },
             "title": "Attempts",
-            "type": "integer"
+            "type": "array"
           },
           "candidate_ids": {
             "anyOf": [
@@ -16257,6 +16352,25 @@
               }
             ],
             "title": "Candidate Ids"
+          },
+          "confirm_deadline_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With an adapter that confirms completion: when the job stops asking the provider about a stalled call and retries (null otherwise).",
+            "title": "Confirm Deadline At"
+          },
+          "confirm_fallback": {
+            "default": false,
+            "description": "The job fell back to retrying with no definitive answer about a stalled call (sticky).",
+            "title": "Confirm Fallback",
+            "type": "boolean"
           },
           "created_at": {
             "format": "date-time",
@@ -16335,6 +16449,12 @@
             "format": "date-time",
             "title": "Updated At",
             "type": "string"
+          },
+          "waiting_for_horizon": {
+            "default": false,
+            "description": "A worker stalled past its lease with a provider call in flight: no attempt starts before that call's horizon (its timeout plus `image_attempt_grace_s`).",
+            "title": "Waiting For Horizon",
+            "type": "boolean"
           },
           "waiting_on": {
             "anyOf": [
@@ -40611,6 +40731,20 @@
             "title": "Image Accounting Retention Days",
             "type": "integer"
           },
+          "image_attempt_grace_s": {
+            "default": 60,
+            "maximum": 3600.0,
+            "minimum": 0.0,
+            "title": "Image Attempt Grace S",
+            "type": "integer"
+          },
+          "image_confirm_wait_max_s": {
+            "default": 1800,
+            "maximum": 86400.0,
+            "minimum": 60.0,
+            "title": "Image Confirm Wait Max S",
+            "type": "integer"
+          },
           "image_limit_deployment_day": {
             "default": 200,
             "maximum": 100000.0,
@@ -40644,6 +40778,13 @@
             "maximum": 5.0,
             "minimum": 0.0,
             "title": "Image Retry Budget",
+            "type": "integer"
+          },
+          "image_status_poll_s": {
+            "default": 15,
+            "maximum": 600.0,
+            "minimum": 5.0,
+            "title": "Image Status Poll S",
             "type": "integer"
           },
           "job_retention_days": {
@@ -42246,6 +42387,28 @@
             ],
             "title": "Image Accounting Retention Days"
           },
+          "image_attempt_grace_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Attempt Grace S"
+          },
+          "image_confirm_wait_max_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Confirm Wait Max S"
+          },
           "image_limit_deployment_day": {
             "anyOf": [
               {
@@ -42300,6 +42463,17 @@
               }
             ],
             "title": "Image Retry Budget"
+          },
+          "image_status_poll_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Status Poll S"
           },
           "job_retention_days": {
             "anyOf": [
@@ -56119,11 +56293,14 @@
                           "gate_promotion_min_cases",
                           "idempotency_result_window",
                           "image_accounting_retention_days",
+                          "image_attempt_grace_s",
+                          "image_confirm_wait_max_s",
                           "image_limit_deployment_day",
                           "image_limit_entry_day",
                           "image_pause_max_wait_s",
                           "image_pause_recheck_s",
                           "image_retry_budget",
+                          "image_status_poll_s",
                           "job_retention_days",
                           "listing_status_values",
                           "lite_author_facts_max",
@@ -75541,7 +75718,7 @@
     },
     "/image-jobs/{job_id}": {
       "delete": {
-        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
         "operationId": "cancel_image_job",
         "parameters": [
           {
@@ -75660,7 +75837,7 @@
         "x-epistrel-mutating": false
       },
       "get": {
-        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` counts its provider attempts. A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
         "operationId": "get_image_job",
         "parameters": [
           {

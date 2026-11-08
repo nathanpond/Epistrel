@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -106,6 +106,8 @@ class JobOutput:
 
 
 Run = Callable[[JobContext], Coroutine[Any, Any, JobOutput]]
+LeaseExpiryHook = Callable[[AsyncConnection, str, dict[str, Any]], Awaitable[datetime | None]]
+"""``(conn, jobs row id, payload) -> due_at | None`` (``JobHandler.on_lease_expired``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,7 +118,13 @@ class JobHandler:
     ``max_attempts`` overrides the worker's ``job_max_attempts`` for this kind (recurring
     sweeps use 1, #71). ``records_operation=False`` is for housekeeping that writes no story
     state (the sweeps, the turn-queue safety net): the job finishes under its fencing token
-    without an ``operations`` row, so a task running every 30 s does not grow the log."""
+    without an ``operations`` row, so a task running every 30 s does not grow the log.
+
+    ``on_lease_expired`` is the kind's lease-expiry hook (#267): ``queue.reap`` calls it in the
+    transaction that reclaims a lapsed claim, with the row's id and payload, and the row is
+    ``queued`` again due at the time it returns (``None``: due as before). It only fences and
+    schedules: the image job's advances its attempt token and parks the row until a stalled
+    provider call's horizon."""
 
     kind: str
     payload: type[BaseModel]
@@ -124,6 +132,7 @@ class JobHandler:
     operation_kind: OperationKind = OperationKind.MAINTENANCE
     max_attempts: int | None = None
     records_operation: bool = True
+    on_lease_expired: LeaseExpiryHook | None = None
 
 
 __all__ = [
@@ -131,6 +140,7 @@ __all__ = [
     "JobContext",
     "JobHandler",
     "JobOutput",
+    "LeaseExpiryHook",
     "PositionedOutput",
     "Run",
     "Stage",

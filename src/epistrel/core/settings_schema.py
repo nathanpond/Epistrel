@@ -1084,6 +1084,14 @@ IMAGE_PAUSE_RECHECK_MAX_S = 3_600
 DEFAULT_IMAGE_PAUSE_MAX_WAIT_S = 86_400
 IMAGE_PAUSE_MAX_WAIT_MIN_S = 60
 IMAGE_PAUSE_MAX_WAIT_MAX_S = 604_800
+DEFAULT_IMAGE_ATTEMPT_GRACE_S = 60
+IMAGE_ATTEMPT_GRACE_MAX_S = 3_600
+DEFAULT_IMAGE_STATUS_POLL_S = 15
+IMAGE_STATUS_POLL_MIN_S = 5
+IMAGE_STATUS_POLL_MAX_S = 600
+DEFAULT_IMAGE_CONFIRM_WAIT_MAX_S = 1_800
+IMAGE_CONFIRM_WAIT_MAX_MIN_S = 60
+IMAGE_CONFIRM_WAIT_MAX_MAX_S = 86_400
 """#264: how often a story image job waiting on a paused story revalidates, and how long in
 total it may wait (FR-IMG-4)."""
 
@@ -1159,6 +1167,29 @@ class ImageJobSettings(BaseModel):
     """How long in total a story image job may wait on a paused story, counted from its first
     wait, before it ends ``stale`` with ``paused_too_long`` (FR-IMG-4; #264; default 86400, 60
     to 604800). Prospective."""
+    image_attempt_grace_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_ATTEMPT_GRACE_S, ge=0, le=IMAGE_ATTEMPT_GRACE_MAX_S
+    )
+    """How long past an image provider call's own timeout its attempt is held before the job may
+    retry (FR-IMG-11; #267; default 60, 0 to 3600): the attempt's horizon is ``started_at +
+    request_timeout_s + image_attempt_grace_s``. Prospective: an attempt's horizon is fixed when
+    it is sent."""
+    image_status_poll_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_STATUS_POLL_S,
+        ge=IMAGE_STATUS_POLL_MIN_S,
+        le=IMAGE_STATUS_POLL_MAX_S,
+    )
+    """How often, after a stalled attempt's horizon, a job polls a ``confirms_completion``
+    adapter's ``status`` (FR-IMG-11; #267; default 15, 5 to 600, never above
+    ``image_confirm_wait_max_s``: 422 ``validation_error``). Prospective."""
+    image_confirm_wait_max_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_CONFIRM_WAIT_MAX_S,
+        ge=IMAGE_CONFIRM_WAIT_MAX_MIN_S,
+        le=IMAGE_CONFIRM_WAIT_MAX_MAX_S,
+    )
+    """How long after a stalled attempt's horizon a job waits for a definitive status before it
+    falls back to the non-confirming rule (FR-IMG-11; #267; default 1800, 60 to 86400): the
+    deadline is the horizon plus this. Prospective: a wait's deadline is fixed when it starts."""
 
     @field_validator("candidate_ttl")
     @classmethod
@@ -1179,6 +1210,8 @@ class ImageJobSettings(BaseModel):
         entry_day = self.image_limit_entry_day
         if entry_day and self.catalog_candidates_n > entry_day:
             raise ValueError("catalog_candidates_n cannot exceed a non-zero image_limit_entry_day")
+        if self.image_status_poll_s > self.image_confirm_wait_max_s:
+            raise ValueError("image_status_poll_s cannot exceed image_confirm_wait_max_s")
         return self
 
 

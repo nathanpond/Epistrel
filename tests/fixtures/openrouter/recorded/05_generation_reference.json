@@ -1,0 +1,72 @@
+{
+  "meta": {
+    "true_height": [
+      1024
+    ],
+    "true_width": [
+      1024
+    ]
+  },
+  "request": {
+    "body": {
+      "aspect_ratio": "1:1",
+      "input_references": [
+        {
+          "image_url": {
+            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAADeUlEQVR4nO3OMQEAMBADoUitfxWVccODAvbgsNUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgegtDoApdUBKK0OQGl1AEqrA1BaHYDS6gCUVgeg9AHtZBDhRJ+aXwAAAABJRU5ErkJggg=="
+          },
+          "type": "image_url"
+        }
+      ],
+      "model": "black-forest-labs/flux-3-image-klein",
+      "prompt": "A small red paper boat on calm blue water, simple flat illustration",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "black-forest-labs"
+        ]
+      }
+    },
+    "headers": {
+      "authorization": "REDACTED",
+      "content-type": "application/json",
+      "x-title": "Epistrel"
+    },
+    "method": "POST",
+    "url": "/api/v1/images"
+  },
+  "response": {
+    "body": {
+      "created": 0,
+      "data": [
+        {
+          "b64_json": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCABAAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCWiilr3DxgooooAKXa3pSUUALsb/JoKkdaSigBKWkOc8ED8KTD/wB4flQA8HHpS7z6D8qpX2oR6cqPMjmNjjeozg+9QPr1j9meWOTewHCYIJNYzxFKDalKzR1U8FiKqUqcG0+39afM0yxIxx+VJVJ9VtoY0MzFWYfdCkmpLS9W93GON1ReNzdzShiaM2lGV2yquAxNJOVSDSW7e3/B+RZopdrehowR1rc4xtLRRQBXvoGubV4PLR1cYO5sY9+lcpL4a1NPuzW6D13HP8q7QAnuPxNLtPqv51z1sNSrNOaO3DY+vhk40pWTOUg0bVjjzpoJR67jn+VdDZxPBAsbIihR/Cc5q1tPt+dRsHz8pUfUZpUcJRotygrNjxWY4nFRUK0rpD9x9TRknqajAl7uv/fP/wBenjpXScImQOpFG9R/Ev50FQeqg/hRtA/hH5UAAZW6EH6Glox7UYoAKKKKAClFJS0Af//Z",
+          "media_type": "image/jpeg"
+        }
+      ],
+      "usage": {
+        "completion_tokens": 4175,
+        "completion_tokens_details": {
+          "image_tokens": 4175,
+          "reasoning_tokens": 0
+        },
+        "cost": 0.009,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0.009,
+          "upstream_inference_cost": 0.009,
+          "upstream_inference_prompt_cost": 0
+        },
+        "is_byok": false,
+        "prompt_tokens": 17,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 4192
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

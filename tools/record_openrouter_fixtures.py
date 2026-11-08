@@ -71,6 +71,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "openrouter"
 REFERENCE_PNG = FIXTURES / "ref.png"
 CALL_BUDGET = 6
+DECODED_HEADERS = frozenset({"content-encoding", "content-length"})
+"""Response headers that no longer describe the body once ``aread`` has decoded it."""
 THUMBNAIL_PX = 64
 PROMPT = "A small red paper boat on calm blue water, simple flat illustration"
 SEED = 42
@@ -124,6 +126,13 @@ class RecordingTransport(httpx.AsyncBaseTransport):
         response = await self.inner.handle_async_request(request)
         body = await response.aread()
         await response.aclose()
+        # ``aread`` has already undone any Content-Encoding, so neither the recording nor the
+        # response handed back may still claim one (the client would decode the body twice).
+        headers = [
+            (name, value)
+            for name, value in response.headers.items()
+            if name.lower() not in DECODED_HEADERS
+        ]
         self.exchanges.append(
             Exchange(
                 method=request.method,
@@ -131,13 +140,11 @@ class RecordingTransport(httpx.AsyncBaseTransport):
                 request_headers=dict(request.headers.items()),
                 request_body=_json_or_text(content),
                 status=response.status_code,
-                response_headers=dict(response.headers.items()),
+                response_headers=dict(headers),
                 response_body=_json_or_text(body),
             )
         )
-        return httpx.Response(
-            response.status_code, headers=response.headers, content=body, request=request
-        )
+        return httpx.Response(response.status_code, headers=headers, content=body, request=request)
 
     async def aclose(self) -> None:
         await self.inner.aclose()

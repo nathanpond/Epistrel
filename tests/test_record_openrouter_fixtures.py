@@ -5,6 +5,7 @@ sanitizes what it writes, judges the dedupe check, and writes nothing when a cal
 from __future__ import annotations
 
 import base64
+import gzip
 import io
 import json
 from pathlib import Path
@@ -201,6 +202,30 @@ def test_recorder_inconclusive_dedupe(
         printed = capsys.readouterr().out
         assert "dedupes: false, inconclusive: true" in printed
         assert "unknown (" in printed
+
+
+def test_recorder_records_gzip_answers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OpenRouter compresses its answers. Every answer here comes back gzip-encoded, and the
+    recorder still records all six calls, decoded, and keeps no ``Content-Encoding`` header in
+    them (the real run once failed with "incorrect header check": the body was decoded twice)."""
+    monkeypatch.setenv(ENV, SECRET)
+    with replay() as server:
+        _serve_listing(server)
+        for answer in ("gen-A", "gen-B", "gen-C", "gen-A"):
+            server.serve("POST", "/api/v1/images", 200, _generation(answer))
+        for queue in server.routes.values():
+            for queued in queue:
+                queued.raw = gzip.compress(json.dumps(queued.body).encode())
+                queued.headers = {**queued.headers, "Content-Encoding": "gzip"}
+        assert recorder.main(_args(server, tmp_path, "--i-accept-cost")) == 0
+    assert "dedupes: true" in capsys.readouterr().out
+    calls = [json.loads(p.read_text()) for p in sorted((tmp_path / "recorded").iterdir())]
+    assert len(calls) == recorder.CALL_BUDGET
+    assert calls[0]["response"]["body"]["data"][0]["id"] == MODEL
+    for call in calls:
+        assert "content-encoding" not in {k.lower() for k in call["response"]["headers"]}
 
 
 def test_reference_png_is_bundled() -> None:

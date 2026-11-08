@@ -13025,6 +13025,13 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the test plan and the planner's test lines.
   **Issue:** #267
 
+- **Decision (Rule 1):** the recorder's `RecordingTransport` drops `Content-Encoding` and `Content-Length` from the response it records and hands back. `aread()` has already decoded the body, so the owner's first real run failed on call 1 ("Error -3 while decompressing data: incorrect header check": gzip decoded twice) and wrote nothing. New test `test_recorder_records_gzip_answers` serves every answer gzipped; it fails without the fix (checked) and passes with it.
+  **Why:** the replay server never compressed its answers, so the recorder's tests could not see this.
+  **Issue:** #255
+- **Decision:** the owner recorded the fixtures on 2026-11-08 against `black-forest-labs/flux-3-image-klein` (6 calls, $0.036). Verdict `dedupes: false, inconclusive: true`, so `OPENROUTER_DEDUPES_IDEMPOTENCY_KEY` stays `False` with no code change. It is inconclusive only because OpenRouter's image answers carry no generation id to compare. The repeat with the same `Idempotency-Key` came back 200 and was billed a second $0.009, which is evidence that OpenRouter does not deduplicate. `test_i_23__m8_openrouter_recorded` and `_dedupe_flag` now run and pass. `needs-owner-action` is removed from #255.
+  **Why:** the owner's step of the recording AC.
+  **Issue:** #255
+
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.

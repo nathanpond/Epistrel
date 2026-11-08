@@ -1,0 +1,65 @@
+{
+  "meta": {
+    "true_height": [
+      1024
+    ],
+    "true_width": [
+      1024
+    ]
+  },
+  "request": {
+    "body": {
+      "aspect_ratio": "1:1",
+      "model": "black-forest-labs/flux-3-image-klein",
+      "prompt": "A small red paper boat on calm blue water, simple flat illustration",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "black-forest-labs"
+        ]
+      },
+      "seed": 42
+    },
+    "headers": {
+      "authorization": "REDACTED",
+      "content-type": "application/json",
+      "x-title": "Epistrel"
+    },
+    "method": "POST",
+    "url": "/api/v1/images"
+  },
+  "response": {
+    "body": {
+      "created": 0,
+      "data": [
+        {
+          "b64_json": "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCABAAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD2qlqiVpNtdXIcvOX6KobfekK0cgc5oUn41Q2+9GKOQOcv5pwrPx70oFHIHOZRvB/db86T7YP7rfnVWlxXZyo4+Zln7YP7rfnSG9XqVIH1rhtS1nWNJ1B4DJFKn3ozJH95e3IxVebxDfalAYXjjhX+MxsTu9q86pmNCF00+ZdD3aOQ4qryyi1yvqn09NGegi8UgEAkHoQaPtg/ut+deVaP4su9IhNrKqzW4/1bOTmP29xWnp3ifVtd1WOztAkMWd0sgT7qDr1z9KdPH0Z2STu+gq2R4qk5SbXKut+npueh/ax/db86UXY/ut+dVQKWvQ5UeHzMbTG3bmzkjtjt9aYt3E3UkfUVKssbdHU/jV2JMnWNLj1SBF3BJUOVcjt3Fc/L4RvSf3d8ie6x8/zruMAjsaZsX+6PyrlqYOhVlzzjd/M9HD5ri8PT9nSnZei/VHAf8IDM5y98CfUx/wD166PQNCh0O3kTeJZpGyz4xx2Fbmxf7o/KlC4p08JQpy5oR1+Yq+aYvEU3Tqzun5Jfkhq7srjOO9S03FKK6DzzHopaK1IAMR0JFPEsg6O350wUtICQXEo/jNL9qm/vfpUVGKLBcl+1Tf3h+VL9qm/v/pUOKUCiyC5//9k=",
+          "media_type": "image/jpeg"
+        }
+      ],
+      "usage": {
+        "completion_tokens": 4175,
+        "completion_tokens_details": {
+          "image_tokens": 4175,
+          "reasoning_tokens": 0
+        },
+        "cost": 0.009,
+        "cost_details": {
+          "upstream_inference_completions_cost": 0.009,
+          "upstream_inference_cost": 0.009,
+          "upstream_inference_prompt_cost": 0
+        },
+        "is_byok": false,
+        "prompt_tokens": 17,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 4192
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

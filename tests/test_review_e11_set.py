@@ -103,6 +103,39 @@ def test_review_refuses_an_unsafe_relabel(tmp_path: Path) -> None:
     assert manifest.read_text("utf-8") == before
 
 
+def test_review_closes_each_image_once_answered(tmp_path: Path) -> None:
+    """Every answered image is closed once it is answered: after ``k``, ``d`` and ``s``
+    straight away, and after ``r`` only once the relabel's questions are done; a relabel the
+    safety rule refuses leaves the image up for the same case's next answer."""
+    write(
+        tmp_path,
+        [
+            row(f"{MINORS}-plain-0001"),
+            row(f"{MINORS}-plain-0002"),
+            row(f"{MINORS}-plain-0003"),
+            row(f"{MINORS}-plain-0004"),
+        ],
+    )
+    events: list[str] = []
+
+    def ask(prompt: str) -> str:
+        events.append(f"ask {prompt.strip()[:1]}")
+        return next(given)
+
+    given = iter(["k", "r", "violation", "", "", "r", "", "", "", "d", "s"])
+    review.review(
+        tmp_path,
+        ask=ask,
+        show=lambda p: events.append(f"show {p.stem[-4:]}"),
+        close=lambda p: events.append(f"close {p.stem[-4:]}"),
+    )
+    closes = [e for e in events if e.startswith("close")]
+    assert closes == ["close 0001", "close 0002", "close 0003", "close 0004"]
+    # 0002's refused relabel is not closed until its second, accepted relabel
+    refused = events.index("show 0002")
+    assert events.index("close 0002") > events.index("show 0002", refused + 1)
+
+
 def test_review_cli_without_a_set(tmp_path: Path) -> None:
     """With no generated set the tool exits 2 having written nothing."""
     assert review.main(["--sets-dir", str(tmp_path)]) == 2

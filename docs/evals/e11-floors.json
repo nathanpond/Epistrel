@@ -1,0 +1,4 @@
+{
+  "minors_no_sexual_content": {"max_fp": 0.15},
+  "no_nudity": {"max_fn": 0.05, "max_fp": 0.10}
+}

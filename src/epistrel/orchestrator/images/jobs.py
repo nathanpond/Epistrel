@@ -140,11 +140,7 @@ from epistrel.core.tables.media import CheckStatus, MediaSource, MediaState
 from epistrel.observability.metrics import count_revalidation
 from epistrel.orchestrator.images import attempts
 from epistrel.orchestrator.images import errors as adapter_errors
-from epistrel.orchestrator.images.params import (
-    ImageGenerationParams,
-    resolve_dimensions,
-    resolve_quality,
-)
+from epistrel.orchestrator.images.params import ImageGenerationParams
 from epistrel.orchestrator.images.port import (
     MAX_IMAGES_PER_REQUEST,
     MAX_PROMPT_CHARS,
@@ -154,7 +150,6 @@ from epistrel.orchestrator.images.port import (
     AttemptCost,
     Cost,
     ImageOutput,
-    ImageRequest,
     ImageUsage,
     Quality,
     Size,
@@ -166,6 +161,11 @@ from epistrel.orchestrator.images.registry import (
     TargetedPolicy,
     ensure_image_check_configured,
     require_image_adapter,
+)
+from epistrel.orchestrator.images.request import (
+    RequestInputs,
+    build_image_request,
+    resend_request,
 )
 from epistrel.testing import crash
 
@@ -1082,20 +1082,10 @@ SNAPSHOT_EXCLUDED: set[str] = {"prompt", "negative_prompt"}
 job (where erasure and story deletion reach it); the records are deployment accounting."""
 
 
-def _image_request(job: ImageJob, seed: int, params: ImageGenerationParams) -> ImageRequest:
-    size, ratio = resolve_dimensions(
-        params, size=job.params.get("size"), aspect_ratio=job.params.get("aspect_ratio")
-    )
-    return ImageRequest(
-        prompt=job.prompt,
-        negative_prompt=job.negative_prompt,
-        seed=seed,
-        size=size,
-        aspect_ratio=ratio,
-        quality=resolve_quality(params, job.params.get("quality")),
-        n=int(job.params.get("n") or 1),
-        reference_images=tuple(job.params.get("reference_image_ids") or ()),
-    )
+def _request_inputs(job: ImageJob) -> RequestInputs:
+    """#797: the narrowed value the adapter's request is built from (``request``): the job's
+    prompt and request-shaped parameters, never its ``safety_context``."""
+    return RequestInputs.of(job.prompt, job.negative_prompt, job.params)
 
 
 class ImageJobRunner:
@@ -1724,15 +1714,9 @@ class ImageJobRunner:
         request = (
             # A re-send's snapshot holds no prompt text (accounting rows outlive their story):
             # the job's prompt is sent with it again.
-            ImageRequest.model_validate(
-                {
-                    **attempt.request,
-                    "prompt": job.prompt,
-                    "negative_prompt": job.negative_prompt,
-                }
-            )
+            resend_request(attempt.request, _request_inputs(job))
             if attempt.request is not None
-            else _image_request(job, attempt.seed, params)
+            else build_image_request(_request_inputs(job), attempt.seed, params)
         )
         key = attempt.key or store.idempotency_key_of(job.id, attempt.token)
         horizon = attempts.horizon_of(

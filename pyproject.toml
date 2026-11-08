@@ -176,7 +176,10 @@ ignore_imports = [
 # reader. Direct imports only: the port's own types reach Core, and a module the generation path
 # shares with the safety path is not a leak by itself. #259 added the prompt builder
 # (`epistrel.orchestrator.images.prompt_builder`), which reads the catalog through
-# `epistrel.core.images.perceived` and gets only an apparent age band from it.
+# `epistrel.core.images.perceived` and gets only an apparent age band from it. #797 added the
+# request builder (`epistrel.orchestrator.images.request`, the only builder of the adapter's
+# `ImageRequest`) and forbids the modules that hold an `ImageJob`, whose `safety_context` carries
+# the true ages: `epistrel.core.images.store` and `epistrel.orchestrator.images.jobs`.
 # `tests/gates/test_image_paths_contract.py` checks that it exists as written, is kept and bites.
 name = "images-generation-path-has-no-ages"
 type = "forbidden"
@@ -184,8 +187,14 @@ source_modules = [
     "epistrel.orchestrator.images.adapters",
     "epistrel.orchestrator.images.port",
     "epistrel.orchestrator.images.prompt_builder",
+    "epistrel.orchestrator.images.request",
 ]
-forbidden_modules = ["epistrel.core.images.safety", "epistrel.core.catalog.ages"]
+forbidden_modules = [
+    "epistrel.core.images.safety",
+    "epistrel.core.catalog.ages",
+    "epistrel.core.images.store",
+    "epistrel.orchestrator.images.jobs",
+]
 allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]

@@ -12,8 +12,10 @@ adults in the cabin and the minors in the barn.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -186,6 +188,32 @@ def names_in(value: str, names: Sequence[str]) -> list[str]:
     return [name for name in names if name in value]
 
 
+_ULID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+
+
+def assert_no_age(value: Any, age: int, path: str = "$") -> None:
+    """``value`` (a dumped view: dicts, lists, scalars) carries ``age`` nowhere. No key names
+    an age (``age`` as an ``_``-separated token), no number equals it, and no string contains
+    its digits. ULIDs and ``datetime`` values are skipped: they are random, so they can hold
+    the digits by chance, and they carry no age (#791)."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            assert "age" not in str(key).lower().split("_"), f"{path}: key {key!r}"
+            assert_no_age(item, age, f"{path}.{key}")
+    elif isinstance(value, list | tuple | set | frozenset):
+        for n, item in enumerate(value):
+            assert_no_age(item, age, f"{path}[{n}]")
+    elif isinstance(value, datetime):
+        return
+    elif isinstance(value, str):
+        if not _ULID.fullmatch(value):
+            assert str(age) not in value, f"{path}: {value!r}"
+    elif isinstance(value, int | float) and not isinstance(value, bool):
+        assert value != age, f"{path}: {value!r}"
+    else:
+        assert str(age) not in str(value), f"{path}: {value!r}"
+
+
 __all__ = [
     "ADULTS",
     "BOBBY",
@@ -198,6 +226,7 @@ __all__ = [
     "STORY_TEXT",
     "WREN",
     "WREN_AGE",
+    "assert_no_age",
     "figures",
     "jobs_of",
     "labels_with_ages",

@@ -12900,6 +12900,10 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the traceability gate takes one file per test ID and milestone. Running #118's rating-check worker needs a scratch database. A deleted story's job never survives to see `target_gone`.
   **Issue:** #264
 
+- **Decision (Rule 1):** #791 was filed by #264's agent after `test_i_24__m8_two_paths` failed 2 times in 4 runs: `"34"` turned up inside a ULID of the job view. The orchestrator triaged it into M8. The fix replaces the substring check with `tests.image_safety_support.assert_no_age`. It walks the dumped view: no key may name an age, no number may equal it, and no string may contain its digits. It skips only ULID-shaped strings and `datetime` values. The twin sweep found no other flaky age check: the `ImageRequest` checks carry no ids, and the C-20 and minors error bodies already pop their numeric costs. The test passed 20 of 20 loops.
+  **Why:** ids and timestamps are random and can't carry an age. Every other field is still checked, now by key as well as by value.
+  **Issue:** #791, #264
+
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.

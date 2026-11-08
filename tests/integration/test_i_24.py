@@ -64,6 +64,7 @@ from tests.image_safety_support import (
     STORY_TEXT,
     WREN,
     WREN_AGE,
+    assert_no_age,
     figures,
     jobs_of,
     origin,
@@ -219,7 +220,7 @@ async def test_i_24__m8_two_paths(
         view = await lib.get_image_job(CTX, marcus)
         shown = json.dumps(dataclasses.asdict(view), default=str)
         assert "safety_context" not in shown
-        assert str(MARCUS_AGE) not in shown
+        assert_no_age(dataclasses.asdict(view), MARCUS_AGE)
 
         # 2. Lily, 17, looks older: refused by her true age, declared or only named.
         declared = await _refused(

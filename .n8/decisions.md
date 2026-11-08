@@ -12973,6 +12973,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #792 is filed (needs-triage, no milestone). `test_a_story_character_is_erased_from_the_catalog` (#504) depends on test order. C-22's leftover "Wren Calloway" catalog characters add candidate mentions to its dry run whenever both run in one session.
   **Why:** the problem is outside #266's scope (catalog character fixtures), and CI's shards don't pair the two files.
   **Issue:** #266, #792
+- **Decision:** #792 is fixed at the source. The image fixtures' catalog character (`tests/image_prompt_support.character_body` and `APPEARANCE`, which `catalog_image_support` reuses) is renamed from "Wren Calloway" to "Odessa Thornquist", a name no erasure test uses. The M7 erasure test is unchanged. The sweep of the other M8 image support modules found no other catalog record that collides. Their Wren, Lily, Marcus, Jenni and Bobby are a story-scoped cast, or a story's catalog snapshots, which no catalog-scope erasure reads. `image_subject_support`'s catalog names ("Ysolde Quillfeather", "Perpetua Hawksmoor") match nothing.
+  **Why:** the orchestrator's instruction and the issue's first option. A catalog-scope dry run lists every catalog mention of the name, so the fixture is what must not share it.
+  **Issue:** #792
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

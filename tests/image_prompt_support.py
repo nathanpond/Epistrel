@@ -30,7 +30,7 @@ from tests.respond_support import respond_client
 
 TRUE_AGE = 34
 BAND = "mid thirties"
-APPEARANCE = "Wren Calloway is a tall woman with a copper braid and a sailcloth coat."
+APPEARANCE = "Odessa Thornquist is a tall woman with a copper braid and a sailcloth coat."
 RESTRICTED_DETAILS = "a hidden kraken tattoo across her shoulders"
 RESTRICTED_TERM = "kraken"
 ADDON_RESTRICTED = "selkie-skin-lora"
@@ -116,7 +116,7 @@ def identity(seen: str, hidden: str, **fields: Any) -> dict[str, Any]:
 def character_body(seen: str, hidden: str, **identity_fields: Any) -> dict[str, Any]:
     """A complete, publishable character (34, Everyone) with that visual identity."""
     return complete(
-        "Wren Calloway",
+        "Odessa Thornquist",
         definition_changes={"true_age": TRUE_AGE, "appearance": APPEARANCE},
         visual_identity=identity(seen, hidden, **identity_fields),
     )

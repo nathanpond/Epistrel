@@ -52,7 +52,7 @@ caption, MIME type, dimensions and generation metadata, exactly as the upload st
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Final
@@ -73,8 +73,10 @@ from epistrel.core.catalog.service import CardRating, PublishRequest, Revision
 from epistrel.core.enums import EntryStatus
 from epistrel.core.ids import Ulid
 from epistrel.core.json_numbers import require_finite
+from epistrel.core.media.checks import CHECK_STATEMENTS, ImageCheck
 from epistrel.core.ownership import Owner
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
+from epistrel.core.tables.media import CheckStatus, MediaSource
 from epistrel.core.trimmed import trim_as_sent
 
 NAME_MAX = 120
@@ -589,6 +591,44 @@ def audience_errors(draft: CharacterDraft) -> list[dict[str, Any]]:
     ]
 
 
+ADDONS_MAX: Final = 10
+"""The most add-ons a visual identity's ``adapter_params.addons`` may list (FR-CAT-4; #259)."""
+ADDON_AUDIENCE_RULE = (
+    "an add-on declares its audience (perceivable or restricted); there is no default"
+)
+
+
+def addon_errors(document: Mapping[str, Any] | CharacterDraft | None) -> list[dict[str, Any]]:
+    """The refusals of ``visual_identity.adapter_params.addons`` (FR-CAT-4; #259): a list of at
+    most ``ADDONS_MAX`` objects, each with a required ``audience`` of ``perceivable`` or
+    ``restricted`` (its other keys stay opaque), as a reference image needs one. Every other
+    ``adapter_params`` key is not looked at."""
+    if isinstance(document, CharacterDraft):
+        identity = document.visual_identity
+        params = None if identity is None else identity.adapter_params
+    else:
+        found = (document or {}).get("visual_identity")
+        params = found.get("adapter_params") if isinstance(found, Mapping) else None
+    if not isinstance(params, Mapping) or "addons" not in params:
+        return []
+    addons = params["addons"]
+    loc: Loc = ("visual_identity", "adapter_params", "addons")
+    if not isinstance(addons, list):
+        return [_error(loc, "list_type", "add-ons are a list of objects")]
+    if len(addons) > ADDONS_MAX:
+        return [_error(loc, "too_long", f"lists more than {ADDONS_MAX} add-ons")]
+    found_errors: list[dict[str, Any]] = []
+    audiences = {a.value for a in Audience}
+    for index, addon in enumerate(addons):
+        if not isinstance(addon, Mapping):
+            found_errors.append(_error((*loc, index), "dict_type", "an add-on is an object"))
+        elif "audience" not in addon:
+            found_errors.append(_error((*loc, index, "audience"), "missing", ADDON_AUDIENCE_RULE))
+        elif addon["audience"] not in audiences:
+            found_errors.append(_error((*loc, index, "audience"), "enum", ADDON_AUDIENCE_RULE))
+    return found_errors
+
+
 # -- what a publish requires --------------------------------------------------------------------
 
 PUBLISH_REQUIRED: Final = (
@@ -655,8 +695,13 @@ class CharacterCardImages(CharacterModel):
 
 class CharacterImageDetail(CharacterModel):
     """An image as ``full`` shows it (FR-CAT-4; #105): the media asset's id and, from its live
-    row, its alt text, caption, MIME type, dimensions and generation metadata, exactly as stored
-    (every field ``null`` for an asset no row holds)."""
+    row, its alt text, caption, MIME type, dimensions and generation metadata, exactly as stored,
+    and its source, check status and check (FR-IMG-10; #258) (every field ``null`` for an asset
+    no row holds)."""
+
+    model_config = ConfigDict(
+        json_schema_extra={"description": f"An image as `full` shows it. {CHECK_STATEMENTS}"}
+    )
 
     media_id: str
     alt_text: str | None = None
@@ -665,6 +710,13 @@ class CharacterImageDetail(CharacterModel):
     width: int | None = None
     height: int | None = None
     generation_metadata: dict[str, Any] | None = None
+    source: MediaSource | None = None
+    check_status: CheckStatus | None = Field(
+        default=None,
+        description="`passed` or `unchecked` (`null` for an asset no row holds). "
+        + CHECK_STATEMENTS,
+    )
+    check: ImageCheck | None = None
 
 
 class CharacterImagesDetail(CharacterModel):
@@ -836,12 +888,25 @@ class CharacterDefinitionPatch(CharacterModel):
     safe_fallback_text: str | None = Field(default=None, max_length=SAFE_FALLBACK_MAX)
 
 
+class CandidateRef(CharacterModel):
+    """A catalog image candidate named in a draft save's image slot (FR-IMG-7; #260): the save
+    attaches it, and the slot holds its media id."""
+
+    candidate_id: Ulid = Field(description="The candidate to attach (`…/images/candidates`).")
+
+
+ImageRef = Ulid | CandidateRef
+"""An image slot's value in a draft save: a media id, or ``{candidate_id}`` to attach."""
+
+
 class CharacterImagesPatch(CharacterModel):
     """The images part of a draft patch: ``primary`` set or removed (``null``), and ``gallery``
-    replaced as a whole."""
+    replaced as a whole. Each image is a media id or ``{candidate_id}``, a candidate of this
+    character's to attach (FR-IMG-7): the save checks it is current (409 ``candidate_stale``
+    otherwise) and stores its media id."""
 
-    primary: Ulid | None = None
-    gallery: list[Ulid] | None = Field(default=None, max_length=GALLERY_MAX)
+    primary: ImageRef | None = None
+    gallery: list[ImageRef] | None = Field(default=None, max_length=GALLERY_MAX)
 
 
 class CharacterPublicCardPatch(CharacterModel):
@@ -916,6 +981,7 @@ class CharacterPatch(CharacterModel):
 
 __all__ = [
     "ADAPTER_PARAMS_MAX_BYTES",
+    "ADDONS_MAX",
     "AUDIENCE_RULE",
     "BACKGROUND_FLAVOR_MAX",
     "DISPOSITION_AXES",
@@ -929,6 +995,7 @@ __all__ = [
     "SAFE_FALLBACK_MAX",
     "SEED_MAX",
     "Audience",
+    "CandidateRef",
     "CardImage",
     "Caution",
     "CautionDisposition",
@@ -956,6 +1023,7 @@ __all__ = [
     "DominanceDisposition",
     "Honesty",
     "HonestyDisposition",
+    "ImageRef",
     "InteractionStyle",
     "InteractionStylePatch",
     "LikesDislikes",
@@ -970,6 +1038,7 @@ __all__ = [
     "VisualIdentityPatch",
     "Warmth",
     "WarmthDisposition",
+    "addon_errors",
     "audience_errors",
     "character_rules",
     "missing_audiences",

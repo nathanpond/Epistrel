@@ -1,13 +1,19 @@
 """``/admin/model-config``: per-purpose model configuration, read and changed at runtime
 (FR-MODEL-1..4; NFR-SEC-3).
 
-- ``GET`` lists ``default`` and every **delivered** purpose (reserved ones are not listed,
-  FR-MODEL-2) with its effective configuration, the ``source`` of each field (``own``,
+- ``GET`` lists ``default`` and every **delivered** purpose and port (reserved ones are not
+  listed, FR-MODEL-2) with its effective configuration, the ``source`` of each field (``own``,
   ``inherited`` from the purpose it defaults to — ``rating_suggestion`` inherits
-  ``guardrail_check``'s, #121 — or ``default``), and the deployment's ``config_revision``;
-  ``GET /{purpose}`` returns one.
+  ``guardrail_check``'s, #121 — ``default``, or ``unset`` for ``image_check``'s fields until it
+  is configured, #254), its ``endpoint`` (the host of its effective ``base_url``, FR-IMG-13) and
+  the deployment's ``config_revision``; ``GET /{purpose}`` returns one.
 - ``PUT /{purpose}`` replaces the purpose's own ``base_url``, ``model`` and ``params`` (omitted or
-  ``null`` inherits from ``default``); 200 with the effective entry and ``config_revision``.
+  ``null`` inherits from ``default``); 200 with the effective entry and ``config_revision``. The
+  image adapter is the ``image_generation`` port, written the same way with its image fields in
+  ``params`` (``adapter``, ``default_size``, ``default_aspect_ratio``, ``default_quality``,
+  ``image_capability_ttl_s``, ``request_timeout_s``; owner decision 11). Enabling an adapter
+  while ``image_check`` is unset is allowed and adds ``warnings: [{"code":
+  "image_check_unset"}]``.
 - ``DELETE /{purpose}`` drops the purpose's override (200); ``default`` cannot be removed (409);
   nothing to drop is 204.
 - ``PUT|DELETE /{purpose}/api-key`` set or remove the purpose's key (204).
@@ -22,7 +28,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import APIRouter, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, Purpose
 from epistrel.api.idempotency import answered, no_content
@@ -35,18 +41,22 @@ from epistrel.orchestrator.models.config import (
     ConfigReplacement,
     ConfigWrite,
 )
+from epistrel.orchestrator.models.registry import IMAGE_CHECK, IMAGE_GENERATION
 
 router = APIRouter(prefix="/model-config")
 
 MASK = "***"
 
-Source = Literal["own", "inherited", "default"]
+Source = Literal["own", "inherited", "default", "unset"]
+
+IMAGE_CHECK_UNSET = "image_check_unset"
 
 
 class Sources(BaseModel):
     """Where each effective value came from, per field (``params`` per key): ``own``, ``inherited``
-    (the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``)
-    or ``default``."""
+    (the row of the purpose this one defaults to: ``rating_suggestion`` → ``guardrail_check``),
+    ``default``, or ``unset`` (``image_check``, which has no default, before it is
+    configured)."""
 
     base_url: Source
     model: Source
@@ -64,6 +74,9 @@ class ModelConfigEntry(BaseModel):
     api_key: Literal["***"] | None
     api_key_fingerprint: str | None
     sources: Sources
+    endpoint: str | None
+    """The host of the effective ``base_url`` (where this purpose's inputs are sent), or
+    ``null`` when it is unset (FR-IMG-13)."""
 
     @classmethod
     def fields_of(cls, entry: ConfigEntry) -> dict[str, Any]:
@@ -74,6 +87,7 @@ class ModelConfigEntry(BaseModel):
             "api_key": MASK if entry.has_api_key else None,
             "api_key_fingerprint": entry.api_key_fingerprint,
             "sources": Sources.model_validate(entry.sources),
+            "endpoint": entry.endpoint,
         }
 
     @classmethod
@@ -107,10 +121,19 @@ class ModelConfigItem(ModelConfigEntry):
     config_revision: int
 
 
+class ConfigWarning(BaseModel):
+    """Something a write allowed that the operator should know: ``image_check_unset`` (an
+    image adapter was enabled while no ``image_check`` model is configured, so every
+    image-output policy fails closed, #254)."""
+
+    code: Literal["image_check_unset"]
+
+
 class ModelConfigMutation(ModelConfigEntry, DeploymentMutationResponse):
     """One purpose after a write, with the ``config_revision`` the write produced."""
 
     purpose: str
+    warnings: list[ConfigWarning] = Field(default_factory=list)
 
 
 @router.get(
@@ -146,9 +169,21 @@ async def _mutation(
     the stored write's revision)."""
     _, entry = await engine.model_config_entry(ctx, purpose)
     answer = ModelConfigMutation(
-        purpose=purpose, config_revision=write.config_revision, **ModelConfigEntry.fields_of(entry)
+        purpose=purpose,
+        config_revision=write.config_revision,
+        warnings=await _warnings(engine, ctx, entry),
+        **ModelConfigEntry.fields_of(entry),
     )
     return answered(answer, ctx, response, replayed=write.replayed)
+
+
+async def _warnings(engine: Engine, ctx: RequestContext, entry: ConfigEntry) -> list[ConfigWarning]:
+    """``image_check_unset`` when the entry is the image adapter, enabled, and ``image_check``
+    has no model."""
+    if entry.purpose != IMAGE_GENERATION.name or entry.params.get("adapter") is None:
+        return []
+    _, check = await engine.model_config_entry(ctx, IMAGE_CHECK.name)
+    return [ConfigWarning(code=IMAGE_CHECK_UNSET)] if check.model is None else []
 
 
 @router.put(

@@ -81,8 +81,10 @@ from epistrel.core.settings_schema import (
     CAST_LIMIT_MAX,
     CAST_LIMIT_MIN,
     DEFAULT_MAX_CHARACTERS_AT_START,
+    MAX_AUTO_IMAGES_PER_TURN_LIMIT,
     TIE_BREAK_PATTERN,
     DeploymentSettings,
+    IllustrationMode,
     PlayerView,
     SequenceOrder,
     TurnConcurrency,
@@ -792,6 +794,16 @@ class StorySettingsDefaults(ScenarioModel):
     """What a character viewpoint's output holds where perception is on (FR-RESP-13; #177):
     ``character`` (the audience filter) or ``story`` (every beat, whatever the character
     perceived). ``null`` leaves the story's default (``character``)."""
+    illustration_mode: Annotated[
+        IllustrationMode | None, FieldClass.configuration, Use.story_setting
+    ] = None
+    """Automatic illustration (FR-IMG-6; #265): ``on_request`` or ``auto``. ``null`` leaves the
+    story's default (``on_request``)."""
+    max_auto_images_per_turn: Annotated[
+        StrictInt | None, FieldClass.configuration, Use.story_setting
+    ] = Field(default=None, ge=0, le=MAX_AUTO_IMAGES_PER_TURN_LIMIT)
+    """How many illustration points of one turn are queued under ``auto`` (#265), 0 to 4.
+    ``null`` leaves the story's default (1)."""
     policies: list[ScenarioPolicy] = Field(default_factory=list, max_length=POLICIES_MAX)
     required_providers: Annotated[list[ProviderName], FieldClass.configuration, Use.policy] = Field(
         default_factory=list, max_length=NAMES_MAX
@@ -963,7 +975,10 @@ class ScenarioPatch(BaseModel):
     by group — a key sets that field, ``null`` removes it, an object merges into the stored one
     and an array replaces it (``roles``, ``seeded_memories``, …) — with the ``draft_revision``
     it is based on (FR-CAT-3). The merged draft is validated as a whole: an invalid field is 422
-    at ``body.<path>``, wherever the field came from."""
+    at ``body.<path>``, wherever the field came from. ``public_card.media.cover`` and each
+    ``public_card.media.gallery`` item may be ``{candidate_id}``, a candidate of this scenario's
+    to attach (FR-IMG-7; #260): 409 ``candidate_stale`` or 422 ``candidate_not_found`` when it
+    cannot be."""
 
     model_config = ConfigDict(
         extra="forbid",

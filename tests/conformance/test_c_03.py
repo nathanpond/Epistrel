@@ -17,13 +17,15 @@ an operation without a route, or without a step here, fails ``test_c_03``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
@@ -31,7 +33,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, SecretStr
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from epistrel.api import create_app
 from epistrel.api.config_changes import ConfigChangesBody
@@ -90,6 +92,7 @@ from epistrel.api.routes.certifications import (
     CertificationImportedBody,
     CertificationInvalidatedBody,
     CertificationRunBody,
+    ImageCheckCertificationBody,
     StoryCertificationRunBody,
 )
 from epistrel.api.routes.clock import ClockAdvancedBody, ClockBody, ClockSettingsWriteBody
@@ -103,6 +106,8 @@ from epistrel.api.routes.engine_profiles import (
     ProfileVersionsBody,
 )
 from epistrel.api.routes.history import HistoryResponse
+from epistrel.api.routes.image_jobs import ImageJobBody
+from epistrel.api.routes.image_usage import DeploymentImageUsage, EntryImageUsage, StoryImageUsage
 from epistrel.api.routes.inspect import (
     BeliefsBody,
     DivergencesBody,
@@ -223,7 +228,7 @@ from epistrel.core.offboarding import OffboardingPlan, OffboardingRequest
 from epistrel.core.outbox import CompensateRequest, ResolveRequest
 from epistrel.core.ownership import OwnerTransferRequest, RelationRequest
 from epistrel.core.policies.model import Scope
-from epistrel.core.profiles.certification import InvalidateRequest
+from epistrel.core.profiles.certification import ImageCheckCertificationRequest, InvalidateRequest
 from epistrel.core.profiles.impact import ImpactPreviewRequest
 from epistrel.core.profiles.store import (
     ProfileCopy,
@@ -255,14 +260,16 @@ from epistrel.core.stories import (
     StorySpec,
 )
 from epistrel.core.story_texts import CustomInstructionsRequest, PinnedMemoriesRequest
+from epistrel.core.tables.images import ImageJobKind
 from epistrel.core.tables.ownership import EntityType
 from epistrel.core.timeline import Swapped, TruncateRequest, UntruncateRequest, Untruncation
 from epistrel.core.variants import ChainRef, SwapRequest
 from epistrel.core.world_clock.scheduled import ScheduledEventCreate, ScheduledEventReschedule
 from epistrel.core.world_clock.service import ClockAdvanceRequest
-from epistrel.engine import Engine, operations
+from epistrel.engine import SHARED_ROUTES, Engine, operations
 from epistrel.evals.certify import install
 from epistrel.orchestrator.directives import DirectiveRequest
+from epistrel.orchestrator.images.prompt_builder import ImagePromptRequest
 from epistrel.orchestrator.jobs.handlers.certification_run import CertificationRunRequest
 from epistrel.orchestrator.jobs.handlers.rebuild import RebuildQueued
 from epistrel.orchestrator.lite.schemas import (
@@ -808,6 +815,11 @@ LISTING_GROUP = "listing"
 NEW_OWNER = {"principal": "p-parity-owner"}
 RELATION = {"principal": "p-parity-d", "relation": "co_author"}
 MODEL_OVERRIDE = {"model": "parity-model", "params": {"temperature": 0.5}}
+IMAGE_OVERRIDE = {
+    "model": "parity-image",
+    "params": {"adapter": None, "default_aspect_ratio": "16:9", "default_quality": "high"},
+}
+CHECKER_OVERRIDE = {"base_url": "http://vision.parity/v1", "model": "parity-vision"}
 MEDIA_BYTES = png(nonce="c-03 parity")
 MEDIA = metadata(
     alt_text="The lighthouse door",
@@ -862,6 +874,19 @@ CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
 _REPORT = "# Parity certification\n\nOne floor passed.\n"
 CERTIFIED = "01JC0000000000000000000C01"
 DRIFT = {"reason": "drift", "note": "the provider confirmed a silent update"}
+IMAGE_ATTESTATION: dict[str, Any] = {
+    "checker_fingerprint": "0123456789ab",
+    "policy_id": "minors_no_sexual_content",
+    "evidence_kind": "external_attestation",
+    "evidence_ref": {
+        "title": "C-03 fixture model card",
+        "url": "https://example.com/c-03-model-card",
+        "publisher": "Example Labs",
+        "publication_date": "2026-01-01",
+        "figure": {"metric": "recall", "value": 0.99, "n": 1000},
+    },
+}
+"""#270: a fictional vendor's evaluation for the minors policy (the only attestable one)."""
 CERTIFICATION_RECORD: dict[str, Any] = {
     "schema_version": 1,
     "certification_id": CERTIFIED,
@@ -2010,6 +2035,40 @@ def _steps() -> list[Step]:
                 e.cancel_scheduled_event(CTX, ids["story"], ids["event"])
             ),
         ),
+        # #261: a story image uploaded after turn 1's first beat for the omniscient audience,
+        # one refused for its missing subjects, read, deleted, and read again (404).
+        Step(
+            "upload_story_image",
+            lambda ids: Rest("POST", f"{s}/images", files=files(STORY_IMAGE_BYTES, STORY_IMAGE)),
+            lambda e, ids: _story_image_uploaded(e, ids["story"], STORY_IMAGE),
+            _keep("story_image", "image_id"),
+        ),
+        Step(  # no depicted subjects: 422 subjects_required on both
+            "upload_story_image",
+            lambda ids: Rest(
+                "POST", f"{s}/images", files=files(STORY_IMAGE_BYTES, STORY_IMAGE_UNDECLARED)
+            ),
+            lambda e, ids: _story_image_uploaded(e, ids["story"], STORY_IMAGE_UNDECLARED),
+        ),
+        Step(
+            "get_story_image",
+            lambda ids: Rest(
+                "GET", f"{s}/images/{{story_image}}", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _story_image(e, ids["story"], ids["story_image"]),
+        ),
+        Step(
+            "delete_story_image",
+            lambda ids: Rest("DELETE", f"{s}/images/{{story_image}}"),
+            lambda e, ids: _no_content(e.delete_story_image(CTX, ids["story"], ids["story_image"])),
+        ),
+        Step(  # deleted: 404 on both
+            "get_story_image",
+            lambda ids: Rest(
+                "GET", f"{s}/images/{{story_image}}", params={"viewpoint": "omniscient"}
+            ),
+            lambda e, ids: _story_image(e, ids["story"], ids["story_image"]),
+        ),
         # #186: the State API: a declaration, both reads, a set and a definition change.
         Step(
             "define_state",
@@ -2377,6 +2436,33 @@ def _steps() -> list[Step]:
             ),
             group=SUGGESTION_GROUP,
         ),
+        # -- the image prompt builder (#259): the character's latest version, a version it does
+        # not have (404 on both), and a base appearance prompt drafted from its draft
+        Step(
+            "build_image_prompt",
+            lambda ids: Rest("POST", "/image-prompts", _image_prompt_body(ids)),
+            lambda e, ids: _validated(
+                e.build_image_prompt(
+                    CTX, ImagePromptRequest.model_validate(_image_prompt_body(ids))
+                )
+            ),
+        ),
+        Step(
+            "build_image_prompt",
+            lambda ids: Rest("POST", "/image-prompts", _image_prompt_body(ids, version=9)),
+            lambda e, ids: _validated(
+                e.build_image_prompt(
+                    CTX, ImagePromptRequest.model_validate(_image_prompt_body(ids, version=9))
+                )
+            ),
+        ),
+        Step(
+            "draft_base_appearance_prompt",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/draft/visual-identity/draft-base-prompt"
+            ),
+            lambda e, ids: _validated(e.draft_base_appearance_prompt(CTX, ids["character"])),
+        ),
         Step(
             "get_scenario",
             lambda ids: Rest("GET", "/catalog/scenarios/{scenario}"),
@@ -2632,6 +2718,24 @@ def _steps() -> list[Step]:
             lambda e, ids: _offboarding(e, ids["offboarding"]),
             group=PRINCIPAL_GROUP,
         ),
+        # -- image jobs (#256): a story job (written as an enqueue would: no route creates one
+        # before #260/#263), read, cancelled, and read again.
+        Step(
+            "get_image_job",
+            lambda ids: Rest("GET", "/image-jobs/{image_job}"),
+            lambda e, ids: _image_job(e, ids["image_job"]),
+            prepare=_queue_image_job,
+        ),
+        Step(
+            "cancel_image_job",
+            lambda ids: Rest("DELETE", "/image-jobs/{image_job}"),
+            lambda e, ids: _cancel_image_job(e, ids["image_job"]),
+        ),
+        Step(
+            "get_image_job",
+            lambda ids: Rest("GET", "/image-jobs/{image_job}"),
+            lambda e, ids: _image_job(e, ids["image_job"]),
+        ),
         # -- erasure (#124): a dry run of the story's second character (it writes nothing)
         Step(
             "erase",
@@ -2743,6 +2847,122 @@ def _steps() -> list[Step]:
             "get_media_url",
             lambda ids: Rest("GET", "/media/{media}/url", params={"ttl": 60}),
             lambda e, ids: _media_url(e, ids["media"]),
+        ),
+        # -- catalog image candidates (#260): a request for the character's primary image
+        # (the parity image adapter and a checker configured first), its job's candidates (one
+        # planted as a promotion writes it), a candidate's content and URL, and a discard.
+        Step(
+            "request_catalog_images",
+            lambda ids: Rest(
+                "POST", "/catalog/characters/{character}/images/generate", CANDIDATE_REQUEST
+            ),
+            lambda e, ids: _catalog_images(e, ids["character"]),
+            _keep("candidate_job", "job_id"),
+            prepare=_image_generation,
+            status=lambda body: 202,
+        ),
+        Step(
+            "request_catalog_images",
+            lambda ids: Rest(
+                "POST", "/catalog/scenarios/{scenario}/images/generate", COVER_REQUEST
+            ),
+            lambda e, ids: _catalog_images(e, ids["scenario"], kind="scenario"),
+            status=lambda body: 202,
+        ),
+        # #263: a story image generated for the omniscient audience after turn 1's player beat
+        # (the JSON body of the upload's route; the adapter and checker above), and one
+        # declaring subjects without a prompt (422 on both).
+        Step(
+            "request_story_image",
+            lambda ids: Rest("POST", f"{s}/images", STORY_IMAGE_REQUEST),
+            lambda e, ids: _story_image_requested(e, ids["story"], STORY_IMAGE_REQUEST),
+            status=lambda body: 202,
+        ),
+        Step(
+            "request_story_image",
+            lambda ids: Rest("POST", f"{s}/images", STORY_IMAGE_UNPROMPTED),
+            lambda e, ids: _story_image_requested(e, ids["story"], STORY_IMAGE_UNPROMPTED),
+        ),
+        Step(
+            "list_image_candidates",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/images/candidates"),
+            lambda e, ids: _candidates(e, ids["character"]),
+            prepare=_plant_candidate,
+        ),
+        Step(
+            "get_image_candidate_content",
+            lambda ids: Rest(
+                "GET", "/catalog/characters/{character}/images/candidates/{candidate}/content"
+            ),
+            lambda e, ids: _candidate_content(e, ids["character"], ids["candidate"]),
+        ),
+        Step(
+            "get_image_candidate_url",
+            lambda ids: Rest(
+                "GET",
+                "/catalog/characters/{character}/images/candidates/{candidate}/url",
+                params={"ttl": 60},
+            ),
+            lambda e, ids: _candidate_url(e, ids["character"], ids["candidate"]),
+        ),
+        Step(
+            "discard_image_candidate",
+            lambda ids: Rest(
+                "DELETE", "/catalog/characters/{character}/images/candidates/{candidate}"
+            ),
+            lambda e, ids: _no_content(
+                e.discard_image_candidate(CTX, ids["candidate"], character_id=ids["character"])
+            ),
+        ),
+        Step(  # a scenario's candidate it never had: 204 on both (idempotent)
+            "discard_image_candidate",
+            lambda ids: Rest(
+                "DELETE", "/catalog/scenarios/{scenario}/images/candidates/{candidate}"
+            ),
+            lambda e, ids: _no_content(
+                e.discard_image_candidate(CTX, ids["candidate"], scenario_id=ids["scenario"])
+            ),
+        ),
+        Step(  # discarded: 404 on both
+            "get_image_candidate_content",
+            lambda ids: Rest(
+                "GET", "/catalog/characters/{character}/images/candidates/{candidate}/content"
+            ),
+            lambda e, ids: _candidate_content(e, ids["character"], ids["candidate"]),
+        ),
+        # -- image usage and cost (#269): the deployment's days, a story's, an entry's per kind,
+        # and a range the report refuses (422 on both).
+        Step(
+            "get_image_usage",
+            lambda ids: Rest("GET", "/admin/image-usage"),
+            lambda e, ids: _image_usage(e),
+        ),
+        Step(
+            "get_image_usage",
+            lambda ids: Rest(
+                "GET", "/admin/image-usage", params={"from": "2026-11-08", "to": "2026-11-01"}
+            ),
+            lambda e, ids: _image_usage(e, date(2026, 11, 8), date(2026, 11, 1)),
+        ),
+        Step(
+            "get_story_image_usage",
+            lambda ids: Rest("GET", f"{s}/image-usage"),
+            lambda e, ids: _story_image_usage(e, ids["story"]),
+        ),
+        Step(
+            "get_entry_image_usage",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/image-usage"),
+            lambda e, ids: _entry_image_usage(e, character_id=ids["character"]),
+        ),
+        Step(
+            "get_entry_image_usage",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}/image-usage"),
+            lambda e, ids: _entry_image_usage(e, scenario_id=ids["scenario"]),
+        ),
+        Step(
+            "remove_model_override",
+            lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
+            lambda e, ids: _model_remove(e, "image_check"),
         ),
         Step(
             "open_upload",
@@ -2958,6 +3178,37 @@ def _steps() -> list[Step]:
                 e.invalidate_certification(CTX, CERTIFIED, InvalidateRequest(**DRIFT))
             ),
         ),
+        # #270: an image checker's certification: the minors policy's external attestation,
+        # listed, then withdrawn.
+        Step(
+            "record_image_check_certification",
+            lambda ids: Rest("POST", "/admin/certifications/image-check", IMAGE_ATTESTATION),
+            lambda e, ids: _image_check_recorded(
+                e.record_image_check_certification(
+                    CTX, ImageCheckCertificationRequest(**IMAGE_ATTESTATION)
+                )
+            ),
+            capture=lambda body, ids: ids.update(image_check=body["certification"]["id"]),
+            status=lambda body: 201 if body.get("stored") else 200,
+        ),
+        Step(
+            "list_image_check_certifications",
+            lambda ids: Rest("GET", "/certifications", params={"subject": "image_check"}),
+            lambda e, ids: _dumped(e.list_image_check_certifications(CTX)),
+            # ``list_certifications``'s route serves it (``SHARED_ROUTES``).
+            status=lambda body: 200,
+        ),
+        Step(
+            "invalidate_image_check_certification",
+            lambda ids: Rest(
+                "POST", f"/admin/certifications/image-check/{ids['image_check']}/invalidate", DRIFT
+            ),
+            lambda e, ids: _image_check_invalidated(
+                e.invalidate_image_check_certification(
+                    CTX, ids["image_check"], InvalidateRequest(**DRIFT)
+                )
+            ),
+        ),
         # #532: the eval runs (the committed reports; the harness is installed above).
         Step(
             "list_eval_runs",
@@ -3128,6 +3379,33 @@ def _steps() -> list[Step]:
             "remove_model_override",
             lambda ids: Rest("DELETE", "/admin/model-config/generation"),
             lambda e, ids: _model_remove(e),
+        ),
+        # #254: the image adapter is the image_generation port, its image fields in params;
+        # image_check reads its own row only (unset, then set, then unset again).
+        Step(
+            "replace_model_config",
+            lambda ids: Rest("PUT", "/admin/model-config/image_generation", IMAGE_OVERRIDE),
+            lambda e, ids: _model_replace(e, "image_generation", IMAGE_OVERRIDE),
+        ),
+        Step(
+            "model_config_entry",
+            lambda ids: Rest("GET", "/admin/model-config/image_generation"),
+            lambda e, ids: _model_entry(e, "image_generation"),
+        ),
+        Step(
+            "model_config_entry",
+            lambda ids: Rest("GET", "/admin/model-config/image_check"),
+            lambda e, ids: _model_entry(e, "image_check"),
+        ),
+        Step(
+            "replace_model_config",
+            lambda ids: Rest("PUT", "/admin/model-config/image_check", CHECKER_OVERRIDE),
+            lambda e, ids: _model_replace(e, "image_check", CHECKER_OVERRIDE),
+        ),
+        Step(
+            "remove_model_override",
+            lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
+            lambda e, ids: _model_remove(e, "image_check"),
         ),
         # -- external-data providers (#204): registration and a story's binding
         Step(
@@ -3471,6 +3749,11 @@ async def _scenario_status(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(ScenarioStatusBody.of(await call))
 
 
+def _image_prompt_body(ids: Ids, **target: Any) -> dict[str, Any]:
+    """``POST /image-prompts`` for the surface's character's primary image (#259)."""
+    return {"target": {"kind": "character", "id": ids["character"], **target}, "purpose": "primary"}
+
+
 async def _validated(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(await call)
 
@@ -3514,6 +3797,172 @@ async def _media(engine: Engine, media_id: str) -> dict[str, Any]:
 async def _media_content(engine: Engine, media_id: str) -> dict[str, Any]:
     content = await engine.get_media_content(CTX, media_id)
     return _bytes(await content.read(), content.mime_type)
+
+
+STORY_IMAGE_BYTES = png(nonce="c-03 story image")
+STORY_IMAGE = {
+    "position": {"turn": 1, "beat": 1},
+    "audience_viewpoint": "omniscient",
+    "camera_pov": {"kind": "establishing"},
+    "depicted_subjects": [],
+    "alt_text": "The inn's door",
+}
+STORY_IMAGE_UNDECLARED = {k: v for k, v in STORY_IMAGE.items() if k != "depicted_subjects"}
+
+
+async def _story_image_uploaded(
+    engine: Engine, story_id: str, fields: dict[str, Any]
+) -> dict[str, Any]:
+    """#261: the library's upload, rendered as the route renders it."""
+    from epistrel.api.routes.story_images import StoryImageUploadedBody
+    from epistrel.core.images.story_images import StoryImageUpload
+
+    request = StoryImageUpload.model_validate(fields)
+    placed = await engine.upload_story_image(
+        CTX, story_id, request, STORY_IMAGE_BYTES, content_type="image/png"
+    )
+    return dump(StoryImageUploadedBody.of(placed))
+
+
+STORY_IMAGE_REQUEST = {
+    "position": {"turn": 1, "beat": 1},
+    "audience_viewpoint": "omniscient",
+    "camera_pov": {"kind": "establishing"},
+}
+STORY_IMAGE_UNPROMPTED = {**STORY_IMAGE_REQUEST, "depicted_subjects": []}
+
+
+async def _story_image_requested(
+    engine: Engine, story_id: str, fields: dict[str, Any]
+) -> dict[str, Any]:
+    """#263: the library's generation request, rendered as the route renders it."""
+    from epistrel.api.routes.story_images import StoryImageRequestedBody
+    from epistrel.core.images.story_images import StoryImageRequest
+
+    request = StoryImageRequest.model_validate(fields)
+    queued = await engine.request_story_image(CTX, story_id, request)
+    return dump(StoryImageRequestedBody.of(queued))
+
+
+async def _story_image(engine: Engine, story_id: str, image_id: str) -> dict[str, Any]:
+    return dump(await engine.get_story_image(CTX, story_id, image_id, viewpoint="omniscient"))
+
+
+CANDIDATE_REQUEST = {"slot": "primary", "n": 1}
+COVER_REQUEST = {"slot": "cover", "n": 1}
+PARITY_IMAGE_ADAPTER = "parity_png"
+
+
+async def _image_generation(engine: Engine, ids: Ids) -> None:
+    """#260: the surface's image adapter (``testing.images.PngImageGenerator``, registered as
+    ``parity_png``) configured with a key, and an ``image_check`` model, so a catalog image
+    request is accepted; nothing runs the job."""
+    from epistrel.orchestrator.images.registry import register_image_adapter
+    from epistrel.testing.images import PngImageGenerator
+
+    register_image_adapter(PARITY_IMAGE_ADAPTER, PngImageGenerator(), replace=True)
+    await engine.replace_model_config(
+        CTX,
+        "image_generation",
+        ConfigReplacement.model_validate(
+            {"model": "parity-image", "params": {"adapter": PARITY_IMAGE_ADAPTER}}
+        ),
+    )
+    await engine.set_model_api_key(CTX, "image_generation", SecretStr("sk-parity-image"))
+    await engine.replace_model_config(
+        CTX, "image_check", ConfigReplacement.model_validate({"model": "parity-vision"})
+    )
+
+
+async def _plant_candidate(engine: Engine, ids: Ids) -> None:
+    """#260: one candidate of the request's job, as its promotion would write it (its asset in
+    state ``candidate``, its bytes in the surface's store); ``ids["candidate"]``."""
+    from epistrel.core.images import candidates
+    from epistrel.core.images.store import insert_generated_asset
+    from epistrel.core.seeds.ratings import EVERYONE_ID
+    from epistrel.core.tables import catalog as catalog_tables
+    from epistrel.core.tables import content_ratings
+    from epistrel.core.tables.media import MediaState
+    from epistrel.testing.images import png as job_png
+
+    data = job_png(5, 7, shade=99)
+    checksum = hashlib.sha256(data).hexdigest()
+    staged = Path(engine.media.staging_path(new_ulid()))
+
+    def put() -> None:
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_bytes(data)
+        engine.media.put(staged, checksum, content_type="image/png")
+
+    await asyncio.to_thread(put)
+    async with engine.db.begin() as conn:
+        draft = await conn.scalar(
+            select(catalog_tables.character_catalog.c.draft).where(
+                catalog_tables.character_catalog.c.id == ids["character"]
+            )
+        )
+        version = await conn.scalar(
+            select(content_ratings.c.current_version_id).where(content_ratings.c.id == EVERYONE_ID)
+        )
+        asset_id = await insert_generated_asset(
+            conn,
+            checksum=checksum,
+            mime_type="image/png",
+            size=len(data),
+            width=5,
+            height=7,
+            owner=PRINCIPAL,
+            content_rating_version_id=str(version),
+            generation_metadata={"adapter": PARITY_IMAGE_ADAPTER},
+            state=MediaState.CANDIDATE,
+            created_by=PRINCIPAL,
+        )
+        [ids["candidate"]] = await candidates.insert(
+            conn,
+            entry_kind="character",
+            entry_id=ids["character"],
+            job_id=ids["candidate_job"],
+            slot="primary",
+            draft_revision=1,
+            fingerprint=await candidates.image_input_fingerprint(
+                conn, "character", ids["character"], draft
+            ),
+            asset_ids=[asset_id],
+            ttl_s=3_600,
+        )
+
+
+async def _catalog_images(
+    engine: Engine, entry_id: str, *, kind: str = "character"
+) -> dict[str, Any]:
+    from epistrel.api.routes.catalog_images import CatalogImagesAccepted
+    from epistrel.orchestrator.images.targets.catalog import CatalogImageRequest
+
+    if kind == "character":
+        request = CatalogImageRequest.model_validate(CANDIDATE_REQUEST)
+        queued = await engine.request_catalog_images(CTX, request, character_id=entry_id)
+    else:
+        request = CatalogImageRequest.model_validate(COVER_REQUEST)
+        queued = await engine.request_catalog_images(CTX, request, scenario_id=entry_id)
+    return dump(CatalogImagesAccepted.of(queued))
+
+
+async def _candidates(engine: Engine, character_id: str) -> dict[str, Any]:
+    return dump(await engine.list_image_candidates(CTX, character_id=character_id))
+
+
+async def _candidate_content(
+    engine: Engine, character_id: str, candidate_id: str
+) -> dict[str, Any]:
+    content = await engine.get_image_candidate_content(CTX, candidate_id, character_id=character_id)
+    return _bytes(await content.read(), content.mime_type)
+
+
+async def _candidate_url(engine: Engine, character_id: str, candidate_id: str) -> dict[str, Any]:
+    found = await engine.get_image_candidate_url(
+        CTX, candidate_id, character_id=character_id, ttl=60
+    )
+    return dump(MediaUrlBody.of(found))
 
 
 async def _media_url(engine: Engine, media_id: str) -> dict[str, Any]:
@@ -3763,6 +4212,52 @@ async def _erasure_boundary(engine: Engine) -> dict[str, Any]:
     from epistrel.api.routes.admin.erasure import ErasureBoundaryBody
 
     return dump(ErasureBoundaryBody.of(await engine.erasure_boundary(CTX)))
+
+
+async def _queue_image_job(engine: Engine, ids: Ids) -> None:
+    """A queued story image job of the story, as ``insert_image_job`` writes it (#256)."""
+    from epistrel.orchestrator.images import jobs as image_jobs
+
+    job = image_jobs.PreparedImageJob(
+        ImageJobKind.STORY,
+        {},
+        {"story_id": ids["story"], "turn": 1, "variant": 1},
+        image_jobs.ImageJobRequest(prompt="a lighthouse at dusk"),
+        PRINCIPAL,
+    )
+    async with engine.db.begin() as conn:
+        ids["image_job"] = (await image_jobs.insert_image_job(conn, job, None)).job_id
+
+
+async def _image_usage(
+    engine: Engine, from_date: date | None = None, to_date: date | None = None
+) -> dict[str, Any]:
+    found = await engine.get_image_usage(CTX, from_date=from_date, to_date=to_date)
+    return dump(DeploymentImageUsage.of(found))
+
+
+async def _story_image_usage(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(StoryImageUsage.of(story_id, await engine.get_story_image_usage(CTX, story_id)))
+
+
+async def _entry_image_usage(
+    engine: Engine, *, character_id: str | None = None, scenario_id: str | None = None
+) -> dict[str, Any]:
+    found = await engine.get_entry_image_usage(
+        CTX, character_id=character_id, scenario_id=scenario_id
+    )
+    if character_id is not None:
+        return dump(EntryImageUsage.of("character", character_id, found))
+    assert scenario_id is not None
+    return dump(EntryImageUsage.of("scenario", scenario_id, found))
+
+
+async def _image_job(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(ImageJobBody.of(await engine.get_image_job(CTX, job_id)))
+
+
+async def _cancel_image_job(engine: Engine, job_id: str) -> dict[str, Any]:
+    return dump(ImageJobBody.of(await engine.cancel_image_job(CTX, job_id)))
 
 
 async def _offboarding(engine: Engine, job_id: str) -> dict[str, Any]:
@@ -4016,6 +4511,14 @@ async def _certification_invalidated(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CertificationInvalidatedBody.of(await call))
 
 
+async def _image_check_recorded(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ImageCheckCertificationBody.recorded(await call))
+
+
+async def _image_check_invalidated(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(ImageCheckCertificationBody.invalidated(await call))
+
+
 async def _effective(engine: Engine, story_id: str) -> dict[str, Any]:
     return dump(await engine.get_effective_config(CTX, story_id))
 
@@ -4126,15 +4629,17 @@ async def _model_entry(engine: Engine, purpose: str) -> dict[str, Any]:
     return dump(ModelConfigItem(purpose=purpose, config_revision=revision, **fields))
 
 
-async def _model_replace(engine: Engine) -> dict[str, Any]:
-    body = ConfigReplacement.model_validate(MODEL_OVERRIDE)
-    write = await engine.replace_model_config(CTX, "generation", body)
-    return await _model_config_write(engine, "generation", write)
+async def _model_replace(
+    engine: Engine, purpose: str = "generation", override: dict[str, Any] = MODEL_OVERRIDE
+) -> dict[str, Any]:
+    body = ConfigReplacement.model_validate(override)
+    write = await engine.replace_model_config(CTX, purpose, body)
+    return await _model_config_write(engine, purpose, write)
 
 
-async def _model_remove(engine: Engine) -> dict[str, Any]:
-    write = await engine.remove_model_override(CTX, "generation")
-    return await _model_config_write(engine, "generation", write)
+async def _model_remove(engine: Engine, purpose: str = "generation") -> dict[str, Any]:
+    write = await engine.remove_model_override(CTX, purpose)
+    return await _model_config_write(engine, purpose, write)
 
 
 PROVIDER_NAME = "parity-ledger"
@@ -4317,7 +4822,8 @@ def parity_gaps(engine_class: type[Engine], app: FastAPI, steps: list[Step]) -> 
     stepped = {step.operation for step in steps}
     gaps: list[str] = []
     for name in operations(engine_class):
-        has_route = name in routed or any(op.startswith(f"{name}_") for op in routed)
+        served = SHARED_ROUTES.get(name, name)
+        has_route = served in routed or any(op.startswith(f"{served}_") for op in routed)
         if not has_route or name not in stepped:
             gaps.append(name)
     return gaps

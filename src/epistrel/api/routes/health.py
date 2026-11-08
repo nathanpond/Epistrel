@@ -26,6 +26,11 @@ poster is refused (422 ``poster_required``).
 reapplied); while it is above zero the status is ``degraded``. ``null`` when the database does
 not answer.
 
+``checks.image_counters`` is what the latest finished ``image_counter_reconcile`` run found
+(#262): ``ok``, or ``drift`` when a stored image limit counter differed from its reservation
+records' sums or a ``held`` record's job had ended (``null``: no run yet). It never changes the
+status, and the next clean run clears it.
+
 Ages use the database's own ``now()``. An app that was never started (no engine) reports ``ok``
 with the database ``skipped``.
 """
@@ -46,6 +51,7 @@ from epistrel.core.config_changes import read_section
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.settings_schema import WorkerHealthSettings
 from epistrel.observability.logging import content_logging_active
+from epistrel.orchestrator.images import reconcile as image_reconcile
 from epistrel.orchestrator.jobs import health as worker_health
 from epistrel.orchestrator.jobs.recurring import registered_tasks
 
@@ -70,7 +76,9 @@ class HealthChecks(BaseModel):
     """Each check: the database, the workers, the oldest overdue timer and job (seconds;
     `null`: nothing overdue), whether ffmpeg and ffprobe (video posters and probes) are
     there (`missing` never changes the status), and the erasure ledger's entries not applied
-    to this database yet (`erasure_pending`; above zero: `degraded`)."""
+    to this database yet (`erasure_pending`; above zero: `degraded`), and what the latest image
+    counter reconcile found (`image_counters`: `ok` or `drift`, never changing the status;
+    `null`: none ran yet)."""
 
     database: Literal["ok", "error", "skipped"]
     workers: WorkersCheck = WorkersCheck()
@@ -79,6 +87,7 @@ class HealthChecks(BaseModel):
     ffmpeg: Literal["ok", "missing"] = "missing"
     ffprobe: Literal["ok", "missing"] = "missing"
     erasure_pending: int | None = None
+    image_counters: Literal["ok", "drift"] | None = None
 
 
 class HealthResponse(BaseModel):
@@ -108,6 +117,7 @@ async def check(engine: AsyncEngine) -> HealthResponse:
                 settings = await read_section(conn, WorkerHealthSettings)
                 snap = await worker_health.snapshot(conn, settings, registered_tasks())
                 pending = await erasure_ledger.pending_count(conn)
+                image_counters = await image_reconcile.latest_check(conn)
             except Exception as exc:
                 if isinstance(exc, TimeoutError | asyncio.CancelledError):
                     raise
@@ -124,6 +134,7 @@ async def check(engine: AsyncEngine) -> HealthResponse:
             oldest_overdue_timer_s=snap.oldest_overdue_timer_s,
             oldest_overdue_job_s=snap.oldest_overdue_job_s,
             erasure_pending=pending,
+            image_counters=image_counters,
         ),
     )
 

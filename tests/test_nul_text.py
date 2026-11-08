@@ -20,6 +20,7 @@ from epistrel.core.context import RequestContext
 from epistrel.core.errors import InvalidRequest, field_path, without_nul
 from epistrel.core.settings_schema import StructuredSettings
 from epistrel.engine import (
+    SHARED_ROUTES,
     Engine,
     library_only_methods,
     nul_checked_methods,
@@ -173,14 +174,18 @@ async def test_a_structured_call_validates_the_cleaned_answer() -> None:
 
 
 def get_operations() -> set[str]:
-    """The Engine operations a ``GET`` route serves."""
+    """The Engine operations a ``GET`` route serves (and those a ``GET`` route of another
+    operation serves too: ``SHARED_ROUTES``, #270's image-checker certifications)."""
     names = operations()
     found = set()
+    gets = set()
     for operation_id, served in route_operations(full_app(DUMMY_DSN)).items():
         if served.startswith("GET "):
+            gets.add(operation_id)
             method = method_of(operation_id, names)
             assert method is not None, operation_id
             found.add(method)
+    found |= {name for name, route in SHARED_ROUTES.items() if route in gets}
     return found
 
 

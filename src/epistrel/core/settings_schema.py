@@ -47,6 +47,7 @@ from pydantic import (
     StrictInt,
     WithJsonSchema,
     field_validator,
+    model_validator,
 )
 from pydantic.fields import FieldInfo
 
@@ -229,6 +230,12 @@ held to what that character could know: a presupposition it had no path to is ac
 both, with an ``implausible_knowledge`` notice under ``confirm``."""
 DEFAULT_CO_AUTHOR_KNOWLEDGE: CoAuthorKnowledge = "confirm"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
+IllustrationMode = Literal["on_request", "auto"]
+"""FR-IMG-6 (#265): whether a story's images are made only when the consumer asks
+(``on_request``) or also automatically at the points a render marks (``auto``)."""
+DEFAULT_ILLUSTRATION_MODE: IllustrationMode = "on_request"
+DEFAULT_MAX_AUTO_IMAGES_PER_TURN = 1
+MAX_AUTO_IMAGES_PER_TURN_LIMIT = 4
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
 primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (#188: a
@@ -468,6 +475,24 @@ class StorySettings(BaseModel):
     under ``own_character``, under Lite, or without per-character partitions. Genesis copies the
     scenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices
     depend on it."""
+
+    illustration_mode: Annotated[IllustrationMode, PROSPECTIVE] = DEFAULT_ILLUSTRATION_MODE
+    """Automatic illustration (FR-IMG-6; #265): ``on_request`` (the default) makes a story image
+    only when the consumer asks; ``auto`` also queues one image job per illustration point a
+    turn's render marks (a new location, a first appearance, a turning point; Lite included,
+    at no extra model call), up to ``max_auto_images_per_turn``, in the turn's own commit. Each
+    job is the turn's output viewpoint's, framed ``third_person``, with ``system`` as its
+    principal; it builds its prompt, runs the checks and reserves inside the job. Accepted
+    whatever the image adapter or the limits; with no adapter nothing is queued. Prospective:
+    read at the turn's start."""
+
+    max_auto_images_per_turn: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_AUTO_IMAGES_PER_TURN, ge=0, le=MAX_AUTO_IMAGES_PER_TURN_LIMIT
+    )
+    """How many illustration points of one turn are queued under ``illustration_mode = auto``
+    (FR-IMG-6; #265), 0 to 4, default 1: the first in beat order, the rest dropped. A story
+    setting, not an accounting limit (the image limits are the deployment's and the catalog
+    entries', #262); 0 turns automatic illustration off. Prospective."""
 
     @field_validator("default_output_viewpoint")
     @classmethod
@@ -1023,6 +1048,210 @@ class CertificationCanarySettings(BaseModel):
         return self.certification_recertify_interval_s or DEFAULT_CANARY_INTERVAL_S
 
 
+# -- image jobs (FR-IMG-3,4; #256) --------------------------------------------------------------
+
+DEFAULT_IMAGE_RETRY_BUDGET = 2
+IMAGE_RETRY_BUDGET_MAX = 5
+DEFAULT_STAGING_TTL_S = 3_600
+STAGING_TTL_MIN_S = 600
+STAGING_TTL_MAX_S = 86_400
+IMAGE_STAGING_SWEEP_TASK = "image_staging_sweep"
+"""The image staging sweep's recurring task (and job kind; every 10 minutes, #256)."""
+DEFAULT_CANDIDATE_TTL_S = 7 * 24 * 3_600
+"""FR-IMG-7's default ``candidate_ttl``: seven days (``P7D``)."""
+CANDIDATE_TTL_MIN_S = 3_600
+CANDIDATE_TTL_MAX_S = 90 * 24 * 3_600
+DEFAULT_CATALOG_CANDIDATES_N = 4
+CATALOG_CANDIDATES_N_MAX = 10
+IMAGE_CANDIDATE_EXPIRY_TASK = "image_candidate_expiry"
+"""The catalog candidates' expiry (recurring task and job kind; hourly, #260)."""
+DEFAULT_IMAGE_LIMIT_DEPLOYMENT_DAY = 200
+DEFAULT_IMAGE_LIMIT_ENTRY_DAY = 16
+IMAGE_LIMIT_MAX = 100_000
+"""FR-IMG-11's limits (#262): output images per deployment per day and per catalog entry per
+day, each a whole number from 0 (generation off at that scope) to this bound; no unlimited
+value."""
+DEFAULT_DEPLOYMENT_TIME_ZONE = "UTC"
+DEFAULT_IMAGE_ACCOUNTING_RETENTION_DAYS = 90
+IMAGE_ACCOUNTING_RETENTION_MAX_DAYS = 3_650
+IMAGE_COUNTER_RECONCILE_TASK = "image_counter_reconcile"
+"""The image limit counters' reconciler (recurring task and job kind; daily, #262)."""
+IMAGE_ACCOUNTING_RETENTION_TASK = "image_accounting_retention"
+"""The image accounting retention (recurring task and job kind; daily, #262)."""
+DEFAULT_IMAGE_PAUSE_RECHECK_S = 30
+IMAGE_PAUSE_RECHECK_MIN_S = 5
+IMAGE_PAUSE_RECHECK_MAX_S = 3_600
+DEFAULT_IMAGE_PAUSE_MAX_WAIT_S = 86_400
+IMAGE_PAUSE_MAX_WAIT_MIN_S = 60
+IMAGE_PAUSE_MAX_WAIT_MAX_S = 604_800
+DEFAULT_IMAGE_ATTEMPT_GRACE_S = 60
+IMAGE_ATTEMPT_GRACE_MAX_S = 3_600
+DEFAULT_IMAGE_STATUS_POLL_S = 15
+IMAGE_STATUS_POLL_MIN_S = 5
+IMAGE_STATUS_POLL_MAX_S = 600
+DEFAULT_IMAGE_CONFIRM_WAIT_MAX_S = 1_800
+IMAGE_CONFIRM_WAIT_MAX_MIN_S = 60
+IMAGE_CONFIRM_WAIT_MAX_MAX_S = 86_400
+"""#264: how often a story image job waiting on a paused story revalidates, and how long in
+total it may wait (FR-IMG-4)."""
+
+
+class ImageCheckFloor(BaseModel):
+    """One image-output policy's E-11 floors (NFR-QUAL-12; #270): the highest false-negative
+    and false-positive rates (fractions 0-1) a checker may show and still pass; either may be
+    absent (that rate is then report-only, and the policy cannot be certified by a run)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_fn: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_fp: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ImageJobSettings(BaseModel):
+    """How image jobs run (FR-IMG-3,4; #256), stored under ``deployment_state.settings``:
+    ``image_retry_budget`` (0-5, default 2), how many times a story job generates again after
+    every output of an attempt failed a check (FR-GUARD-6's bound, a key of its own beside the
+    text retry bound); ``staging_ttl`` (600-86400 seconds, default one hour), the age past
+    which the staging sweep removes what a crashed job left in private staging; and #260's
+    ``candidate_ttl`` and ``catalog_candidates_n``. Prospective: a job or sweep reads them when
+    it starts."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    image_retry_budget: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_RETRY_BUDGET, ge=0, le=IMAGE_RETRY_BUDGET_MAX
+    )
+    staging_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_STAGING_TTL_S, ge=STAGING_TTL_MIN_S, le=STAGING_TTL_MAX_S
+    )
+    candidate_ttl: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CANDIDATE_TTL_S, ge=CANDIDATE_TTL_MIN_S, le=CANDIDATE_TTL_MAX_S
+    )
+    """How long an unattached catalog candidate lives (FR-IMG-7; #260), in seconds: default
+    seven days (``P7D``), whole hours from 1 hour to 90 days. Prospective: a candidate's
+    ``expires_at`` is fixed when it is promoted, and a change never moves existing ones."""
+    catalog_candidates_n: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_CATALOG_CANDIDATES_N, ge=1, le=CATALOG_CANDIDATES_N_MAX
+    )
+    """How many candidates a catalog image request asks for when it names no ``n`` (FR-IMG-7;
+    default 4, 1 to 10, and never above a non-zero ``image_limit_entry_day``: 422
+    ``validation_error`` from either side; #262). Prospective."""
+    image_limit_deployment_day: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_LIMIT_DEPLOYMENT_DAY, ge=0, le=IMAGE_LIMIT_MAX
+    )
+    """Output images the deployment admits per local day (FR-IMG-11; #262), automatic and
+    requested, story and catalog together: default 200, 0 to 100000, and 0 turns generation off
+    (``images_disabled``). There is no unlimited value and no story-scoped limit: per-story and
+    per-turn admission is the consumer's to manage. Prospective: lowering it keeps held
+    reservations and refuses only new ones."""
+    image_limit_entry_day: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_LIMIT_ENTRY_DAY, ge=0, le=IMAGE_LIMIT_MAX
+    )
+    """Output images one catalog entry admits per local day (FR-IMG-11; #262): default 16, 0 to
+    100000, 0 turns catalog generation off. Prospective."""
+    deployment_time_zone: Annotated[str, PROSPECTIVE] = Field(
+        default=DEFAULT_DEPLOYMENT_TIME_ZONE, min_length=1, max_length=64
+    )
+    """The IANA time zone whose calendar days the image limits count (FR-IMG-11; #262; default
+    ``UTC``; aliases accepted, anything else 422 ``invalid_time_zone``). Prospective: a change
+    applies to new reservations, and existing records keep their snapshots."""
+    image_accounting_retention_days: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_ACCOUNTING_RETENTION_DAYS,
+        ge=1,
+        le=IMAGE_ACCOUNTING_RETENTION_MAX_DAYS,
+    )
+    """Days a closed period's limit counters and reservation records are kept once every record
+    naming them is settled or released (FR-IMG-11; #262; default 90, 1 to 3650). Prospective."""
+    image_pause_recheck_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_PAUSE_RECHECK_S,
+        ge=IMAGE_PAUSE_RECHECK_MIN_S,
+        le=IMAGE_PAUSE_RECHECK_MAX_S,
+    )
+    """How often a story image job whose story is paused (a rating or reactivation check, a
+    backfill) revalidates while it waits, in seconds (FR-IMG-4; #264; default 30, 5 to 3600).
+    Prospective: the next wait uses it."""
+    image_pause_max_wait_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_PAUSE_MAX_WAIT_S,
+        ge=IMAGE_PAUSE_MAX_WAIT_MIN_S,
+        le=IMAGE_PAUSE_MAX_WAIT_MAX_S,
+    )
+    """How long in total a story image job may wait on a paused story, counted from its first
+    wait, before it ends ``stale`` with ``paused_too_long`` (FR-IMG-4; #264; default 86400, 60
+    to 604800). Prospective."""
+    image_attempt_grace_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_ATTEMPT_GRACE_S, ge=0, le=IMAGE_ATTEMPT_GRACE_MAX_S
+    )
+    """How long past an image provider call's own timeout its attempt is held before the job may
+    retry (FR-IMG-11; #267; default 60, 0 to 3600): the attempt's horizon is ``started_at +
+    request_timeout_s + image_attempt_grace_s``. Prospective: an attempt's horizon is fixed when
+    it is sent."""
+    image_status_poll_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_STATUS_POLL_S,
+        ge=IMAGE_STATUS_POLL_MIN_S,
+        le=IMAGE_STATUS_POLL_MAX_S,
+    )
+    """How often, after a stalled attempt's horizon, a job polls a ``confirms_completion``
+    adapter's ``status`` (FR-IMG-11; #267; default 15, 5 to 600, never above
+    ``image_confirm_wait_max_s``: 422 ``validation_error``). Prospective."""
+    image_confirm_wait_max_s: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_IMAGE_CONFIRM_WAIT_MAX_S,
+        ge=IMAGE_CONFIRM_WAIT_MAX_MIN_S,
+        le=IMAGE_CONFIRM_WAIT_MAX_MAX_S,
+    )
+    """How long after a stalled attempt's horizon a job waits for a definitive status before it
+    falls back to the non-confirming rule (FR-IMG-11; #267; default 1800, 60 to 86400): the
+    deadline is the horizon plus this. Prospective: a wait's deadline is fixed when it starts."""
+
+    image_check_floors: Annotated[dict[str, ImageCheckFloor], PROSPECTIVE] = Field(
+        default_factory=dict
+    )
+    """E-11's floors per image-output policy, by policy id (NFR-QUAL-12; #270): ``{policy_id:
+    {max_fn, max_fp}}``, empty by default, so every policy's rates are ``report_only`` and no
+    run certifies one. A write naming an unknown or non-image-output policy, or a ``max_fn``
+    for an ``external_evidence_only`` policy (the minors policy, whose false negatives are
+    never measured; ADR-182), is 422 ``invalid_setting``. Prospective: the next E-11 run reads
+    it (``evals run --floors`` overrides it for one run)."""
+
+    @field_validator("image_check_floors")
+    @classmethod
+    def _floor_ids(cls, value: dict[str, ImageCheckFloor]) -> dict[str, ImageCheckFloor]:
+        for key in value:
+            if not 1 <= len(key) <= 200:
+                raise ValueError("image_check_floors keys are policy ids (1 to 200 characters)")
+        return value
+
+    @field_validator("candidate_ttl")
+    @classmethod
+    def _whole_hours(cls, value: int) -> int:
+        if value % 3_600:
+            raise ValueError("candidate_ttl must be a whole number of hours, in seconds")
+        return value
+
+    @field_validator("deployment_time_zone")
+    @classmethod
+    def _known_zone(cls, value: str) -> str:
+        if not known_time_zone(value):
+            raise ValueError("deployment_time_zone must be an IANA time zone")
+        return value
+
+    @model_validator(mode="after")
+    def _candidates_fit(self) -> Any:
+        entry_day = self.image_limit_entry_day
+        if entry_day and self.catalog_candidates_n > entry_day:
+            raise ValueError("catalog_candidates_n cannot exceed a non-zero image_limit_entry_day")
+        if self.image_status_poll_s > self.image_confirm_wait_max_s:
+            raise ValueError("image_status_poll_s cannot exceed image_confirm_wait_max_s")
+        return self
+
+
+def known_time_zone(name: str) -> bool:
+    """Whether ``name`` is an IANA zone ``zoneinfo`` can load (aliases such as ``US/Eastern``
+    included; #262)."""
+    import zoneinfo
+
+    return name in zoneinfo.available_timezones() or name == "UTC"
+
+
 class ModelTiers(BaseModel):
     """The deployment's model tiers (#227): ``strongest`` is the model id a profile's
     ``"@strongest"`` route resolves to (``core.profiles.tiers``); ``null`` (the default): each
@@ -1403,6 +1632,7 @@ class DeploymentSettings(
     ModelTierSettings,
     CertificationCanarySettings,
     RewriteSettings,
+    ImageJobSettings,
 ):
     """Every deployment setting ``/admin/settings`` reads and writes (#64): the
     ``deployment_state`` columns (``DEPLOYMENT_COLUMNS``) and the ``settings`` document's

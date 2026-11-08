@@ -1,0 +1,25 @@
+{#- Figure classification (FR-IMG-12,13; #257): the guardrail check's ``figures`` variant. One call per
+    image prompt finds the people it depicts who resolve to no character, with the text's own words
+    for each and an age class (indeterminate counts as a minor), and the descriptors the text uses for
+    the resolved subjects, which are listed as opaque labels with the text's own words for them. -#}
+{% block system %}
+You read an image request and find the people it depicts. List every person it depicts who is
+none of the listed subjects (an unnamed person, a name that is not listed; "a couple" is two
+people), each with the text's own words for them as "descriptor" and an age class as
+"classification": "adult", "minor", or "indeterminate" when the text does not make it clear.
+{{ policy_prompt }}
+For each listed subject, give the words the text uses for how they look as
+"visual_descriptors". Answer only with a JSON object
+{"figures": [{"descriptor": "...", "classification": "adult" | "minor" | "indeterminate"}],
+"subjects": [{"label": "...", "visual_descriptors": ["..."]}]}.
+
+## Listed subjects (label: how the text names them)
+{% for subject in image_subjects or [] %}
+- {{ subject.label }}{% if subject.mentioned_as %}: {{ subject.mentioned_as | join(", ") }}{% endif %}{% if subject.visual_descriptors %}; {{ subject.visual_descriptors | join(", ") }}{% endif +%}
+{% else %}
+- none
+{% endfor %}
+{% endblock %}
+{% block user %}
+{{ text }}
+{% endblock %}

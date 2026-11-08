@@ -86,6 +86,7 @@ from epistrel.core.catalog.models import (
     Name,
     ReferenceImageDetail,
     VisualIdentityDetail,
+    addon_errors,
     audience_errors,
     character_rules,
 )
@@ -116,7 +117,9 @@ from epistrel.core.erasure.index import (
 )
 from epistrel.core.erasure.records import character_draft_record, character_version_record
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
+from epistrel.core.images.subjects import include_own
 from epistrel.core.media.assets import assert_referenceable, rating_version
+from epistrel.core.media.checks import image_check_of
 from epistrel.core.ports import Ports
 from epistrel.core.ratings import require_assignable
 from epistrel.core.tables import media_assets
@@ -138,7 +141,7 @@ def _validated(document: Any) -> dict[str, Any]:
         draft = CharacterDraft.model_validate(document)
     except ValidationError as exc:
         raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
-    refused = [*character_rules(draft), *audience_errors(draft)]
+    refused = [*character_rules(draft), *audience_errors(draft), *addon_errors(draft)]
     if refused:
         raise InvalidRequest.from_errors(refused, prefix=("body",))
     return draft.document()
@@ -168,6 +171,11 @@ async def _media_rows(conn: AsyncConnection, media_ids: Sequence[str]) -> dict[s
             media_assets.c.width,
             media_assets.c.height,
             media_assets.c.generation_metadata,
+            media_assets.c.source,
+            media_assets.c.check_status,
+            media_assets.c.check_model,
+            media_assets.c.check_endpoint,
+            media_assets.c.policy_results,
         ).where(media_assets.c.id.in_(wanted))
     )
     return {str(row.id): row for row in rows}
@@ -191,6 +199,11 @@ def _detail(media_id: str, rows: Mapping[str, Any]) -> dict[str, Any]:
         "width": row.width,
         "height": row.height,
         "generation_metadata": row.generation_metadata,
+        "source": row.source,
+        "check_status": row.check_status,
+        "check": image_check_of(
+            row.check_status, row.check_model, row.check_endpoint, row.policy_results or ()
+        ),
     }
 
 
@@ -376,6 +389,11 @@ class DeletedCharacter:
 # -- the service -------------------------------------------------------------------------------
 
 
+def _image_ids(document: Mapping[str, Any] | None) -> set[str]:
+    """The media ids of a draft's image slots and reference images."""
+    return {media_id for _, media_id in (*images_of(document), *reference_images_of(document))}
+
+
 class CharacterCatalog(CatalogService):
     """Catalog characters on the generic catalog service."""
 
@@ -400,8 +418,10 @@ class CharacterCatalog(CatalogService):
         owner: str,
         listing_status: str,
     ) -> None:
-        """A character is created with its companion scenario (FR-CAT-5; #116)."""
+        """A character is created with its companion scenario (FR-CAT-5; #116); its images
+        depict it (FR-IMG-9; #266)."""
         await companion.create(conn, entry_id, document, owner=owner, listing_status=listing_status)
+        await include_own(conn, entry_id, _image_ids(document))
 
     async def saved(
         self,
@@ -410,8 +430,11 @@ class CharacterCatalog(CatalogService):
         document: Mapping[str, Any],
         previous: Mapping[str, Any],
     ) -> None:
-        """A changed content rating reaches the companion's draft (until set there; #116)."""
+        """A changed content rating reaches the companion's draft (until set there; #116); an
+        image it adds (an attached candidate's included) depicts the character (FR-IMG-9;
+        #266)."""
         await companion.follow_rating(conn, entry_id, document, previous)
+        await include_own(conn, entry_id, _image_ids(document) - _image_ids(previous))
 
     async def archived(self, conn: AsyncConnection, entry_id: str, archived: bool) -> None:
         """The companion is archived and unarchived with its character (FR-CAT-5; #116)."""
@@ -434,7 +457,16 @@ class CharacterCatalog(CatalogService):
         with_companion: bool = False,
     ) -> CharacterPublished:
         """Publish the draft, and a companion version with it (FR-CAT-10;
-        ``core.catalog.companion``)."""
+        ``core.catalog.companion``). A stored draft whose add-on lacks an audience (saved before
+        #259 refused it) is refused first: 422 ``validation_error`` at
+        ``visual_identity.adapter_params.addons[i].audience``."""
+        async with db.connect() as conn:
+            draft = await conn.scalar(
+                select(character_catalog.c.draft).where(character_catalog.c.id == entry_id)
+            )
+        refused = addon_errors(draft if isinstance(draft, Mapping) else None)
+        if refused:
+            raise InvalidRequest.from_errors(refused)
         return await companion.publish(
             self,
             db,

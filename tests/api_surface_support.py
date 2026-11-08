@@ -26,12 +26,12 @@ from epistrel.core.tables.ownership import EntityType
 from tests.conftest import REPO_ROOT
 
 TABLE_PATH = REPO_ROOT / "tests" / "fixtures" / "api" / "fr_api_6_routes.json"
-CURRENT = "M7"
+CURRENT = "M8"
 """The milestone this table was checked at: every ``present`` row is delivered by it, every
 ``not_yet`` row by a later one (or named in ``PENDING``)."""
 PENDING: dict[tuple[str, str], str] = {}
 """``not_yet`` rows of ``CURRENT``'s milestone still being built, each with the story that
-delivers it (none: #230 served the last M7 row, the conflict resolution)."""
+delivers it (#256 served the image job read and cancel, M8's first rows)."""
 
 ITEMS = (
     "characters",

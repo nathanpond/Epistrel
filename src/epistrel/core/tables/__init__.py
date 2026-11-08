@@ -31,6 +31,7 @@ from epistrel.core.tables.catalog import (
 )
 from epistrel.core.tables.certifications import (
     certification_runs,
+    image_check_certifications,
     model_reported_versions,
     profile_certifications,
 )
@@ -54,6 +55,13 @@ from epistrel.core.tables.facts import facts
 from epistrel.core.tables.genesis import genesis_deferred
 from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.idempotency import idempotency_keys
+from epistrel.core.tables.images import (
+    image_candidates,
+    image_costs,
+    image_jobs,
+    image_limit_counters,
+    image_reservations,
+)
 from epistrel.core.tables.jobs import jobs
 from epistrel.core.tables.media import media_assets, subject_references
 from epistrel.core.tables.memories import memories
@@ -104,6 +112,7 @@ from epistrel.core.tables.states import (
     state_values,
 )
 from epistrel.core.tables.stories import stories
+from epistrel.core.tables.story_images import story_images
 from epistrel.core.tables.timers import recurring_tasks, timers, worker_heartbeats
 from epistrel.core.tables.turn_queue import turn_queue
 from epistrel.core.tables.utterances import utterances
@@ -153,6 +162,12 @@ __all__ = [
     "genesis_deferred",
     "guardrail_check_results",
     "idempotency_keys",
+    "image_candidates",
+    "image_check_certifications",
+    "image_costs",
+    "image_jobs",
+    "image_limit_counters",
+    "image_reservations",
     "jobs",
     "lite_summary_segments",
     "media_assets",
@@ -192,6 +207,7 @@ __all__ = [
     "stories",
     "story_backfills",
     "story_heads",
+    "story_images",
     "story_profile_overrides",
     "story_provider_bindings",
     "story_texts",

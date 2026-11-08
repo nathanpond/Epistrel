@@ -1,6 +1,7 @@
 """``profile_certifications`` and ``certification_runs``: what an eval run certified for one
 configuration fingerprint, and the runs that produce them (FR-PROF-15..17, NFR-QUAL-8,11;
-docs/02 §4.11; #233, migration 0113).
+docs/02 §4.11; #233, migration 0113); and ``image_check_certifications``: which image-output
+policies an image checker is certified for (NFR-QUAL-12; #258, migration 0134; #270 fills it).
 
 A **certification** is a deployment-scoped record that an eval run against one configuration
 fingerprint passed the floors it lists, with their sample sizes and bounds
@@ -131,4 +132,52 @@ model_reported_versions = Table(
 )
 """#234: each version a model reported (``orchestrator.models.reported_version``)."""
 
-__all__ = ["certification_runs", "model_reported_versions", "profile_certifications"]
+image_check_certifications = Table(
+    "image_check_certifications",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("checker_fingerprint", Text, nullable=False),
+    Column("policy_id", Text, nullable=False),
+    Column("policy_version", Integer, nullable=True),
+    Column("model_id", Text, nullable=True),
+    Column("metrics", JSONB, nullable=False, server_default=text("'{}'")),
+    Column("report_sha256", Text, nullable=True),
+    Column("recorded_at", TIMESTAMP(timezone=True), nullable=False, server_default=NOW),
+    Column("recorded_via", Text, nullable=False, server_default=text("'job'")),
+    Column("status", Text, nullable=False, server_default=text("'valid'")),
+    Column("evidence_kind", Text, nullable=False, server_default=text("'eval_run'")),
+    Column("evidence_ref", JSONB, nullable=False, server_default=text("'{}'")),
+    Column("content_hash", Text, nullable=False),
+    Column("recorded_by", Text, nullable=False, server_default=text("'system'")),
+    Column("invalidated_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("invalidated_by", Text, nullable=True),
+    Column("invalidated_reason", Text, nullable=True),
+    CheckConstraint("status IN ('valid', 'stale')", name="status"),
+    CheckConstraint("recorded_via IN ('job', 'import')", name="recorded_via"),
+    CheckConstraint("checker_fingerprint ~ '^[0-9a-f]{12}$'", name="checker_fingerprint"),
+    CheckConstraint("evidence_kind IN ('eval_run', 'external_attestation')", name="evidence_kind"),
+    CheckConstraint(
+        "invalidated_reason IS NULL OR invalidated_reason IN ('drift', 'manual')",
+        name="invalidated_reason",
+    ),
+    Index(
+        "ix_image_check_certifications_fingerprint", "checker_fingerprint", "policy_id", "status"
+    ),
+    Index("uq_image_check_certifications_content_hash", "content_hash", unique=True),
+)
+"""#258: that an image checker (``checker_fingerprint``: ``orchestrator.images.output_check``'s
+12 hex of its endpoint host, model, reported version and ``image_check`` template) is certified
+for one image-output policy (NFR-QUAL-12): the newest ``valid`` row for the pair makes that
+policy's result ``certified: true`` on every image it checks. #270 (migration 0143) added the
+evidence a row rests on: ``evidence_kind`` ``eval_run`` (an E-11 run that passed both floors) or
+``external_attestation`` (a vendor's published evaluation, for the ``external_evidence_only``
+minors policy alone; ADR-182), ``evidence_ref``, ``content_hash`` (recording the same evidence
+again stores nothing), ``recorded_by`` and ``invalidated_*``. Append-only except ``status`` and
+``invalidated_*`` (a trigger, which also refuses DELETE); no story content."""
+
+__all__ = [
+    "certification_runs",
+    "image_check_certifications",
+    "model_reported_versions",
+    "profile_certifications",
+]

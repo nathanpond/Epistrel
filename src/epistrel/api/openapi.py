@@ -61,7 +61,9 @@ from epistrel.core.bundles.import_job import ImportMetadata
 from epistrel.core.context import PRINCIPAL_PATTERN
 from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.idempotency import IDEMPOTENCY_HEADER, IDEMPOTENT_REPLAY_HEADER, KEY_PATTERN
+from epistrel.core.images.story_images import StoryImageRequest, StoryImageUpload
 from epistrel.core.media.assets import POSTER_FILE_FIELD, MediaUpload
+from epistrel.core.media.checks import IMAGE_VIEWPOINT_GUARANTEE
 from epistrel.core.ownership import REGISTRY
 from epistrel.core.profiles.certification import CertificationRecord
 from epistrel.core.stories import StorySpec
@@ -89,6 +91,13 @@ TAGS: list[dict[str, str]] = [
         "declared depicted subjects, an optional moderation hook, and delete-as-retire "
         "(FR-MEDIA-1,2); byte ranges, short-lived signed URLs, resumable uploads and a poster "
         "for every video (FR-MEDIA-3).",
+    },
+    {
+        "name": "images",
+        "description": "Image jobs (FR-IMG-3,4): a generation runs as a background job outside "
+        "any turn; its bytes stay in private staging, unreachable, until they pass every check. "
+        "A consumer follows a job with a long-polling read and may cancel it. "
+        + IMAGE_VIEWPOINT_GUARANTEE,
     },
     {
         "name": "profiles",
@@ -219,6 +228,10 @@ ERROR_STATUS: dict[str, int] = {
     "fact_not_found": 404,
     "certification_not_found": 404,
     "certification_not_valid": 409,
+    "invalid_evidence": 422,
+    "attestation_not_allowed": 422,
+    "eval_run_not_allowed": 422,
+    "invalid_setting": 422,
     "backfill_not_found": 404,
     "rewrite_session_not_found": 404,
     "rewrite_session_closed": 409,
@@ -273,6 +286,10 @@ ERROR_STATUS: dict[str, int] = {
     "unknown_chain": 409,
     "config_conflict": 409,
     "draft_stale": 409,
+    "candidate_stale": 409,
+    "not_configured": 409,
+    "image_check_unconfigured": 409,
+    "image_limit_reached": 409,
     "feedback_tag_in_use": 409,
     "listing_status_in_use": 409,
     "offboarding_in_progress": 409,
@@ -337,6 +354,10 @@ ERROR_STATUS: dict[str, int] = {
     "invalid_profile": 422,
     "locked_slot_reassigned": 422,
     "media_retired": 422,
+    "candidate_not_found": 422,
+    "images_disabled": 422,
+    "invalid_range": 422,
+    "invalid_time_zone": 422,
     "moderation_rejected": 422,
     "not_published": 422,
     "nothing_to_regenerate": 422,
@@ -370,6 +391,14 @@ ERROR_STATUS: dict[str, int] = {
     "unknown_predicate": 422,
     "slot_required": 422,
     "subjects_required": 422,
+    "position_invalid": 422,
+    "viewpoint_invalid": 422,
+    "camera_pov_invalid": 422,
+    "camera_pov_not_present": 422,
+    "viewpoint_protected_content": 422,
+    "subjects_not_allowed": 422,
+    "subject_invalid": 422,
+    "viewpoint_perceived_nothing": 422,
     "transfer_target_invalid": 422,
     "transfer_target_required": 422,
     "unknown_feedback_tag": 422,
@@ -389,6 +418,7 @@ ERROR_STATUS: dict[str, int] = {
     "config_missing": 503,
     "database_unavailable": 503,
     "erasure_pending": 503,
+    "image_prompt_unavailable": 503,
     "ledger_unavailable": 503,
     "media_store_unavailable": 503,
     "model_unavailable": 503,
@@ -659,6 +689,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "invalidate_certification": ("certification_not_found", "certification_not_valid"),
     "get_eval_run": ("eval_run_not_found",),
     "import_certification": ("invalid_certification_record", "certification_record_conflict"),
+    # #270: an image checker's certification (ADR-182).
+    "record_image_check_certification": (
+        "invalid_evidence",
+        "attestation_not_allowed",
+        "eval_run_not_allowed",
+    ),
+    "invalidate_image_check_certification": ("certification_not_found",),
     "list_state_proposals": ("module_off",),
     "approve_state_proposal": (
         "story_archived",
@@ -925,6 +962,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "invalid_profile",
         "listing_status_in_use",
         "feedback_tag_in_use",
+        "invalid_time_zone",
+        "invalid_setting",
     ),
     "policies_create": (*_ADMIN_CONFIG, "cannot_relax"),
     # A policy of a blocked story (#363), or one whose text a pending catalog-scope erasure
@@ -948,11 +987,89 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "entry_archived",
         "rating_retired",
         "media_retired",
+        "candidate_not_found",
+        "candidate_stale",
     ),
     # A character's publish makes its companion's version too (#116): each refusal may be the
     # companion's (``details.entity``).
     "publish_character": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
+    # The image prompt builder (#259): the entry, its version and its draft; the prompt the model
+    # writes and #257's prompt check on it.
+    "build_image_prompt": (
+        "not_found",
+        "not_published",
+        "draft_stale",
+        # #263: a story target's.
+        "position_invalid",
+        "viewpoint_invalid",
+        "camera_pov_invalid",
+        "camera_pov_not_present",
+        "viewpoint_perceived_nothing",
+        "viewpoint_protected_content",
+        "guardrail_violation",
+        "image_prompt_unavailable",
+        "model_unavailable",
+        "erasure_pending",
+    ),
+    "draft_base_appearance_prompt": (
+        "not_found",
+        "draft_stale",
+        "image_prompt_unavailable",
+        "erasure_pending",
+    ),
     "get_character": ("not_published",),
+    # Catalog image candidates (#260): a request is refused before any job when no adapter or
+    # checker is configured, the entry is archived, the prompt cannot be built or violates a
+    # policy; a candidate's reads are 404 alike for every candidate that is not live.
+    **{
+        f"request_catalog_images_{kind}": (
+            "not_found",
+            "entry_archived",
+            "not_configured",
+            "image_check_unconfigured",
+            "image_limit_reached",
+            "images_disabled",
+            "guardrail_violation",
+            "image_prompt_unavailable",
+            "model_unavailable",
+            "erasure_pending",
+        )
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"list_image_candidates_{kind}": ("not_found", "erasure_pending")
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"get_image_candidate_content_{kind}": (
+            "not_found",
+            "range_not_satisfiable",
+            "media_store_unavailable",
+            "erasure_pending",
+        )
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"get_image_candidate_url_{kind}": (
+            "not_found",
+            "config_missing",
+            "config_key_missing",
+            "media_store_unavailable",
+            "erasure_pending",
+        )
+        for kind in ("character", "scenario")
+    },
+    **{
+        f"discard_image_candidate_{kind}": ("erasure_pending",)
+        for kind in ("character", "scenario")
+    },
+    # Image usage and cost (#269): a range the reports refuse.
+    "get_image_usage": ("invalid_range",),
+    "get_story_image_usage": ("invalid_range",),
+    **{
+        f"get_entry_image_usage_{kind}": ("not_found", "erasure_pending", "invalid_range")
+        for kind in ("character", "scenario")
+    },
     "create_scenario_draft": _SCENARIO_SAVE,
     # A companion scenario (#116): its slots are fixed, and it is archived, unarchived and
     # deleted only with its character.
@@ -961,6 +1078,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "entry_archived",
         *_SCENARIO_SAVE,
         "companion_slots_fixed",
+        "candidate_not_found",
+        "candidate_stale",
     ),
     "publish_scenario": ("draft_stale", "entry_archived", "publish_invalid", "rating_retired"),
     "archive_scenario": ("companion_follows_character",),
@@ -981,6 +1100,32 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         *_UPLOADED,
         "use_multipart",
     ),
+    # #261 (FR-IMG-5): a story image's checks, then #258's upload path, in one operation.
+    "upload_story_image": (
+        "position_invalid",
+        "viewpoint_invalid",
+        "camera_pov_invalid",
+        "camera_pov_not_present",
+        # #266: a declared subject that is no character of the story.
+        "subject_invalid",
+        *_UPLOADED,
+        "use_multipart",
+        "story_archived",
+        "story_paused",
+        # #263: the JSON body's generation request.
+        "not_configured",
+        "image_check_unconfigured",
+        "subjects_not_allowed",
+        "viewpoint_perceived_nothing",
+        "viewpoint_protected_content",
+        "guardrail_violation",
+        "image_limit_reached",
+        "images_disabled",
+        "image_prompt_unavailable",
+        "model_unavailable",
+    ),
+    "get_story_image": ("viewpoint_unresolved", "omniscient_required"),
+    "delete_story_image": ("story_archived", "story_paused", "erased_subject_referenced"),
     "get_media_content": (
         "url_expired",
         "signature_invalid",
@@ -1123,7 +1268,13 @@ DOCUMENTED_BODIES: dict[str, str | tuple[str, ...]] = {
 the component that documents it, or the components it is one of (``anyOf``: ``POST /stories``
 takes a blank story or one from a scenario, #119)."""
 
-MULTIPART_BODIES = {"upload_media": "MediaUpload", "import_story": "ImportMetadata"}
+JSON_ALTERNATIVES = {"upload_story_image": "StoryImageRequest"}
+"""Multipart operations that also take a JSON body (#263's story image generation request)."""
+MULTIPART_BODIES = {
+    "upload_media": "MediaUpload",
+    "import_story": "ImportMetadata",
+    "upload_story_image": "StoryImageUpload",
+}
 """Operations whose handler reads a ``multipart/form-data`` body itself (#105): a ``metadata``
 part (the component named here, as JSON) followed by a binary ``file`` part and, for a video,
 an optional binary ``poster_file`` part (#107). ``import_story``'s ``file`` is the bundle
@@ -1352,6 +1503,8 @@ def _extra_components() -> dict[str, Any]:
             (StorySpec, "validation"),
             (StoryFromScenario, "validation"),
             (MediaUpload, "validation"),
+            (StoryImageUpload, "validation"),
+            (StoryImageRequest, "validation"),
             (ImportMetadata, "validation"),
             (CertificationRecord, "validation"),
         ],
@@ -1415,6 +1568,11 @@ def _finish_operation(operation: dict[str, Any], method: str, path: str) -> None
         operation["requestBody"] = _multipart_body(
             MULTIPART_BODIES[operation_id], poster=operation_id == "upload_media"
         )
+    if operation_id in JSON_ALTERNATIVES:
+        # #263: one operation, two bodies: the JSON generation request beside #261's upload.
+        operation["requestBody"]["content"]["application/json"] = {
+            "schema": {"$ref": REF.format(model=JSON_ALTERNATIVES[operation_id])}
+        }
     if operation_id in RAW_BODIES:
         operation["requestBody"] = {
             "required": True,

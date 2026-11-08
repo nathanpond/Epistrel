@@ -65,6 +65,7 @@ from epistrel.core.tables import (
     state_changes,
     state_definitions,
     stories,
+    story_images,
     thunks,
     transcript_messages,
     utterances,
@@ -88,6 +89,9 @@ PRUNABLE_TABLES: tuple[Table, ...] = (
     facts,
     state_changes,
     scheduled_events,
+    # #261 (FR-STORE-32): a pruned operation's story images; their assets fall to the media
+    # sweep once no row references them.
+    story_images,
     state_definitions,
     lite_summary_segments,
     proposition_changes,
@@ -182,18 +186,23 @@ class Excluded(BaseModel):
 
 
 class PruneImpact(BaseModel):
-    """The report (see the module docstring)."""
+    """The report (see the module docstring). #272: ``story_images`` is how many story image
+    rows the chosen targets hold, ``media_assets_purgeable`` how many of their assets nothing
+    else would reference afterwards (the next media sweep purges them, #105's 24 h rule for a
+    young asset unchanged)."""
 
     to_delete: dict[str, list[PruneTarget]]
     lost_operations: list[dict[str, Any]]
     retained: dict[str, int]
     excluded: list[Excluded]
     suggestions: list[dict[str, Any]]
+    story_images: int = 0
+    media_assets_purgeable: int = 0
 
 
 class PruneResult(BaseModel):
     """An applied pruning: its operation (``prune_id``), the revision after it, and what it
-    deleted by count."""
+    deleted by count (#272: ``deleted.story_images``, the story image rows)."""
 
     operation_id: str
     prune_id: str
@@ -290,6 +299,10 @@ async def _targets(
         if any(str(r.status) == OperationStatus.IN_FLIGHT.value for r in members):
             target.excluded = Excluded(target=target.id, reason="in_flight")
         found.append(target)
+    working = await _image_work(conn, story_id, rows)
+    for target in found:
+        if target.excluded is None and working & set(target.operation_ids):
+            target.excluded = Excluded(target=target.id, reason="in_flight")
     for target in found:
         if target.excluded is None:
             names = await _amendment_names(conn, story_id, target.operation_ids)
@@ -306,6 +319,63 @@ async def _targets(
                     settling_change_ids=settling,
                 )
     return found
+
+
+async def _image_work(conn: AsyncConnection, story_id: str, rows: Sequence[Any]) -> set[str]:
+    """#272: the operations among ``rows`` (discarded or dormant) a story image job that has
+    not ended works on: its position's turn variant (an automatic job's turn), so a target
+    holding one is excluded ``in_flight``."""
+    from epistrel.core.tables import image_jobs
+    from epistrel.core.tables.images import TERMINAL_STATUSES, ImageJobKind
+
+    by_position = {
+        (int(r.narrative_turn), int(r.turn_variant or 0)): str(r.operation_id)
+        for r in rows
+        if r.narrative_turn is not None
+    }
+    ids = {str(r.operation_id) for r in rows}
+    if not ids:
+        return set()
+    working: set[str] = set()
+    for (origin,) in await conn.execute(
+        select(image_jobs.c.origin).where(
+            image_jobs.c.story_id == story_id,
+            image_jobs.c.kind == ImageJobKind.STORY.value,
+            image_jobs.c.status.not_in([s.value for s in TERMINAL_STATUSES]),
+        )
+    ):
+        origin = dict(origin or {})
+        auto = origin.get("auto")
+        if isinstance(auto, dict) and str(auto.get("operation_id")) in ids:
+            working.add(str(auto["operation_id"]))
+        turn, variant = origin.get("turn"), origin.get("variant")
+        if turn is not None and variant is not None:
+            hit = by_position.get((int(turn), int(variant)))
+            if hit is not None:
+                working.add(hit)
+    return working
+
+
+async def _image_impact(conn: AsyncConnection, ids: Sequence[str]) -> tuple[int, int]:
+    """#272: the story image rows of ``ids`` and how many of their assets nothing else would
+    reference once they are gone."""
+    from epistrel.core.media.assets import referenced
+
+    if not ids:
+        return 0, 0
+    s = story_images.c
+    doomed = list(await conn.execute(select(s.id, s.asset_id).where(s.operation_id.in_(list(ids)))))
+    if not doomed:
+        return 0, 0
+    assets = sorted({str(r.asset_id) for r in doomed})
+    kept = {
+        str(a)
+        for a in await conn.scalars(
+            select(s.asset_id).where(s.asset_id.in_(assets), s.operation_id.not_in(list(ids)))
+        )
+    }
+    kept |= await referenced(conn, assets, skip={"public.story_images"})
+    return len(doomed), len(set(assets) - kept)
 
 
 async def _settling(
@@ -404,7 +474,11 @@ def _chosen(found: Sequence[_Target], wanted: Sequence[str] | None) -> list[_Tar
 
 
 def _impact(
-    found: Sequence[_Target], chosen: Sequence[_Target], retained: dict[str, int], story_id: str
+    found: Sequence[_Target],
+    chosen: Sequence[_Target],
+    retained: dict[str, int],
+    story_id: str,
+    images: tuple[int, int] = (0, 0),
 ) -> PruneImpact:
     tails = [t.view() for t in chosen if t.kind == "discarded_tail"]
     dormant = [t.view() for t in chosen if t.kind == "dormant_continuation"]
@@ -431,6 +505,8 @@ def _impact(
         retained=retained,
         excluded=[t.excluded for t in found if t.excluded is not None],
         suggestions=suggestions,
+        story_images=images[0],
+        media_assets_purgeable=images[1],
     )
 
 
@@ -457,11 +533,12 @@ async def prune(
         chosen = _chosen(found, request.targets)
         ids = [i for t in chosen for i in t.operation_ids]
         retained = await _retained(conn, story_id, ids)
+        images = await _image_impact(conn, ids)
         revision = int(
             await conn.scalar(select(stories.c.timeline_revision).where(stories.c.id == story_id))
             or 0
         )
-    impact = _impact(found, chosen, retained, story_id)
+    impact = _impact(found, chosen, retained, story_id, images)
     if not request.ignore_warnings or not chosen:
         return PruneOutcome(False, impact, timeline_revision=revision)
     deleted: dict[str, Any] = {}
@@ -566,6 +643,8 @@ async def _apply(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
             doomed = list(await conn.scalars(select(table.c[_pk(table)]).where(key.in_(list(ids)))))
             if not doomed:
                 continue
+            if table is story_images:
+                await _drop_image_verdicts(conn, story_id, [str(d) for d in doomed])
             pk = table.c[_pk(table)]
             for start in range(0, len(doomed), CHUNK):
                 # #702: deleted in chunks of ``CHUNK`` rows, all in the one transaction.
@@ -605,7 +684,31 @@ async def _apply(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
     trimmed = await _trim_proposals(conn, story_id, {str(e) for e in doomed_events})
     if trimmed:
         rows["state_proposals"] = trimmed
-    return {"operations": len(ids), "events": len(doomed_events), "rows_by_table": rows}
+    return {
+        "operations": len(ids),
+        "events": len(doomed_events),
+        "story_images": rows.get(story_images.name, 0),
+        "rows_by_table": rows,
+    }
+
+
+async def _drop_image_verdicts(
+    conn: AsyncConnection, story_id: str, image_ids: Sequence[str]
+) -> None:
+    """#272: the stored rating-check verdicts of pruned story images (their prompt's and their
+    output's, ``core.ratings.change``'s record keys)."""
+    from epistrel.core.ratings.change import IMAGE_KEY, OUTPUT_SUFFIX
+    from epistrel.core.tables import guardrail_check_results
+
+    keys = [f"{IMAGE_KEY}{i}" for i in image_ids]
+    keys += [k + OUTPUT_SUFFIX for k in keys]
+    g = guardrail_check_results.c
+    for start in range(0, len(keys), CHUNK):
+        await conn.execute(
+            delete(guardrail_check_results).where(
+                g.story_id == story_id, g.record_key.in_(keys[start : start + CHUNK])
+            )
+        )
 
 
 CHUNK = 5_000

@@ -29,6 +29,7 @@ from tests.model_support import (
     mock_openai,
     put,
     put_key,
+    reserved_purpose,
     restored_model_config,
 )
 
@@ -173,12 +174,14 @@ async def test_invalid_config_is_refused_and_nothing_changes(
     assert await changes(engine, before["config_revision"]) == []
 
 
-@pytest.mark.parametrize("purpose", ["nonsense", "image_prompt"])
+@pytest.mark.parametrize("purpose", ["nonsense", "future_purpose"])
 async def test_unknown_purpose_is_refused(
-    client: httpx.AsyncClient, engine: AsyncEngine, purpose: str
+    client: httpx.AsyncClient, engine: AsyncEngine, purpose: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Negative (#52 AC4): 422 naming the path; the previous configuration, its revision and
-    the ``config_changes`` log are untouched (#285)."""
+    """Negative (#52 AC4): 422 naming the path, for an unknown and for a reserved purpose
+    (test-registered: M8 delivered every reserved one, #254); the previous configuration, its
+    revision and the ``config_changes`` log are untouched (#285)."""
+    reserved_purpose(monkeypatch)
     await put(client, "generation", {"model": "kept", "base_url": "http://gw/v1"})
     before = await listing(client)
     response = await client.put(

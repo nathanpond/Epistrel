@@ -22,7 +22,7 @@ from epistrel.api import create_app
 from epistrel.api.auth import EXEMPT_ROUTES, unguarded_routes
 from epistrel.api.routes.admin import ADMIN_PREFIX, is_operator_path
 from epistrel.core.ids import new_ulid
-from epistrel.engine import Engine, library_only_methods, operations
+from epistrel.engine import SHARED_ROUTES, Engine, library_only_methods, operations
 from epistrel.orchestrator.providers import registry
 from epistrel.orchestrator.providers.port import Binding
 from tests import provider_support as ps
@@ -114,6 +114,8 @@ def unreachable(app: FastAPI, engine_class: type[Engine] = Engine) -> list[str]:
     routed = route_operations(app)
     names = operations(engine_class)
     covered = {method_of(op, names) for op in routed}
+    # #263: an operation another operation's route serves (by its body) is reachable there.
+    covered |= {name for name, route in SHARED_ROUTES.items() if route in routed}
     return [name for name in names if name not in covered]
 
 

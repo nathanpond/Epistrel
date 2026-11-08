@@ -61,6 +61,17 @@ UNKEYED_WRITES = {
         "an export file's deletion (#126): 204 also when the file is already gone; the export's "
         "record stays, so a repeat adds nothing"
     ),
+    "discard_image_candidate_character": (
+        "a catalog image candidate's discard (#260): 204 also for an unknown or discarded one, "
+        "so a repeat answers the same and changes nothing"
+    ),
+    "discard_image_candidate_scenario": (
+        "a catalog image candidate's discard (#260): 204 also for an unknown or discarded one"
+    ),
+    "cancel_image_job": (
+        "an image job's cancel (#256, docs/02 §9): a job that already ended is answered "
+        "unchanged, so a repeat answers the same state and records nothing more"
+    ),
     "reconcile_erasure": (
         "the erasure ledger's reconciliation (#125, FR-ADMIN-7): it reapplies only what the "
         "ledger already records and records no operation, so a repeat is harmless; each run has "
@@ -78,6 +89,8 @@ UNKEYED_READS = {
     "validate_profile": "an engine profile validation (FR-PROF-2): a dry run of an edit",
     "suggest_ratings_character": "an advisory rating suggestion (#111): writes nothing",
     "suggest_ratings_scenario": "an advisory rating suggestion (#111): writes nothing",
+    "build_image_prompt": "an image prompt built without generating (#259): writes nothing",
+    "draft_base_appearance_prompt": "a base appearance prompt drafted, not saved (#259)",
 }
 """Routes with a mutating method flagged ``mutating=False`` that write nothing. They are sent twice
 without a key as well: the repeat must answer the same and add no row."""

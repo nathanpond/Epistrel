@@ -6,8 +6,9 @@ catalog entry deletion (``catalog_entry_deleted``, #103), a persona deletion
 (``persona_deleted``, #114) and a refused tightening of a story's rating
 (``rating_change_refused``, #118: the job id, the target rating and the violation count) and an
 erasure (``erasure``, #124: the ledger entry's id, the subject's kind and id, the scope and the
-counts). A row holds policy ids, the story, the principal and small
-structured details, and **never** the text that was rejected (NFR-SEC-4).
+counts), and an image output rejected or an image job ended without an image
+(``image_output_rejected``, ``image_job_ended``, #256). A row holds policy ids, the story, the
+principal and small structured details, and **never** the text that was rejected (NFR-SEC-4).
 
 The table is append-only (trigger ``audit_log_append_only``). Two changes are allowed:
 deleting a story nulls ``story_id`` on that story's rows, which is the only update the trigger
@@ -40,6 +41,30 @@ class AuditKind(StrEnum):
     BACKFILL_FAILED = "backfill_failed"
     """#228: a backfill ended ``failed`` after its last attempt (the same, and the error's
     exception name)."""
+    IMAGE_OUTPUT_REJECTED = "image_output_rejected"
+    """#256: a generated image failed an output check (job id, attempt token, the output's
+    index, ``outcome: rejected``; the policy ids). Never the image or its prompt."""
+    IMAGE_JOB_ENDED = "image_job_ended"
+    """#256: an image job ended without an image: failed closed, cancelled, stale or its target
+    gone (job id, attempt token, ``outcome``: the status, and its ``reason`` code; the policy
+    ids). Never the image or its prompt."""
+    IMAGE_PROMPT_REJECTED = "image_prompt_rejected"
+    """#257: an image prompt refused by the prompt check before any job (the target's kind and
+    id, the entry point; the policy ids). Never the prompt (FR-GUARD-10, NFR-SEC-4)."""
+    IMAGE_UPLOAD_REJECTED = "image_upload_rejected"
+    """#258: an uploaded image (or a video's poster) refused by the output check before anything
+    was stored (the entry point, the request's operation id, the media kind; the policy ids).
+    Never the image or its hash (FR-GUARD-10)."""
+    IMAGE_COUNTERS_RECONCILED = "image_counters_reconciled"
+    """#262: ``epistrel images reconcile --fix`` rewrote drifted image limit counters and
+    released stuck ``held`` reservation records (actor ``cli:images-reconcile``; a count per
+    scope). Ids and counts only."""
+    IMAGE_CHECK_CERTIFICATION_RECORDED = "image_check_certification_recorded"
+    """#270: an image checker's certification recorded for one policy (the record's id, the
+    checker fingerprint, the evidence kind; the policy id). Ids only."""
+    IMAGE_CHECK_CERTIFICATION_INVALIDATED = "image_check_certification_invalidated"
+    """#270: an image checker's certification withdrawn (the record's id and the reason code;
+    the policy id). Never the note."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

@@ -659,3 +659,101 @@ async def test_s_prune__outcomes_kept(stub_settings: Settings, engine: AsyncEngi
             o=str(third.operation_id),
         )
         assert marker == "pruned"
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-STORE-32; FR-MEDIA-2")
+async def test_s_prune__m8_images(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#272: story images on pruned turns. A story's turn 2 holds an image (with a stored
+    rating-check verdict) and is truncated away; turn 1, still active, holds another image.
+
+    - While a story image job that has not ended works on turn 2, the tail is excluded
+      ``in_flight``.
+    - Once it ended, the report counts the tail's image (``story_images: 1``) and its asset,
+      which nothing else references (``media_assets_purgeable: 1``). The applied pruning names
+      it (``deleted.story_images``), deletes its row and its stored verdicts, and the next
+      media sweep purges its asset (backdated past #105's 24 h grace).
+    - Complement: the image on the active turn survives the pruning and the sweep, its asset
+      too, though it is as old."""
+    from epistrel.core.media.sweep import sweep
+    from tests import story_image_support as si
+    from tests.image_job_support import clean, image_settings_for, insert, prepared
+    from tests.image_support import story_origin
+
+    settings = image_settings_for(pg_url, tmp_path)
+    async with respond_client(settings, engine) as (client, lib):
+        lib.prepare_media()
+        try:
+            story, _ = await si.scene(client, turns=2)
+            pruned = await si.placed(client, story, si.meta({"turn": 2, "beat": 2}, si.OMNISCIENT))
+            kept = await si.placed(client, story, si.meta({"turn": 1, "beat": 2}, si.OMNISCIENT))
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "INSERT INTO guardrail_check_results (story_id, record_key, policy_id, "
+                        "policy_version, verdict) VALUES (:s, :k, 'p-any', 1, 'pass'), "
+                        "(:s, :o, 'p-any', 1, 'pass')"
+                    ),
+                    {
+                        "s": story,
+                        "k": f"image:{pruned['image_id']}",
+                        "o": f"image:{pruned['image_id']}:output",
+                    },
+                )
+            await _ok(
+                await client.post(f"/stories/{story}/truncate", json={"to_turn": 1}, headers=WRITE)
+            )
+            job = await insert(lib, prepared(story, origin=story_origin(story, turn=2, variant=1)))
+
+            report = await _ok(await _prune(client, story))
+            assert [e["reason"] for e in report["impact"]["excluded"]] == ["in_flight"]
+            assert report["impact"]["story_images"] == 0
+
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text("UPDATE image_jobs SET status = 'cancelled' WHERE id = :j"), {"j": job}
+                )
+            report = await _ok(await _prune(client, story))
+            assert report["impact"]["excluded"] == []
+            assert report["impact"]["story_images"] == 1
+            assert report["impact"]["media_assets_purgeable"] == 1
+            applied = await _ok(await _prune(client, story, ignore_warnings=True))
+            assert applied["result"]["deleted"]["story_images"] == 1
+            assert (
+                await scalar(
+                    engine, "SELECT count(*) FROM story_images WHERE id = :i", i=pruned["image_id"]
+                )
+                == 0
+            )
+            assert (
+                await scalar(
+                    engine,
+                    "SELECT count(*) FROM guardrail_check_results WHERE story_id = :s",
+                    s=story,
+                )
+                == 0
+            )
+            assets = [pruned["media_id"], kept["media_id"]]
+            async with engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        "UPDATE media_assets SET created_at = now() - interval '2 days' "
+                        "WHERE id = ANY(CAST(:a AS text[]))"
+                    ),
+                    {"a": assets},
+                )
+            await sweep(engine, lib.media)
+            left = {
+                str(r.id)
+                for r in await rows(
+                    engine,
+                    "SELECT id FROM media_assets WHERE id = ANY(CAST(:a AS text[]))",
+                    a=assets,
+                )
+            }
+            assert left == {kept["media_id"]}
+            assert si.image_ids(await si.history(client, story, si.OMNISCIENT)) == [
+                kept["image_id"]
+            ]
+        finally:
+            await clean(engine)

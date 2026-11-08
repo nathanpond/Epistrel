@@ -36,12 +36,25 @@ EVAL_CASE_PATTERN = re.compile(rf"^{EVAL_CASE_HEADER}: (\S+)$", re.MULTILINE)
 
 
 class Message(BaseModel):
-    """One chat message sent to a model."""
+    """One chat message sent to a model: its text and, for a multimodal one (#258:
+    ``image_check``'s user message), the images it carries after the text, as URLs (a ``data:``
+    URL for an image sent inline)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     role: Literal["system", "user", "assistant"]
     content: str
+    images: tuple[str, ...] = ()
+
+    def wire(self) -> dict[str, Any]:
+        """The message as Chat Completions takes it: ``{role, content}``, the content a string,
+        or, with images, OpenAI's content array (a ``text`` part, then one ``image_url`` part
+        per image)."""
+        if not self.images:
+            return {"role": self.role, "content": self.content}
+        parts: list[dict[str, Any]] = [{"type": "text", "text": self.content}]
+        parts.extend({"type": "image_url", "image_url": {"url": url}} for url in self.images)
+        return {"role": self.role, "content": parts}
 
 
 class ModelParams(BaseModel):

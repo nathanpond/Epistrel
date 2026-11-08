@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from epistrel.core.concurrency import hash_member
 from epistrel.core.settings_schema import ResolvedGeneration
 from epistrel.core.turns import TurnInputs, WindowRow
+from epistrel.orchestrator.images.auto import LITE_ILLUSTRATE_INSTRUCTION
 from epistrel.orchestrator.lite.cast import ResolvedCast
 from epistrel.orchestrator.lite.context import LiteContext
 from epistrel.orchestrator.models.adapter import Message, ModelParams
@@ -70,13 +71,15 @@ def assemble(
     do: str | None,
     constraints: Sequence[str] = (),
     context: LiteContext | None = None,
+    illustrate: bool = False,
 ) -> GenerationInputs:
     """The ``generation`` inputs of one Lite turn, every section from the Engine's records.
 
     The author notes are the actor's and the render characters', in request order; the
     definitions are the ones read in the turn's snapshot (``inputs.cast``). ``constraints``
     are the output gate's lines on a guardrail regeneration (#68); ``context`` the prompt-only
-    clock and States (#203)."""
+    clock and States (#203); ``illustrate`` asks for #265's illustrate tag (the story is
+    ``auto``, an image adapter is configured and its cap is above 0)."""
     names = {c.id: c.name for c in inputs.cast}
     current = {c.id: c for c in inputs.cast}
     return GenerationInputs(
@@ -99,6 +102,7 @@ def assemble(
         player_authority=inputs.player_authority,
         lite_time=list(context.time_lines) if context is not None else [],
         tracked_values=list(context.tracked_values) if context is not None else [],
+        illustrate_instruction=LITE_ILLUSTRATE_INSTRUCTION if illustrate else "",
     )
 
 
@@ -114,7 +118,7 @@ def model_params(resolved: ResolvedGeneration, cast: ResolvedCast) -> ModelParam
 
 def prompt_hash(messages: Sequence[Message]) -> str:
     """SHA-256 of the rendered chat messages' canonical JSON (recorded on the reply)."""
-    return hash_member([m.model_dump() for m in messages])
+    return hash_member([m.wire() for m in messages])
 
 
 __all__ = ["assemble", "model_params", "prompt_hash", "transcript_line"]

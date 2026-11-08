@@ -20,7 +20,7 @@ import time
 import types
 import typing
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal, Protocol, overload
 
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
@@ -73,9 +73,11 @@ from epistrel.core.catalog import promote as catalog_promote
 from epistrel.core.catalog import scenario_models
 from epistrel.core.catalog import scenarios as catalog_scenarios
 from epistrel.core.catalog import search as catalog_search
+from epistrel.core.catalog import service as catalog_service
 from epistrel.core.catalog.report import ValidationResult
 from epistrel.core.commit import lifecycle as commitment
 from epistrel.core.concurrency import check_expected_revision
+from epistrel.core.config_changes import read_section
 from epistrel.core.context import SYSTEM_PRINCIPAL, RequestContext, requesting_principal
 from epistrel.core.enums import (
     BeliefKind,
@@ -104,6 +106,9 @@ from epistrel.core.errors import (
     RewriteApplyFailed,
     StoryNotFound,
     SubjectNotFound,
+    SubjectsNotAllowed,
+    SubjectsRequired,
+    ViewpointProtectedContent,
     refuse_nul,
 )
 from epistrel.core.genesis import create as genesis
@@ -120,6 +125,10 @@ from epistrel.core.idempotency import (
 )
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
+from epistrel.core.images import candidates as image_candidates
+from epistrel.core.images import costs as image_costs
+from epistrel.core.images import perceived as image_perceived
+from epistrel.core.images import story_images, story_perceived
 from epistrel.core.media import assets as media
 from epistrel.core.media import sweep as media_sweep
 from epistrel.core.media import uploads as media_uploads
@@ -147,14 +156,22 @@ from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
 from epistrel.core.retrieval import lexical_backend
 from epistrel.core.retrieval import pipeline as retrieval_pipeline
-from epistrel.core.settings_schema import ConfigClass, PlayerView, StorySettings
+from epistrel.core.settings_schema import (
+    ConfigClass,
+    ImageJobSettings,
+    PlayerView,
+    StorySettings,
+)
 from epistrel.core.states import api as state_api
 from epistrel.core.states import external as external_states
 from epistrel.core.states import proposals as state_proposals
+from epistrel.core.tables import characters as characters_table
 from epistrel.core.tables import events
 from epistrel.core.tables import stories as stories_table
-from epistrel.core.tables.media import MediaKind, MediaState
+from epistrel.core.tables.images import ImageJobKind
+from epistrel.core.tables.media import MediaKind, MediaSource, MediaState
 from epistrel.core.tables.ownership import EntityType
+from epistrel.core.tables.story_images import ViewpointBasis
 from epistrel.core.turn_gate import Concurrency, QueueItem
 from epistrel.core.verify import shadow as verify_shadow
 from epistrel.core.verify import yield_queries
@@ -180,6 +197,16 @@ from epistrel.orchestrator.commit import directed
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
+from epistrel.orchestrator.images import attempts as image_attempts
+from epistrel.orchestrator.images import jobs as image_jobs
+from epistrel.orchestrator.images import output_check, prompt_builder
+from epistrel.orchestrator.images import registry as image_registry
+from epistrel.orchestrator.images import safety_checks as image_safety
+from epistrel.orchestrator.images.params import ImageGenerationParams
+from epistrel.orchestrator.images.port import MAX_REFERENCE_IMAGES
+from epistrel.orchestrator.images.references import MediaReferences
+from epistrel.orchestrator.images.targets import catalog as catalog_images
+from epistrel.orchestrator.images.targets import story as story_image_target
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
@@ -342,6 +369,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
     # #196: a scheduled event created, rescheduled or cancelled between turns.
     "create_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten, status=201),
+    # #261: a story image uploaded at a position (201) and deleted (204).
+    "upload_story_image": ResultCodec.of(story_images.StoryImagePlaced, status=201),
+    # #263: the same route's JSON body, a generation request (202, story-scoped).
+    "request_story_image": ResultCodec.of(story_image_target.StoryImageQueued, status=202),
+    "delete_story_image": ResultCodec.of(story_images.StoryImageDeletion, status=204),
     "reschedule_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
     "cancel_scheduled_event": ResultCodec.of(scheduled_events.ScheduledEventWritten),
     # #186: a State set and a State declared between turns, and a definition changed.
@@ -393,6 +425,14 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "import_certification": ResultCodec.of(
         certification.CertificationImported, revision_field=_CONFIG
+    ),
+    "record_image_check_certification": ResultCodec.of(
+        certification.ImageCheckRecorded,
+        status=lambda found: 201 if found.stored else 200,
+        revision_field=_CONFIG,
+    ),
+    "invalidate_image_check_certification": ResultCodec.of(
+        certification.ImageCheckInvalidated, revision_field=_CONFIG
     ),
     "invalidate_certification": ResultCodec.of(
         certification.CertificationInvalidated, revision_field=_CONFIG
@@ -554,6 +594,16 @@ def _ownership_codecs() -> dict[str, ResultCodec[Any]]:
 
 
 CODECS.update(_ownership_codecs())
+# A catalog entry's image candidates (#260): one method, one codec per kind (the key is the route's
+# ``operation_id``, ``request_catalog_images_character``), deployment-scoped.
+CODECS.update(
+    {
+        f"request_catalog_images_{kind}": ResultCodec.of(
+            catalog_images.CatalogImagesQueued, status=202, revision_field=_CONFIG
+        )
+        for kind in catalog_images.ENTRY_KINDS
+    }
+)
 # A catalog entry's listing status (#110): one method, one codec per catalog kind (the key is the
 # route's ``operation_id``, ``set_listing_status_character``), deployment-scoped.
 CODECS.update(
@@ -598,6 +648,10 @@ def _with_checks(
 def _body(model: Any) -> Any:
     """A validated request body as hashed: its JSON dump with defaults filled."""
     return model.model_dump(mode="json")
+
+
+_builder_subjects = story_image_target.builder_subjects
+_asset_subject_ids = story_image_target.asset_subject_ids
 
 
 _POLICY_ITEMS: TypeAdapter[list[StoryPolicyItem]] = TypeAdapter(list[StoryPolicyItem])
@@ -661,6 +715,15 @@ def library_only[F: Callable[..., Any]](reason: str) -> Callable[[F], F]:
     return mark
 
 
+SHARED_ROUTES: Mapping[str, str] = {
+    "request_story_image": "upload_story_image",
+    "list_image_check_certifications": "list_certifications",
+}
+"""Engine operations a route of another operation serves, told apart by the body (#263: ``POST
+/stories/{id}/images`` takes a JSON generation request or a multipart upload) or the query
+(#270: ``GET /certifications?subject=image_check``): operation → the route's ``operation_id``."""
+
+
 def operations(engine_class: type[Engine] | None = None) -> list[str]:
     """The public operations of ``engine_class`` (``Engine``): every public coroutine method not
     marked ``library_only``, sorted by name."""
@@ -721,6 +784,16 @@ async def _end_rating_checks(conn: AsyncConnection) -> None:
     await rating_change.reconcile(conn, true())
 
 
+IMAGE_ATTEMPTS_HOOK = "image_attempts"
+"""The worker recovery hook that classifies every fenced image attempt left in ``sending``
+(#268, ``orchestrator.images.attempts.recover_attempts``): one no idempotent re-send can recover
+is an ambiguous send, held to its horizon and presumed there."""
+
+
+async def _recover_image_attempts(conn: AsyncConnection) -> None:
+    await image_attempts.recover_attempts(conn)
+
+
 CERTIFICATIONS_HOOK = "certifications"
 """The worker recovery hook that imports the committed certification records
 (``core.profiles.certification.SEEDS_DIR``, #233): idempotent, so a deployment on the reference
@@ -730,6 +803,8 @@ it never stops the start."""
 
 async def _load_certifications(conn: AsyncConnection) -> None:
     await certification.load_committed(conn)
+    # #270: the committed image-checker records (``seeds/certifications/image-check/``).
+    await certification.load_committed_image_checks(conn)
 
 
 LITE_NO_RECONCILIATION = "lite_no_reconciliation"
@@ -791,7 +866,11 @@ class Engine:
         self.in_process_providers = provider_in_process.InProcessRegistry()
         self.media: BlobStore = make_store(settings)
         self.signer = Signer(settings.config_key)
+        # Reference images reach a hosted image provider as signed URLs or data URLs (#255).
+        self.models.images.references = MediaReferences(lambda: self.db, self.media, self.signer)
         self.posters: PosterExtractor = FfmpegTools(settings.ffmpeg_path)
+        # Image jobs' long-polling reads wait here (#256): one LISTEN connection per process.
+        self.image_waiters = image_jobs.ImageJobWaiters(lambda: self.db)
         # The feedback exports not yet downloaded are rewritten by an erasure in this store
         # (#126; the last Engine constructed in a process binds it).
         feedback_export.bind(self.media)
@@ -863,8 +942,11 @@ class Engine:
         )
         extraction_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
-        rating_check_job.bind(self.models)
+        rating_check_job.bind(self.models, self.media)
         media_sweep_job.bind(self.media)
+        # #256: image jobs generate through this Engine's adapter and stage in its media root.
+        self._image_runtime_bound = self.image_runtime()
+        image_jobs.bind(self._image_runtime_bound)
         erasure_reconcile_job.bind(self._reconcile_run)
         # #210: the outbox dispatcher sends through this Engine's in-process callables.
         outbox_job.bind(self.in_process_providers)
@@ -874,6 +956,7 @@ class Engine:
         register_recovery_hook(TURN_QUEUE_HOOK, self._recovery_hook)
         register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
         register_recovery_hook(CERTIFICATIONS_HOOK, _load_certifications)
+        register_recovery_hook(IMAGE_ATTEMPTS_HOOK, _recover_image_attempts)
         self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
         self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
 
@@ -908,6 +991,7 @@ class Engine:
             unregister_recovery_hook(TURN_QUEUE_HOOK)
             unregister_recovery_hook(RATING_CHECK_HOOK)
             unregister_recovery_hook(CERTIFICATIONS_HOOK)
+            unregister_recovery_hook(IMAGE_ATTEMPTS_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:
@@ -918,6 +1002,9 @@ class Engine:
             rating_check_job.bind(None)
         if media_sweep_job.bound() is self.media:
             media_sweep_job.bind(None)
+        if image_jobs.bound() is getattr(self, "_image_runtime_bound", None):
+            image_jobs.bind(None)
+        await self.image_waiters.aclose()
         if erasure_reconcile_job.bound() == self._reconcile_run:
             erasure_reconcile_job.bind(None)
         if outbox_job.bound() is self.in_process_providers:
@@ -934,6 +1021,18 @@ class Engine:
         if self._db is None:
             raise RuntimeError("the Engine has no database; bind one first")
         return self._db
+
+    def image_runtime(self) -> image_jobs.ImageRuntime:
+        """What image jobs run on in this Engine (#256): its database, Model Access Layer,
+        blob store and ``job_max_attempts``."""
+        return image_jobs.ImageRuntime(
+            self.db, self.models, self.media, self.settings.job_max_attempts
+        )
+
+    def upload_check(self) -> output_check.UploadCheck:
+        """The output check an uploaded image or a video's poster passes before it is stored
+        (FR-IMG-3; #258): ``unchecked`` while ``image_check`` has no model."""
+        return output_check.UploadCheck(self.models, self.db)
 
     def prepare_media(self) -> None:
         """Create the media root and its staging area and prove them writable, and on S3 that
@@ -2936,6 +3035,7 @@ class Engine:
                     "compressor": self.ports.summary_compressor,
                     "collect": collect,
                     "models": self.models,
+                    "media": self.media,
                 },
             )
         )
@@ -4471,8 +4571,12 @@ class Engine:
         """Replace a purpose's own configuration. For the ``embedding`` port (#138) a new
         model is probed first (422 ``embedding_unreachable`` when it does not answer): the
         write then moves the embedding pin and enqueues the re-embed jobs in its transaction
-        (``reembed_job.on_embedding_model_changed``)."""
+        (``reembed_job.on_embedding_model_changed``). ``params`` are checked against the
+        purpose's own schema first (the ``image_generation`` port's image fields, #254), so a
+        refused body claims no key."""
         principal = self.require_principal(ctx)
+        model_config.check_purpose(purpose)
+        params = body.params_for(purpose)
         probe = await self._probe_embedding_change(purpose, body)
         with reembed_job.changing(self.models.embeddings, probe):
             return await self._keyed(
@@ -4481,7 +4585,13 @@ class Engine:
                 lambda _: model_config.replace_config(
                     self.db, purpose, body, keybox=self.models.keybox, principal=principal
                 ),
-                material={"purpose": purpose, "body": _body(body)},
+                material={
+                    "purpose": purpose,
+                    "body": {
+                        **_body(body),
+                        "params": None if params is None else params.model_dump(mode="json"),
+                    },
+                },
             )
 
     async def _probe_embedding_change(
@@ -4491,8 +4601,9 @@ class Engine:
         for any other purpose, an unset model or the same model."""
         if purpose != EMBEDDING_PORT or body.model is None:
             return None
-        if body.params is not None:
-            model_config.check_port_params(purpose, body.params)
+        params = body.params_for(purpose)
+        if params is not None:
+            model_config.check_port_params(purpose, params)
         _, rows = await model_config.snapshot(self.db)
         own = rows.get(purpose)
         if own is not None and own.model == body.model:
@@ -4502,7 +4613,7 @@ class Engine:
             base_url=body.base_url,
             model=body.model,
             api_key_ciphertext=None if own is None else own.api_key_ciphertext,
-            params=body.params or ModelParams(),
+            params=params if isinstance(params, ModelParams) else ModelParams(),
             revision=0,
         )
         try:
@@ -4871,11 +4982,18 @@ class Engine:
         """Delete the entry and its versions, from any status, with a ``catalog_entry_deleted``
         audit row. Stories created from it keep their snapshot and provenance (FR-CAT-9)."""
         principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> catalog_characters.DeletedCharacter:
+            async with self.db.connect() as conn:
+                companions = await image_candidates.companions_of(conn, character_id)
+                entries = [("character", character_id), *(("scenario", c) for c in companions)]
+                checksums = await image_candidates.entry_checksums(conn, entries)
+            deleted = await catalog_characters.delete(self.db, character_id, principal=principal)
+            await self._collect(checksums)
+            return deleted
+
         return await self._keyed(
-            ctx,
-            "delete_character",
-            lambda _: catalog_characters.delete(self.db, character_id, principal=principal),
-            material={"character_id": character_id},
+            ctx, "delete_character", run, material={"character_id": character_id}
         )
 
     @refuses_nul()
@@ -5035,12 +5153,17 @@ class Engine:
         ``catalog_entry_deleted`` audit row. Stories created from it keep their snapshot and
         provenance (FR-CAT-9)."""
         principal = self.require_principal(ctx)
-        return await self._keyed(
-            ctx,
-            "delete_scenario",
-            lambda _: catalog_scenarios.delete(self.db, scenario_id, principal=principal),
-            material={"scenario_id": scenario_id},
-        )
+
+        async def run(_: RequestContext) -> catalog_scenarios.DeletedScenario:
+            async with self.db.connect() as conn:
+                checksums = await image_candidates.entry_checksums(
+                    conn, [("scenario", scenario_id)]
+                )
+            deleted = await catalog_scenarios.delete(self.db, scenario_id, principal=principal)
+            await self._collect(checksums)
+            return deleted
+
+        return await self._keyed(ctx, "delete_scenario", run, material={"scenario_id": scenario_id})
 
     @refuses_nul()
     async def get_scenario(
@@ -5499,6 +5622,494 @@ class Engine:
         principal (FR-AUTH-7). 404 for an unknown job (or a purged report)."""
         return await offboarding.get(self.db, job_id)
 
+    # -- image jobs (FR-IMG-3,4; #256) --------------------------------------------------------
+
+    @refuses_nul()
+    async def get_image_job(
+        self,
+        ctx: RequestContext,
+        job_id: str,
+        *,
+        wait: int | None = None,
+        since_status: str | None = None,
+    ) -> image_jobs.ImageJobView:
+        """An image job's state: kind, status, ``status_reason`` (a bare code), ``asset_ids``
+        (a story job) or ``candidate_ids`` (a catalog job), ``[]`` until it succeeds, how many
+        provider attempts it made, its timestamps and, when it failed on a policy, the
+        ``policy_ids``. With ``wait`` (1 to 30 seconds) the read is a long poll: it answers
+        once the status differs from ``since_status`` (default: the status when the read
+        began) or when the wait ends, whichever is first. 422 ``validation_error`` for a
+        ``wait`` outside 1..30 or an unknown ``since_status``; 503 ``too_many_waiters`` when
+        this process already holds 200 long polls; 404 ``image_job_not_found``."""
+        return await image_jobs.get_job(
+            self.db, self.image_waiters, job_id, wait=wait, since_status=since_status
+        )
+
+    async def cancel_image_job(self, ctx: RequestContext, job_id: str) -> image_jobs.ImageJobView:
+        """Cancel a queued or running image job: it ends ``cancelled``, a worker running it is
+        fenced and promotes nothing, and its staged bytes are deleted. A job that already
+        ended is answered unchanged, so a repeat changes nothing: the cancel is idempotent by
+        design and takes no ``Idempotency-Key`` (docs/02 §9). It needs only the service
+        credential: ownership gates nothing. 404 ``image_job_not_found``."""
+        await image_jobs.cancel_job(self.image_runtime(), job_id)
+        async with self.db.connect() as conn:
+            return await image_jobs.read_view(conn, job_id)
+
+    # -- image usage and cost (FR-IMG-11; #269) -----------------------------------------------
+
+    @refuses_nul()
+    async def get_image_usage(
+        self,
+        ctx: RequestContext,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> image_costs.DeploymentUsage:
+        """The deployment's image usage and cost per local day (``deployment_time_zone``),
+        ``from_date`` to ``to_date`` inclusive (default: the last 30 days through today, at most
+        366 days; 422 ``invalid_range`` otherwise), every retained day listed (zeros included)
+        and the range's totals: outputs used, overage, extra outputs, reserved (held now),
+        ambiguous sends, the ``unknown`` and ``zero`` cost attempts, and the known costs per
+        currency (never mixed or converted). Days the accounting retention purged are left out
+        (``retained_from``). A deleted story's costs stay in. Needs only the service credential."""
+        async with self.db.connect() as conn:
+            return await image_costs.deployment_usage(conn, from_date, to_date)
+
+    @refuses_nul()
+    async def get_story_image_usage(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> image_costs.ScopedUsage:
+        """A story's image usage and cost, from its reservation records and cost rows: all-time
+        totals and the active local days of the range (the same range rules as
+        ``get_image_usage``). There are no story limits. 404 for an unknown or deleted story
+        (its costs stay in the deployment's report)."""
+        async with self.db.connect() as conn:
+            found = await conn.scalar(
+                select(stories_table.c.id).where(stories_table.c.id == story_id)
+            )
+            if found is None:
+                raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+            return await image_costs.story_usage(conn, story_id, from_date, to_date)
+
+    @refuses_nul()
+    async def get_entry_image_usage(
+        self,
+        ctx: RequestContext,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> image_costs.ScopedUsage:
+        """A catalog entry's image usage (its entry counters) and cost (its catalog jobs' cost
+        rows): all-time totals, the active local days of the range (the same range rules as
+        ``get_image_usage``) and today's entry limit (``image_limit_entry_day``, used, reserved
+        and remaining). Name exactly one of ``character_id`` and ``scenario_id``. 404 for an
+        unknown or deleted entry."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            await catalog_images.require_entry(conn, kind, entry_id)
+            return await image_costs.entry_usage(conn, kind, entry_id, from_date, to_date)
+
+    # -- image prompts (FR-IMG-2, FR-CAT-4; #259) ----------------------------------------------
+
+    async def _image_deployment(self) -> ImageGenerationParams | None:
+        """The configured image adapter's params, or ``None`` when none is configured."""
+        config = await self.models.images.config()
+        if image_registry.missing_of(config) is not None:
+            return None
+        return config.image_params or ImageGenerationParams()
+
+    async def build_image_prompt(
+        self, ctx: RequestContext, request: prompt_builder.ImagePromptRequest
+    ) -> prompt_builder.BuiltImagePrompt:
+        """Build a catalog image's prompt and its parameters without generating (FR-IMG-2):
+        from the entry's draft (``target.draft``), a published ``target.version``, or its latest
+        published version, using only what anyone browsing could see (the appearance, the
+        apparent age band and never the age, the ``perceivable`` references, the visual style
+        and the rating's image guidance). Then #257's prompt check runs on it. It creates no
+        job, reservation or cost row, and needs no image adapter. 404 for an unknown entry or
+        version; 422 ``not_published``, ``validation_error`` (a purpose the kind's images
+        cannot have, a missing true age, rating or appearance) or ``guardrail_violation`` (the
+        refused prompt is never returned); 503 ``image_prompt_unavailable``,
+        ``model_unavailable`` or ``erasure_pending``. A story target (``kind: story``, #263):
+        ``_build_story_image_prompt``."""
+        target = request.target
+        if isinstance(target, prompt_builder.StoryImagePromptTarget):
+            return await self._build_story_image_prompt(ctx, target)
+        assert request.purpose is not None  # noqa: S101 - the body's validator requires it
+        await self._catalog_gate(target.kind, target.id)
+        deployment = await self._image_deployment()
+        async with self.db.connect() as conn, conn.begin():
+            resolved = await image_perceived.resolve_target(
+                conn, target.kind, target.id, draft=target.draft, version=target.version
+            )
+            view = await prompt_builder.build_catalog_image_inputs(
+                conn,
+                target.kind,
+                target.id,
+                version=resolved.version,
+                draft_revision=resolved.draft_revision,
+                purpose=request.purpose,
+                deployment=deployment,
+            )
+        built = await prompt_builder.write_image_prompt(self.models, view)
+        origin: dict[str, Any] = {
+            "entry_kind": target.kind,
+            "entry_id": target.id,
+            "version": resolved.version,
+            "draft_revision": resolved.draft_revision,
+        }
+        await image_safety.check_image_prompt(
+            self.image_runtime(),
+            image_jobs.PromptCheck(
+                kind=ImageJobKind.CATALOG,
+                target={"entry_kind": target.kind, "entry_id": target.id},
+                origin=origin,
+                request=image_jobs.ImageJobRequest(
+                    prompt=built.prompt, negative_prompt=built.negative_prompt
+                ),
+                principal=ctx.principal or SYSTEM_PRINCIPAL,
+            ),
+        )
+        return prompt_builder.BuiltImagePrompt(
+            prompt=built.prompt,
+            negative_prompt=built.negative_prompt,
+            seed=built.seed,
+            reference_image_ids=list(built.reference_image_ids),
+            size=built.size,
+            aspect_ratio=built.aspect_ratio,
+            target=prompt_builder.ResolvedTarget(
+                kind=target.kind,
+                id=target.id,
+                version=resolved.version,
+                draft_revision=resolved.draft_revision,
+            ),
+            # FR-IMG-9 (#266): a catalog character's images depict the character itself.
+            depicted_subjects=[prompt_builder.CatalogDepicted(id=target.id)]
+            if target.kind == "character"
+            else [],
+        )
+
+    async def _build_story_image_prompt(
+        self, ctx: RequestContext, target: prompt_builder.StoryImagePromptTarget
+    ) -> prompt_builder.BuiltImagePrompt:
+        """A story image's prompt built without generating (FR-IMG-2,8; #263): from the same
+        filtered inputs a generation request builds from, through the same protected match (one
+        rewrite, then 422 ``viewpoint_protected_content``) and #257's prompt check. Read-only:
+        it works on a paused story and takes no key, reservation or job. 404 for an unknown
+        story; 422 ``position_invalid``, ``viewpoint_invalid``, ``camera_pov_invalid``,
+        ``camera_pov_not_present``, ``viewpoint_perceived_nothing``; 503
+        ``erasure_pending``."""
+        await self._erasure_gate(target.story_id)
+        async with self.db.connect() as conn:
+            placement = await story_images.place_at(
+                conn,
+                target.story_id,
+                target.position,
+                target.audience_viewpoint,
+                target.camera_pov,
+                at="body.target",
+            )
+            view, matcher = await self._story_image_view(conn, placement, at="body.target")
+        built = await prompt_builder.write_story_image_prompt(self.models, view, matcher)
+        depicted = _builder_subjects(view)
+        await image_safety.check_image_prompt(
+            self.image_runtime(),
+            image_jobs.PromptCheck(
+                kind=ImageJobKind.STORY,
+                target=story_image_target.target_of(placement),
+                origin=story_image_target.origin_of(
+                    placement,
+                    operation_id=new_ulid(),
+                    timeline_revision=0,
+                    position=target.position,
+                ),
+                request=image_jobs.ImageJobRequest(
+                    prompt=built.prompt,
+                    negative_prompt=built.negative_prompt,
+                    depicted_subjects=depicted,
+                ),
+                principal=ctx.principal or SYSTEM_PRINCIPAL,
+                viewpoint=placement.audience_viewpoint,
+            ),
+        )
+        return prompt_builder.BuiltImagePrompt(
+            prompt=built.prompt,
+            negative_prompt=built.negative_prompt,
+            seed=built.seed,
+            reference_image_ids=list(built.reference_image_ids),
+            size=None,
+            aspect_ratio=None,
+            target=target,
+            depicted_subjects=[
+                prompt_builder.StoryDepicted(id=i) for i in _asset_subject_ids(view)
+            ],
+            viewpoint_basis="filtered_inputs",
+        )
+
+    async def _story_image_view(
+        self, conn: AsyncConnection, placement: story_images.Placement, *, at: str
+    ) -> tuple[prompt_builder.PerceivedView, story_perceived.ViewpointMatcher]:
+        """A placement's perceived inputs and protected match (``targets.story.perceived_view``,
+        shared with #265's automatic jobs)."""
+        return await story_image_target.perceived_view(conn, placement, at=at)
+
+    async def draft_base_appearance_prompt(
+        self, ctx: RequestContext, character_id: str, draft_revision: int | None = None
+    ) -> prompt_builder.DraftedBaseAppearance:
+        """Draft a catalog character's ``visual_identity.base_appearance_prompt`` from its
+        draft's appearance (FR-CAT-4), with the ``image_prompt`` purpose, and return it with the
+        draft's revision without saving it. The author saves it, and may edit it, through an
+        ordinary draft save. The text states no exact age, no age band and no restricted
+        detail: a drafted text that does is regenerated once, then 503
+        ``image_prompt_unavailable``. 404 for an unknown character; 409 ``draft_stale`` for a
+        stale ``draft_revision``; 422 ``validation_error`` (``definition.appearance``) without
+        an appearance."""
+        async with self.db.connect() as conn:
+            inputs = await image_perceived.base_appearance_inputs(
+                conn, character_id, draft_revision
+            )
+        drafted = await prompt_builder.draft_base_appearance_prompt(self.models, inputs)
+        return prompt_builder.DraftedBaseAppearance(
+            base_appearance_prompt=drafted, draft_revision=inputs.draft_revision
+        )
+
+    # -- catalog image candidates (FR-IMG-4,7; #260) ------------------------------------------
+    # One method per operation for both kinds, naming its entry ``character_id=`` or
+    # ``scenario_id=`` (so the catalog gate, #346, applies), each served by one route per kind.
+    # Attaching a candidate is an ordinary draft save naming ``{candidate_id}``.
+
+    async def _collect(self, checksums: Sequence[str]) -> None:
+        """Delete each blob no asset row names any more (#105's checksum-guarded delete), once
+        the write that freed it committed; a failure is left to the media sweep's orphan
+        step."""
+        for checksum in checksums:
+            try:
+                await media_sweep.collect_blob(self.db, self.media, checksum)
+            except Exception as exc:
+                logger.warning("blob not collected after commit: %s", type(exc).__name__)
+
+    async def request_catalog_images(
+        self,
+        ctx: RequestContext,
+        request: catalog_images.CatalogImageRequest,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> catalog_images.CatalogImagesQueued:
+        """Generate ``request.n`` private candidate images for a catalog character's
+        ``primary`` or ``gallery`` image or a scenario's ``cover`` (FR-IMG-7), from its draft's
+        perceivable inputs (#259) under its rating's guidance and image policies (#257): 202
+        ``{job_id, status: queued}``; follow it at ``GET /image-jobs/{id}``, which ends
+        ``candidates_ready`` with the ``candidate_ids`` (or ``failed`` when none passed). The
+        job records the draft revision and image-input fingerprint it was built from. Nothing
+        is attached: an author attaches a candidate with a draft save naming
+        ``{candidate_id}``. Refused before any job, reservation or provider call: 404 for an
+        unknown entry, 422 ``entry_archived``, 409 ``not_configured`` without an image adapter,
+        409 ``image_check_unconfigured`` while an image-output policy applies and
+        ``image_check`` is unset, 422 for a ``slot`` the kind's images cannot have, the
+        builder's 422 and 503 and the prompt check's 422 ``guardrail_violation``; and 409
+        ``image_limit_reached`` or 422 ``images_disabled`` when ``n`` outputs do not fit the
+        deployment's or the entry's daily image limit (#262; the reservation is made with the
+        job, in one transaction). Idempotent
+        under its key (deployment-scoped); the request never saves or advances the draft."""
+        principal = self.require_principal(ctx)
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        if request.slot not in image_candidates.SLOTS[kind]:
+            allowed = ", ".join(sorted(image_candidates.SLOTS[kind]))
+            raise InvalidRequest(
+                f"a {kind}'s image slot is one of {allowed}", {"field": "body.slot"}
+            )
+
+        async def run(_: RequestContext) -> catalog_images.CatalogImagesQueued:
+            async with self.db.connect() as conn:
+                await catalog_images.require_editable(conn, kind, entry_id)
+            await image_jobs.require_generation(self.models, self.db)
+            settings = await read_section(self.db, ImageJobSettings)
+            deployment = await self._image_deployment()
+            async with self.db.connect() as conn, conn.begin():
+                resolved = await image_perceived.resolve_target(conn, kind, entry_id, draft=True)
+                document, _rating = await image_perceived.entry_document(conn, resolved)
+                view = await prompt_builder.build_catalog_image_inputs(
+                    conn,
+                    kind,
+                    entry_id,
+                    draft_revision=resolved.draft_revision,
+                    purpose=request.slot,
+                    deployment=deployment,
+                )
+                fingerprint = await image_candidates.image_input_fingerprint(
+                    conn, kind, entry_id, document
+                )
+            built = await prompt_builder.write_image_prompt(self.models, view)
+            job_request = image_jobs.ImageJobRequest(
+                prompt=built.prompt,
+                negative_prompt=built.negative_prompt,
+                n=request.n or settings.catalog_candidates_n,
+                seed=built.seed,
+                size=built.size,
+                aspect_ratio=None if built.size is not None else built.aspect_ratio,
+                reference_image_ids=tuple(built.reference_image_ids)[:MAX_REFERENCE_IMAGES],
+            )
+            metadata = document.get("metadata") if isinstance(document, Mapping) else None
+            rating = metadata.get("content_rating_id") if isinstance(metadata, Mapping) else None
+            prepared = await image_jobs.prepare_image_job(
+                self.image_runtime(),
+                ImageJobKind.CATALOG,
+                {
+                    "entry_kind": kind,
+                    "entry_id": entry_id,
+                    "slot": request.slot,
+                    "content_rating_id": rating,
+                },
+                {
+                    "entry_kind": kind,
+                    "entry_id": entry_id,
+                    "draft_revision": resolved.draft_revision,
+                    "image_input_fingerprint": fingerprint,
+                },
+                job_request,
+                principal,
+            )
+            async with self.db.begin() as conn:
+                queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)
+                revision = await catalog_service.config_revision(conn)
+            return catalog_images.CatalogImagesQueued(queued.job_id, revision)
+
+        return await self._keyed(
+            ctx,
+            f"request_catalog_images_{kind}",
+            run,
+            material={
+                "entry_kind": kind,
+                "entry_id": entry_id,
+                "body": request.model_dump(mode="json", exclude_unset=True),
+            },
+        )
+
+    @refuses_nul()
+    async def list_image_candidates(
+        self,
+        ctx: RequestContext,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        job_id: str | None = None,
+        limit: int = image_candidates.LIST_DEFAULT,
+        cursor: str | None = None,
+    ) -> image_candidates.CandidatePage:
+        """The entry's live candidates (FR-IMG-7), oldest first (generation order), by
+        ``job_id`` when given (an unknown job: an empty page), ``limit`` 1 to 50 a page: each
+        with its slot, job, draft revision, expiry, whether it is ``stale`` (its image-input
+        fingerprint differs from the draft's now) and its image's metadata, check and
+        generation metadata. A candidate past its expiry is left out before the expiry task
+        deletes it. 404 for an unknown entry."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            entry = await catalog_images.require_entry(conn, kind, entry_id)
+            current = await image_candidates.image_input_fingerprint(
+                conn, kind, entry_id, entry.draft
+            )
+            return await image_candidates.list_for_entry(
+                conn,
+                kind,
+                entry_id,
+                current_fingerprint=current,
+                job_id=job_id,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    @refuses_nul()
+    async def get_image_candidate_content(
+        self,
+        ctx: RequestContext,
+        candidate_id: str,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        byte_range: media.ByteRange | None = None,
+        if_none_match: str | Sequence[str] = (),
+        if_range: str | None = None,
+        with_bytes: bool = True,
+    ) -> media.MediaContent:
+        """A live candidate's bytes, opened as ``get_media_content`` opens an asset's (``Range``,
+        ``If-None-Match``, ``If-Range``; FR-MEDIA-3), marked ``private`` (REST sends
+        ``Cache-Control: private, no-store``). 404 ``not_found`` for an unknown entry and for a
+        candidate that is unknown, another entry's, attached, discarded or expired alike."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            await catalog_images.require_entry(conn, kind, entry_id)
+            live = await image_candidates.live_candidate(conn, kind, entry_id, candidate_id)
+        return await media.open_content(
+            self.db,
+            self.media,
+            live.asset_id,
+            candidate=True,
+            byte_range=byte_range,
+            if_none_match=if_none_match,
+            if_range=if_range,
+            with_bytes=with_bytes,
+        )
+
+    @refuses_nul()
+    async def get_image_candidate_url(
+        self,
+        ctx: RequestContext,
+        candidate_id: str,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        ttl: int | None = None,
+    ) -> media.MediaUrl:
+        """A short-lived URL that serves a live candidate's bytes without the service
+        credential, valid ``ttl`` seconds (at most, and by default, ``media_signed_url_ttl``):
+        on S3 the store's presigned GET; on the local store Epistrel's signed ``GET
+        /media/{asset_id}/content?exp=&sig=`` under ``public_base_url``, invariant 4's one
+        signed route (ADR-152), which serves a candidate only with that signature. It stops
+        serving once the candidate is discarded or expires; after an attach it serves until
+        its expiry. 404 as ``get_image_candidate_content``; 503 ``config_missing`` or
+        ``config_key_missing`` as ``get_media_url``."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            await catalog_images.require_entry(conn, kind, entry_id)
+            live = await image_candidates.live_candidate(conn, kind, entry_id, candidate_id)
+        settings = await media.read_media_settings(self.db)
+        return await media.signed_url(
+            self.db,
+            self.media,
+            live.asset_id,
+            ttl_s=ttl,
+            settings=settings,
+            signer=self.signer,
+            candidate=True,
+        )
+
+    async def discard_image_candidate(
+        self,
+        ctx: RequestContext,
+        candidate_id: str,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+    ) -> None:
+        """Discard a candidate before it expires (FR-IMG-7): its candidate row and asset row are
+        deleted, and its bytes once that commits unless another asset row has the same
+        checksum. Idempotent by design, so it takes no ``Idempotency-Key``: an unknown entry or
+        candidate, or one already discarded or attached, changes nothing (an attached
+        candidate's ``live`` asset is never touched)."""
+        self.require_principal(ctx)
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.begin() as conn:
+            checksums = await image_candidates.discard(conn, kind, entry_id, candidate_id)
+        await self._collect(checksums)
+
     # -- erasure (FR-ADMIN-2,6, NFR-PRIV-2; #124) -------------------------------------------------
 
     async def erase(
@@ -5748,6 +6359,289 @@ class Engine:
         text as ``docs/OPERATIONS.md`` and the API description."""
         return erasure_boundary.ERASURE_BOUNDARY
 
+    # -- story images (FR-IMG-5, FR-IMG-10; #261) -----------------------------------------------
+
+    async def upload_story_image(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: story_images.StoryImageUpload,
+        content: bytes | AsyncIterable[bytes],
+        *,
+        content_type: str | None = None,
+        body_size: int | None = None,
+    ) -> story_images.StoryImagePlaced:
+        """Place an uploaded image in the story (FR-IMG-5; REST 201): ``request`` is its
+        metadata (``position`` ``{turn, beat}`` or ``{slot_after_turn}``, ``audience_viewpoint``,
+        ``camera_pov``, ``depicted_subjects``, optional caption, alt text and rating),
+        ``content`` its bytes. 422 ``position_invalid`` (an inactive position, or a slot after
+        any turn but the last completed one), ``viewpoint_invalid``, ``camera_pov_invalid``,
+        ``camera_pov_not_present``, ``subjects_required``, ``subject_invalid`` (a declared
+        subject that is no character of the story; #266), in that order, before the bytes are
+        checked; then #258's upload path (415, 413, ``rating_retired``, with an ``image_check``
+        model 422 ``guardrail_violation`` or 503 ``image_check_unavailable``, the moderation
+        hook's refusals); 409 ``story_archived``, ``story_paused`` or ``revision_conflict``. The
+        asset is stored ``source = uploaded`` and ``viewpoint_basis = none``, owned by the
+        story's owner; a looser rating than the story's answers a ``rating_looser`` warning. The
+        key's request hash covers the metadata and the bytes' SHA-256."""
+        principal = self.require_principal(ctx)
+        await stories.require_writable(self.db, story_id)
+        settings = await media.read_media_settings(self.db)
+        staged = await media.stage(
+            self.media,
+            new_ulid(),
+            media.content_of(content),
+            settings=settings,
+            kind=MediaKind.IMAGE,
+            content_type=content_type,
+            body_size=body_size,
+            threshold=settings.media_multipart_threshold,
+        )
+        try:
+
+            async def run(ctx: RequestContext) -> story_images.StoryImagePlaced:
+                await self.check_expected_revision(ctx, story_id)
+                async with self.db.connect() as conn:
+                    placement = await story_images.place(conn, story_id, request)
+                asset = story_images.media_request(request, placement)
+                prepared = await media.prepare(
+                    self.db,
+                    self.media,
+                    staged,
+                    asset,
+                    principal=principal,
+                    settings=settings,
+                    signer=self.signer,
+                    posters=self.posters,
+                    image_check=self.upload_check(),
+                )
+
+                async def store(conn: AsyncConnection) -> str:
+                    return await media.commit(
+                        conn,
+                        self.media,
+                        prepared,
+                        principal=principal,
+                        viewpoint_basis="none",
+                        record_control=False,
+                    )
+
+                return await story_images.upload(
+                    self.db,
+                    placement,
+                    staged.asset_id,
+                    store,
+                    principal=principal,
+                    idempotency_key=ctx.idempotency_key,
+                )
+
+            return await self._keyed(
+                ctx,
+                "upload_story_image",
+                run,
+                story_id=story_id,
+                material={
+                    "story_id": story_id,
+                    "body": _body(request),
+                    "sha256": staged.sha256,
+                    "size": staged.size,
+                    "mime_type": staged.mime_type,
+                },
+            )
+        finally:
+            await media.discard(staged)
+
+    async def request_story_image(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        request: story_images.StoryImageRequest,
+    ) -> story_image_target.StoryImageQueued:
+        """Generate a story image at a position for an audience viewpoint (FR-IMG-5,8; REST
+        202 on ``POST /stories/{id}/images`` with a JSON body; #263). Without ``prompt`` the
+        prompt and references are built only from what the viewpoint perceived there
+        (``core.images.story_perceived``; the prompt builder's story variant); with it the
+        consumer's prompt is sent as written, the scenario's visual style and the rating's image
+        guidance appended. Either passes the viewpoint's protected-content match and #257's
+        prompt check, outside any transaction, then the reservation (#262) and the ``story``
+        job are written in one transaction, the prompt stored on the job. One image per
+        request. Refusals, in order, with nothing written: 404; 409 ``story_archived``,
+        ``story_paused``; 409 ``not_configured``, ``image_check_unconfigured`` (before any
+        prompt-model call); 422 ``subjects_required``, ``subjects_not_allowed``,
+        ``position_invalid``, ``viewpoint_invalid``, ``camera_pov_invalid``,
+        ``camera_pov_not_present``, ``subject_invalid`` (a declared subject that is no
+        character of the story; 409 ``erased_subject_referenced`` for an erased one),
+        ``viewpoint_perceived_nothing``,
+        ``viewpoint_protected_content``, ``guardrail_violation``; 409 ``image_limit_reached``,
+        422 ``images_disabled``; 503 ``image_prompt_unavailable``, ``model_unavailable``.
+        Idempotent under its key (story-scoped)."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> story_image_target.StoryImageQueued:
+            revision = await self.check_expected_revision(ctx, story_id)
+            await stories.require_writable(self.db, story_id)
+            await image_jobs.require_generation(self.models, self.db)
+            consumer = request.prompt is not None
+            if consumer and request.depicted_subjects is None:
+                raise SubjectsRequired(
+                    "a consumer prompt must declare the subjects it depicts: "
+                    "`depicted_subjects` (an empty list declares none)",
+                    {"field": "body.depicted_subjects"},
+                )
+            if not consumer and request.depicted_subjects is not None:
+                raise SubjectsNotAllowed(
+                    "only a consumer prompt declares its subjects: the prompt builder fills them",
+                    {"field": "body.depicted_subjects"},
+                )
+            async with self.db.connect() as conn:
+                placement = await story_images.place_at(
+                    conn,
+                    story_id,
+                    request.position,
+                    request.audience_viewpoint,
+                    request.camera_pov,
+                    at=story_image_target.FIELD,
+                    subjects=request.depicted_subjects if consumer else None,
+                )
+                if consumer:
+                    style, style_negative, guidance = await story_perceived.style_and_guidance(
+                        conn, story_id
+                    )
+                    matcher = await story_perceived.viewpoint_matcher(
+                        conn, story_id, placement.audience_viewpoint
+                    )
+                else:
+                    view, matcher = await self._story_image_view(
+                        conn, placement, at=story_image_target.FIELD
+                    )
+            hit = matcher.first_hit(
+                {"prompt": request.prompt, "caption": request.caption, "alt_text": request.alt_text}
+            )
+            if hit is not None:
+                raise ViewpointProtectedContent(
+                    "the request holds content its audience viewpoint does not hold",
+                    {"field": f"body.{hit}"},
+                )
+            if consumer:
+                assert request.prompt is not None  # noqa: S101 - consumer
+                declared = list(request.depicted_subjects or ())
+                job_request = image_jobs.ImageJobRequest(
+                    prompt=prompt_builder.consumer_prompt(request.prompt, style, guidance),
+                    negative_prompt=style_negative,
+                    caption=request.caption,
+                    alt_text=request.alt_text,
+                    depicted_subjects=tuple(
+                        image_jobs.DepictedSubject(character_id=d.id) for d in declared
+                    ),
+                )
+                extra = {
+                    "source": MediaSource.GENERATED_FROM_CONSUMER_PROMPT.value,
+                    "viewpoint_basis": ViewpointBasis.PROTECTED_TERM_MATCH.value,
+                    "depicted_subjects": [d.model_dump(mode="json") for d in declared],
+                }
+            else:
+                built = await prompt_builder.write_story_image_prompt(self.models, view, matcher)
+                job_request, extra = story_image_target.built_job(
+                    built, view, caption=request.caption, alt_text=request.alt_text
+                )
+            prepared = await image_jobs.prepare_image_job(
+                self.image_runtime(),
+                ImageJobKind.STORY,
+                story_image_target.target_of(placement),
+                story_image_target.origin_of(
+                    placement,
+                    operation_id=new_ulid(),
+                    timeline_revision=revision,
+                    position=request.position,
+                ),
+                job_request,
+                principal,
+                viewpoint=placement.audience_viewpoint,
+                extra_params=extra,
+            )
+            async with self.db.begin() as conn:
+                queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)
+            return story_image_target.StoryImageQueued(queued.job_id, revision)
+
+        return await self._keyed(
+            ctx,
+            "request_story_image",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "body": _body(request)},
+        )
+
+    @refuses_nul()
+    async def get_story_image(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        image_id: str,
+        *,
+        viewpoint: str | None = None,
+        include_audit: bool = False,
+    ) -> story_images.StoryImageItem:
+        """One story image for a viewpoint (FR-IMG-5): ``viewpoint`` (or ``ctx.viewpoint``),
+        else the story's default, resolved as the history read resolves it (422
+        ``viewpoint_unresolved``); 404 ``not_found`` for an image of another story or audience,
+        or one discarded with its turn or deleted. ``include_audit`` (``omniscient`` only, 403
+        ``omniscient_required``) adds ``operation_id``, ``job_id`` and ``prompt``."""
+        ctx = with_requested(ctx, viewpoint, field="query.viewpoint")
+        async with self.db.connect() as conn:
+            row = (
+                await conn.execute(
+                    select(stories_table.c.settings).where(stories_table.c.id == story_id)
+                )
+            ).one_or_none()
+            if row is None:
+                raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+            cast = [
+                str(c)
+                for c in await conn.scalars(
+                    select(characters_table.c.id).where(characters_table.c.story_id == story_id)
+                )
+            ]
+            resolved = resolve_viewpoint(
+                ctx.viewpoint,
+                actor_character_id=None,
+                story_default=StorySettings.from_row(row.settings).default_output_viewpoint,
+                cast_ids=cast,
+                field="query.viewpoint",
+            )
+            if include_audit:
+                require_omniscient(resolved, field="query.include_audit")
+            return await story_images.get_image(
+                conn, story_id, image_id, resolved, audit=include_audit
+            )
+
+    async def delete_story_image(
+        self, ctx: RequestContext, story_id: str, image_id: str
+    ) -> story_images.StoryImageDeletion:
+        """Delete a story image (FR-IMG-5; REST 204): it leaves every read while the deletion's
+        operation is on the timeline, and its asset stays until the media sweep finds no
+        reference (FR-MEDIA-2). Idempotent (a deleted image answers 204 again); 404 for an
+        image of another story or one discarded with its turn; 409 ``story_archived``,
+        ``story_paused`` or ``revision_conflict``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> story_images.StoryImageDeletion:
+            await self.check_expected_revision(ctx, story_id)
+            return await story_images.delete(
+                self.db,
+                story_id,
+                image_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "delete_story_image",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "image_id": image_id},
+        )
+
     # -- media assets (FR-MEDIA-1,2; FR-API-6; #105) --------------------------------------------
     # Deployment-scoped: an upload or a delete records a story-less ``control`` operation, keyed
     # per deployment. Media are referenced by id and never touch a story.
@@ -5767,8 +6661,10 @@ class Engine:
         bytes (or chunks), ``content_type`` the bytes' declared MIME type and ``body_size`` the
         whole request's declared length (REST's ``Content-Length``). 415
         ``media_type_not_allowed``, 413 ``media_too_large``, 413 ``use_multipart`` (larger than
-        ``media_multipart_threshold``: use ``open_upload``), 422 ``rating_retired``; with a
-        moderation hook configured, 422 ``moderation_rejected`` or 503
+        ``media_multipart_threshold``: use ``open_upload``), 422 ``rating_retired``; with an
+        ``image_check`` model configured, an image (or a video's poster) is checked first (422
+        ``guardrail_violation``, 503 ``image_check_unavailable``; #258) and stored ``passed``,
+        else ``unchecked``; with a moderation hook configured, 422 ``moderation_rejected`` or 503
         ``moderation_unavailable`` (nothing stored). A video's poster (FR-MEDIA-3) is
         ``request.poster``, the ``poster_file`` given, or extracted from its first frame with
         ffmpeg (422 ``poster_required`` without it, ``poster_extraction_failed`` when it fails).
@@ -5832,6 +6728,7 @@ class Engine:
                     signer=self.signer,
                     posters=self.posters,
                     poster_file=poster,
+                    image_check=self.upload_check(),
                 ),
                 material=material,
             )
@@ -6024,6 +6921,7 @@ class Engine:
                 settings=settings,
                 signer=self.signer,
                 posters=self.posters,
+                image_check=self.upload_check(),
             ),
             material={"upload_id": upload_id},
         )
@@ -6238,6 +7136,78 @@ class Engine:
             run,
             material={"certification_id": certification_id, **request.model_dump()},
         )
+
+    async def record_image_check_certification(
+        self, ctx: RequestContext, request: certification.ImageCheckCertificationRequest
+    ) -> certification.ImageCheckRecorded:
+        """Record an image checker's certification for one policy (NFR-QUAL-12, FR-PROF-15;
+        #270, ADR-182): an E-11 report's row that passed both floors, or for the
+        ``external_evidence_only`` minors policy only, an external attestation. ``stored`` is
+        false when the same evidence was recorded before. 422 ``invalid_evidence``,
+        ``attestation_not_allowed`` or ``eval_run_not_allowed``, and nothing is written."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.ImageCheckRecorded:
+            async with self.db.begin() as conn:
+                found, stored = await certification.record_image_check(
+                    conn, request, principal=principal
+                )
+                revision = await profiles.config_revision(conn)
+            return certification.ImageCheckRecorded(found, stored, revision)
+
+        return await self._keyed(
+            ctx,
+            "record_image_check_certification",
+            run,
+            material={"request": request.model_dump(mode="json")},
+        )
+
+    async def invalidate_image_check_certification(
+        self,
+        ctx: RequestContext,
+        certification_id: str,
+        request: certification.InvalidateRequest,
+    ) -> certification.ImageCheckInvalidated:
+        """Withdraw an image-checker certification (#270): ``stale`` with ``invalidated_*``; one
+        already stale answers unchanged. Images checked before keep the flag they were checked
+        with. 404 ``certification_not_found``. The note is not stored or logged."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> certification.ImageCheckInvalidated:
+            async with self.db.begin() as conn:
+                found, changed = await certification.invalidate_image_check(
+                    conn, certification_id, request, principal=principal
+                )
+                revision = await profiles.config_revision(conn)
+            return certification.ImageCheckInvalidated(found, changed, revision)
+
+        return await self._keyed(
+            ctx,
+            "invalidate_image_check_certification",
+            run,
+            material={"certification_id": certification_id, **request.model_dump()},
+        )
+
+    @refuses_nul()
+    async def list_image_check_certifications(
+        self,
+        ctx: RequestContext,
+        *,
+        checker_fingerprint: str | None = None,
+        policy_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> certification.ImageCheckCertificationPage:
+        """Image-checker certifications, newest first (stale ones included), narrowed by
+        ``checker_fingerprint`` and ``policy_id`` when given (#270)."""
+        async with self.db.connect() as conn:
+            return await certification.list_image_check_certifications(
+                conn,
+                checker_fingerprint=checker_fingerprint,
+                policy_id=policy_id,
+                limit=limit,
+                cursor=cursor,
+            )
 
     @refuses_nul()
     async def get_profile_guarantees(

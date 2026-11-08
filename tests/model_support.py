@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import types
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import httpx2 as httpx
+import pytest
 from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -22,6 +24,7 @@ from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.engine import Engine
 from epistrel.orchestrator.embeddings.adapter import stub_vector
+from epistrel.orchestrator.models.registry import ReservedPurpose
 from tests.auth_support import bearer
 
 CONFIG_KEY = base64.urlsafe_b64encode(b"epistrel-test-config-key-0000000").decode()
@@ -39,6 +42,47 @@ class Recorded:
     body: dict[str, Any]
 
 
+STRICT_REFUSED = ("minimum", "maximum", "minLength", "maxLength", "maxItems")
+"""Keywords api.anthropic.com's strict mode answered with a 400, live (#761)."""
+
+
+def strict_refusal(body: dict[str, Any]) -> str | None:
+    """api.anthropic.com's 400 message for ``body``'s ``json_schema``, or ``None`` when it would
+    accept it: ``strict`` must be ``true``; under it, the ``STRICT_REFUSED`` keywords are refused
+    and every object must set ``additionalProperties: false``. The messages are the live ones.
+    Independent of ``provider_schema``, so it checks it rather than mirroring it."""
+    json_schema = body.get("response_format", {}).get("json_schema")
+    if json_schema is None:
+        return None
+    if "strict" not in json_schema:
+        return "response_format.json_schema.strict: Field required"
+    if json_schema["strict"] is not True:
+        return "response_format.json_schema.strict: Input should be True"
+
+    def refused(node: Any) -> str | None:
+        if isinstance(node, list):
+            return next((r for r in map(refused, node) if r is not None), None)
+        if not isinstance(node, dict):
+            return None
+        kind = node.get("type")
+        named = [k for k in STRICT_REFUSED if k in node and isinstance(node[k], int)]
+        if named:
+            return f"For '{kind}' type, properties {', '.join(sorted(named))} are not supported"
+        if kind == "object" and node.get("additionalProperties") is not False:
+            return "For 'object' type, 'additionalProperties' must be explicitly set to false"
+        children = [
+            *(node.get("properties", {}).values()),
+            *(node.get("$defs", {}).values()),
+            *node.get("anyOf", []),
+        ]
+        if "items" in node:
+            children.append(node["items"])
+        return refused(children)
+
+    problem = refused(json_schema.get("schema"))
+    return None if problem is None else f"response_format.json_schema.schema: {problem}"
+
+
 @dataclass
 class MockOpenAI:
     """A Chat Completions endpoint on 127.0.0.1. Replies ``[mock <model>] <last user text>``,
@@ -46,14 +90,16 @@ class MockOpenAI:
     a JSON Schema. With ``legacy_max_tokens`` it answers ``max_completion_tokens`` with a 400,
     as older servers do; with ``reject_response_format`` it answers ``response_format`` with a
     400 naming it; with ``reject_sampling`` it answers ``temperature``/``top_p`` with a 400
-    naming the parameter, as Claude 4.7 and later do (#235); ``raw_body`` is served as an HTML
-    page with status 200."""
+    naming the parameter, as Claude 4.7 and later do (#235); with ``require_strict`` it answers
+    a ``json_schema`` the way api.anthropic.com did live on 2026-11-07 (#761, ``strict_refusal``);
+    ``raw_body`` is served as an HTML page with status 200."""
 
     port: int = 0
     requests: list[Recorded] = field(default_factory=list)
     legacy_max_tokens: bool = False
     reject_response_format: bool = False
     reject_sampling: bool = False
+    require_strict: bool = False
     fail_with: int | None = None
     raw_body: bytes | None = None
     script: list[str] = field(default_factory=list)
@@ -103,6 +149,9 @@ class MockOpenAI:
             return 400, {"error": {"type": "invalid_request_error", "message": message}}
         if self.reject_response_format and "response_format" in body:
             return 400, {"error": {"message": "response_format json_schema is not supported"}}
+        refusal = strict_refusal(body) if self.require_strict else None
+        if refusal is not None:
+            return 400, {"error": {"type": "invalid_request_error", "message": refusal}}
         system = " ".join(m["content"] for m in body["messages"] if m["role"] == "system")
         if self.script:
             content = self.script.pop(0)
@@ -255,3 +304,26 @@ async def put_key(client: httpx.AsyncClient, purpose: str, api_key: str) -> None
         headers=OPERATOR_HEADERS,
     )
     assert response.status_code == 204, response.text
+
+
+FUTURE_PURPOSE = ReservedPurpose(
+    "future_purpose", "A purpose a later milestone delivers (test-registered).", "M10"
+)
+"""The reserved purpose the refusal tests name, now that M8 delivered every reserved one
+(#254): ``reserved_purpose`` registers it."""
+
+
+def reserved_purpose(
+    monkeypatch: pytest.MonkeyPatch, purpose: ReservedPurpose = FUTURE_PURPOSE
+) -> ReservedPurpose:
+    """Declare ``purpose`` reserved until ``monkeypatch`` undoes it (the test's end): in the
+    registry's ``RESERVED_PURPOSES`` and ``RESERVED``, and in every module that imported
+    ``RESERVED`` by name."""
+    from epistrel.orchestrator import models as models_package
+    from epistrel.orchestrator.models import access, registry
+
+    reserved = types.MappingProxyType({**registry.RESERVED, purpose.name: purpose})
+    monkeypatch.setattr(registry, "RESERVED_PURPOSES", (*registry.RESERVED_PURPOSES, purpose))
+    for module in (registry, access, models_package):
+        monkeypatch.setattr(module, "RESERVED", reserved)
+    return purpose

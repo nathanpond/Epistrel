@@ -5,9 +5,11 @@
   first, then the ``file`` part, then, for a video, an optional ``poster_file`` part. 201 with
   the asset's metadata. Refusals: 422 ``subjects_required`` (no ``depicted_subjects``), 415
   ``media_type_not_allowed``, 413 ``media_too_large``, 413 ``use_multipart`` (larger than
-  ``media_multipart_threshold``), 422 ``rating_retired``, a video's poster refusals, and with a
-  moderation hook 422 ``moderation_rejected`` or 503 ``moderation_unavailable``; nothing is
-  stored on any of them.
+  ``media_multipart_threshold``), 422 ``rating_retired``, a video's poster refusals, with an
+  ``image_check`` model 422 ``guardrail_violation`` or 503 ``image_check_unavailable`` (#258),
+  and with a moderation hook 422 ``moderation_rejected`` or 503 ``moderation_unavailable``;
+  nothing is stored on any of them. Every read of an asset carries its ``source``,
+  ``check_status`` and ``check`` (FR-IMG-10).
 - ``GET /media``: ``live`` assets newest first (``state=retired``: the deleted ones), a page at
   a time, filtered by ``owner``, ``relation`` and ``kind`` only when asked.
 - ``GET /media/{id}``: the metadata; ``GET /media/{id}/content`` (and ``HEAD``): the bytes, with
@@ -73,6 +75,7 @@ from epistrel.core.media.assets import (
     MediaUrl,
     MediaWrite,
 )
+from epistrel.core.media.checks import CHECK_STATEMENTS
 from epistrel.core.media.store import CACHE_CONTROL
 from epistrel.core.media.uploads import (
     PART_HASH_HEADER,
@@ -321,7 +324,15 @@ async def abort_upload(upload_id: UploadId, ctx: ContextDep, engine: EngineDep) 
         "`poster` named (a live image), the `poster_file` sent, or a PNG taken from its first "
         "frame with ffmpeg (422 `poster_required` without ffmpeg, 422 "
         "`poster_extraction_failed` when it fails); a poster stored with the video has its "
-        "rating, owner and subjects. When the deployment configures a moderation hook, the "
+        "rating, owner and subjects. When an `image_check` model is configured, an image (and "
+        "a video's poster) is first checked in staging against every policy that applies to "
+        "image outputs (the global, its rating's and its declared story characters' policies): "
+        "a violation is 422 `guardrail_violation` listing the policies and nothing is stored (a "
+        "refused poster refuses the video), a checker that cannot answer is 503 "
+        "`image_check_unavailable`, and a passing image is stored `check_status: passed` with "
+        "its per-policy results; without a checker it is stored `unchecked`. "
+        f"{CHECK_STATEMENTS} "
+        "When the deployment configures a moderation hook, the "
         "upload (and a poster stored with it) is sent to it before anything is stored; "
         "`reject` is 422 `moderation_rejected`, and a hook that times out, cannot be reached or "
         "answers anything else is 503 `moderation_unavailable` (it fails closed). Identical "
@@ -491,9 +502,13 @@ def entity_tags(value: str | None) -> list[str]:
     return [tag.strip() for tag in value.split(",") if tag.strip()]
 
 
+PRIVATE_CACHE_CONTROL = "private, no-store"
+"""A catalog image candidate's content (#260): never cached, unlike an asset's immutable bytes."""
+
+
 def _content_headers(content: MediaContent) -> dict[str, str]:
     headers = {
-        "Cache-Control": CACHE_CONTROL,
+        "Cache-Control": PRIVATE_CACHE_CONTROL if content.private else CACHE_CONTROL,
         "Accept-Ranges": "bytes",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": EXPOSED_HEADERS,
@@ -553,6 +568,13 @@ async def _content(
         if_range=if_range.strip() if if_range is not None else None,
         with_bytes=with_bytes,
     )
+    return await content_response(content, with_bytes=with_bytes)
+
+
+async def content_response(content: MediaContent, *, with_bytes: bool = True) -> Response:
+    """The answer for opened content (#107's delivery, shared with #260's candidate content):
+    200, 206 with ``Content-Range`` or 304, with the entity tag, ``Accept-Ranges`` and the
+    cache header (``private, no-store`` for a candidate); the body streams and closes after."""
     headers = _content_headers(content)
     if not with_bytes or content.not_modified:
         await content.aclose()
@@ -576,6 +598,8 @@ ExpQuery = Annotated[
 ]
 SigQuery = Annotated[str | None, Query(max_length=SIG_MAX, description="A signed URL's signature.")]
 RangeHeader = Annotated[str | None, Header(alias="Range", description=RANGE_DESCRIPTION)]
+CONTENT_HEADERS_DOC = _HEADERS_DOC
+"""The content headers' documentation, shared with #260's candidate content routes."""
 IfNoneMatchHeader = Annotated[
     str | None,
     Header(

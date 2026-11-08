@@ -117,6 +117,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.events import Operation
 from epistrel.core.history import story_player_view, turn_beats
+from epistrel.core.images import story_images
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfile
 from epistrel.core.profiles.fingerprint import Stamp
 from epistrel.core.profiles.schema import ProfileSettings
@@ -145,6 +146,7 @@ from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_degradation
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
+from epistrel.orchestrator.images import auto as auto_images
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.context import (
     TIME_ESTIMATE_SKIPPED,
@@ -333,6 +335,8 @@ async def respond(
         started=started,
     )
     timing = TurnTiming(front=started)
+    # #265 (FR-IMG-6): automatic illustration as the story's settings stand at the start.
+    illustration = await auto_images.illustration_of(models, story.settings)
     with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
         await gate(
@@ -376,6 +380,7 @@ async def respond(
                     calls,
                     configuration=_captured(concurrency),
                     timing=timing,
+                    illustration=illustration,
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -450,6 +455,7 @@ async def run_queued(
         started=front,
     )
     budget.release_to(1 + budget.reserved.get(GUARDRAIL_OUTPUT, 0))  # gated when queued
+    illustration = await auto_images.illustration_of(models, story.settings)  # #265
     with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         return await _play(
             db,
@@ -463,6 +469,7 @@ async def run_queued(
             calls,
             configuration=_captured(concurrency),
             timing=timing,
+            illustration=illustration,
         )
 
 
@@ -513,6 +520,7 @@ async def regenerate(
         started=started,
     )
     timing = TurnTiming(front=started)
+    illustration = await auto_images.illustration_of(models, story.settings)  # #265
     with recording() as calls, reporting_costs(calls, budget), _routed(concurrency):
         gating = time.perf_counter()
         said = replay.player_input
@@ -550,6 +558,7 @@ async def regenerate(
                     timing=timing,
                     regenerating=recorded,
                     corrected_from=None if correction is None else recorded.operation_id,
+                    illustration=illustration,
                 )
         finally:
             if op.status is None:  # took the slot but never began
@@ -599,11 +608,13 @@ async def _play(
     timing: TurnTiming | None = None,
     regenerating: RecordedTurn | None = None,
     corrected_from: str | None = None,
+    illustration: auto_images.Illustration = auto_images.OFF,
 ) -> RespondResult:
     """The turn itself: one ``turn`` operation under #47's revision protocol (steps 3 and 4 of
     the module docstring), under ``configuration`` (captured at the turn's start, #113).
     ``regenerating``: the head turn this one replaces (#66); ``timing``: where its time went so
-    far (#76)."""
+    far (#76); ``illustration``: the story's automatic illustration at the turn's start
+    (#265)."""
     timing = timing if timing is not None else TurnTiming(front=budget.started)
     say, do = request.player_input.say_text, request.player_input.do_text
     before_turn = regenerating.turn if regenerating is not None else None
@@ -645,6 +656,8 @@ async def _play(
     fixed: dict[str, Any] = {}
     produced: list[float] = [0.0]
     """Seconds spent producing drafts (assembly and generation) inside the output gate."""
+    hints: list[tuple[Draft, str | None]] = []
+    """#265: each draft and the illustrate tag its reply ended with (stripped from its text)."""
 
     async def generate(op: Operation, read: tuple[TurnInputs, ResolvedGeneration]) -> None:
         inputs, resolved = read
@@ -679,14 +692,20 @@ async def _play(
         async def _produce(constraints: tuple[str, ...], attempt: int) -> Draft:
             assembling = time.perf_counter()
             payload = assemble(
-                inputs, cast, say=say, do=do, constraints=constraints, context=lite_context[0]
+                inputs,
+                cast,
+                say=say,
+                do=do,
+                constraints=constraints,
+                context=lite_context[0],
+                illustrate=illustration.instructs,
             )
             settings = resolved.model_copy(
                 update={"temperature": raised_temperature(resolved.temperature, attempt)}
             )
             _, _, messages = models.prepare(GENERATION, payload)
             timing.assemble_s += time.perf_counter() - assembling
-            result = await _generate(models, payload, model_params(settings, cast), budget)
+            result, reason = await _generate(models, payload, model_params(settings, cast), budget)
             # Content: the ContentFilter drops ``prompt`` and ``text`` unless operator-only
             # content debug logging is on (NFR-SEC-4; #74).
             content_log.debug(
@@ -695,12 +714,14 @@ async def _play(
                 prompt=[message.content for message in messages],
                 text=result.text,
             )
-            return Draft(
+            draft = Draft(
                 text=result.text,
                 model=result.model,
                 prompt_hash=prompt_hash(messages),
                 finish_reason=result.finish_reason,
             )
+            hints.append((draft, reason))
+            return draft
 
         gating, before = time.perf_counter(), produced[0]
         outcome = await gate_output(
@@ -748,11 +769,24 @@ async def _play(
         op.add_commit_step(partial(paced, reply=outcome.draft.text))
         if regenerating is not None:
             op.add_commit_step(fail_queue)
+        # #265 (FR-IMG-6): the reply's illustration point, queued in the turn's own commit
+        # (never for the safe fallback).
+        reason = next((r for d, r in hints if d is outcome.draft), None)
+        if reason is not None and illustration.queues and not outcome.fallback_used:
+            point = auto_images.IllustrationPoint(REPLY_BEAT, reason)
+            op.add_commit_step(partial(illustrate, points=[point]))
 
     failed_queue: list[str] = []
 
     skipped: list[LiteSkip | None] = [None]
     """#632: the reply's narrated skip, planned before the commit."""
+
+    async def illustrate(
+        conn: AsyncConnection, *, points: list[auto_images.IllustrationPoint]
+    ) -> None:
+        await auto_images.queue_points(
+            conn, op, points, illustration=illustration, viewpoint=viewpoint, pipeline="lite"
+        )
 
     async def paced(conn: AsyncConnection, *, reply: str) -> None:
         await pace(conn, op, story_id, say=joined_input(say, do), reply=reply, skip=skipped[0])
@@ -823,6 +857,12 @@ async def _play(
         fields: dict[str, Any] = {
             "message": FinishedMessage(message_id=reply.message_id, text=reply.text),
             "beats": beats,
+            # #261 (FR-IMG-5): the story images positioned within the turn, for its viewpoint.
+            "images": await story_images.images_for_operation(
+                conn, story_id, committed.narrative_turn, committed.turn_variant, viewpoint
+            ),
+            # #265 (FR-IMG-6): the automatic images the turn queued.
+            "pending_images": await _pending(conn, committed.operation_id),
             "turn": committed.narrative_turn,
             "variant": committed.turn_variant,
             "timeline_revision": committed.timeline_revision,
@@ -1080,18 +1120,41 @@ def reporting_costs(calls: CallLog, budget: TurnBudget) -> Iterator[None]:
         raise
 
 
+async def _pending(
+    conn: AsyncConnection | AsyncEngine, operation_id: str
+) -> list[story_images.PendingImage]:
+    if isinstance(conn, AsyncConnection):
+        return await auto_images.pending_images(conn, operation_id)
+    async with conn.connect() as read:
+        return await auto_images.pending_images(read, operation_id)
+
+
 async def _generate(
     models: ModelAccessLayer, payload: Any, params: Any, budget: TurnBudget
-) -> ModelResult:
-    """The turn's ``generation`` call; an empty reply is asked once more if the budget's
-    unreserved remainder can pay for it, else (or when it is empty again) 503 ``reason=empty``."""
+) -> tuple[ModelResult, str | None]:
+    """The turn's ``generation`` call, its reply with any trailing illustrate tag stripped
+    (#265, ``auto.strip_illustrate_tag``: always, before the output gate) and the tag's reason;
+    an empty reply (empty once stripped included) is asked once more if the budget's unreserved
+    remainder can pay for it, else (or when it is empty again) 503 ``reason=empty``."""
     try:
-        return await models.call(GENERATION, payload, params, budget=budget)
+        return await _stripped(models, payload, params, budget)
     except EmptyCompletion:
         if budget.expired() or not budget.can_afford_unreserved():
             raise
         budget.hold(1)
-        return await models.call(GENERATION, payload, params, budget=budget)
+        return await _stripped(models, payload, params, budget)
+
+
+async def _stripped(
+    models: ModelAccessLayer, payload: Any, params: Any, budget: TurnBudget
+) -> tuple[ModelResult, str | None]:
+    result = await models.call(GENERATION, payload, params, budget=budget)
+    found = auto_images.strip_illustrate_tag(result.text)
+    if not found.text.strip():
+        raise EmptyCompletion(GENERATION)
+    if found.text == result.text:
+        return result, found.reason
+    return result.model_copy(update={"text": found.text}), found.reason
 
 
 __all__ = [

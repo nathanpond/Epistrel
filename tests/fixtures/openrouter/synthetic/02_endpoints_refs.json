@@ -1,0 +1,49 @@
+{
+  "meta": {
+    "note": "seed: alpha, delta; references: gamma, delta"
+  },
+  "request": {
+    "body": null,
+    "headers": {
+      "Authorization": "REDACTED",
+      "X-Title": "Epistrel"
+    },
+    "method": "GET",
+    "url": "/api/v1/images/models/synthetic-author/synthetic-image/endpoints"
+  },
+  "response": {
+    "body": {
+      "data": {
+        "endpoints": [
+          {
+            "supported_parameters": [
+              "seed",
+              "size"
+            ],
+            "tag": "alpha"
+          },
+          {
+            "supported_parameters": [
+              "input_references",
+              "aspect_ratio"
+            ],
+            "tag": "gamma"
+          },
+          {
+            "supported_parameters": [
+              "input_references",
+              "seed",
+              "aspect_ratio"
+            ],
+            "tag": "delta"
+          }
+        ],
+        "id": "synthetic-author/synthetic-image"
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

@@ -110,7 +110,7 @@ async def _probe(args: argparse.Namespace) -> dict[str, Any]:
         "text": result.text,
         "result": result.model_dump(exclude={"text"}),
         "request_fields": list(payload_fields(inputs)),
-        "messages": [m.model_dump() for m in messages],
+        "messages": [m.wire() for m in messages],
     }
 
 

@@ -21,8 +21,12 @@ still ``importing``; any refusal (``ImportRefused``, or the erasure fence's
 2. ``check_guardrails`` (stage ``guardrails``): the whole active history checked against the
    chosen rating's effective guardrails (global, the rating's, the story's and its characters',
    the minors policy among them) with #118's evaluator, exactly as a tightening checks it, every
-   violation listed: ``rating_check_failed``. When everything passes, every active turn variant
-   is stamped with the set evaluated. Inactive imported turns keep no stamp (#250 never imports
+   violation listed: ``rating_check_failed``. Every active story image is checked as an image
+   too (#272: #258's ``check_output`` against every image-output policy in effect), with no
+   recorded result trusted: with no ``image_check`` model and an image-output policy applying,
+   the import is refused (``reason: image_unchecked``). When everything passes, every active
+   turn variant is stamped with the set evaluated and the verdicts are stored as the story's
+   (``guardrail_check_results``). Inactive imported turns keep no stamp (#250 never imports
    it), so a swap, untruncate or fork that would reactivate one checks it first (#120).
 3. ``park_outbox`` (stage ``outbox``): every imported incomplete staged turn is closed as a fork
    closes one (FR-EXT-19); every imported outbox row with no terminal outcome is parked
@@ -318,24 +322,38 @@ async def check_guardrails(ctx: ImportContext) -> None:
         if done % 200 == 0 or done == count:
             await ctx.stage("guardrails", done, count)
 
+    media = ctx.services.extra.get("media") or rating_check.bound_media()
     result = await change.evaluate_history(
         active,
         history.records,
         model_check=None if models is None else rating_check.ModelPolicyCheck(models, context),
         calls_per_record=settings.rating_check_model_calls_per_record,
         progress=progress,
+        image_check=rating_check.image_check(models, ctx.db, media),
+        image_policies=change.image_output_policies(found),
     )
     if result.violations:
-        violations = [v.as_json() for v in result.violations]
+        # #272: an image is named by its id in the bundle (the imported rows go with the
+        # refusal, so their new ids would name nothing).
+        source = {new: old for old, new in ctx.inserted.ids.items()}
+        violations = [_as_source(v.as_json(), source) for v in result.violations]
+        details: dict[str, Any] = {"violations": violations}
+        if any(v.code == change.IMAGE_UNCHECKED for v in result.violations):
+            details["reason"] = change.IMAGE_UNCHECKED
         raise ImportRefused(
             "rating_check_failed",
             "the story's active history breaks this deployment's guardrails for its rating",
-            {"violations": violations},
+            details,
             errors=[
                 {"code": "rating_check_failed", "path": v["position"], **v} for v in violations
             ],
         )
     async with ctx.db.begin() as conn:
+        if result.verdicts:
+            # #272: the gate's verdicts (an image's among them) are the imported story's own,
+            # so a later check or reactivation does not ask again; the imported assets keep the
+            # check fields the source recorded.
+            await change.store_verdicts(conn, ctx.story_id, result.verdicts)
         await conn.execute(
             update(operations)
             .where(
@@ -347,6 +365,13 @@ async def check_guardrails(ctx: ImportContext) -> None:
             .values(checked_guardrails=stamp_of(ctx.rating_id, version, found))
         )
     ctx.report["guardrails"] = {"checked": total, "violations": 0}
+
+
+def _as_source(violation: dict[str, Any], source: dict[str, str]) -> dict[str, Any]:
+    position = dict(violation["position"])
+    if position.get("kind") == "image" and position.get("id") in source:
+        position["id"] = source[str(position["id"])]
+    return {**violation, "position": position}
 
 
 # -- 3. the outbox -------------------------------------------------------------------------------

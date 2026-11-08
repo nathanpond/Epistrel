@@ -54,6 +54,17 @@ The registry holds:
 - ``epistrel_budget_rejected_total`` (#456): calls and queued turns refused 422
   ``budget_below_safety_minimum`` before any model call (counted once per unit of work by
   ``observability.instrument``).
+- ``epistrel_image_counter_drift_total{scope}`` (#262): per ``image_counter_reconcile`` run, one
+  per image limit counter whose stored sums differ from its reservation records' (``deployment``
+  or ``entry``) and one per ``held`` record whose job is terminal or missing (``stuck_held``).
+- ``epistrel_image_revalidation_total{outcome}`` (#264): each story image job's revalidation
+  inside its attaching transaction, by outcome (``ok``, ``wait``, ``needs_evaluation``,
+  ``stale``, ``target_gone``).
+- ``epistrel_image_attempt_outcomes_total{outcome}`` (#267): each outcome written on an image
+  provider attempt (``image_reservations.outcome``: ``promoted``, ``rejected``, ``failed``,
+  ``discarded``, ``settled``, ``adopted``, ``cancelled``, ``released_at_horizon``,
+  ``abandoned_fallback``, ``late_discarded``, ``late_after_horizon``), and each
+  ``late_duplicate`` return, which is reported but never stored.
 
 Label values are enums, ULIDs, route names, HTTP statuses or sanitised model names (#44's rule),
 never content. prometheus-client's default process, platform and GC collectors are removed.
@@ -322,6 +333,105 @@ BUDGET_REJECTED = Counter(
     "Calls and queued turns refused with budget_below_safety_minimum before any model call "
     "(the budget could not cover the calls the safety reservation needs).",
 )
+IMAGE_COUNTER_DRIFT = Counter(
+    "epistrel_image_counter_drift",
+    "Image limit counters whose stored sums differ from their reservation records' (scope "
+    "deployment or entry), and held records whose job is terminal or missing (stuck_held), "
+    "per reconcile run (#262).",
+    ("scope",),
+)
+IMAGE_REVALIDATION = Counter(
+    "epistrel_image_revalidation",
+    "Story image jobs' revalidations at promotion, by outcome (ok, wait, needs_evaluation, "
+    "stale, target_gone; #264).",
+    ("outcome",),
+)
+IMAGE_REVALIDATION_OUTCOMES = frozenset({"ok", "wait", "needs_evaluation", "stale", "target_gone"})
+
+
+def count_revalidation(outcome: str) -> None:
+    """Count one story image revalidation (``epistrel_image_revalidation_total{outcome}``;
+    #264); an outcome outside the five is a programming error."""
+    if outcome not in IMAGE_REVALIDATION_OUTCOMES:
+        raise ValueError(f"unknown image revalidation outcome {outcome}")
+    IMAGE_REVALIDATION.labels(outcome=outcome).inc()
+
+
+IMAGE_ATTEMPT_OUTCOMES = Counter(
+    "epistrel_image_attempt_outcomes",
+    "Image provider attempts' outcomes, as written on their records, and late duplicate "
+    "and late unaccounted returns (#267, #268).",
+    ("outcome",),
+)
+IMAGE_ATTEMPT_OUTCOME_VALUES = frozenset(
+    {
+        "promoted",
+        "rejected",
+        "failed",
+        "discarded",
+        "settled",
+        "adopted",
+        "cancelled",
+        "released_at_horizon",
+        "abandoned_fallback",
+        "late_discarded",
+        "late_after_horizon",
+        "late_duplicate",
+        "presumed",
+        "resent",
+        "late_after_presumed",
+        "late_unaccounted",
+    }
+)
+
+
+def count_attempt_outcome(outcome: str) -> None:
+    """Count one image attempt outcome (``epistrel_image_attempt_outcomes_total{outcome}``;
+    #267); an outcome outside ``IMAGE_ATTEMPT_OUTCOME_VALUES`` is a programming error."""
+    if outcome not in IMAGE_ATTEMPT_OUTCOME_VALUES:
+        raise ValueError(f"unknown image attempt outcome {outcome}")
+    IMAGE_ATTEMPT_OUTCOMES.labels(outcome=outcome).inc()
+
+
+IMAGE_AUTO_JOBS_QUEUED = Counter(
+    "epistrel_image_auto_jobs_queued",
+    "Automatic illustration jobs queued in a turn's commit, by pipeline (lite, structured; #265).",
+    ("pipeline",),
+)
+IMAGE_AUTO_POINTS_DROPPED = Counter(
+    "epistrel_image_auto_points_dropped",
+    "Illustration points a turn marked that were not queued: beyond the story's "
+    "max_auto_images_per_turn (cap), or on a beat the turn did not commit (unmapped; #265).",
+    ("reason",),
+)
+IMAGE_AUTO_HINTS_DROPPED = Counter(
+    "epistrel_image_auto_hints_dropped",
+    "Illustration hints dropped as invalid: a Lite tag whose value is not one of the three "
+    "reasons, or a structured render's illustrate entry that does not validate (#265).",
+)
+IMAGE_AUTO_POINT_REASONS = frozenset({"cap", "unmapped"})
+
+
+def count_auto_queued(pipeline: str, n: int) -> None:
+    """Count ``n`` automatic illustration jobs a turn queued (``pipeline``: lite, structured)."""
+    if n:
+        IMAGE_AUTO_JOBS_QUEUED.labels(pipeline=pipeline).inc(n)
+
+
+def count_auto_points_dropped(reason: str, n: int = 1) -> None:
+    """Count ``n`` illustration points not queued (``cap`` or ``unmapped``)."""
+    if reason not in IMAGE_AUTO_POINT_REASONS:
+        raise ValueError(f"unknown dropped-point reason {reason}")
+    if n:
+        IMAGE_AUTO_POINTS_DROPPED.labels(reason=reason).inc(n)
+
+
+def count_auto_hints_dropped(n: int = 1) -> None:
+    """Count ``n`` invalid illustration hints dropped."""
+    if n:
+        IMAGE_AUTO_HINTS_DROPPED.inc(n)
+
+
 _STEP_LABEL = re.compile(r"^[a-z][a-z_]{0,63}$")
 OTHER_STEP = "other"
 
@@ -513,6 +623,15 @@ __all__ = [
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
     "HTTP_DURATION",
+    "IMAGE_ATTEMPT_OUTCOMES",
+    "IMAGE_ATTEMPT_OUTCOME_VALUES",
+    "IMAGE_AUTO_HINTS_DROPPED",
+    "IMAGE_AUTO_JOBS_QUEUED",
+    "IMAGE_AUTO_POINTS_DROPPED",
+    "IMAGE_AUTO_POINT_REASONS",
+    "IMAGE_COUNTER_DRIFT",
+    "IMAGE_REVALIDATION",
+    "IMAGE_REVALIDATION_OUTCOMES",
     "LEDGER",
     "MINIMAL_COMMITS",
     "MULTI_TURNS",
@@ -533,10 +652,15 @@ __all__ = [
     "THUNKS",
     "TURN_DEGRADATION",
     "SchedulerGauges",
+    "count_attempt_outcome",
+    "count_auto_hints_dropped",
+    "count_auto_points_dropped",
+    "count_auto_queued",
     "count_budget_rejected",
     "count_degradation",
     "count_perception_repair",
     "count_repair",
+    "count_revalidation",
     "render_metrics",
     "router",
     "step_label",

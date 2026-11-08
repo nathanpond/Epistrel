@@ -7,12 +7,19 @@ The guide lists every delivered purpose in registry order: what it does, whether
 hot path, the ``model_config`` row it defaults to, its template, its capability floor, the
 structured result it returns, and its data-flow row (each input field it receives with that
 field's content category, and the categories it never receives). Then come the delivered
-ports (``embedding``, #138: its own row, floor and data-flow row, and its retention note),
-the reserved purposes, the content categories, and one hosted-provider retention note. CI runs
-``--check`` in the ``lint`` job, and the comparison is byte for byte.
+ports (``embedding``, #138, and the image adapter ``image_generation``, #254: each its own row,
+floor and data-flow row, and its retention note), the reserved purposes, the content
+categories, and one hosted-provider retention note. CI runs ``--check`` in the ``lint`` job,
+and the comparison is byte for byte.
 
-A purpose without a capability floor or without a data-flow row (no declared input) cannot be
-rendered: ``GuideError`` names it, so the generator and the check both fail.
+The image path's rows (#254, FR-IMG-13) also carry docs/02 §6's "never receives" words
+(``NEVER_RECEIVES_NOTES``), and both safety purposes' rows (``guardrail_check`` and
+``image_check``) carry ``registry.HOSTED_SAFETY_RETENTION`` verbatim, through
+``SAFETY_RETENTION_LINE``.
+
+A purpose without a capability floor or without a data-flow row (no declared input), or a
+safety purpose whose row lacks the retention sentence, cannot be rendered: ``GuideError``
+names it, so the generator and the check both fail.
 """
 
 from __future__ import annotations
@@ -23,11 +30,16 @@ from typing import Any
 
 from epistrel.orchestrator.models.registry import (
     DELIVERED,
+    HOSTED_SAFETY_RETENTION,
     PORTS,
     RESERVED,
+    SAFETY_PURPOSES,
     CapabilityFloor,
     ContentCategory,
+    EmbeddingFloor,
+    ImageGenerationFloor,
     Port,
+    PortFloor,
     Purpose,
     ReservedPurpose,
     StructuredOutput,
@@ -164,7 +176,45 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         'believes ...") and the speech acts it heard ("you heard Bobby say ..."). Its own '
         "partition only; never another character's, a scalar, a provenance or a divergence."
     ),
+    ContentCategory.IMAGE: (
+        "An image's own pixels (#254): a generated output, or an upload when a checker is "
+        "configured, checked by `image_check` against the image-output policies."
+    ),
+    ContentCategory.SUBJECT_LABEL: (
+        "An opaque label of a subject in an image's safety context (`character_1` ...): never "
+        "a name the prompt does not already contain (FR-IMG-13)."
+    ),
+    ContentCategory.VISUAL_DESCRIPTOR: (
+        "What an image shows, in visual terms only: a subject's perceivable appearance and "
+        "apparent age band, the visual style, and in a safety context the descriptors the "
+        "prompt already uses for a subject. Never a true age, a name the prompt lacks or story "
+        "text."
+    ),
+    ContentCategory.IMAGE_PROMPT: (
+        "A built image prompt and its negative prompt (#254): what the image adapter generates "
+        "from (with its seed, size or aspect ratio, quality and count) and what `guardrail_check` "
+        "and `image_check` judge."
+    ),
+    ContentCategory.CAPTION_ALT_TEXT: "An image's caption and alt text, judged with the image.",
+    ContentCategory.REFERENCE_IMAGE: (
+        "A reference image the image adapter is given: one the image's audience has perceived "
+        "(FR-IMG-5), sent as a signed URL or a data URL (#255)."
+    ),
 }
+
+NEVER_RECEIVES_NOTES: Mapping[str, str] = {
+    "guardrail_check": "other story text; beliefs; names an image prompt lacks",
+    "image_prompt": (
+        "true ages; restricted references; anything the image's audience has not perceived"
+    ),
+    "image_check": "story text; beliefs; names the prompt lacks",
+    "image_generation": "true ages; the safety context",
+}
+"""docs/02 §6's "never receives" words for the image path's rows (FR-IMG-13), beside the
+categories the registry refuses."""
+
+SAFETY_RETENTION_LINE = "- **Hosted providers:** {sentence}"
+"""How a safety purpose's row carries ``HOSTED_SAFETY_RETENTION`` (FR-IMG-13)."""
 
 STRUCTURED_LABELS: Mapping[StructuredOutput, str] = {
     StructuredOutput.NONE: "not required",
@@ -202,11 +252,14 @@ Each purpose sends the inputs listed in its row to the endpoint configured for i
 `base_url`, inherited from the `default` row unless the purpose overrides it). When that
 endpoint is a hosted provider, those inputs leave the deployment and are kept under that
 provider's terms, outside Epistrel's erasure boundary (FR-ADMIN-8, FR-IMG-13). This includes the
-true ages `guardrail_check` receives for age-conditioned policies, and the memory texts and
-retrieval queries the `embedding` port sends (its own row: it inherits no endpoint). A
-deployment that needs any of this data kept in-house points the purposes concerned at
-self-hosted models.
-`GET /admin/model-config` names the endpoint for every purpose (FR-MODEL-1).
+true ages `guardrail_check` receives for age-conditioned policies, the images and true ages
+`image_check` receives (its own row: it has no default), the memory texts and
+retrieval queries the `embedding` port sends, and the prompts and reference images the
+`image_generation` port sends to its image provider (each port's own row: it inherits no
+endpoint). A deployment that needs any of this data kept in-house points the purposes
+concerned at self-hosted models; for the safety path, both `guardrail_check` and `image_check`.
+`GET /admin/model-config` names the endpoint for every purpose and port (FR-MODEL-1): its
+`endpoint` is the host of the effective `base_url`.
 """
 
 
@@ -252,6 +305,16 @@ def problems(purposes: Iterable[Purpose]) -> list[str]:
     return found
 
 
+def retention_problems(purposes: Iterable[Purpose]) -> list[str]:
+    """The safety purposes whose rendered row lacks ``HOSTED_SAFETY_RETENTION`` verbatim."""
+    return [
+        f"{purpose.name}: its row lacks the hosted-provider retention sentence (FR-IMG-13)"
+        for purpose in purposes
+        if purpose.name in SAFETY_PURPOSES
+        and HOSTED_SAFETY_RETENTION not in "\n".join(_purpose(purpose))
+    ]
+
+
 def _summary(purposes: Sequence[Purpose]) -> list[str]:
     lines = [
         "## Purposes delivered",
@@ -261,12 +324,40 @@ def _summary(purposes: Sequence[Purpose]) -> list[str]:
     ]
     for p in purposes:
         floor = p.capability_floor
+        default = (
+            "none (own row only)" if p.default_model_key == p.name else _code(p.default_model_key)
+        )
         lines.append(
             f"| {_code(p.name)} | {'yes' if p.hot_path else 'no'} | "
-            f"{_code(p.default_model_key)} | {_code(floor.structured_output.value)} | "
+            f"{default} | {_code(floor.structured_output.value)} | "
             f"{floor.min_context_tokens:,} tokens |"
         )
     return [*lines, ""]
+
+
+def _default_line(purpose: Purpose) -> str:
+    if purpose.default_model_key == purpose.name:
+        return (
+            f"- **Default model:** none: its own {_code(purpose.name)} row of `model_config` "
+            "only, never the `default` row (unset until configured)"
+        )
+    return (
+        f"- **Default model:** the {_code(purpose.default_model_key)} row of `model_config`, "
+        + (
+            "unless the purpose has its own"
+            if purpose.default_model_key == "default"
+            else "then the `default` row, per field, unless the purpose has its own"
+        )
+    )
+
+
+def _never(name: str, never_receives: frozenset[ContentCategory]) -> list[str]:
+    never = ", ".join(_code(c.value) for c in ContentCategory if c in never_receives)
+    lines = [f"**Never receives:** {never or '—'}"]
+    note = NEVER_RECEIVES_NOTES.get(name)
+    if note is not None:
+        lines += ["", f"**Never receives (docs/02 §6):** {note}"]
+    return lines
 
 
 def _purpose(purpose: Purpose) -> list[str]:
@@ -277,12 +368,7 @@ def _purpose(purpose: Purpose) -> list[str]:
         purpose.description,
         "",
         f"- **Hot path:** {'yes' if purpose.hot_path else 'no'}",
-        f"- **Default model:** the {_code(purpose.default_model_key)} row of `model_config`, "
-        + (
-            "unless the purpose has its own"
-            if purpose.default_model_key == "default"
-            else "then the `default` row, per field, unless the purpose has its own"
-        ),
+        _default_line(purpose),
         f"- **Template:** {_code(purpose.template)}"
         + (
             "; variants: " + ", ".join(f"{name} {_code(t)}" for name, t in purpose.variants.items())
@@ -291,7 +377,7 @@ def _purpose(purpose: Purpose) -> list[str]:
         ),
         "- **Capability floor:** structured output: "
         f"{STRUCTURED_LABELS[floor.structured_output]}; minimum context "
-        f"{floor.min_context_tokens:,} tokens",
+        f"{floor.min_context_tokens:,} tokens" + ("; image input (vision)" if floor.vision else ""),
     ]
     schema = purpose.response_schema
     if schema is None:
@@ -303,30 +389,20 @@ def _purpose(purpose: Purpose) -> list[str]:
             f"- **Returns:** {_code(schema.__name__)} ({fields}), validated strictly; "
             + ("its free text is author-facing" if free_text else "no free-text field")
         )
+    if purpose.name in SAFETY_PURPOSES:
+        lines.append(SAFETY_RETENTION_LINE.format(sentence=HOSTED_SAFETY_RETENTION))
     lines += ["", "**Receives**", "", "| Field | Content category |", "|---|---|"]
     for path, category in _leaf_paths(field_categories(purpose.input_schema)):
         lines.append(f"| {_code(path)} | {_code(category)} |")
-    never = ", ".join(_code(c.value) for c in ContentCategory if c in purpose.never_receives)
-    lines += ["", f"**Never receives:** {never or '—'}", ""]
+    lines += ["", *_never(purpose.name, purpose.never_receives), ""]
     return lines
 
 
-def _ports(ports: Iterable[Port]) -> list[str]:
-    lines = [
-        "## Ports delivered",
-        "",
-        "A port is configured like a purpose but called through its own adapter, never as a chat",
-        "completion. Its `model_config` row is its own, with no fallback to the `default` row.",
-        "",
-    ]
-    for port in ports:
-        floor = port.floor
-        lines += [
-            f"### {_code(port.name)}",
-            "",
-            port.description,
-            "",
-            f"- **Hot path:** {'yes' if port.hot_path else 'no'}",
+def _port_facts(port: Port[PortFloor]) -> list[str]:
+    """The lines a port's section gives about its row, floor, result and retention."""
+    floor = port.floor
+    if isinstance(floor, EmbeddingFloor):
+        return [
             f"- **Default model:** the {_code(port.default_model_key)} row of `model_config` "
             "only (an unset model is `model_unavailable` `not_configured`); its `params` take "
             "`timeout` only",
@@ -339,6 +415,42 @@ def _ports(ports: Iterable[Port]) -> list[str]:
             "(one deployment-wide model and dimension, FR-EMBED-3)",
             "- **Retention:** the memory texts and retrieval queries it embeds leave the "
             "deployment when this row names a hosted provider",
+        ]
+    assert isinstance(floor, ImageGenerationFloor)  # noqa: S101 - PortFloor has two kinds
+    return [
+        f"- **Default model:** the {_code(port.default_model_key)} row of `model_config` only, "
+        "never the `default` row; its `params` take `adapter` (a registered adapter, or "
+        "`null`: off), `default_size`, `default_aspect_ratio`, `default_quality`, "
+        "`image_capability_ttl_s` and `request_timeout_s`. With no adapter, model or key, "
+        "every generation entry point answers 409 `not_configured`, and uploads keep working",
+        "- **Capability floor:** generates images from a text prompt; seeds, reference images, "
+        "sizes and aspect ratios are discovered per endpoint, never assumed (FR-IMG-1)",
+        "- **Returns:** the generated images' bytes and media types, with usage and cost when "
+        "the provider reports them (an unpriced call is `unknown`, never 0)",
+        f"- **Engine profiles:** {'routable' if port.story_scoped else 'not routable'} "
+        "(one deployment-wide adapter)",
+        "- **Retention:** the built prompts, their parameters and the reference images it is "
+        "given go to the image provider this row names; it never receives true ages or the "
+        "safety context",
+    ]
+
+
+def _ports(ports: Iterable[Port[PortFloor]]) -> list[str]:
+    lines = [
+        "## Ports delivered",
+        "",
+        "A port is configured like a purpose but called through its own adapter, never as a chat",
+        "completion. Its `model_config` row is its own, with no fallback to the `default` row.",
+        "",
+    ]
+    for port in ports:
+        lines += [
+            f"### {_code(port.name)}",
+            "",
+            port.description,
+            "",
+            f"- **Hot path:** {'yes' if port.hot_path else 'no'}",
+            *_port_facts(port),
             "",
             "**Receives**",
             "",
@@ -347,8 +459,7 @@ def _ports(ports: Iterable[Port]) -> list[str]:
         ]
         for path, category in _leaf_paths(field_categories(port.input_schema)):
             lines.append(f"| {_code(path)} | {_code(category)} |")
-        never = ", ".join(_code(c.value) for c in ContentCategory if c in port.never_receives)
-        lines += ["", f"**Never receives:** {never or '—'}", ""]
+        lines += ["", *_never(port.name, port.never_receives), ""]
     return lines
 
 
@@ -359,6 +470,11 @@ def _reserved(reserved: Iterable[ReservedPurpose]) -> list[str]:
         "Declared now and delivered later (docs/03 §22). Each joins the sections above, with",
         "its floor and data-flow row, in the milestone that delivers it.",
         "",
+    ]
+    reserved = list(reserved)
+    if not reserved:
+        return [*lines, "None: every purpose and port FR-MODEL-2 names is delivered.", ""]
+    lines += [
         "| Purpose | Kind | Milestone | Defaults to | Description |",
         "|---|---|---|---|---|",
     ]
@@ -383,12 +499,12 @@ def _categories() -> list[str]:
 def render(
     delivered: Mapping[str, Purpose] = DELIVERED,
     reserved: Mapping[str, ReservedPurpose] = RESERVED,
-    ports: Mapping[str, Port] = PORTS,
+    ports: Mapping[str, Port[PortFloor]] = PORTS,
 ) -> str:
     """The model guide for ``delivered``, ``ports`` and ``reserved`` (the registry's by
     default)."""
     purposes = list(delivered.values())
-    found = problems(purposes)
+    found = problems(purposes) + retention_problems(purposes)
     if found:
         raise GuideError("; ".join(found))
     lines = [BANNER, "", INTRO, *_summary(purposes)]

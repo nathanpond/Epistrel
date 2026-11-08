@@ -17,7 +17,12 @@ from epistrel.engine import Engine
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.config import KeyBox
 from tests.auth_support import CREDENTIAL_A, auth_settings
-from tests.model_support import CONFIG_KEY, config_key, restored_model_config
+from tests.model_support import (
+    CONFIG_KEY,
+    config_key,
+    reserved_purpose,
+    restored_model_config,
+)
 
 CANARY = "sk-canary-at-rest-4f1d9c0e7b2a"
 
@@ -83,13 +88,16 @@ async def test_stored_key_without_config_key_refuses_to_start(
         assert await model_config.config_key_problem(load_settings(), engine) is None
 
 
-async def test_writes_validate_purpose_and_base_url(engine: AsyncEngine) -> None:
+async def test_writes_validate_purpose_and_base_url(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from epistrel.core.errors import ConfigConflict, InvalidRequest
 
     keybox = KeyBox(None)
+    reserved = reserved_purpose(monkeypatch).name  # M8 delivered every reserved one (#254)
     async with restored_model_config(engine):
         with pytest.raises(InvalidRequest):
-            await model_config.write_config(engine, "image_prompt", keybox=keybox, principal="p")
+            await model_config.write_config(engine, reserved, keybox=keybox, principal="p")
         with pytest.raises(InvalidRequest):
             await model_config.write_config(
                 engine, "default", keybox=keybox, principal="p", base_url="ftp://x"

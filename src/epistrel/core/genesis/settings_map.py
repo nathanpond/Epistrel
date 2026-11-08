@@ -20,8 +20,9 @@ policy, a story setting only the structured permission check reads, #144, kept i
 later upgrade finds it, the player view, #177, always active: a no-op wherever perception is
 ``none``, Lite included, so never ``inactive``, the player authority, #180, prompt-only under
 Lite, the co-author knowledge, #598, a no-op under Lite and without partitions, and the
-ambiguous-retcon timing, #240, read only by a structured rewrite, and the backfill conflict
-policy, #230, read when a backfill starts). A capability no #106 module covers is named by the
+ambiguous-retcon timing, #240, read only by a structured rewrite, the backfill conflict
+policy, #230, read when a backfill starts, and the automatic illustration mode and its per-turn
+cap, #265, which Lite stories use too). A capability no #106 module covers is named by the
 setting's own area (``providers``). The build-time check ``unmapped_settings`` keeps the dict
 complete.
 """
@@ -52,6 +53,8 @@ SETTING_CAPABILITIES: Final[Mapping[str, str | None]] = {
     "allow_new_arrivals": None,
     "player_view": None,
     "policies": None,
+    "illustration_mode": None,
+    "max_auto_images_per_turn": None,
     "required_providers": "providers",
 }
 """Each ``story_settings_defaults`` field and the capability it needs (``None``: applied at

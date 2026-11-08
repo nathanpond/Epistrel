@@ -35,7 +35,7 @@ import os
 import re
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -389,26 +389,31 @@ def _prompt(belief: time_belief.TimeBelief) -> str:
     return "\n".join(m.content for m in prompts.render(GENERATION, inputs, STRUCTURED))
 
 
-@pytest.mark.part("M6", "FR-CLOCK-11")
-@settings(max_examples=EXAMPLES, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-@given(case=beliefs())
-def test_s_clock_belief__no_leak(case: tuple[time_belief.TimeBelief, str]) -> None:
-    """See the module docstring: the objective time of day (``HH:MM``) is in the character's
-    prompt only where its belief holds that very minute (or a schedule it holds falls on it, as
-    it believes it)."""
-    belief, objective = case
+def _derived(awareness: str, start: int, now: int) -> time_belief.TimeBelief:
+    """The belief ``beliefs`` draws with no reading, gap or schedule: the clock anchored at
+    ``start`` and read ``now`` minutes later."""
+    anchor = Anchor.unanchored().refine(Statement(time=((start, start + 1),)), 0)
+    assert isinstance(anchor, Anchor)
+    return time_belief.derive(ME.id, awareness=awareness, anchor=anchor, now=now)
+
+
+# #692 (and its duplicates #693, #701): ``approximate`` at 23:00 widens to a range wrapping
+# midnight, ``((0, 1), (1320, 1440))``. Its one-minute ``(0, 1)`` piece once made the oracle
+# read the belief as exactly 00:00, while the prompt (rightly) says "about 23:00".
+WRAPPED = _derived("approximate", 23 * 60, 0)
+WRAPPED_HERE = _derived("approximate", 0, 23 * 60)  # #693/#701's shrunk case: here ~23 hours
+
+
+def _assert_no_leak(belief: time_belief.TimeBelief, objective: str, prompt: str) -> None:
+    """The oracle: ``objective`` (``HH:MM``) is in ``prompt`` only where the belief holds that
+    very minute as its context tells it (``TimeBelief.told``), or a schedule it holds falls
+    on it as it believes it."""
     cw = belief.clockwork
-    prompt = _prompt(belief)
     section = _section(prompt)
-    # What the character believes, as it is told it: a minute it can tell, else about the
-    # middle of its range (the hour, for awareness or a gap: never a minute it cannot tell).
-    believed = {cw.clock(lo) for lo, hi in belief.times or () if hi - lo == 1}
-    middle = belief.estimate()
-    if middle is not None and not believed:
-        if belief.basis in ("awareness", "gap"):
-            middle = (round(middle / 60) * 60) % cw.day_minutes
-            assert middle % 60 == 0
-        believed = {cw.clock(middle)}
+    _, minutes = belief.told()
+    believed = {cw.clock(m) for m in minutes}
+    if belief.basis in ("awareness", "gap") and not belief.told()[0]:
+        assert all(m % 60 == 0 for m in minutes)
     planned = {s.split(": ", 1)[1].split(",", 1)[0] for s in belief.lines()[1:] if ": " in s}
     if objective not in believed | planned:
         assert objective not in prompt, (objective, section)
@@ -417,3 +422,38 @@ def test_s_clock_belief__no_leak(case: tuple[time_belief.TimeBelief, str]) -> No
     assert set(re.findall(r"\b\d{2}:\d{2}\b", prompt)) == set(
         re.findall(r"\b\d{2}:\d{2}\b", section)
     )
+
+
+@pytest.mark.part("M6", "FR-CLOCK-11")
+@settings(max_examples=EXAMPLES, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@given(case=beliefs())
+@example(case=(WRAPPED, "23:00"))
+@example(case=(WRAPPED_HERE, "23:00"))
+@example(case=(WRAPPED, "21:37"))  # complement: an objective minute it does not hold
+def test_s_clock_belief__no_leak(case: tuple[time_belief.TimeBelief, str]) -> None:
+    """See the module docstring: the objective time of day (``HH:MM``) is in the character's
+    prompt only where its belief holds that very minute (or a schedule it holds falls on it, as
+    it believes it)."""
+    belief, objective = case
+    _assert_no_leak(belief, objective, _prompt(belief))
+
+
+def test_no_leak_oracle__wrapped_midnight_case() -> None:
+    """#692's pinned case, read directly: the wrapped range is not exact, the prompt says
+    "about 23:00", and the oracle counts 23:00 as believed (but never 21:37 or 00:00)."""
+    assert WRAPPED.times == ((0, 1), (1320, 1440))
+    assert WRAPPED.told() == (False, (23 * 60,))
+    section = _section(_prompt(WRAPPED))
+    assert "about 23:00 (night)" in section
+    assert "00:00" not in section
+    assert "21:37" not in section
+
+
+def test_no_leak_oracle__catches_an_injected_objective() -> None:
+    """Mutation: the objective time injected into the time-belief section fails the oracle."""
+    prompt = _prompt(WRAPPED)
+    mutated = prompt.replace(SENSE + "\n", f"{SENSE}\nThe clock says 21:37.\n", 1)
+    assert mutated != prompt
+    _assert_no_leak(WRAPPED, "21:37", prompt)
+    with pytest.raises(AssertionError):
+        _assert_no_leak(WRAPPED, "21:37", mutated)

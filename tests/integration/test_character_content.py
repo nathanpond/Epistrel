@@ -68,7 +68,19 @@ from tests.story_support import create as create_story
 from tests.story_support import rest, story_body
 
 DETAIL_KEYS = frozenset(
-    {"media_id", "alt_text", "caption", "mime_type", "width", "height", "generation_metadata"}
+    {
+        "media_id",
+        "alt_text",
+        "caption",
+        "mime_type",
+        "width",
+        "height",
+        "generation_metadata",
+        # #258 (FR-IMG-10): every image read says where it came from and how it was checked.
+        "source",
+        "check_status",
+        "check",
+    }
 )
 """What ``full`` shows of each image (a reference image adds its ``audience``)."""
 FULL_KEYS = frozenset(
@@ -495,6 +507,11 @@ async def test_full_inlines_each_image_and_the_card_never_does(pg_url: str) -> N
             "image/png",
         )
         assert (primary["width"], primary["height"]) == (5, 4)
+        assert (primary["source"], primary["check_status"], primary["check"]) == (
+            "uploaded",
+            "unchecked",
+            None,
+        )
         assert [g["media_id"] for g in full["images"]["gallery"]] == [
             assets[1]["id"],
             assets[0]["id"],

@@ -36,6 +36,17 @@ A story import's job (#250; ``core.bundles``), each hit by the worker running it
 - ``bundles.import.after_insert``: the bundle's rows committed into the importing story, no
   gate run yet (the next attempt purges them and starts again from the staged file).
 
+An image job (#256; ``orchestrator.images.jobs``), each hit by the worker running it:
+
+- ``images.after_sending_commit`` (#268): the attempt's ``sending`` commit is done (its key,
+  request and capabilities snapshots stored), ``submit`` not called: an ambiguous send;
+- ``images.async.before_ack_commit`` (#268): an ``async`` adapter's ``submit`` acknowledged the
+  request, its ``accepted`` not committed: an ambiguous send too;
+- ``images.after_stage``: an attempt's outputs are written to private staging, none checked;
+- ``images.promote.before_commit``: the passing outputs are copied to their content-addressed
+  keys and the promote transaction has written its rows, not committed (the blobs are then
+  orphans the media sweep removes after its hour).
+
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 ``epistrel.testing.faults`` (the child-process harness) re-exports ``crash_at`` and ``hit``.
 """
@@ -66,7 +77,14 @@ STAGED_POINTS = (
 """A staged turn's stage boundaries (#213)."""
 IMPORT_POINTS = ("bundles.import.mid_records", "bundles.import.after_insert")
 """A story import's job (#250)."""
-POINTS = (*COMMIT_POINTS, *STAGED_POINTS, *IMPORT_POINTS)
+IMAGE_POINTS = (
+    "images.after_sending_commit",
+    "images.async.before_ack_commit",
+    "images.after_stage",
+    "images.promote.before_commit",
+)
+"""An image job (#256; #268 adds the two send points)."""
+POINTS = (*COMMIT_POINTS, *STAGED_POINTS, *IMPORT_POINTS, *IMAGE_POINTS)
 ENABLE_VAR = "EPISTREL_TEST_FAULTS"
 CRASH_VAR = "EPISTREL_TEST_CRASH_AT"
 EXIT_STATUS = 137
@@ -145,6 +163,7 @@ __all__ = [
     "CRASH_VAR",
     "ENABLE_VAR",
     "EXIT_STATUS",
+    "IMAGE_POINTS",
     "IMPORT_POINTS",
     "POINTS",
     "STAGED_POINTS",

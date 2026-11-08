@@ -57,6 +57,7 @@ from epistrel.core.enums import (
 from epistrel.core.events.operation import Operation
 from epistrel.core.ids import new_ulid
 from epistrel.core.media import sweep as media_sweep
+from epistrel.core.media.store import LocalFilesystemStore
 from epistrel.core.profiles import certification
 from epistrel.core.profiles.certification import (
     CertificationRecord,
@@ -1663,3 +1664,307 @@ async def test_x_07__m7_prune(pg_url: str, moved: MovableClock) -> None:
         finally:
             prune_policy.bind(None)
             await db.dispose()
+
+
+# -- image staging (M8, #256) -----------------------------------------------------------------
+
+
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_staging(
+    pg_url: str, engine: AsyncEngine, quiet: Probe, tmp_path: Path
+) -> None:
+    """#256: workers killed after an image job staged its output and before the check
+    (``images.after_stage``), and the job then ended by recovery without its after-commit
+    delete, leave the staging directory. While no worker runs it ages past ``staging_ttl`` and
+    the 10-minute ``image_staging_sweep`` falls overdue; restarting runs the overdue sweep once,
+    which deletes the directory. Running the sweep again changes nothing.
+
+    Complements asserted: before the restart the directory is still there, and exactly one
+    ``image_staging_sweep`` job ran."""
+    from epistrel.orchestrator.images import jobs as image_jobs
+    from epistrel.orchestrator.jobs.handlers import image_job
+    from tests.image_job_support import (
+        backdate,
+        configure_child_adapter,
+        crashed_child,
+        end_by_recovery,
+        image_engine,
+        image_settings_for,
+        insert,
+        staged,
+    )
+
+    ttl = 3600
+    settings = image_settings_for(pg_url, tmp_path)
+    async with image_engine(settings, engine) as lib:
+        await configure_child_adapter(lib, settings)
+        job_id = await insert(lib)
+        child = await crashed_child(pg_url, "images.after_stage", job_id)
+        try:
+            store = LocalFilesystemStore(Path(child.media_root))
+            job_dir = store.image_staging_dir(job_id)
+            assert [p.name for p in staged(store, job_id)] == ["0"]
+            await end_by_recovery(engine, job_id)
+            backdate(job_dir, ttl + 60)
+            await _execute(
+                engine,
+                "UPDATE recurring_tasks SET next_run_at = now() - interval '35 minutes' "
+                "WHERE name = :name",
+                name=image_job.IMAGE_STAGING_SWEEP,
+            )
+            assert job_dir.exists()
+            child.crash = None
+            await child.start()
+
+            async def swept() -> bool:
+                task = await _task(engine, image_job.IMAGE_STAGING_SWEEP)
+                return not job_dir.exists() and task.last_status == "ok"
+
+            await _wait_for(swept, within=30)
+            assert len(await _jobs_of(engine, image_job.IMAGE_STAGING_SWEEP)) == 1
+            task = await _task(engine, image_job.IMAGE_STAGING_SWEEP)
+            assert task.next_run_at > _now()
+            again = await image_jobs.sweep_staging(engine, store, ttl_s=ttl)
+            assert again == {"removed": 0, "skipped_running": 0}
+        finally:
+            await child.__aexit__(None, None, None)
+
+
+# -- image candidates (M8, #260) ----------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_candidate_ttl(quiet: Probe, pg_url: str, engine: AsyncEngine) -> None:
+    """#260: with no worker running, a catalog candidate passes its ``expires_at`` and the
+    hourly ``image_candidate_expiry`` falls overdue; starting a worker runs the overdue expiry
+    once, which deletes the candidate row, its asset row and its bytes. Running it again
+    changes nothing.
+
+    Complements asserted: before the start the candidate, its asset and its bytes are still
+    there, and exactly one ``image_candidate_expiry`` job ran."""
+    from epistrel.core.images import candidates
+    from epistrel.core.images.store import insert_generated_asset
+    from epistrel.core.seeds.ratings import EVERYONE_ID
+    from epistrel.core.tables import content_ratings
+    from epistrel.core.tables.media import MediaState
+    from epistrel.orchestrator.jobs.handlers import image_candidate_expiry
+    from epistrel.testing import faults
+    from epistrel.testing.images import png
+    from tests.auth_support import CREDENTIAL_A
+    from tests.model_support import CONFIG_KEY
+
+    name = image_candidate_expiry.IMAGE_CANDIDATE_EXPIRY
+    child = faults.EngineProcess(pg_url, CREDENTIAL_A, config_key=CONFIG_KEY, mode="all")
+    store = LocalFilesystemStore(Path(child.media_root))
+    store.prepare()
+    data = png(83, 41, shade=7)
+    checksum = hashlib.sha256(data).hexdigest()
+    staged = Path(child.media_root) / "x07-candidate.png"
+    staged.write_bytes(data)
+    store.put(staged, checksum, content_type="image/png")
+    entry_id = new_ulid()
+    async with engine.begin() as conn:
+        version = await conn.scalar(
+            select(content_ratings.c.current_version_id).where(content_ratings.c.id == EVERYONE_ID)
+        )
+        asset_id = await insert_generated_asset(
+            conn,
+            checksum=checksum,
+            mime_type="image/png",
+            size=len(data),
+            width=83,
+            height=41,
+            owner="p-x07",
+            content_rating_version_id=str(version),
+            generation_metadata={},
+            state=MediaState.CANDIDATE,
+            created_by="p-x07",
+        )
+        [candidate_id] = await candidates.insert(
+            conn,
+            entry_kind="character",
+            entry_id=entry_id,
+            job_id=new_ulid(),
+            slot="primary",
+            draft_revision=1,
+            fingerprint="v1:" + "0" * 64,
+            asset_ids=[asset_id],
+            ttl_s=3_600,
+        )
+    try:
+        await _execute(
+            engine,
+            "UPDATE catalog.image_candidates SET expires_at = now() - interval '3 hours' "
+            "WHERE id = :c",
+            c=candidate_id,
+        )
+        await _execute(
+            engine,
+            "UPDATE recurring_tasks SET next_run_at = now() - interval '2 hours' WHERE name = :n",
+            n=name,
+        )
+        async with engine.connect() as conn:
+            assert await candidates.count_for_entry(conn, "character", entry_id) == 1
+        assert store.exists(checksum)
+        async with child:
+
+            async def expired() -> bool:
+                task = await _task(engine, name)
+                return task.last_status == "ok" and not store.exists(checksum)
+
+            await _wait_for(expired, within=30)
+        assert len(await _jobs_of(engine, name)) == 1
+        async with engine.connect() as conn:
+            assert await candidates.count_for_entry(conn, "character", entry_id) == 0
+            assert (
+                await conn.scalar(
+                    text("SELECT count(*) FROM media_assets WHERE id = :a"), {"a": asset_id}
+                )
+                == 0
+            )
+        again = await image_candidate_expiry.expire(engine, store)
+        assert again == {"expired": 0, "blobs_deleted": 0}
+    finally:
+        await _execute(
+            engine, "DELETE FROM catalog.image_candidates WHERE entry_id = :e", e=entry_id
+        )
+        await _execute(engine, "DELETE FROM media_assets WHERE id = :a", a=asset_id)
+
+
+# -- image attempt horizons (M8, #267) ----------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_horizon(pg_url: str, tmp_path: Path) -> None:
+    """#267: a confirming adapter's call stalls, the worker loses its lease, and the reaper
+    fences the attempt and schedules its ``image_attempt_horizon`` timer. With no worker running
+    the clock moves past the horizon and past ``image_confirm_wait_max_s``. The restart's
+    recovery pass fires the overdue timer, and the drained jobs release the reservation once and
+    run the overdue fallback once: one ``cancel``, ``confirm_fallback`` set, the record
+    ``abandoned_fallback``, one retry. A second recovery pass and drain change nothing.
+
+    Complements asserted: before the restart the record is still held and nothing was retried,
+    and the counters reconcile after each pass."""
+    from epistrel.core.tables.images import ImageJobKind
+    from epistrel.observability.metrics import IMAGE_ATTEMPT_OUTCOMES
+    from epistrel.orchestrator.images import attempts
+    from epistrel.orchestrator.images import jobs as image_jobs
+    from epistrel.testing.images import ScriptedChecks, installed_checks, registered_target
+    from tests.image_job_support import configure, prepared
+    from tests.image_limits_support import CatalogTarget, assert_clean, records, space
+    from tests.image_support import Outputs, Stall, StatusSeq, StubImageGenerator, registered
+    from tests.image_support import catalog_origin as origin_of
+
+    def releases() -> float:
+        return float(IMAGE_ATTEMPT_OUTCOMES.labels(outcome="released_at_horizon")._value.get())
+
+    async def fenced_record() -> Any:
+        found = [r for r in await records(sp.db, job_id) if r.attempt_token == old]
+        assert len(found) == 1
+        return found[0]
+
+    async with space(pg_url, tmp_path, "x07_horizon") as sp:
+        gate = asyncio.Event()
+        stub = StubImageGenerator(
+            submission="async",
+            confirms_completion=True,
+            script=[Stall(gate, StatusSeq(["running"], Outputs(2))), Outputs(2)],
+        )
+        with (
+            registered("stub_async", stub),
+            registered_target(CatalogTarget(), kind=ImageJobKind.CATALOG),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            await configure(sp.lib, sp.settings, "stub_async")
+            job_id = await sp.insert(
+                prepared(kind=ImageJobKind.CATALOG, origin=origin_of(new_ulid()), n=2)
+            )
+            stalled = asyncio.create_task(sp.run(job_id))
+            try:
+                await _wait_for(lambda: _sent_one(stub), within=10)
+                old = await _scalar(
+                    sp.db, "SELECT attempt_token::text FROM image_jobs WHERE id = :j", j=job_id
+                )
+
+                async def accepted() -> bool:
+                    return bool((await fenced_record()).send_state.value == "accepted")
+
+                await _wait_for(accepted, within=10)
+                await _execute(
+                    sp.db,
+                    "UPDATE jobs SET status = 'running', lease_until = now() - interval '1 second'"
+                    " WHERE kind = 'image_job' AND payload->>'image_job_id' = :j",
+                    j=job_id,
+                )
+                assert len(await queue.reap(sp.db)) == 1
+                # Workers down for three hours: past the horizon and past confirm_wait_max.
+                for sql in (
+                    "UPDATE image_reservations SET horizon_at = now() - interval '3 hours' "
+                    "WHERE job_id = :j",
+                    "UPDATE timers SET due_at = now() - interval '3 hours' WHERE target LIKE :p",
+                    "UPDATE jobs SET due_at = now() - interval '3 hours' "
+                    "WHERE payload->>'image_job_id' = :j",
+                ):
+                    await _execute(sp.db, sql, j=job_id, p=f"{job_id}:%")
+                assert (await fenced_record()).state.value == "held"
+                assert len(stub.requests) == 1
+                await assert_clean(sp.db)
+
+                released_before = releases()
+                image_jobs.bind(sp.lib.image_runtime())
+                worker = Worker(sp.db, _config())
+                try:
+                    first = await recovery_pass(sp.db)
+                    assert attempts.HORIZON_TIMER in first.fired
+                    await _drain(sp.db, worker)
+                    record = await fenced_record()
+                    assert (record.state.value, record.used) == ("released", 0)
+                    assert stub.cancelled == ["stub-1"]
+                    assert len(stub.requests) == 2, "one retry, after the fallback"
+                    row = await _scalar(
+                        sp.db,
+                        "SELECT confirm_fallback FROM image_jobs WHERE id = :j",
+                        j=job_id,
+                    )
+                    assert row is True
+                    outcome = await _scalar(
+                        sp.db,
+                        "SELECT outcome FROM image_reservations "
+                        "WHERE job_id = :j AND attempt_token = :t",
+                        j=job_id,
+                        t=old,
+                    )
+                    assert outcome == "abandoned_fallback"
+                    # Released once: by the job's own run or by the timer, whichever ran first.
+                    assert releases() == released_before + 1
+                    horizons = await _jobs_of(sp.db, attempts.HORIZON_TIMER)
+                    assert len(horizons) == 1
+                    assert horizons[0].result["outcome"] in ("released", "skipped")
+                    await assert_clean(sp.db)
+
+                    second = await recovery_pass(sp.db)
+                    assert attempts.HORIZON_TIMER not in second.fired
+                    await _drain(sp.db, worker)
+                    assert stub.cancelled == ["stub-1"]
+                    assert len(stub.requests) == 2
+                    assert len(await _jobs_of(sp.db, attempts.HORIZON_TIMER)) == 1
+                    assert releases() == released_before + 1
+                    status = await _scalar(
+                        sp.db, "SELECT status FROM image_jobs WHERE id = :j", j=job_id
+                    )
+                    assert status == "candidates_ready"
+                    await assert_clean(sp.db)
+                finally:
+                    image_jobs.bind(None)
+            finally:
+                stalled.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stalled
+
+
+async def _sent_one(stub: Any) -> bool:
+    return len(stub.requests) >= 1

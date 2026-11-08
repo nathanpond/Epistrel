@@ -26,6 +26,10 @@ OPERATOR = "p-operator"
 DEFAULT_KEY = "sk-conformance-default-0001"
 HOUSE_MODEL = "house-model"
 GENERATION_MODEL = "generation-model"
+VISION_MODEL = "vision-model"
+"""``image_check``'s model (#254): its own row only, never the default's."""
+OWN_ROW_PATH = "/vision/v1/chat/completions"
+"""Where a purpose that reads its own row only is served (``image_check``, #254)."""
 
 
 @dataclass
@@ -41,7 +45,8 @@ class Observed:
 
 async def configure(engine: Engine, mock: MockOpenAI) -> None:
     """``default`` → the mock's ``/v1`` with a key; ``generation`` overrides the model;
-    ``guardrail_check`` overrides the base URL (a gateway path on the same server)."""
+    ``guardrail_check`` overrides the base URL (a gateway path on the same server);
+    ``image_check``, which inherits nothing (#254), gets a row of its own on ``/vision/v1``."""
     write = model_config.write_config
     keybox = engine.models.keybox
     await write(
@@ -60,6 +65,15 @@ async def configure(engine: Engine, mock: MockOpenAI) -> None:
         keybox=keybox,
         principal=OPERATOR,
         base_url=f"{mock.root}/gateway/v1",
+    )
+    await write(
+        engine.db,
+        "image_check",
+        keybox=keybox,
+        principal=OPERATOR,
+        base_url=f"{mock.root}{OWN_ROW_PATH.removesuffix('/chat/completions')}",
+        model=VISION_MODEL,
+        api_key=DEFAULT_KEY,
     )
 
 

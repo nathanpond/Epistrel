@@ -14,7 +14,11 @@ recurring safety net), the embedding port's ``embed`` and ``reembed`` (#138) and
 its ``outbox_lease`` timer kind and the ``outbox_recovery`` sweep every 60 s (#210), and the
 ``reservation_expiry`` timer kind that releases an expired State hold (#216), and the late
 settlement of an outcome at the next inter-turn slot, ``outcome_settlement`` (#217). M7 adds
-the on-demand ``certification_run`` (#233) and ``backfill`` (#228). A kind
+the on-demand ``certification_run`` (#233) and ``backfill`` (#228). M8 adds ``image_job`` and
+the ``image_staging_sweep`` every 10 minutes (#256), the hourly ``image_candidate_expiry``
+(#260), the daily ``image_counter_reconcile`` and ``image_accounting_retention`` (#262), and
+the ``image_attempt_horizon`` and ``image_status_poll`` timer kinds (#267). A
+kind
 no handler is registered for is refused at enqueue and ends ``failed`` if a worker claims one
 (a row a newer version wrote). Tests register their own handlers through ``register`` /
 ``unregister``.
@@ -22,6 +26,12 @@ no handler is registered for is refused at enqueue and ends ``failed`` if a work
 
 from __future__ import annotations
 
+from epistrel.orchestrator.images.reconcile import (
+    IMAGE_ACCOUNTING_RETENTION_HANDLER,
+    IMAGE_ACCOUNTING_RETENTION_TASK_DEFINITION,
+    IMAGE_COUNTER_RECONCILE_HANDLER,
+    IMAGE_COUNTER_RECONCILE_TASK_DEFINITION,
+)
 from epistrel.orchestrator.jobs.handlers.backfill import BACKFILL_HANDLER
 from epistrel.orchestrator.jobs.handlers.certification_canary import (
     CERTIFICATION_CANARY_HANDLER,
@@ -34,6 +44,17 @@ from epistrel.orchestrator.jobs.handlers.consolidation import CONSOLIDATION_HAND
 from epistrel.orchestrator.jobs.handlers.erasure_reconcile import (
     ERASURE_RECONCILE_HANDLER,
     ERASURE_RECONCILE_TASK,
+)
+from epistrel.orchestrator.jobs.handlers.image_candidate_expiry import (
+    IMAGE_CANDIDATE_EXPIRY_HANDLER,
+    IMAGE_CANDIDATE_EXPIRY_TASK_DEFINITION,
+)
+from epistrel.orchestrator.jobs.handlers.image_job import (
+    IMAGE_ATTEMPT_HORIZON_HANDLER,
+    IMAGE_JOB_HANDLER,
+    IMAGE_STAGING_SWEEP_HANDLER,
+    IMAGE_STAGING_SWEEP_TASK_DEFINITION,
+    IMAGE_STATUS_POLL_HANDLER,
 )
 from epistrel.orchestrator.jobs.handlers.importance import IMPORTANCE_HANDLER, IMPORTANCE_TASK
 from epistrel.orchestrator.jobs.handlers.lite_summary import (
@@ -132,6 +153,13 @@ for _handler in (
     PRUNE_RUN_HANDLER,
     STORY_EXPORT_HANDLER,
     STORY_IMPORT_HANDLER,
+    IMAGE_JOB_HANDLER,
+    IMAGE_STATUS_POLL_HANDLER,
+    IMAGE_ATTEMPT_HORIZON_HANDLER,
+    IMAGE_STAGING_SWEEP_HANDLER,
+    IMAGE_CANDIDATE_EXPIRY_HANDLER,
+    IMAGE_COUNTER_RECONCILE_HANDLER,
+    IMAGE_ACCOUNTING_RETENTION_HANDLER,
 ):
     register(_handler)
 for _task in (
@@ -148,6 +176,10 @@ for _task in (
     CERTIFICATION_CANARY_TASK_DEFINITION,
     CERTIFICATION_RECERTIFY_TASK_DEFINITION,
     REWRITE_EXPIRY_TASK,
+    IMAGE_STAGING_SWEEP_TASK_DEFINITION,
+    IMAGE_CANDIDATE_EXPIRY_TASK_DEFINITION,
+    IMAGE_COUNTER_RECONCILE_TASK_DEFINITION,
+    IMAGE_ACCOUNTING_RETENTION_TASK_DEFINITION,
 ):
     register_recurring(_task)
 

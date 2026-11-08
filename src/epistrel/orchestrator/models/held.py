@@ -31,9 +31,12 @@ from epistrel.orchestrator.models.adapter import Message, ModelResult
 
 
 def key_of(purpose: str, messages: Sequence[Message]) -> str:
-    """The match key of one completion: its purpose and the exact messages, hashed."""
+    """The match key of one completion: its purpose and the exact messages (a message's images
+    only when it has some, so a text message's key is unchanged), hashed."""
     material = json.dumps(
-        [purpose, [[m.role, m.content] for m in messages]], ensure_ascii=False, sort_keys=True
+        [purpose, [[m.role, m.content, *([list(m.images)] if m.images else [])] for m in messages]],
+        ensure_ascii=False,
+        sort_keys=True,
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 

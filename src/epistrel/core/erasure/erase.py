@@ -51,6 +51,12 @@ complete erasure:
    position and operation, with ``redacted_at``; their ids leave ``render_character_ids`` and
    the events' ``character_id``; a memory the subject holds or voiced is deleted with a marker,
    and every other memory naming them is redacted with its vector nulled (#135);
+   story images (#261, #266) that declare the subject or certainly name it in their prompt,
+   caption, alt text or generation prompts are deleted on every membership, each leaving a
+   marker, and their assets go with their bytes (after the commit) unless another record still
+   references them, a fork's copy for one; the story's image jobs that depict or name the
+   subject have ``prompt`` and ``negative_prompt`` nulled and are cancelled if unfinished (their
+   other texts, like every job's, are redacted span by span);
    the story's default viewpoint is cleared when it names them; stored idempotency results that
    name them are purged (``result`` null: a replay answers the reference); the projections are
    refolded and the story's index rebuilt (the subject's rows go last); nothing in flight can
@@ -79,7 +85,10 @@ the subject are rewritten (several subjects: the subject leaves ``depicted_subje
 and alt text are redacted) or, depicting only the subject, purged with their bytes once no other
 asset shares them, unless a record the erasure leaves untouched references them and the
 deployment's ``erasure_shared_media`` is ``retire`` (the asset is kept ``retired``, redacted);
-deployment-scoped stored results naming the subject are purged. The transaction takes the
+deployment-scoped stored results naming the subject are purged; image candidates (#260, #266)
+that declare or name the subject, the subject's own included, are deleted with their assets,
+their bytes collected after the commit, while a story image's asset is never touched (it is
+indexed in its story). The transaction takes the
 deployment row first (as configuration writes do) and, when a policy was rewritten, moves the
 deployment's ``policy_erasure_revision`` (#469: the effective-policy cache's key; the
 ``config_revision`` stays, as for any catalog write). Stories are otherwise never
@@ -896,6 +905,8 @@ class _StoryRun:
     principal: str
     now: datetime
     markers: list[tuple[str, str]] = field(default_factory=list)
+    checksums: list[str] = field(default_factory=list)
+    """The purged story images' assets' checksums (#266): bytes deleted after the commit."""
 
 
 async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
@@ -1019,6 +1030,8 @@ async def _story_pass(conn: AsyncConnection, run: _StoryRun) -> _Tally:
     await _redact_structured(conn, story_id, refs, removed, redactor, tally, run)
     await _purge_story_results(conn, story_id, refs, redactor, tally, write=write)
     await _redact_transient(conn, story_id, redactor, tally, write=write)
+    await _erase_story_images(conn, refs, run, tally)
+    await _erase_image_jobs(conn, story_id, run, tally)
     for target in ERASURE_TARGETS:
         changed = await target.erase(conn, story_id=story_id, redactor=redactor, write=write)
         for _ in range(changed):
@@ -2235,6 +2248,158 @@ async def _redact_transient(
         await _redact_json_rows(conn, table, key, ids, (column,), redactor, tally, write=write)
 
 
+def _declares(record: Record, subject: _Subject) -> bool:
+    """Whether ``record`` declares the subject (a story character that is the subject, or the
+    subject itself)."""
+    keys = set(subject.keys)
+    return any((SubjectKind(kind).value, str(i)) in keys for kind, i, _ in record.subjects)
+
+
+def _names(record: Record, redactor: Redactor) -> bool:
+    """Whether a text of ``record`` holds a certain or confirmed-candidate mention of the
+    subject. Every field is read, so each candidate it holds is met (listed by a dry run)."""
+    found = False
+    for path, value in record.fields.items():
+        if value and redactor.text(value, (record.table, record.record_id, path)) != value:
+            found = True
+    return found
+
+
+async def _purge_story_assets(
+    conn: AsyncConnection, rows: Sequence[Any], run: _StoryRun, tally: _Tally
+) -> None:
+    """The assets of the story images an erasure deletes (#266): one no other record references
+    (another story image, a fork's copy included, or any other reference source) is purged with
+    its bytes after the commit (``checksum``-guarded by the media sweep's ``collect_blob``);
+    one still referenced stays as it is (FR-STORE-14)."""
+    from epistrel.core.images.story_images import TABLE as STORY_IMAGES
+    from epistrel.core.media import assets
+    from epistrel.core.tables.story_images import story_images
+
+    deleting = [str(r.id) for r in rows]
+    by_asset = {str(r.asset_id): r for r in rows}
+    if not by_asset:
+        return
+    s = story_images.c
+    kept = {
+        str(a)
+        for a in await conn.scalars(
+            select(s.asset_id).where(s.asset_id.in_(list(by_asset)), s.id.not_in(deleting))
+        )
+    }
+    kept |= await assets.referenced(conn, list(by_asset), skip={STORY_IMAGES})
+    for asset_id in sorted(set(by_asset) - kept):
+        row = by_asset[asset_id]
+        if row.asset_checksum is None:
+            continue  # no asset row (already purged)
+        tally.record(media_assets.name)
+        tally.media += 1
+        if run.write:
+            await ownership.drop_entity(conn, EntityType.MEDIA, asset_id, principal=run.principal)
+            await index.drop_references(conn, assets.RECORD_TABLE, asset_id)
+            await conn.execute(delete(media_assets).where(media_assets.c.id == asset_id))
+            run.checksums.append(str(row.asset_checksum))
+
+
+async def _erase_story_images(
+    conn: AsyncConnection, refs: Mapping[str, set[str]], run: _StoryRun, tally: _Tally
+) -> None:
+    """Story images (#261, #266) on every membership that declare the subject (its asset's
+    depicted subjects, the audience's or the camera's character) or whose prompt, caption, alt
+    text or generation prompts hold a certain or confirmed-candidate mention of it: each row is
+    deleted with an erasure marker, then its asset as ``_purge_story_assets`` says."""
+    from epistrel.core.erasure.records import asset_columns, story_image_record
+    from epistrel.core.tables.story_images import story_images
+
+    ids = sorted(refs.get(story_images.name, set()))
+    if not ids:
+        return
+    rows = await conn.execute(
+        select(story_images, *asset_columns(), media_assets.c.checksum.label("asset_checksum"))
+        .join(media_assets, media_assets.c.id == story_images.c.asset_id, isouter=True)
+        .where(story_images.c.id.in_(ids), story_images.c.story_id == run.subject.story_id)
+        .order_by(story_images.c.id)
+    )
+    reached = []
+    for row in rows:
+        record = story_image_record(row)
+        named = _names(record, run.redactor)
+        if named or _declares(record, run.subject):
+            reached.append(row)
+    for row in reached:
+        image_id = str(row.id)
+        await _delete(
+            conn,
+            run,
+            tally,
+            story_images.name,
+            image_id,
+            delete(story_images).where(story_images.c.id == image_id),
+        )
+        if run.write:
+            await index.drop_references(conn, story_images.name, image_id)
+    await _purge_story_assets(conn, reached, run, tally)
+
+
+IMAGE_JOB_DOCUMENTS = ("params", "safety_context", "status_detail")
+"""An image job's JSON columns that can hold text (its caption, alt text, subjects' descriptors
+and labels): redacted span by span. The others hold ids, positions and policy results."""
+IMAGE_JOB_PROMPTS = ("prompt", "negative_prompt")
+
+
+async def _erase_image_jobs(
+    conn: AsyncConnection, story_id: str, run: _StoryRun, tally: _Tally
+) -> None:
+    """The story's image jobs (#256, #266). A job whose depicted subjects (or the subjects its
+    prompt was checked with, or its audience's character) include the subject, or whose prompt
+    or negative prompt holds a certain or confirmed-candidate mention of it, has both prompts
+    nulled, and is cancelled in this transaction when it has not ended
+    (``core.images.store.cancel_in``: it can then never promote). The job row and its accounting
+    stay. Every job's JSON texts (``IMAGE_JOB_DOCUMENTS``) are redacted span by span, so a job
+    that only names the subject in its caption keeps its prompt. An automatic job that has not
+    prepared yet has no prompt or subjects (#265): it prepares from the erased story. Every job
+    of the story is read (a story has few), as the erasure reads its transient work."""
+    from epistrel.core.erasure.records import image_job_record
+    from epistrel.core.images import store as image_store
+    from epistrel.core.tables.images import TERMINAL_STATUSES, image_jobs
+
+    j = image_jobs.c
+    rows = await conn.execute(select(image_jobs).where(j.story_id == story_id).order_by(j.id))
+    terminal = {s.value for s in TERMINAL_STATUSES}
+    for row in rows:
+        job_id = str(row.id)
+        at = (image_jobs.name, job_id)
+        named = False
+        for column in IMAGE_JOB_PROMPTS:
+            value = getattr(row, column)
+            if value and run.redactor.text(value, (*at, column)) != value:
+                named = True
+        reached = named or _declares(image_job_record(row), run.subject)
+        values: dict[str, Any] = {}
+        changed = 0
+        for column in IMAGE_JOB_DOCUMENTS:
+            value = getattr(row, column)
+            if value is None:
+                continue
+            new, count = run.redactor.document(value, at, column)
+            if count:
+                values[column] = new
+                changed += count
+        if reached:
+            for column in IMAGE_JOB_PROMPTS:
+                if getattr(row, column):
+                    values[column] = None
+                    changed += 1
+        if not values:
+            continue
+        tally.record(image_jobs.name, changed)
+        if not run.write:
+            continue
+        await conn.execute(update(image_jobs).where(j.id == job_id).values(**values))
+        if reached and str(row.status) not in terminal:
+            await image_store.cancel_in(conn, job_id)
+
+
 async def _story_media(conn: AsyncConnection, story_id: str, removed: set[str]) -> int:
     """The images the subject's characters show (counted; story erasure leaves the assets)."""
     found = 0
@@ -2377,6 +2542,8 @@ async def _catalog_pass(conn: AsyncConnection, run: _CatalogRun) -> _Tally:
     refs = await _catalog_records(conn, subject, redactor)
     if write:
         await _guc(conn)
+    # The candidates first (#266), the subject's own among them: their bytes are collected.
+    await _erase_candidates(conn, refs, run, tally)
     if subject.kind is SubjectKind.CATALOG_CHARACTER and await conn.scalar(
         select(character_catalog.c.id).where(character_catalog.c.id == subject.id)
     ):
@@ -2501,6 +2668,12 @@ async def _delete_catalog_character(conn: AsyncConnection, run: _CatalogRun, tal
         tally.record(_catalog(scenario_versions.name))
         run.deleted.add((scenario_versions.name, f"{companion}@{version}"))
     if run.write:
+        from epistrel.core.images import candidates
+
+        # The companions' candidates go with them (#260): their bytes are collected too.
+        run.checksums += await candidates.entry_checksums(
+            conn, [("scenario", companion) for companion in companions]
+        )
         await SERVICE.delete_in(
             conn, subject.id, principal=run.principal, operation_id=run.operation_id
         )
@@ -2646,6 +2819,42 @@ async def _redact_scenarios(
             )
 
 
+async def _erase_candidates(
+    conn: AsyncConnection, refs: Mapping[str, set[str]], run: _CatalogRun, tally: _Tally
+) -> None:
+    """Catalog image candidates (#260, #266) that declare the subject (a character entry's own
+    candidates, or an asset depicting it) or whose asset's caption, alt text or generation
+    prompts hold a certain or confirmed-candidate mention of it (a story character erased from
+    the catalog, #504, is matched by its story's names): each is deleted outright with its
+    asset, and the bytes are collected after the commit. A story-scope erasure never reaches a
+    candidate."""
+    from epistrel.core.erasure.records import asset_columns, image_candidate_record
+    from epistrel.core.images import candidates
+    from epistrel.core.tables.images import image_candidates
+
+    ids = sorted(refs.get(image_candidates.name, set()))
+    if not ids:
+        return
+    rows = await conn.execute(
+        select(image_candidates, *asset_columns())
+        .join(media_assets, media_assets.c.id == image_candidates.c.asset_id, isouter=True)
+        .where(image_candidates.c.id.in_(ids))
+        .order_by(image_candidates.c.id)
+    )
+    reached = []
+    for row in rows:
+        record = image_candidate_record(row)
+        named = _names(record, run.redactor)
+        if named or _declares(record, run.subject):
+            reached.append(str(row.id))
+    for candidate_id in reached:
+        tally.record(_catalog(image_candidates.name))
+        tally.media += 1
+        run.deleted.add((image_candidates.name, candidate_id))
+    if run.write and reached:
+        run.checksums += await candidates.remove(conn, reached)
+
+
 async def _media_stories(conn: AsyncConnection, media_id: str) -> list[ReferencingStory]:
     """The stories whose records reference a media asset (a character's images, a snapshot, the
     scenario snapshot), with the characters that hold it."""
@@ -2689,7 +2898,9 @@ async def _erase_media(
         row = (
             await conn.execute(select(media_assets).where(media_assets.c.id == media_id))
         ).one_or_none()
-        if row is None:
+        if row is None or row.viewpoint_basis is not None:
+            # Gone with a candidate or the subject's entry; or a story image's asset, which
+            # belongs to its story (FR-STORE-14; #266).
             continue
         depicted = [d for d in (row.depicted_subjects or []) if isinstance(d, Mapping)]
         others = [d for d in depicted if (d.get("kind"), d.get("id")) != (subject.kind, subject.id)]
@@ -3082,6 +3293,18 @@ Collect = Callable[[str], Awaitable[object]]
 """``collect(checksum)``: delete a purged asset's bytes once no row has them (after commit)."""
 
 
+async def _collect(collect: Collect | None, checksums: Iterable[str]) -> None:
+    """Delete the purged assets' bytes after the commit (each once; ``collect`` keeps bytes
+    another row still names); a failed delete is left to the media sweep."""
+    if collect is None:
+        return
+    for checksum in dict.fromkeys(checksums):
+        try:
+            await collect(checksum)
+        except Exception as exc:  # the media sweep deletes what is left
+            log.warning("erasure blob delete failed", exc_type=type(exc).__name__)
+
+
 async def erase(
     db: AsyncEngine,
     request: ErasureRequest,
@@ -3125,6 +3348,7 @@ async def erase(
             principal,
             compressor,
             hashes,
+            collect,
             write_ledger=write_ledger,
             ledger=ledger,
             strict=strict,
@@ -3156,6 +3380,7 @@ async def _erase_story(
     principal: str,
     compressor: SummaryCompressor,
     hashes: list[str],
+    collect: Collect | None,
     *,
     write_ledger: bool,
     ledger: LedgerFile | None,
@@ -3216,6 +3441,7 @@ async def _erase_story(
         op.add_commit_step(step)
         await op.commit()
     timeline_revision = op.timeline_revision
+    await _collect(collect, run.checksums)
     if found.get("failed_queue"):
         turn_gate.wakeups.wake(story_id)
     degradation: list[str] = []
@@ -3350,13 +3576,7 @@ async def _erase_catalog(
         if write_ledger:
             await append_stage(conn, operation_id, "ledger_written", "done")
         revision = await config_revision(conn)
-    for checksum in dict.fromkeys(run.checksums):
-        if collect is None:
-            continue
-        try:
-            await collect(checksum)
-        except Exception as exc:  # the media sweep deletes what is left
-            log.warning("erasure blob delete failed", exc_type=type(exc).__name__)
+    await _collect(collect, run.checksums)
     return ErasureResult(
         dry_run=False,
         subject_kind=subject.kind.value,

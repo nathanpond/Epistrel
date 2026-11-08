@@ -53,6 +53,10 @@ from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import flatten
 
 UNMEASURED = "unmeasured"
+MINORS_IMAGE_CHECK_LINE = (
+    "certified only by external attestation; otherwise an uncertified backstop"
+)
+"""C-14 (M8, ADR-182): how the image check's row states the minors policy's certification."""
 """The metric of a model-dependent step no NFR-QUAL requirement measures yet."""
 BOUNDARY = "The model proposes; the engine validates structured claims, effects, and permissions."
 """FR-VERIFY-15's boundary sentence."""
@@ -501,6 +505,38 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         purposes=("quality_judge",),
         in_story=False,
         note="Eval only, never in a turn.",
+    ),
+    _row(
+        "image_prompt",
+        "image prompt",
+        M,
+        UNMEASURED,
+        purposes=("image_prompt",),
+        in_story=False,
+        note="Writes an image prompt from what the image's audience perceived; the prompt then "
+        "passes the image-prompt policies before anything is generated (FR-IMG-2,3).",
+    ),
+    _row(
+        "image_check",
+        "image check",
+        M,
+        "NFR-QUAL-12",
+        purposes=("image_check",),
+        in_story=False,
+        note="A vision model checks each image against the image-output policies; with none "
+        "configured, an image a policy applies to fails closed (FR-IMG-3). Measured per policy "
+        "by E-11's false-negative and false-positive rates (`nfr_qual_12.<policy>.fn|fp`), one "
+        "certification per policy. The minors policy: " + MINORS_IMAGE_CHECK_LINE + ".",
+    ),
+    _row(
+        "image_generation",
+        "image generation",
+        M,
+        UNMEASURED,
+        purposes=("image_generation",),
+        in_story=False,
+        note="The image adapter (FR-IMG-1): what it draws is the provider's; nobody sees an "
+        "image until it has passed the checks.",
     ),
 )
 """Every step of the guarantee boundary (see the module docstring)."""

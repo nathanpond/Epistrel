@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
 from fastapi import APIRouter
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.core.history import DEFAULT_LIMIT, History, HistoryItem, SummaryItem, TurnSummary
+from epistrel.core.images.story_images import StoryImageItem, merge_into_history
 from epistrel.core.variants import ChainRef
 
 router = APIRouter(tags=["stories"])
@@ -270,12 +272,23 @@ class OmniscientHistoryItemModel(HistoryItemModel):
 
 
 ItemModel = OmniscientHistoryItemModel | HistoryItemModel
+PlacedItem = ItemModel | StoryImageItem
+"""A history item or respond beat, or a story image in place (#261, FR-IMG-5)."""
 
 
 def item_model(item: HistoryItem) -> ItemModel:
     if item.true_ages is not None:
         return OmniscientHistoryItemModel.model_validate(item, from_attributes=True)
     return HistoryItemModel.model_validate(item, from_attributes=True)
+
+
+def in_place(items: Sequence[HistoryItem], images: Sequence[StoryImageItem]) -> list[PlacedItem]:
+    """``items`` as models with the viewpoint's ``images`` merged in at their positions
+    (``story_images.merge_into_history``)."""
+    return [
+        entry if isinstance(entry, StoryImageItem) else item_model(entry)
+        for entry in merge_into_history(items, images)
+    ]
 
 
 class TurnMessageModel(BaseModel):
@@ -356,7 +369,10 @@ class HistoryResponse(BaseModel):
     """A page of the story's corrected history for one output viewpoint, with the turns on the
     page, the revision it was read at and the cursor to the previous page."""
 
-    items: list[ItemModel]
+    items: list[PlacedItem] = Field(
+        description="The page's items, ascending, with the story images whose audience is the "
+        "read's viewpoint in place (`kind: image`, #261); images do not count toward `limit`."
+    )
     audit: list[ItemModel] | None = None
     summary: list[SummarySegmentModel] | None = None
     turns: list[TurnSummaryModel]
@@ -393,7 +409,7 @@ class HistoryResponse(BaseModel):
         if found.summary is not None:
             extra["summary"] = [SummarySegmentModel.of(s) for s in found.summary]
         return cls(
-            items=[item_model(i) for i in found.items],
+            items=in_place(found.items, found.images),
             **extra,
             turns=[TurnSummaryModel.of(t) for t in found.turns],
             output_viewpoint=found.output_viewpoint,

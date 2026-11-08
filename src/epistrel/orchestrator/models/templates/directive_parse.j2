@@ -28,7 +28,7 @@ Use only the entity, predicate and State names listed below (a binding may name 
 {% block user %}
 ## Entities
 {% for entity in entities %}
-- {{ entity.name }} ({{ entity.kind }}){% if entity.aliases %}, also {{ entity.aliases | join(", ") }}{% endif %}
+- {{ entity.name }} ({{ entity.kind }}){% if entity.aliases %}, also {{ entity.aliases | join(", ") }}{% endif +%}
 {% else %}
 - (none)
 {% endfor %}
@@ -38,7 +38,7 @@ Use only the entity, predicate and State names listed below (a binding may name 
 
 ## States
 {% for state in states %}
-- {{ state.name }}: {{ state.type }}, per {{ state.scope }}{% if state.unit %}, in {{ state.unit }}{% endif %}
+- {{ state.name }}: {{ state.type }}, per {{ state.scope }}{% if state.unit %}, in {{ state.unit }}{% endif +%}
 {% else %}
 - (none)
 {% endfor %}

@@ -43,8 +43,7 @@ call's ``response_schema`` (``{order: [ids]}``): every primary, once. -#}
 ## Who acts first
 You are the narrator. These characters each answer {{ player_input.name }} in this turn, one after another, each seeing what the ones before did:
 {% for candidate in director_candidates %}
-- {{ candidate.name }} (id {{ candidate.id }}){% if candidate.card %}: {{ candidate.card }}{% endif %}
-
+- {{ candidate.name }} (id {{ candidate.id }}){% if candidate.card %}: {{ candidate.card }}{% endif +%}
 {% endfor %}
 Answer with `order`: every one of their ids, once each, in the order they should act.
 {% endblock %}

@@ -3,7 +3,9 @@ API and the background workers in one process); `worker` is `serve --mode worker
 `evals …` runs the model-quality eval harness (``epistrel.evals``, #134);
 `moderation-secret` prints the secret a media moderation hook verifies Epistrel's requests with
 (#105); `backup dump` and `backup verify <dump>` take and check a database backup (#125:
-erasure markers are expected gaps, and the dump's erasure ledger is checked against the file)."""
+erasure markers are expected gaps, and the dump's erasure ledger is checked against the file);
+`images reconcile [--fix]` compares the image limit counters with their reservation records and,
+with ``--fix``, rewrites the drifted ones (#262)."""
 
 from __future__ import annotations
 
@@ -54,6 +56,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     # Its arguments are the eval CLI's own; ``main`` hands them over before parsing.
     evals.add_argument("evals_args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    images = sub.add_parser("images", help="image accounting: `epistrel images reconcile [--fix]`")
+    image_actions = images.add_subparsers(dest="images_command")
+    reconciling = image_actions.add_parser(
+        "reconcile",
+        help="compare the image limit counters with their reservation records (exit 1 on "
+        "drift); --fix rewrites drifted counters and releases stuck held records, with an "
+        "audit row",
+    )
+    reconciling.add_argument("--fix", action="store_true", help="rewrite what drifted")
+    models = sub.add_parser(
+        "models", help="model configuration: `epistrel models fingerprint --purpose image_check`"
+    )
+    model_actions = models.add_subparsers(dest="models_command")
+    fingerprinting = model_actions.add_parser(
+        "fingerprint",
+        help="print the configured image checker's fingerprint (#270: the key its E-11 "
+        "certifications are recorded under); exit 1 when no image_check model is configured",
+    )
+    fingerprinting.add_argument("--purpose", choices=("image_check",), default="image_check")
     sub.add_parser(
         "moderation-secret",
         help="print the secret a media moderation hook verifies X-Epistrel-Signature with "
@@ -184,6 +205,62 @@ def moderation_secret() -> int:
     return 0
 
 
+def images_reconcile(*, fix: bool) -> int:
+    """``epistrel images reconcile [--fix]`` (#262): print the report (JSON); exit 1 when it
+    found drift and ``--fix`` was not given, 78 for a configuration error."""
+    import json
+
+    from epistrel.core.db import make_engine
+    from epistrel.orchestrator.images import reconcile as image_reconcile
+
+    settings = _load()
+    if settings is None:
+        return EX_CONFIG
+
+    async def run() -> int:
+        engine = make_engine(settings)
+        try:
+            report = await image_reconcile.reconcile(engine)
+            found: dict[str, object] = {"report": report.as_json()}
+            if fix and not report.clean:
+                found["fixed"] = await image_reconcile.fix(engine)
+            print(json.dumps(found, indent=2, default=str))
+            return 0 if report.clean or fix else 1
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+def models_fingerprint() -> int:
+    """``epistrel models fingerprint --purpose image_check`` (#270): the configured checker's
+    fingerprint on its own line; 1 without an ``image_check`` model, 78 for a configuration
+    error."""
+    from epistrel.core.db import make_engine
+    from epistrel.engine import Engine
+    from epistrel.orchestrator.images import output_check
+
+    settings = _load()
+    if settings is None:
+        return EX_CONFIG
+
+    async def run() -> int:
+        db = make_engine(settings)
+        engine = Engine(settings, db)
+        try:
+            found = await output_check.checker(engine.models, db)
+        finally:
+            await engine.models.aclose()
+            await db.dispose()
+        if found is None:
+            print("no image_check model is configured", file=sys.stderr)
+            return 1
+        print(found.fingerprint)
+        return 0
+
+    return asyncio.run(run())
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = sys.argv[1:] if argv is None else list(argv)
     if raw[:1] == ["evals"]:
@@ -197,6 +274,16 @@ def main(argv: list[str] | None = None) -> int:
         return moderation_secret()
     if args.command == "backup":
         return backup_tool.run(args)
+    if args.command == "images":
+        if args.images_command == "reconcile":
+            return images_reconcile(fix=args.fix)
+        print("usage: epistrel images reconcile [--fix]", file=sys.stderr)
+        return 2
+    if args.command == "models":
+        if args.models_command == "fingerprint":
+            return models_fingerprint()
+        print("usage: epistrel models fingerprint --purpose image_check", file=sys.stderr)
+        return 2
     if args.command == "serve":
         return serve(args.host, args.port, args.mode, args.concurrency)
     if args.command == "worker":

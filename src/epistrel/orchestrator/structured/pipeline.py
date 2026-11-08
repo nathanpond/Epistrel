@@ -217,6 +217,7 @@ from epistrel.core.events.types import (
 )
 from epistrel.core.genesis.structured import deferred_items
 from epistrel.core.history import filtered_turn_beats
+from epistrel.core.images import story_images
 from epistrel.core.membership import (
     Position,
     active_operation,
@@ -340,6 +341,7 @@ from epistrel.observability import stages
 from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import (
     CHARACTERS_MODELED,
+    count_auto_points_dropped,
     count_degradation,
     count_perception_repair,
     count_repair,
@@ -359,6 +361,7 @@ from epistrel.orchestrator.commit import resolution, salience
 from epistrel.orchestrator.commit.salience import SALIENCE_SKIPPED
 from epistrel.orchestrator.compose import compose as composing
 from epistrel.orchestrator.epistemic import adjudicate, speech
+from epistrel.orchestrator.images import auto as auto_images
 from epistrel.orchestrator.lite import pipeline as lite
 from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
 from epistrel.orchestrator.lite.prompt import prompt_hash
@@ -1201,6 +1204,7 @@ def _beats_of(
 ) -> tuple[list[TurnBeat], dict[int, list[PropositionSketch]]]:
     beats: list[TurnBeat] = []
     sketches: dict[int, list[PropositionSketch]] = {}
+    marked = auto_images.first_hints(render.hints())  # #265: the render's illustration points
     for offset, decl in enumerate(render.beats):
         number = start + offset
         scope = decl.visibility.scope if decl.visibility is not None else "objective"
@@ -1230,9 +1234,13 @@ def _beats_of(
                 advances=advances_of(decl.effects),
                 reschedules=reschedules_of(decl.effects),
                 flashback=decl.flashback,
+                illustrate=marked.get(offset),
             )
         )
         sketches[number] = [*decl.propositions, *_reschedule_sketches(decl, narrator=narrator)]
+    unmapped = sum(1 for index in marked if index >= len(render.beats))
+    if unmapped:
+        count_auto_points_dropped("unmapped", unmapped)
     return beats, sketches
 
 
@@ -2532,6 +2540,7 @@ async def _follow_up(
                     clock_level=None if book is None else book.clock_level,
                     clock_fixed=False if book is None else book.clock_fixed,
                     items=None if book is None else book.names_item,
+                    illustrate=bool(sections.illustrate_instruction),
                 ),
                 variant=NARRATOR_VARIANT,
                 params=params,
@@ -2939,6 +2948,9 @@ def _merge_repair(checked: Checked, result: RepairResult) -> None:
     if accepted is not None and found is not None:
         (made,) = found.beats
         accepted = replace(made, repaired_from=accepted.repaired_from)
+    if accepted is not None and accepted.illustrate is None:
+        # #265: a repaired beat keeps the illustration point its render marked.
+        accepted = replace(accepted, illustrate=result.original.illustrate)
     beats: list[TurnBeat] = []
     for b in checked.beats:
         if b.beat != number:
@@ -4378,6 +4390,8 @@ async def play(
     settings = configuration.settings
     captured = configuration.configuration()
     read_set = StructuredReadSet()
+    # #265 (FR-IMG-6): automatic illustration as the story's settings stand at the start.
+    illustration = await auto_images.illustration_of(models, story.settings)
     stamped: list[Stamp] = []
     gated: list[Gated] = []
     released: list[Rendered] = []
@@ -5248,6 +5262,10 @@ async def play(
             length_target=length_line(read.resolved.max_tokens),
             # #168: the step contract, for a character that keeps its own beliefs.
             belief_steps=module_on(settings, belief_transitions.PARTITIONS_MODULE),
+            # #265 (FR-IMG-6): the illustrate hints, asked of every beat render when auto.
+            illustrate_instruction=auto_images.STRUCTURED_ILLUSTRATE_INSTRUCTION
+            if illustration.instructs
+            else "",
         )
         budget_tokens = settings.render.prompt_token_budget
         max_beats = settings.render.max_beats
@@ -5427,6 +5445,7 @@ async def play(
                                 clock_level=book.clock_level,
                                 clock_fixed=book.clock_fixed,
                                 items=book.names_item,
+                                illustrate=bool(sections.illustrate_instruction),
                             ),
                             variant=NARRATOR_VARIANT,
                             params=params,
@@ -5483,6 +5502,7 @@ async def play(
                         clock_level=book.clock_level,
                         clock_fixed=book.clock_fixed,
                         items=book.names_item,
+                        illustrate=bool(sections.illustrate_instruction),
                     ),
                     variant=STRUCTURED,
                     params=params,
@@ -6275,6 +6295,13 @@ async def play(
             if any(b.effects for b in checked.beats):
                 op.add_commit_step(partial(apply_effects, beats=list(checked.beats)))
         op.add_commit_step(partial(write_turn, read=read, rendered=rendered, checked=checked))
+        # #265 (FR-IMG-6): the turn's illustration points (never the safe fallback's), queued in
+        # its own commit; a staged turn stores them with the intent (``write_report``) and
+        # queues them in its completion's commit.
+        points = [] if outcome.fallback_used else auto_images.points_of(checked.beats)
+        fixed["illustration"] = points
+        if points and illustration.queues and not staged_turn[0]:
+            op.add_commit_step(partial(illustrate, points=points))
         if lifecycle_plan:
             # #196: the scheduled events' lifecycle, after the turn's canon (its own creates).
             op.add_commit_step(partial(record_schedule, planned=list(lifecycle_plan)))
@@ -6863,6 +6890,13 @@ async def play(
         clock.add("commit", time.perf_counter() - committing)
         await write_report(conn, rendered, checked, op_turn=read.turn)
 
+    async def illustrate(
+        conn: AsyncConnection, *, points: list[auto_images.IllustrationPoint]
+    ) -> None:
+        await auto_images.queue_points(
+            conn, op, points, illustration=illustration, viewpoint=viewpoint, pipeline=STRUCTURED
+        )
+
     async def write_report(
         conn: AsyncConnection, rendered: Rendered, checked: Checked, *, op_turn: int
     ) -> None:
@@ -7018,6 +7052,11 @@ async def play(
         for repaired in checked.repairs:
             count_repair(repaired.rung, repaired.repair_class.value)
         count_degradation(report["degradation"])  # #456
+        if staged_turn[0] and illustration.queues and fixed.get("illustration"):
+            # #265: a staged turn's accepted illustration points, queued at its completion.
+            report[auto_images.REPORT_KEY] = auto_images.staged_report(
+                fixed["illustration"], illustration
+            )
         await conn.execute(
             update(operations)
             .where(operations.c.operation_id == op.operation_id)
@@ -7120,6 +7159,7 @@ async def play(
             ctx.narrator_sections,
             constraints=staged_turns.lines(answers, recorded, dict(read_.names)),
             pending_outcomes=(),
+            illustrate_instruction="",  # #265: the outcome step marks no illustration point
         )
         inputs = prompts.narrator_inputs(
             sections, read_.actor, say=None, do=None, budget=ctx.budget_tokens
@@ -7384,6 +7424,8 @@ async def play(
         op.add_commit_step(
             partial(staged_turns.write_report, operation_id=op.operation_id, report=report)
         )
+        # #265: the intent's illustration points, queued in the completion's commit.
+        op.add_commit_step(partial(auto_images.queue_staged, op=op, pipeline=STRUCTURED))
         op.turn_stage = StagedTurnStage.COMPLETED
         op.stage_turn(staged_turns.COMPLETION)
         await op.commit()
@@ -7516,6 +7558,12 @@ async def play(
             ]
             # #175: a simultaneous turn's settled conflicts.
             fields["adjudications"] = list(multis[0].adjudications)
+        # #261 (FR-IMG-5): the story images positioned within the turn, for its viewpoint.
+        fields["images"] = await story_images.images_for_operation(
+            conn, story_id, committed.narrative_turn, committed.turn_variant or 0, viewpoint
+        )
+        # #265 (FR-IMG-6): the automatic images the turn queued (a staged turn's at completion).
+        fields["pending_images"] = await lite._pending(conn, committed.operation_id)
         if regenerating is not None:
             return RegenerateResult(**fields, previous_variant=regenerating.variant)
         return RespondResult(**fields)

@@ -24,6 +24,12 @@ port. Options the child applies to itself before serving:
 - ``stub_rules`` (#213): ``StubRule``s the child's stub adapter answers with
   (``StubAdapter.when``), so a child plays scripted turns (a staged turn's render declaring an
   effect, its outcome step). They may be changed between restarts;
+- ``images`` (#256): the child registers ``testing.images``' PNG adapter as ``IMAGE_ADAPTER``
+  (and, #268, its ``async`` and idempotent variants as ``IMAGE_ADAPTER_ASYNC`` and
+  ``IMAGE_ADAPTER_IDEMPOTENT``),
+  the test target for ``story`` image jobs, and checks that pass every output (so a test can
+  enqueue an image job and kill the child at an ``images.*`` crash point); ``config_key``
+  (``EPISTREL_CONFIG_KEY``) lets it decrypt the image adapter's key the test configured;
 - ``deliver`` (#213): modules the child treats as delivered (``core.profiles.schema.
   DELIVERED``, as the ``states_delivered`` fixture does in-process; ``states`` until #203
   delivers it for real).
@@ -153,6 +159,8 @@ class EngineProcess:
         mode: str = "all",
         stub_rules: Sequence[StubRule] = (),
         deliver: Sequence[str] = (),
+        images: bool = False,
+        config_key: str | None = None,
     ) -> None:
         self.database_url = database_url
         self.credential = credential
@@ -166,6 +174,8 @@ class EngineProcess:
         self.mode = mode
         self.stub_rules = list(stub_rules)
         self.deliver = list(deliver)
+        self.images = images
+        self.config_key = config_key
         self.media_root = tempfile.mkdtemp(prefix="epistrel-faults-media-")
         weakref.finalize(self, shutil.rmtree, self.media_root, ignore_errors=True)
         self.erasure_ledger_dir = tempfile.mkdtemp(prefix="epistrel-faults-ledger-")
@@ -195,6 +205,7 @@ class EngineProcess:
             "EPISTREL_MEDIA_ROOT": self.media_root,
             "EPISTREL_ERASURE_LEDGER_DIR": self.erasure_ledger_dir,
             **(self.crash.env() if self.crash is not None else {}),
+            **({"EPISTREL_CONFIG_KEY": self.config_key} if self.config_key else {}),
         }
 
     async def start(self) -> None:
@@ -260,6 +271,8 @@ class EngineProcess:
             args += ["--stub-rules", self._rules_file()]
         for module in self.deliver:
             args += ["--deliver", module]
+        if self.images:
+            args.append("--images")
         bound: asyncio.Future[int | None] = asyncio.get_running_loop().create_future()
         self.process = await asyncio.create_subprocess_exec(
             *args,
@@ -419,6 +432,30 @@ def _script_stub(app: Any, path: str) -> None:
         stub.when(tuple(rule["needles"]), rule["response"], purpose=rule["purpose"])
 
 
+IMAGE_ADAPTER = "faults_png"
+"""The image adapter name a child started with ``images`` registers (#256)."""
+IMAGE_ADAPTER_ASYNC = "faults_png_async"
+"""#268: the child's ``async`` PNG adapter (it acknowledges in ``submit``)."""
+IMAGE_ADAPTER_IDEMPOTENT = "faults_png_idempotent"
+"""#268: the child's ``sync`` PNG adapter that declares ``idempotency_keys``."""
+
+
+def _images() -> None:
+    """Register the test image adapter, target and passing checks in the child (#256)."""
+    from epistrel.core.tables.images import ImageJobKind
+    from epistrel.orchestrator.images import jobs
+    from epistrel.orchestrator.images.registry import register_image_adapter
+    from epistrel.testing.images import PngImageGenerator, ScriptedChecks, TestImageTarget
+
+    register_image_adapter(IMAGE_ADAPTER, PngImageGenerator(), replace=True)
+    register_image_adapter(IMAGE_ADAPTER_ASYNC, PngImageGenerator(submission="async"), replace=True)
+    register_image_adapter(
+        IMAGE_ADAPTER_IDEMPOTENT, PngImageGenerator(idempotency_keys=True), replace=True
+    )
+    jobs.register_target(ImageJobKind.STORY, TestImageTarget())
+    jobs.set_image_checks(ScriptedChecks(fail_closed=False))
+
+
 def serve(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="epistrel.testing.faults serve")
     parser.add_argument("--port", type=int, required=True, help="0: any free port")
@@ -427,6 +464,7 @@ def serve(argv: list[str] | None = None) -> int:
     parser.add_argument("--turn-start-delay-s", type=float, default=0.0)
     parser.add_argument("--stub-rules", default=None)
     parser.add_argument("--deliver", action="append", default=[])
+    parser.add_argument("--images", action="store_true")
     args = parser.parse_args(argv)
 
     import uvicorn
@@ -443,6 +481,8 @@ def serve(argv: list[str] | None = None) -> int:
         _delay_turn_starts(args.turn_start_delay_s)
     if args.deliver:
         _deliver(args.deliver)
+    if args.images:
+        _images()
     app = create_app()
     if args.stub_rules:
         _script_stub(app, args.stub_rules)
@@ -540,6 +580,9 @@ __all__ = [
     "COMMIT_POINTS",
     "EX_ADDRESS_IN_USE",
     "FAULT_MARKER",
+    "IMAGE_ADAPTER",
+    "IMAGE_ADAPTER_ASYNC",
+    "IMAGE_ADAPTER_IDEMPOTENT",
     "LISTENING",
     "POINTS",
     "STAGED_POINTS",

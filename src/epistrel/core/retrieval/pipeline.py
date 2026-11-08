@@ -29,7 +29,8 @@ embedding calls are excluded and counted in ``model_calls``):
    reflections whose ``participants`` include one of them, formed from the window's start on.
    Neither a window nor a type: the step is skipped (``skipped: ["occasion"]``).
 3. **hybrid arms** (FR-RET-4): the **vector** arm (``search.vector_search`` over the HNSW
-   index, ``SET LOCAL hnsw.ef_search`` and ``hnsw.iterative_scan = relaxed_order``, only
+   index, ``SET LOCAL hnsw.ef_search``, ``hnsw.iterative_scan = relaxed_order`` and
+   ``hnsw.max_scan_tuples = HNSW_MAX_SCAN_TUPLES`` (#706), only
    vectors in the pinned version, #138's never-mix rule), the **lexical** arm (the
    ``LexicalSearch`` backend over ``memories.search``; a hit scoring under
    ``LEXICAL_RELATIVE_FLOOR`` of the best hit is dropped, #458) and the **alias** arm (the
@@ -207,6 +208,16 @@ CANON_PER_ENTITY = 20
 BELIEFS_MAX = 20
 """The most beliefs the ``beliefs`` arm returns (#159)."""
 PARTITIONS_MODULE = "partitions"
+HNSW_MAX_SCAN_TUPLES = 100_000
+"""``SET LOCAL hnsw.max_scan_tuples`` of the vector arm (#706): how many index tuples the HNSW
+iterative scan may visit before it ends. The index is global, so a story's ``story_id``
+filter discards every other story's nearer vectors. With pgvector's default of 20,000, a
+story with few vectors in a deployment of more than 20,000 nearer ones got none back. 100,000
+covers a story's whole hot-vector bound (``hot_vector_budget_per_story`` 50,000 plus
+``max_pinned_per_story`` 2,000) nearly twice over beside it. A story with fewer than
+``retrieval_vector_k`` vectors still reads to the cap on every retrieval, so the cap is also
+that read's cost bound. It bounds the miss and does not remove it: a tiny story among more
+than 100,000 nearer vectors can still lose some (docs/02 §6, the retrieval pipeline)."""
 
 ARM_VECTOR = "vector"
 ARM_LEXICAL = "lexical"
@@ -1083,6 +1094,9 @@ async def retrieve(
                 version = str(pin.version)
                 await conn.execute(text(f"SET LOCAL hnsw.ef_search = {int(params.ef_search)}"))
                 await conn.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+                await conn.execute(
+                    text(f"SET LOCAL hnsw.max_scan_tuples = {int(HNSW_MAX_SCAN_TUPLES)}")
+                )
                 hits = await vector_search(
                     conn,
                     story_id,

@@ -5,7 +5,9 @@ or ``video``), the MIME type sniffed from its bytes, its size, its dimensions or
 when no probe could read them), the SHA-256 ``checksum`` that addresses its bytes in the blob
 store, the content-rating version it was uploaded under, alt text, caption, generation metadata,
 ``source`` (``uploaded``; ``extracted`` for a video's poster ffmpeg took from its first frame,
-#107; ``generated`` from M8), ``state``, the ``depicted_subjects`` the upload declared (``[{kind,
+#107; ``generated`` or ``generated_from_consumer_prompt`` from M8), the output check's
+``check_status`` (``passed`` or ``unchecked``), ``check_model``, ``check_endpoint`` and per-policy
+``policy_results`` (#258), ``state``, the ``depicted_subjects`` the upload declared (``[{kind,
 id}]``) and, for a video, ``poster_media_id``: the image asset that is its poster (FR-MEDIA-3;
 #107), a plain reference the media sweep counts. Two assets with identical bytes share one blob:
 the blob is keyed by checksum, never by asset. ``state`` is ``live``; ``retired`` once deleted
@@ -46,8 +48,9 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 from epistrel.core.tables.base import metadata, ulid_type
 
@@ -63,12 +66,23 @@ class MediaKind(StrEnum):
 
 
 class MediaSource(StrEnum):
-    """Where an asset came from: ``uploaded`` by the consumer, ``generated`` (M8), or
-    ``extracted``: a video's poster taken from its first frame with ffmpeg (#107)."""
+    """Where an asset came from (FR-IMG-10): ``uploaded`` by the consumer, ``generated`` from an
+    Epistrel-built prompt, ``generated_from_consumer_prompt`` (#258), or ``extracted``: a video's
+    poster taken from its first frame with ffmpeg (#107)."""
 
     UPLOADED = "uploaded"
     GENERATED = "generated"
+    GENERATED_FROM_CONSUMER_PROMPT = "generated_from_consumer_prompt"
     EXTRACTED = "extracted"
+
+
+class CheckStatus(StrEnum):
+    """Whether Epistrel checked an image (FR-IMG-3,10; #258): ``passed`` every applicable
+    image-output policy under a named checker, or ``unchecked``: Epistrel did not check it
+    (never a pass). A rejected image is never stored, so there is no third value."""
+
+    PASSED = "passed"
+    UNCHECKED = "unchecked"
 
 
 class MediaState(StrEnum):
@@ -120,8 +134,20 @@ def _in(column: str, values: type[StrEnum]) -> str:
 
 KIND_CHECK = _in("kind", MediaKind)
 SOURCE_CHECK = _in("source", MediaSource)
+CHECK_STATUS_CHECK = _in("check_status", CheckStatus)
+CHECKED_BY_CHECK = (
+    "check_status <> 'passed' OR (check_model IS NOT NULL AND check_endpoint IS NOT NULL)"
+)
+"""A ``passed`` image names its checker's model and endpoint host (#258)."""
 STATE_CHECK = _in("state", MediaState)
 CHECKSUM_CHECK = "checksum ~ '^[0-9a-f]{64}$'"
+VIEWPOINT_BASES = ("filtered_inputs", "protected_term_match", "none")
+"""``media_assets.viewpoint_basis`` (#261; ``core.tables.story_images.ViewpointBasis``)."""
+VIEWPOINT_BASIS_CHECK = (
+    "viewpoint_basis IS NULL OR viewpoint_basis IN ("
+    + ", ".join(f"'{v}'" for v in VIEWPOINT_BASES)
+    + ")"
+)
 SUBJECT_KIND_CHECK = _in("subject_kind", SubjectKind)
 SCOPE_CHECK = _in("scope", ReferenceScope)
 REF_KIND_CHECK = _in("ref_kind", ReferenceKind)
@@ -161,11 +187,30 @@ media_assets = Table(
     Column("created_at", TIMESTAMP(timezone=True), nullable=False),
     Column("created_by", Text, nullable=False),
     Column("poster_media_id", ulid_type(), nullable=True),
+    # The output check (#258): ``passed`` with the checker's model, its endpoint's host and,
+    # per applicable policy, ``{policy_id, policy_version, policy_name, result: pass, uncertain,
+    # certified}`` (passes only: a violating image is never stored); or ``unchecked``.
+    Column("check_status", Text, nullable=False, server_default=text("'unchecked'")),
+    Column("check_model", Text, nullable=True),
+    Column("check_endpoint", Text, nullable=True),
+    Column("policy_results", JSONB, nullable=False, server_default=text("'[]'::jsonb")),
+    # FR-IMG-10 (#261): what a story image's perceivable inputs were built from
+    # (``filtered_inputs``, ``protected_term_match``, or ``none`` for an upload); ``NULL`` for an
+    # asset that is no story image.
+    Column("viewpoint_basis", Text, nullable=True),
+    # FR-IMG-11 (#268): a generated output's job, the attempt token it was promoted under and its
+    # index in the provider's return order; unique together, so no output is promoted twice.
+    Column("source_job_id", ulid_type(), nullable=True),
+    Column("source_attempt_token", UUID(as_uuid=False), nullable=True),
+    Column("output_index", Integer, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(SOURCE_CHECK, name="source"),
+    CheckConstraint(CHECK_STATUS_CHECK, name="check_status"),
+    CheckConstraint(CHECKED_BY_CHECK, name="checked_by"),
     CheckConstraint(STATE_CHECK, name="state"),
     CheckConstraint(CHECKSUM_CHECK, name="checksum"),
     CheckConstraint("size >= 0", name="size"),
+    CheckConstraint(VIEWPOINT_BASIS_CHECK, name="viewpoint_basis"),
 )
 
 # The blob's other users (the sweep's "no row of any state has this checksum"), listing by owner
@@ -180,6 +225,14 @@ Index(
 )
 # The media sweep's "does a video name this poster" (#107).
 Index("ix_media_assets_poster_media_id", media_assets.c.poster_media_id)
+# Promotion at most once (FR-IMG-11; #268): one row per job, attempt token and output index.
+Index(
+    "ux_media_assets_source_output",
+    media_assets.c.source_job_id,
+    media_assets.c.source_attempt_token,
+    media_assets.c.output_index,
+    unique=True,
+)
 
 media_upload_sessions = Table(
     "media_upload_sessions",
@@ -262,8 +315,10 @@ Index(
 )
 
 __all__ = [
+    "CHECKED_BY_CHECK",
     "CHECKSUM_CHECK",
     "CHECKSUM_LENGTH",
+    "CHECK_STATUS_CHECK",
     "DECLARED_SHA256_CHECK",
     "KIND_CHECK",
     "MENTION_RULES",
@@ -276,6 +331,7 @@ __all__ = [
     "STORY_SCOPE_CHECK",
     "SUBJECT_KIND_CHECK",
     "UPLOAD_STATE_CHECK",
+    "CheckStatus",
     "MediaKind",
     "MediaSource",
     "MediaState",

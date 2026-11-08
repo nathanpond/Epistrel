@@ -143,6 +143,9 @@ from epistrel.core.tables import (
     genesis_deferred,
     guardrail_check_results,
     idempotency_keys,
+    image_costs,
+    image_jobs,
+    image_reservations,
     jobs,
     lite_summary_segments,
     media_assets,
@@ -207,6 +210,7 @@ from epistrel.core.tables.states import (
     state_proposals,
     state_values,
 )
+from epistrel.core.tables.story_images import story_images
 from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
 
@@ -245,6 +249,8 @@ STORY_TABLES: tuple[Table, ...] = (
     characters,
     turn_queue,
     jobs,
+    # Image jobs (#256): transient work, deleted with the story; not copied by a fork.
+    image_jobs,
     rating_check_jobs,
     guardrail_check_results,
     timers,
@@ -278,6 +284,9 @@ STORY_TABLES: tuple[Table, ...] = (
     # Scheduled events (#196): a derived table (each lifecycle step a version), before the
     # operations it references; copied by a fork through the fork point like ``facts``.
     scheduled_events,
+    # Story images (#261): a derived table, before the operations it references (the placing
+    # and the deleting one); copied by a fork by reference to the same assets.
+    story_images,
     # The outbox (#210): the outcome records (append-only, no foreign key), then the
     # outbox (a derived table), before the operations it references; #211's reconciliation
     # marks (ids and reason codes, no foreign key) first.
@@ -333,6 +342,7 @@ goes with that operation."""
 STORY_TABLES_NOT_COPIED: frozenset[str] = frozenset(
     {
         jobs.name,
+        image_jobs.name,
         turn_queue.name,
         timers.name,
         audit_log.name,
@@ -373,15 +383,21 @@ source's renders, which ``GET /admin/evals/extraction-shadow`` counts once), and
 records (#155: the source's turns' entailment calls, which ``GET /admin/evals/escalation-yield``
 counts once), and the engine's State proposals (#192: the source's review queue, whose evidence
 may point past the fork point; the fork's own analysis proposes again), and the reconciliation
-marks (#211: the source's listings; the fork's outbox copies are records, never listed). Every
+marks (#211: the source's listings; the fork's outbox copies are records, never listed), and the
+image jobs (#256: work in progress, like ``jobs``). Every
 other table
 in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is copied unless it
 is named here."""
 
-STORY_ID_EXCEPTIONS: frozenset[str] = frozenset({audit_log.name, certification_runs.name})
+STORY_ID_EXCEPTIONS: frozenset[str] = frozenset(
+    {audit_log.name, certification_runs.name, image_reservations.name, image_costs.name}
+)
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
-column instead of removing the row. ``audit_log`` (#56) and ``certification_runs`` (#233: a
-story's certification run is a deployment record)."""
+column instead of removing the row. ``audit_log`` (#56), ``certification_runs`` (#233: a
+story's certification run is a deployment record) and ``image_reservations`` (#262, owner
+decision 13: image accounting; the records the story's jobs still hold are released first, and
+the limit counters and the records' ``counter_keys`` are untouched) with ``image_costs`` (#269:
+the attempts' costs, so the deployment's usage report keeps them)."""
 
 STORY_DELETE_SETTING = "epistrel.allow_story_delete"
 """The transaction setting the ``events`` trigger reads to let one story's events be deleted."""
@@ -1561,6 +1577,21 @@ async def _refuse_running_job(conn: AsyncConnection, story_id: str) -> None:
         )
         .limit(1)
     )
+    if running is None:
+        # #262: an image job of the story generating or checking is running work too; #264:
+        # one waiting on the paused story is not (it holds no lease, and goes with the story).
+        running = await conn.scalar(
+            select(image_jobs.c.id)
+            .where(
+                image_jobs.c.story_id == story_id,
+                image_jobs.c.status.in_(("generating", "checking")),
+                or_(
+                    image_jobs.c.status_detail.is_(None),
+                    image_jobs.c.status_detail["waiting_on"].astext.is_(None),
+                ),
+            )
+            .limit(1)
+        )
     if running is not None:
         raise StoryBusy(
             "a background job of the story is running; retry when it finishes",
@@ -1662,9 +1693,13 @@ async def _delete_story_rows(conn: AsyncConnection, story_id: str) -> dict[str, 
         conn, idempotency_keys.name, [idempotency_id(k.scope, k.scope_id, k.key) for k in keys]
     )
     from epistrel.core.bundles import delete_story_bundles
+    from epistrel.core.images.limits import release_for_story
 
     # #704: the story's exports and their archive files go with it.
     removed["bundle_exports"] = await delete_story_bundles(conn, story_id)
+    # #262: the reservations its image jobs still hold are released and every record of the
+    # story is kept with ``story_id`` nulled (deployment accounting); then the jobs go.
+    await release_for_story(conn, story_id)
     for table in STORY_TABLES:
         result = await conn.execute(delete(table).where(table.c.story_id == story_id))
         removed[table.name] = result.rowcount

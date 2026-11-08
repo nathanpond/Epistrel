@@ -15,7 +15,10 @@ is the structured caller's, #53). A model that answers a 400 naming ``temperatur
 ``top_p`` is retried once without both and remembered per endpoint and model (#235: Claude 4.7
 and later accept only their default sampling; the model's default then applies). A client for
 ``api.anthropic.com`` also sends ``anthropic-version``: that endpoint's ``GET /models`` is the
-native Anthropic API, which answers a request without it with a 400 (#235). SDK
+native Anthropic API, which answers a request without it with a 400 (#235). A structured call
+to ``api.anthropic.com`` sends ``json_schema.strict: true`` with the schema's strict wire form,
+as that endpoint refuses any other (#761, ``provider_schema``); every other endpoint's request is
+unchanged. SDK
 exceptions escape as themselves; the Model Access Layer maps them
 (``errors.map_provider_error``), and a 200 that is not a chat completion raises
 ``ProviderGarbage``.
@@ -29,7 +32,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-import urllib.parse
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -50,6 +52,7 @@ from epistrel.orchestrator.models.adapter import (
 )
 from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox, key_fingerprint
 from epistrel.orchestrator.models.errors import ProviderGarbage
+from epistrel.orchestrator.models.provider_schema import is_anthropic, strict_wire_schema
 
 log = logging.getLogger(__name__)
 
@@ -64,12 +67,20 @@ def request_body(
     *,
     legacy_max_tokens: bool = False,
     sampling: bool = True,
+    strict: bool = False,
 ) -> dict[str, Any]:
     """The Chat Completions arguments (everything but the timeout); without ``sampling``, no
-    ``temperature`` or ``top_p``."""
+    ``temperature`` or ``top_p``. With a ``response_schema``, ``response_format`` is
+    ``{"type": "json_schema", "json_schema": {"name", "schema"}}``; with ``strict`` (an
+    api.anthropic.com endpoint, #761) it also carries ``"strict": true`` and the schema is its
+    strict wire form (``provider_schema.strict_wire_schema``). A schema with no wire form is sent
+    as without ``strict``; ``structured_call`` never asks for one (``json_schema_mode``). A
+    message with image parts is sent as a content array of ``text`` and ``image_url`` parts
+    (#258)."""
     body: dict[str, Any] = {
         "model": model,
-        "messages": [m.model_dump() for m in messages],
+        # A multimodal message's parts go as OpenAI's content array (#258).
+        "messages": [m.wire() for m in messages],
         "stream": False,
     }
     if sampling and params.temperature is not None:
@@ -83,13 +94,13 @@ def request_body(
     if params.max_tokens is not None:
         body["max_tokens" if legacy_max_tokens else "max_completion_tokens"] = params.max_tokens
     if response_schema is not None:
-        body["response_format"] = {
-            "type": "json_schema",
-            "json_schema": {
-                "name": response_schema.__name__,
-                "schema": response_schema.model_json_schema(),
-            },
-        }
+        schema = response_schema.model_json_schema()
+        wire = strict_wire_schema(schema) if strict else None
+        json_schema: dict[str, Any] = {"name": response_schema.__name__}
+        if wire is not None:
+            json_schema["strict"] = True
+        json_schema["schema"] = schema if wire is None else wire
+        body["response_format"] = {"type": "json_schema", "json_schema": json_schema}
     return body
 
 
@@ -100,8 +111,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 def provider_headers(base_url: str) -> dict[str, str]:
     """Extra headers a provider needs beyond the OpenAI protocol: ``anthropic-version`` for
     ``api.anthropic.com`` (#235); none for any other endpoint."""
-    host = urllib.parse.urlsplit(base_url).hostname or ""
-    if host == "api.anthropic.com":
+    if is_anthropic(base_url):
         return {"anthropic-version": ANTHROPIC_VERSION}
     return {}
 
@@ -249,6 +259,7 @@ class OpenAICompatibleAdapter:
                 response_schema,
                 legacy_max_tokens=legacy,
                 sampling=sampling,
+                strict=is_anthropic(base_url),
             )
             try:
                 completion = await client.chat.completions.create(**body, timeout=timeout)

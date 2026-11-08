@@ -17,3 +17,6 @@ htmlcov/
 
 # The eval results journal (#730): per-case outcomes, model output included; never committed.
 /.evals-results/
+
+# E-11's generated images (#270): never committed, only the manifest with each image's sha256.
+evals/sets/e11/**/*.png

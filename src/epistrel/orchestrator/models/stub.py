@@ -142,7 +142,7 @@ def canonical_digest(purpose: str, messages: Sequence[Message], params: ModelPar
     """SHA-256 over canonical JSON of the request: the same in every process."""
     body = {
         "purpose": purpose,
-        "messages": [m.model_dump() for m in messages],
+        "messages": [m.wire() for m in messages],
         "params": params.wire(),
     }
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

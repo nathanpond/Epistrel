@@ -12,7 +12,7 @@ A coverage test fails on a story table classified nowhere.
 transaction pinned to the story's revision (``exported_revision``) reads the story row, its
 committed operations (in-flight ones are left out, with their events), its events in ``seq``
 order and every ``EXPORT`` table's rows, and writes one gzip-compressed POSIX tar under
-``EPISTREL_BUNDLE_DIR``: ``manifest.json`` first (format ``1.0.0``, the source story, the
+``EPISTREL_BUNDLE_DIR``: ``manifest.json`` first (format ``1.1.0``, the source story, the
 revision, the Alembic head, when and by whom, and per file its path, SHA-256, size and record
 count), then ``records/story.json``, ``events.jsonl`` and ``records/<table>.jsonl`` in a fixed
 order. Lines are canonical JSON (sorted keys, UTF-8, ``\\n``), so two exports of one revision
@@ -48,6 +48,16 @@ a bundle.
   its exports and files (``delete_story_bundles``).
 - **Secrets.** The scan covers the model API keys and provider credentials the Engine passes,
   besides the service credentials and the config key.
+
+#272 (format ``1.1.0``): the story's images (``records/story_images.jsonl``, ``EXPORT`` by
+default) travel with their assets, deleted and retired ones included; a ``media.jsonl`` line
+carries the asset's check fields (``check_status``, ``check_model``, ``check_endpoint``,
+``policy_results``) and ``viewpoint_basis``. The image work and accounting tables
+(``image_jobs``, ``image_reservations``, ``image_costs``) are ``NEVER``, as is every
+deployment-level table that carries a ``story_id`` (``core.stories.STORY_ID_EXCEPTIONS``:
+``audit_log``, ``certification_runs`` (#773) and the image accounting). A ``1.0.0`` bundle
+imports through ``format.FORMAT_MIGRATIONS``' step: its media lines get the new fields' empty
+values, and it imports with no story images.
 """
 
 from __future__ import annotations
@@ -81,7 +91,7 @@ from epistrel.testing import pauses
 
 log = get_logger(__name__)
 
-FORMAT_VERSION = "1.0.0"
+FORMAT_VERSION = "1.1.0"
 TTL = timedelta(hours=24)
 EXPORT_KIND = "story_export"
 """The job kind (#70)."""
@@ -107,9 +117,13 @@ REBUILD: frozenset[str] = frozenset(
 NEVER: frozenset[str] = frozenset(
     {
         "jobs",
+        "image_jobs",
+        "image_reservations",
+        "image_costs",
         "turn_queue",
         "timers",
         "audit_log",
+        "certification_runs",
         "idempotency_keys",
         "worker_heartbeats",
         "rating_check_jobs",
@@ -342,13 +356,22 @@ MEDIA_FIELDS = (
     "depicted_subjects",
     "content_rating_version_id",
     "poster_media_id",
+    "viewpoint_basis",
+    "check_status",
+    "check_model",
+    "check_endpoint",
+    "policy_results",
 )
+MEDIA_FIELDS_1_1 = ("check_status", "check_model", "check_endpoint", "policy_results")
+"""#272: the fields format ``1.1.0`` added to a ``media.jsonl`` line (``viewpoint_basis``,
+#261, with them)."""
 
 
 async def _media(conn: AsyncConnection, story_row: Any, story_id: str) -> list[dict[str, Any]]:
     """#704: the media assets the story's rows reference (its characters' images, its catalog
-    snapshots, its scenario snapshot) and their posters, as ``media.jsonl`` lines."""
-    from epistrel.core.tables import characters, media_assets
+    snapshots, its scenario snapshot, #261: its story images, deleted ones included) and their
+    posters, as ``media.jsonl`` lines."""
+    from epistrel.core.tables import characters, media_assets, story_images
 
     wanted = _ulids(story_row.scenario_snapshot)
     for (images,) in await conn.execute(
@@ -361,6 +384,12 @@ async def _media(conn: AsyncConnection, story_row: Any, story_id: str) -> list[d
             select(snapshots.c.content).where(snapshots.c.story_id == story_id)
         ):
             wanted |= _ulids(content)
+    wanted |= {
+        str(a)
+        for a in await conn.scalars(
+            select(story_images.c.asset_id).where(story_images.c.story_id == story_id)
+        )
+    }
     if not wanted:
         return []
     m = media_assets.c

@@ -21,6 +21,8 @@
 - ``POST /catalog/characters/{id}/rating-suggestion``: the advisory table of every rating's
   fit (FR-RATE-8; #121; ``routes.rating_suggestion``): author-facing, nothing written, no
   ``Idempotency-Key``.
+- ``POST /catalog/characters/{id}/draft/visual-identity/draft-base-prompt``: a base appearance
+  prompt drafted from the draft's appearance, answered and not saved (FR-CAT-4; #259).
 - ``PUT /catalog/characters/{id}/owner``, ``POST``/``GET …/relations`` and ``DELETE
   …/relations/{relation}/{principal}``: the entry's owner and relations (``routes.ownership``,
   #104). Nothing gates on them (FR-AUTH-8).
@@ -35,7 +37,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response
+from fastapi import APIRouter, Body, Query, Response
 from fastapi import status as http_status
 from pydantic import BaseModel
 
@@ -83,6 +85,7 @@ from epistrel.core.catalog.search import CatalogPage
 from epistrel.core.enums import EntryStatus
 from epistrel.core.ratings.suggest import RatingSuggestion
 from epistrel.core.tables.ownership import EntityType
+from epistrel.orchestrator.images.prompt_builder import BaseAppearanceRequest, DraftedBaseAppearance
 
 router = APIRouter(prefix="/catalog/characters", tags=["catalog"])
 
@@ -539,6 +542,38 @@ async def suggest_ratings_character(
     suggestion.refuse_projection(projection)
     return await engine.suggest_ratings(
         ctx, EntityType.CHARACTER, character_id, body, include_retired=include_retired
+    )
+
+
+@router.post(
+    "/{character_id}/draft/visual-identity/draft-base-prompt",
+    response_model=DraftedBaseAppearance,
+    operation_id="draft_base_appearance_prompt",
+    summary="Draft a base appearance prompt (not saved)",
+    description=(
+        "Drafts the character's `visual_identity.base_appearance_prompt` from its draft's "
+        "`definition.appearance` with the `image_prompt` model (FR-CAT-4), and answers it with "
+        "the draft's `draft_revision` **without saving it**. Save it, edited or not, through an "
+        "ordinary draft save (`PATCH /catalog/characters/{character_id}`). The text uses only "
+        "the appearance: no style, no rating guidance, no exact age, no age band and no "
+        "restricted detail (authored ages are left out before the model sees the appearance). "
+        "A drafted text that states the true age, a number of years or a word of the "
+        "restricted-details prompt is regenerated once, then 503 `image_prompt_unavailable`. "
+        "The optional body's `draft_revision` is the revision the caller holds: 409 "
+        "`draft_stale` when the draft has moved on. 404 for an unknown character; 422 "
+        "`validation_error` (`definition.appearance`) without an appearance. Writes nothing and "
+        "stores nothing under an `Idempotency-Key`."
+    ),
+    **route_flags(mutating=False),
+)
+async def draft_base_appearance_prompt(
+    character_id: CharacterId,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[BaseAppearanceRequest | None, Body()] = None,
+) -> DraftedBaseAppearance:
+    return await engine.draft_base_appearance_prompt(
+        ctx, character_id, None if body is None else body.draft_revision
     )
 
 

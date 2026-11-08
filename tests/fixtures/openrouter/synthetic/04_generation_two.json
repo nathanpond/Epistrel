@@ -1,0 +1,56 @@
+{
+  "meta": {
+    "true_height": [
+      24,
+      24
+    ],
+    "true_width": [
+      32,
+      32
+    ]
+  },
+  "request": {
+    "body": {
+      "model": "synthetic-author/synthetic-image",
+      "n": 2,
+      "prompt": "a lighthouse at dusk",
+      "provider": {
+        "allow_fallbacks": false,
+        "only": [
+          "alpha"
+        ]
+      },
+      "seed": 7
+    },
+    "headers": {
+      "Authorization": "REDACTED",
+      "Content-Type": "application/json",
+      "X-Title": "Epistrel"
+    },
+    "method": "POST",
+    "url": "/api/v1/images"
+  },
+  "response": {
+    "body": {
+      "data": [
+        {
+          "b64_json": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAAIklEQVR4nGOwoTFgGLVg1IJRC0YtGLVg1IJRC0YtGBoWAADo8RwfNWxo7AAAAABJRU5ErkJggg==",
+          "media_type": "image/png"
+        },
+        {
+          "b64_json": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAAIklEQVR4nGM4QWPAMGrBqAWjFoxaMGrBqAWjFoxaMDQsAABIvghqaHfI6wAAAABJRU5ErkJggg==",
+          "media_type": "image/png"
+        }
+      ],
+      "id": "REDACTED-1",
+      "provider": "alpha",
+      "usage": {
+        "cost": 0.08
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

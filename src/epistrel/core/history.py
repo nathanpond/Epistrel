@@ -79,7 +79,7 @@ from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, bindparam, case, func, literal_column, or_, select
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -112,6 +112,9 @@ from epistrel.core.viewpoint import (
     resolve_viewpoint,
     visible_to,
 )
+
+if TYPE_CHECKING:
+    from epistrel.core.images.story_images import StoryImageItem
 
 DEFAULT_LIMIT = 200
 MAX_LIMIT = 1_000
@@ -218,6 +221,16 @@ class History:
     """#222 (FR-STORE-23,26): an as-recorded read's records as they stood at the boundary:
     ``facts`` (the versions open then), ``beliefs`` (held then), ``memories`` (created by then,
     their text as it stood) and ``states`` (each State's value at the checkpoint)."""
+    images: list[StoryImageItem] = field(default_factory=list)
+    """#261 (FR-IMG-5): the page's story images for the read's viewpoint, in order
+    (``core.images.story_images``); ``sequence()`` gives them in place among ``items``. They
+    do not count toward the page size."""
+
+    def sequence(self) -> list[HistoryItem | StoryImageItem]:
+        """``items`` with ``images`` in place (``story_images.merge_into_history``)."""
+        from epistrel.core.images.story_images import merge_into_history
+
+        return merge_into_history(self.items, self.images)
 
 
 @dataclass(frozen=True, slots=True)
@@ -269,6 +282,12 @@ async def read_as_recorded(
             checkpoint,
             variant=None if variant is None else variant.variant,
         )
+        from epistrel.core.images import story_images
+
+        # #261 (owner 2026-11-06): the omniscient images the checkpoint holds, in place.
+        images = await story_images.as_recorded(
+            conn, story_id, ((e.type, e.payload) for e in found.events)
+        )
         meta = {
             str(r.message_id): r
             for r in await conn.execute(
@@ -315,6 +334,7 @@ async def read_as_recorded(
             "memories": found.memories,
             "states": found.states,
         },
+        images=images,
     )
 
 
@@ -405,6 +425,20 @@ async def read_history(
             changed,
         )
         noticed = await _notices(conn, story_id, rows, items)
+        from epistrel.core.images import story_images
+
+        # #261 (FR-IMG-5): the page's images for exactly this viewpoint; ``as_of=N`` leaves out
+        # the slots after N (#65's rule).
+        images = await story_images.images_for_history(
+            conn,
+            story_id,
+            resolved,
+            lower=lower,
+            upper=upper,
+            slots_through=through if as_of is None else through - 1,
+            chain=chain,
+            audit=include_audit,
+        )
         audit = (
             await _audit(conn, story_id, lower, upper, story.ages, chain) if include_audit else None
         )
@@ -427,6 +461,7 @@ async def read_history(
         summary=summary,
         audience_filter=heard.stated,
         player_view=view,
+        images=images,
     )
 
 

@@ -1182,3 +1182,26 @@ class AmendmentReverted(EventPayload):
     amendment_id: str
     by: str
     transcript: tuple[TranscriptPatch, ...] = ()
+
+
+STORY_IMAGE_ADDED = "story_image_added"
+STORY_IMAGE_DELETED = "story_image_deleted"
+
+
+@register(STORY_IMAGE_ADDED, category=EventCategory.NARRATIVE_STATE)
+class StoryImageAdded(EventPayload):
+    """A story image placed at a narrative position (FR-IMG-5; #261): its id and its asset's.
+    The event's own position columns are the image's (``beat`` for a beat image, ``slot_k`` for
+    an inter-turn slot's). Identifiers only: the image's row (``story_images``) holds the rest,
+    and no prompt is ever in the event."""
+
+    image_id: str
+    asset_id: str
+
+
+@register(STORY_IMAGE_DELETED, category=EventCategory.NARRATIVE_STATE)
+class StoryImageDeleted(EventPayload):
+    """A story image deleted (FR-IMG-5; #261): it leaves every read while this operation is on
+    the timeline. Its asset stays until the media sweep finds no reference (FR-MEDIA-2)."""
+
+    image_id: str

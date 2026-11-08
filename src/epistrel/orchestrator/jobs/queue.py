@@ -12,7 +12,9 @@ FR-CONC-8; #70). Postgres only — no broker (invariant 5).
   was fenced (the worker cancels its handler).
 - ``reap`` sends every running job whose lease has lapsed back to ``queued`` and advances its
   ``attempt`` (fencing the lost claim); every worker runs it each poll tick and in its start-up
-  recovery pass. A reclaim does not count as a failure.
+  recovery pass. A reclaim does not count as a failure. A kind with a lease-expiry hook
+  (``JobHandler.on_lease_expired``, #267's image job) has it called in the same transaction, and
+  the row is due at the time the hook returns.
 - ``commit_job`` commits a handler's output as one ``maintenance``/``consolidation`` operation
   (story-less jobs: a story-less ``maintenance`` operation), which bumps no revision, plus any
   ``positioned`` operations of the same kind (#72's summary segments) in the same transaction.
@@ -35,7 +37,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -159,10 +161,17 @@ def _claimed(row: Row[Any]) -> ClaimedJob:
     )
 
 
-async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJob | None:
+async def claim(
+    db: AsyncEngine,
+    worker_id: str,
+    *,
+    lease_s: float,
+    exclude_kinds: Collection[str] = (),
+) -> ClaimedJob | None:
     """Claim the earliest due ``queued`` job (``SKIP LOCKED``), or ``None`` when none is due.
     A job of a story the erasure reconciler blocked stays queued, unclaimed, until the story is
-    unblocked (#125); so does a job of a story being imported (#250)."""
+    unblocked (#125); so does a job of a story being imported (#250). Jobs of
+    ``exclude_kinds`` are left for another claim (a kind at its per-process cap, #256)."""
     now = clock.now()
     blocked = exists().where(
         stories.c.id == jobs.c.story_id,
@@ -175,6 +184,7 @@ async def claim(db: AsyncEngine, worker_id: str, *, lease_s: float) -> ClaimedJo
             jobs.c.status == QUEUED,
             jobs.c.due_at <= now,
             or_(jobs.c.story_id.is_(None), ~blocked),
+            *([jobs.c.kind.not_in(list(exclude_kinds))] if exclude_kinds else []),
         )
         .order_by(jobs.c.due_at, jobs.c.id)
         .limit(1)
@@ -263,21 +273,39 @@ async def reap(db: AsyncEngine) -> list[str]:
     """Fence and requeue every running job whose lease has lapsed; returns their ids.
 
     Each lapsed claim is reclaimed exactly once: the row's ``attempt`` advances (so the lost
-    claim's heartbeat and commit are refused) and it is ``queued`` again, due as before. Rows
-    another worker is reaping right now are skipped (``SKIP LOCKED``)."""
+    claim's heartbeat and commit are refused) and it is ``queued`` again, due as before, or at
+    the time its kind's lease-expiry hook returns (#267). Rows another worker is reaping right
+    now are skipped (``SKIP LOCKED``)."""
     now = clock.now()
     reclaimed: list[str] = []
     async with db.begin() as conn:
         expired = (
             await conn.execute(
-                select(jobs.c.id, jobs.c.coalesce_key)
+                select(jobs.c.id, jobs.c.kind, jobs.c.payload, jobs.c.coalesce_key)
                 .where(jobs.c.status == RUNNING, jobs.c.lease_until < now)
                 .order_by(jobs.c.id)
                 .with_for_update(skip_locked=True)
             )
         ).all()
         for row in expired:
-            await _back_to_queue(conn, row.id, row.coalesce_key, {"attempt": jobs.c.attempt + 1})
+            values: dict[str, Any] = {"attempt": jobs.c.attempt + 1}
+            handler = handlers.lookup(row.kind)
+            if handler is not None and handler.on_lease_expired is not None:
+                try:
+                    async with conn.begin_nested():
+                        due = await handler.on_lease_expired(conn, row.id, dict(row.payload or {}))
+                except Exception as exc:
+                    # Left running and lapsed: the next reap tries the hook again.
+                    logger.warning(
+                        "job %s (%s): lease-expiry hook failed: %s",
+                        row.id,
+                        row.kind,
+                        type(exc).__name__,
+                    )
+                    continue
+                if due is not None:
+                    values["due_at"] = due
+            await _back_to_queue(conn, row.id, row.coalesce_key, values)
             reclaimed.append(row.id)
     if reclaimed:
         logger.info("reclaimed %d job(s) whose lease lapsed", len(reclaimed))

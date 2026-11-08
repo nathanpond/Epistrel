@@ -14,11 +14,12 @@ from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.clock import TurnClockBody
 from epistrel.api.routes.history import (
     AudienceFilterValue,
-    ItemModel,
     NoticeBody,
+    PlacedItem,
     StateEffectModel,
-    item_model,
+    in_place,
 )
+from epistrel.core.images.story_images import PendingImage
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.core.retrieval.coverage_marks import CoverageGap
@@ -236,7 +237,9 @@ class RespondResponse(MutationResponse):
     (#113, C-16; null only on a replay of a turn stored before #113)."""
 
     message: MessageBody
-    beats: list[ItemModel]
+    beats: list[PlacedItem]
+    """The turn's beats for the viewpoint, with the story images positioned within the turn
+    for that viewpoint in place (``kind: image``, #261)."""
     turn: int
     variant: int
     output_viewpoint: str
@@ -326,6 +329,11 @@ class RespondResponse(MutationResponse):
     """#598 (FR-RESP-14): one ``implausible_knowledge`` notice per presupposition of the
     ``co_author`` player's narration the narrated character could not know (under
     ``co_author_knowledge = confirm``); absent when none."""
+    pending_images: list[PendingImage] = Field(default_factory=list)
+    """#265 (FR-IMG-6): the automatic images the turn queued under ``illustration_mode = auto``,
+    ``{job_id, position: {turn, beat}}`` in beat order. Follow each at ``GET
+    /image-jobs/{job_id}``; once promoted it appears in history at its position. Empty unless
+    the turn queued one. Image jobs never count against the turn's budget or deadline."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -336,7 +344,7 @@ class RespondResponse(MutationResponse):
                 mode=result.message.mode,
                 narrative=None if result.message.mode is None else result.message.text,
             ),
-            beats=[item_model(b) for b in result.beats],
+            beats=in_place(result.beats, result.images),
             turn=result.turn,
             variant=result.variant,
             timeline_revision=result.timeline_revision,
@@ -379,6 +387,7 @@ class RespondResponse(MutationResponse):
                 RequiredEffectBody(**r) for r in result.reconciliation_required
             ],
             notices=[NoticeBody(**n) for n in result.notices],
+            pending_images=list(result.pending_images),
             coverage_gaps=[CoverageGap(**g) for g in result.coverage_gaps],
             budget=(
                 None

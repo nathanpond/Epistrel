@@ -15,6 +15,7 @@ from epistrel.api.routes import (
     amendments,
     backfill,
     catalog_characters,
+    catalog_images,
     catalog_scenarios,
     certifications,
     clock,
@@ -25,6 +26,9 @@ from epistrel.api.routes import (
     feedback_reports,
     health,
     history,
+    image_jobs,
+    image_prompts,
+    image_usage,
     inspect,
     media,
     memories,
@@ -41,6 +45,7 @@ from epistrel.api.routes import (
     state_proposals,
     states,
     stories,
+    story_images,
     story_profile,
     story_rating,
     story_texts,
@@ -68,7 +73,15 @@ router.include_router(operations.router)
 router.include_router(operations.story_router)
 router.include_router(catalog_characters.router)
 router.include_router(catalog_scenarios.router)
+router.include_router(catalog_images.characters)
+router.include_router(catalog_images.scenarios)
 router.include_router(media.router)
+router.include_router(image_jobs.router)
+router.include_router(image_prompts.router)
+router.include_router(story_images.router)
+router.include_router(image_usage.story_router)  # #269
+router.include_router(image_usage.characters)
+router.include_router(image_usage.scenarios)
 router.include_router(engine_profiles.router)
 router.include_router(certifications.router)
 router.include_router(personas.router)

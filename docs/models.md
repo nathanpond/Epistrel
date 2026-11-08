@@ -35,6 +35,8 @@ per model tier are in [model-matrix.md](model-matrix.md).
 | `directive_parse` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `lite_rewrite_reach` | no | `default` | `parse_validate_retry` | 8,192 tokens |
 | `lite_rewrite_parse` | no | `default` | `parse_validate_retry` | 8,192 tokens |
+| `image_prompt` | no | `generation` | `parse_validate_retry` | 8,192 tokens |
+| `image_check` | no | none (own row only) | `parse_validate_retry` | 8,192 tokens |
 
 ### `generation`
 
@@ -75,6 +77,7 @@ Writes the reply of a Lite turn from the story's prompt sections; in a structure
 | `length_target` | `constraint` |
 | `belief_steps` | `constraint` |
 | `clock_contract` | `constraint` |
+| `illustrate_instruction` | `constraint` |
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
@@ -120,9 +123,10 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 
 - **Hot path:** yes
 - **Default model:** the `default` row of `model_config`, unless the purpose has its own
-- **Template:** `guardrail_check.j2`
+- **Template:** `guardrail_check.j2`; variants: figures `guardrail_figures.j2`
 - **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
 - **Returns:** `GuardrailVerdict` (`violation`, `confidence`), validated strictly; no free-text field
+- **Hosted providers:** When this purpose is routed to a hosted provider, the images and true ages it receives leave the deployment, are kept under that provider's terms and are outside Epistrel's erasure boundary; to keep them in-house, route both `guardrail_check` and `image_check` to self-hosted models.
 
 **Receives**
 
@@ -134,8 +138,15 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `subjects.age` | `subject_true_age` |
 | `subjects.present` | `subject_true_age` |
 | `external_data` | `external_data` |
+| `image_subjects.label` | `subject_label` |
+| `image_subjects.true_age` | `subject_true_age` |
+| `image_subjects.classification` | `subject_true_age` |
+| `image_subjects.visual_descriptors` | `visual_descriptor` |
+| `image_subjects.mentioned_as` | `checked_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `image_prompt`, `caption_alt_text`, `reference_image`
+
+**Never receives (docs/02 §6):** other story text; beliefs; names an image prompt lacks
 
 ### `consolidation`
 
@@ -162,7 +173,7 @@ Compresses one window of episodic memories (and the canon in it) into standing f
 | `level` | `scope_meta` |
 | `covers` | `scope_meta` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `lite_summary`
 
@@ -222,7 +233,7 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `quality_judge`
 
@@ -244,7 +255,7 @@ Pairwise prose comparisons and single-message scores for the eval harness (NFR-Q
 | `reference` | `eval_text` |
 | `criteria` | `eval_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `importance_scoring`
 
@@ -263,7 +274,7 @@ Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).
 | `text` | `memory_text` |
 | `kind` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `entailment`
 
@@ -284,7 +295,7 @@ Judges the fuzzy residual of verify: one claim the deterministic check left unce
 | `records.holder` | `canon_record` |
 | `records.valid_time` | `canon_record` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `belief_adjudication`
 
@@ -314,7 +325,7 @@ Decides what one salient witness makes of a say it heard: accept, reject, suspen
 | `utterance.claims` | `utterance_text` |
 | `perceived_intent` | `utterance_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_state`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_state`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `salience_detection`
 
@@ -337,7 +348,7 @@ Tells content placed to be noticed from background texture in one render's beats
 | `scene_context.present_entities` | `scene` |
 | `scene_context.last_beats` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `extraction_backstop`
 
@@ -361,7 +372,7 @@ The model layer of claim detection: lists every factual claim one render's beats
 | `scene_context.last_beats` | `scene` |
 | `external_data` | `external_data` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `regeneration`
 
@@ -402,6 +413,7 @@ Rewrites one beat of a structured render that contradicted canon or asserted wha
 | `length_target` | `constraint` |
 | `belief_steps` | `constraint` |
 | `clock_contract` | `constraint` |
+| `illustrate_instruction` | `constraint` |
 | `player_input.name` | `player_input` |
 | `player_input.say` | `player_input` |
 | `player_input.do` | `player_input` |
@@ -467,7 +479,7 @@ Proposes a best-guess duration, with its reason and a confidence, for a narrated
 | `established_times` | `scene` |
 | `clock` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `rewrite_parse`
 
@@ -497,7 +509,7 @@ Parses an author's history-rewrite instruction into structured proposition, reco
 | `states.owner` | `author_instruction` |
 | `clock` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `rewrite_record`
 
@@ -519,7 +531,7 @@ Repairs one record a history rewrite contradicts: the least change that makes it
 | `new_canon` | `author_instruction` |
 | `guidance` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `directive_parse`
 
@@ -549,7 +561,7 @@ Classifies an author's directive as guidance for the next turn or a change to th
 | `states.owner` | `author_instruction` |
 | `clock` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `lite_rewrite_reach`
 
@@ -570,7 +582,7 @@ Finds the lines of a Lite story's transcript a correction to its past contradict
 | `lines.speaker` | `recent_message` |
 | `lines.text` | `recent_message` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
 
 ### `lite_rewrite_parse`
 
@@ -593,7 +605,68 @@ Reads a Lite story's history-rewrite instruction as one change statement, says w
 | `recent.text` | `recent_message` |
 | `author_facts` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+
+### `image_prompt`
+
+Writes an image prompt from what the image's audience has perceived: the subjects' visual identities and apparent age bands, the scene, the visual style and the rating's image guidance (FR-IMG-2). Catalog candidates (#259) and story images (#263).
+
+- **Hot path:** no
+- **Default model:** the `generation` row of `model_config`, then the `default` row, per field, unless the purpose has its own
+- **Template:** `image_prompt.j2`; variants: base_appearance `image_prompt_base_appearance.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens
+- **Returns:** `ImagePromptResult` (`prompt`), validated strictly; its free text is author-facing
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `subjects.description` | `visual_descriptor` |
+| `subjects.age_band` | `visual_descriptor` |
+| `subjects.base_appearance_prompt` | `visual_descriptor` |
+| `subjects.label` | `visual_descriptor` |
+| `scene` | `scene` |
+| `visual_style` | `visual_descriptor` |
+| `rating_image_guidance` | `rating_guidance` |
+| `purpose` | `constraint` |
+| `beats` | `scene` |
+| `location` | `scene` |
+| `camera` | `constraint` |
+| `instruction` | `constraint` |
+
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `working_memory`, `retrieved_memories`, `canon_facts`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `image_prompt`, `caption_alt_text`, `reference_image`
+
+**Never receives (docs/02 §6):** true ages; restricted references; anything the image's audience has not perceived
+
+### `image_check`
+
+Checks one image against the image-output policies, with its prompt, caption, alt text and the safety context's subject labels, true ages and visual descriptors (FR-IMG-3,13). A vision-capable model; no default: unset, every image-output policy evaluation fails closed (`image_check_unconfigured`).
+
+- **Hot path:** no
+- **Default model:** none: its own `image_check` row of `model_config` only, never the `default` row (unset until configured)
+- **Template:** `image_check.j2`
+- **Capability floor:** structured output: constrained `json_schema` decoding, or output reliable enough to parse, validate and retry; minimum context 8,192 tokens; image input (vision)
+- **Returns:** `ImageCheckVerdict` (`verdicts`), validated strictly; no free-text field
+- **Hosted providers:** When this purpose is routed to a hosted provider, the images and true ages it receives leave the deployment, are kept under that provider's terms and are outside Epistrel's erasure boundary; to keep them in-house, route both `guardrail_check` and `image_check` to self-hosted models.
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `image` | `image` |
+| `prompt` | `image_prompt` |
+| `caption` | `caption_alt_text` |
+| `alt_text` | `caption_alt_text` |
+| `subjects.label` | `subject_label` |
+| `subjects.true_age` | `subject_true_age` |
+| `subjects.classification` | `subject_true_age` |
+| `subjects.visual_descriptors` | `visual_descriptor` |
+| `policies.policy_id` | `policy_text` |
+| `policies.text` | `policy_text` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `reference_image`
+
+**Never receives (docs/02 §6):** story text; beliefs; names the prompt lacks
 
 ## Ports delivered
 
@@ -617,18 +690,42 @@ Embeds memory texts and retrieval queries over the OpenAI-compatible `/embedding
 |---|---|
 | `text` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+
+### `image_generation`
+
+The image adapter (FR-IMG-1): generates images through the `ImageGenerator` port (`orchestrator.images.port`) with the adapter its row names (`params.adapter`; OpenRouter is bundled, #255). With no adapter, model or key, every generation entry point answers 409 `not_configured` and uploads keep working.
+
+- **Hot path:** no
+- **Default model:** the `image_generation` row of `model_config` only, never the `default` row; its `params` take `adapter` (a registered adapter, or `null`: off), `default_size`, `default_aspect_ratio`, `default_quality`, `image_capability_ttl_s` and `request_timeout_s`. With no adapter, model or key, every generation entry point answers 409 `not_configured`, and uploads keep working
+- **Capability floor:** generates images from a text prompt; seeds, reference images, sizes and aspect ratios are discovered per endpoint, never assumed (FR-IMG-1)
+- **Returns:** the generated images' bytes and media types, with usage and cost when the provider reports them (an unpriced call is `unknown`, never 0)
+- **Engine profiles:** not routable (one deployment-wide adapter)
+- **Retention:** the built prompts, their parameters and the reference images it is given go to the image provider this row names; it never receives true ages or the safety context
+
+**Receives**
+
+| Field | Content category |
+|---|---|
+| `prompt` | `image_prompt` |
+| `negative_prompt` | `image_prompt` |
+| `seed` | `image_prompt` |
+| `size` | `image_prompt` |
+| `aspect_ratio` | `image_prompt` |
+| `quality` | `image_prompt` |
+| `n` | `image_prompt` |
+| `reference_images` | `reference_image` |
+
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `caption_alt_text`
+
+**Never receives (docs/02 §6):** true ages; the safety context
 
 ## Reserved purposes
 
 Declared now and delivered later (docs/03 §22). Each joins the sections above, with
 its floor and data-flow row, in the milestone that delivers it.
 
-| Purpose | Kind | Milestone | Defaults to | Description |
-|---|---|---|---|---|
-| `image_prompt` | purpose | M8 | `generation` | Writes image prompts. |
-| `image_check` | purpose | M8 | — | Vision checks of image outputs; no default. |
-| `image_generation` | port | M8 | — | The image-generation port (FR-IMG-1). |
+None: every purpose and port FR-MODEL-2 names is delivered.
 
 ## Content categories
 
@@ -667,6 +764,12 @@ its floor and data-flow row, in the milestone that delivers it.
 | `author_instruction` | An author's history-rewrite instruction and free-text answers (#223, FR-REWRITE-1,2), and the story's names it is normalized against: its entities, the registered predicates, its States and the clock. Never transcript text, a memory or a belief. |
 | `tracked_values` | A structured render's tracked values (#187, FR-TURN-11): for a character's render, the player-visible States it may change (name, type, scope, unit, aliases, allowed values) and the effect syntax, never a value; for the narrator's, every State with its current value and constraints. |
 | `external_data` | A value an external-data provider answered (#208, FR-EXT-5, NFR-SEC-2): untrusted content, typed and cleaned, rendered only inside a fenced, labelled data block (<external name=... tier=...>) and never as instructions; the answer's JSON keys never. The narrator's render takes it; a character learns a value only as a belief. |
+| `image` | An image's own pixels (#254): a generated output, or an upload when a checker is configured, checked by `image_check` against the image-output policies. |
+| `subject_label` | An opaque label of a subject in an image's safety context (`character_1` ...): never a name the prompt does not already contain (FR-IMG-13). |
+| `visual_descriptor` | What an image shows, in visual terms only: a subject's perceivable appearance and apparent age band, the visual style, and in a safety context the descriptors the prompt already uses for a subject. Never a true age, a name the prompt lacks or story text. |
+| `image_prompt` | A built image prompt and its negative prompt (#254): what the image adapter generates from (with its seed, size or aspect ratio, quality and count) and what `guardrail_check` and `image_check` judge. |
+| `caption_alt_text` | An image's caption and alt text, judged with the image. |
+| `reference_image` | A reference image the image adapter is given: one the image's audience has perceived (FR-IMG-5), sent as a signed URL or a data URL (#255). |
 
 ## Hosted providers and retention
 
@@ -674,8 +777,11 @@ Each purpose sends the inputs listed in its row to the endpoint configured for i
 `base_url`, inherited from the `default` row unless the purpose overrides it). When that
 endpoint is a hosted provider, those inputs leave the deployment and are kept under that
 provider's terms, outside Epistrel's erasure boundary (FR-ADMIN-8, FR-IMG-13). This includes the
-true ages `guardrail_check` receives for age-conditioned policies, and the memory texts and
-retrieval queries the `embedding` port sends (its own row: it inherits no endpoint). A
-deployment that needs any of this data kept in-house points the purposes concerned at
-self-hosted models.
-`GET /admin/model-config` names the endpoint for every purpose (FR-MODEL-1).
+true ages `guardrail_check` receives for age-conditioned policies, the images and true ages
+`image_check` receives (its own row: it has no default), the memory texts and
+retrieval queries the `embedding` port sends, and the prompts and reference images the
+`image_generation` port sends to its image provider (each port's own row: it inherits no
+endpoint). A deployment that needs any of this data kept in-house points the purposes
+concerned at self-hosted models; for the safety path, both `guardrail_check` and `image_check`.
+`GET /admin/model-config` names the endpoint for every purpose and port (FR-MODEL-1): its
+`endpoint` is the host of the effective `base_url`.

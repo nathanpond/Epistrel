@@ -533,6 +533,7 @@ def _story_settings(cast: list[str]) -> st.SearchStrategy[dict[str, Any]]:
         "backfill_conflict_policy": st.sampled_from(  # #230
             ["last_mention", "first_mention", "ask"]
         ),
+        "illustration_mode": st.sampled_from(["on_request", "auto"]),  # #265
         "prune_policy": st.one_of(  # #248
             st.none(), st.builds(lambda d: {"older_than_days": d}, st.integers(1, 3650))
         ),

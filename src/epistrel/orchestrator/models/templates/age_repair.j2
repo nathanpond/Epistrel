@@ -29,7 +29,6 @@ Answer once for each character listed below, with its name copied exactly as lis
 {% endblock %}
 {% block user %}
 {% for intro in introductions %}
-- {{ intro.name }}{% if intro.clue %}: {{ intro.clue }}{% endif %}
-
+- {{ intro.name }}{% if intro.clue %}: {{ intro.clue }}{% endif +%}
 {% endfor %}
 {% endblock %}

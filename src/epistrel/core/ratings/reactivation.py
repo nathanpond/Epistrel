@@ -29,8 +29,11 @@ story locked:
 
 The job (``orchestrator.jobs.handlers.rating_check``) waits for a turn in flight to commit,
 then ``read_pending`` plans the edit again and reads the unchecked turns' player inputs and
-rendered beats (and their story images, none in M3), which it evaluates against the current
-policies (``change.evaluate_history``). ``settle``, under the story lock, runs the check again
+rendered beats and their story images (#272: with the inter-turn slot images after them; a
+turn whose stamp is current is chosen too when one of its images lacks a stored verdict for a
+current image-output policy, and then only its images are read), which it evaluates against
+the current policies (``change.evaluate_history``). An image violation withholds the stamp of
+the turn its image is at. ``settle``, under the story lock, runs the check again
 when the timeline or the policy set moved since that read; otherwise it stamps every turn that
 passed with the current set, so a later attempt never checks it again, even when another turn
 failed. Any violation refuses the edit: the check is ``refused`` with every violation by
@@ -106,11 +109,14 @@ class Continuation(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class PendingTurn:
-    """A turn variant the edit would make active whose stamp lacks a current policy."""
+    """A turn variant the edit would make active whose stamp lacks a current policy
+    (``text``: its inputs and beats are checked), or one of whose story images lacks a stored
+    verdict for a current image-output policy (#272: only its images are checked)."""
 
     operation_id: str
     turn: int
     variant: int
+    text: bool = True
 
 
 StartJob = Callable[[AsyncConnection, Continuation], Awaitable[str]]
@@ -210,11 +216,58 @@ async def unchecked(
         )
         .order_by(operations.c.narrative_turn, operations.c.turn_variant)
     )
-    return [
-        PendingTurn(row.operation_id, int(row.narrative_turn), int(row.turn_variant or 1))
-        for row in found
-        if missing(row.checked_guardrails, current)
-    ]
+    rows = list(found)
+    pictured = await _uncached_images(
+        conn,
+        story_id,
+        [(str(r.operation_id), int(r.narrative_turn), int(r.turn_variant or 1)) for r in rows],
+        operation_ids,
+        current,
+    )
+    pending: list[PendingTurn] = []
+    for row in rows:
+        lacking = bool(missing(row.checked_guardrails, current))
+        if lacking or row.operation_id in pictured:
+            pending.append(
+                PendingTurn(
+                    row.operation_id,
+                    int(row.narrative_turn),
+                    int(row.turn_variant or 1),
+                    text=lacking,
+                )
+            )
+    return pending
+
+
+async def _uncached_images(
+    conn: AsyncConnection,
+    story_id: str,
+    turns: Sequence[tuple[str, int, int]],
+    operation_ids: Sequence[str],
+    current: Sequence[Policy],
+) -> set[str]:
+    """#272: the turn operations among ``turns`` one of whose story images (or the inter-turn
+    slot images after it) lacks a stored verdict for a current image-output policy that
+    applies to it, whatever the turn's stamp says (an image placed after the turn was
+    stamped, or one stored ``unchecked``)."""
+    outputs = change.image_output_policies(current)
+    if not turns or not outputs:
+        return set()
+    records = await change.story_image_records(
+        conn, story_id, [t[0] for t in turns], activating=operation_ids
+    )
+    if not records:
+        return set()
+    cache = await change.load_cache(conn, story_id, [r.key for r in records])
+    by_position = {(t[1], t[2]): t[0] for t in turns}
+    found: set[str] = set()
+    for record in records:
+        if record.at is None or record.at not in by_position:
+            continue
+        key = change.output_key(record)
+        if any((key, p.id, p.version) not in cache for p in outputs if change.applies(p, record)):
+            found.add(by_position[record.at])
+    return found
 
 
 # -- the guard --------------------------------------------------------------------------------
@@ -369,10 +422,12 @@ async def read_pending(conn: AsyncConnection, continuation: Continuation) -> Pen
     _, _, current = await current_set(conn, story_id)
     turns = await unchecked(conn, story_id, ids, current)
     chosen = [t.operation_id for t in turns]
+    texts = [t.operation_id for t in turns if t.text]
     records: list[change.HistoryRecord] = []
+    if texts:
+        records = await change.event_records(conn, story_id, operations.c.operation_id.in_(texts))
     if chosen:
-        records = await change.event_records(conn, story_id, operations.c.operation_id.in_(chosen))
-        records.extend(await change.story_image_records(conn, story_id, chosen))
+        records.extend(await change.story_image_records(conn, story_id, chosen, activating=ids))
     return Pending(tuple(turns), tuple(records), current, int(revision))
 
 
@@ -418,6 +473,15 @@ async def settle(
             (int(v.position["turn"]), int(v.position["variant"]))
             for v in result.violations
             if "turn" in v.position
+        }
+        # #272: an image violation withholds the stamp of the turn the image is at (a slot
+        # image's: the turn it follows).
+        at = {str(r.position.get("id")): r.at for r in pending.records if r.image}
+        violated |= {
+            spot
+            for v in result.violations
+            if v.position.get("kind") == "image"
+            and (spot := at.get(str(v.position.get("id")))) is not None
         }
         passing = [t.operation_id for t in pending.turns if (t.turn, t.variant) not in violated]
         if passing:

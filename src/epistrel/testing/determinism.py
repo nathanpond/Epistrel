@@ -39,6 +39,9 @@ from epistrel.core.ids import CROCKFORD, ULID_LENGTH
 OPERATIONAL_TABLES = frozenset(
     {
         "jobs",
+        "image_jobs",
+        "image_reservations",
+        "image_costs",
         "timers",
         "recurring_tasks",
         "worker_heartbeats",
@@ -48,7 +51,9 @@ OPERATIONAL_TABLES = frozenset(
         "guardrail_check_results",
     }
 )
-"""Excluded: background work, timers, heartbeats, the turn queue and idempotency bookkeeping,
+"""Excluded: background work (image jobs and their attempts' reservation records too, #256,
+#262: their attempt tokens are random, and their cost rows, #269), timers,
+heartbeats, the turn queue and idempotency bookkeeping,
 and a rating change's check and its verdict cache (#118)."""
 
 VOLATILE_KEYS = frozenset(
@@ -258,6 +263,12 @@ ORDER: dict[str, str] = {
     "scheduled_events": (
         f"{_STORY_RANK}, t.narrative_turn, t.slot_k, t.beat, t.step, t.turn_variant, "
         "t.planned_offset_minutes, t.status"
+    ),
+    # Story images (#261): by position, then audience and camera, then the asset's checksum.
+    "story_images": (
+        f"{_STORY_RANK}, t.at_turn, t.at_slot_k, t.at_beat, t.at_step, t.at_variant, "  # noqa: S608
+        "t.audience_viewpoint, t.camera_pov::text, "
+        "(SELECT m.checksum FROM media_assets m WHERE m.id = t.asset_id)"
     ),
     "state_changes": (
         f"{_STORY_RANK}, {_STATE_RANK}, {_SCOPE_RANK} NULLS FIRST, t.narrative_turn, "

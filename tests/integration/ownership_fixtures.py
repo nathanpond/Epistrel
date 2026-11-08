@@ -222,6 +222,14 @@ async def _nothing(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dic
     return {}
 
 
+UNKNOWN_CANDIDATE = "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+"""A candidate no entry has (#260): its reads are 404 and its discard 204 for anyone."""
+
+
+async def _no_candidate(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"candidate_id": UNKNOWN_CANDIDATE}
+
+
 CERTIFICATION_RUN = {"suites": ["smoke"], "seeds": 2, "sample": 10}
 
 
@@ -524,6 +532,25 @@ async def _scheduled_event(client: httpx.AsyncClient, kind: Kind, entity: Entity
         201,
     )
     return {"event_id": created["event"]["event_id"]}
+
+
+STORY_IMAGE = {
+    "position": {"slot_after_turn": 0},
+    "audience_viewpoint": "omniscient",
+    "depicted_subjects": [],
+}
+"""#261: an omniscient image in the slot after genesis (the story has no completed turn)."""
+
+
+async def _story_image(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    """A story image the owner uploaded (#261), read for its audience, ``omniscient``."""
+    response = await client.post(
+        kind.path(entity.id, "/images"),
+        files=files(MATRIX_IMAGE, STORY_IMAGE),
+        headers=headers(OWNER),
+    )
+    created = await ok(response, 201)
+    return {"image_id": created["image_id"], "query.viewpoint": "omniscient"}
 
 
 async def _omniscient(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
@@ -901,6 +928,14 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"planned": 90}, prepare=_scheduled_event
     ),
     ("DELETE", f"{S}/scheduled-events/{{event_id}}"): Call(200, prepare=_scheduled_event),
+    # -- stories: its images (#261, #263). The matrix sends JSON: the same route's generation
+    # request (#263), 409 ``not_configured`` for anyone (the matrix configures no image adapter);
+    # the image the owner uploaded reads and deletes alike.
+    ("POST", f"{S}/images"): Call(409, STORY_IMAGE),
+    ("GET", f"{S}/images/{{image_id}}"): Call(200, prepare=_story_image),
+    ("DELETE", f"{S}/images/{{image_id}}"): Call(204, prepare=_story_image),
+    # #269: the story's image usage and cost (a read anyone with the credential may make)
+    ("GET", f"{S}/image-usage"): Call(200),
     # -- stories: its States (#186), on the story running States at prompt_only (#203)
     ("GET", f"{S}/states"): Call(200, prepare=_state_name),
     ("GET", f"{S}/states/{{name}}"): Call(200, prepare=_state_name),
@@ -1007,6 +1042,17 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{C}/listing-status"): Call(200, {"value": "public"}),
     # the advisory rating table (#121), of the draft: a read that writes nothing
     ("POST", f"{C}/rating-suggestion"): Call(200),
+    # catalog image candidates (#260): with no image adapter configured a request is 409
+    # `not_configured` for anyone; the list reads; a candidate the entry never had is 404 to
+    # read and 204 to discard (idempotent). Ownership gates none of them (FR-AUTH-8).
+    ("POST", f"{C}/images/generate"): Call(409, {"slot": "primary"}),
+    ("GET", f"{C}/images/candidates"): Call(200),
+    ("GET", f"{C}/images/candidates/{{candidate_id}}/content"): Call(404, prepare=_no_candidate),
+    ("GET", f"{C}/images/candidates/{{candidate_id}}/url"): Call(404, prepare=_no_candidate),
+    ("DELETE", f"{C}/images/candidates/{{candidate_id}}"): Call(204, prepare=_no_candidate),
+    ("GET", f"{C}/image-usage"): Call(200),  # #269
+    # a base appearance prompt drafted from the draft, not saved (#259)
+    ("POST", f"{C}/draft/visual-identity/draft-base-prompt"): Call(200),
     # -- catalog characters: reads of a `private` entry: the latest version as the card (the
     # default) and in full, version 1, and the draft in both projections
     ("GET", C): Call(200, queries=ENTRY_READS, prepare=_published),
@@ -1027,6 +1073,15 @@ CALLS: dict[tuple[str, str], Call] = {
     ("PUT", f"{SC}/listing-status"): Call(200, {"value": "public"}),
     ("POST", f"{SC}/validate"): Call(200),  # a dry run that writes nothing (#111)
     ("POST", f"{SC}/rating-suggestion"): Call(200),  # the advisory rating table (#121)
+    # catalog image candidates (#260): with no image adapter configured a request is 409
+    # `not_configured` for anyone; the list reads; a candidate the entry never had is 404 to
+    # read and 204 to discard (idempotent). Ownership gates none of them (FR-AUTH-8).
+    ("POST", f"{SC}/images/generate"): Call(409, {"slot": "cover"}),
+    ("GET", f"{SC}/images/candidates"): Call(200),
+    ("GET", f"{SC}/images/candidates/{{candidate_id}}/content"): Call(404, prepare=_no_candidate),
+    ("GET", f"{SC}/images/candidates/{{candidate_id}}/url"): Call(404, prepare=_no_candidate),
+    ("DELETE", f"{SC}/images/candidates/{{candidate_id}}"): Call(204, prepare=_no_candidate),
+    ("GET", f"{SC}/image-usage"): Call(200),  # #269
     # -- scenarios: reads of a `private` scenario, as for catalog characters
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),

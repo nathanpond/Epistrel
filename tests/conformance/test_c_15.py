@@ -753,6 +753,11 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "story_settings_defaults.audit_retention_days": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.allow_new_arrivals": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.player_view": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.illustration_mode": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.max_auto_images_per_turn": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
     "story_settings_defaults.policies[].name": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].applies_to": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),
@@ -1196,7 +1201,8 @@ def test_c_15__api_surface(dummy_dsn: str) -> None:
     later = {
         (row["item"], row["milestone"]) for row in table["routes"] if row["status"] != "present"
     }
-    assert {milestone for _, milestone in later} == {"M8"}
+    # Every FR-API-6 row is served now (the last ``not_yet`` rows were M8's, #261).
+    assert not later, later
     assert c03.parity_gaps(Engine, app, c03._steps()) == []
     assert schema_problems(app.openapi(), app) == []
 

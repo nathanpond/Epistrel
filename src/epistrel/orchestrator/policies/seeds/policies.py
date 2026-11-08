@@ -13,8 +13,11 @@ costs no model call. When it applies, the ``guardrail_check`` purpose judges the
 ``PROMPT``, receiving every cast member as an opaque label with a true age, never a name.
 ``{minor_age_threshold}`` in the prompt is replaced with the live threshold at check time.
 
-Image targets (``image_prompt``, ``image_output``) join ``applies_to`` in M8. Once a database
-is seeded, editing this module changes nothing in it — change seeds through a new migration.
+Image targets (``image_prompt``, ``image_output``: ``IMAGE_TARGETS``) joined ``applies_to`` in
+M8, through migration ``0133`` (#257): ``MINORS_POLICY`` is the row ``0009`` inserted, so its
+``applies_to`` still lists the text targets only, and a seeded database holds all four. Once a
+database is seeded, editing this module changes nothing in it — change seeds through a new
+migration.
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ MINORS_POLICY_NAME: Final = "No sexual content involving or near minors"
 MINORS_POLICY_MESSAGE: Final = "This content isn't allowed because a minor is involved or present."
 MINOR_AGE_CONDITION: Final = "minor_involved_or_present"
 SEED_PRINCIPAL: Final = "system"
+IMAGE_TARGETS: Final = ("image_prompt", "image_output")
+"""What migration ``0133`` adds to the seeded policy's ``applies_to`` (#257)."""
 
 THRESHOLD_PLACEHOLDER: Final = "{minor_age_threshold}"
 """Replaced with the deployment's live ``minor_age_threshold`` when a check is built."""
@@ -59,6 +64,7 @@ MINORS_POLICY: Final[dict[str, Any]] = {
 SEED_POLICIES: Final = (MINORS_POLICY,)
 
 __all__ = [
+    "IMAGE_TARGETS",
     "MINORS_POLICY",
     "MINORS_POLICY_ID",
     "MINORS_POLICY_MESSAGE",

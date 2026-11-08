@@ -505,6 +505,70 @@ class EntryArchived(EpistrelError):
     http_status = 422
 
 
+class CandidateNotFound(EpistrelError):
+    """A draft save names a catalog image candidate (``{candidate_id}``, FR-IMG-7; #260) that
+    cannot be attached: unknown, expired, already attached, discarded or another entry's, one
+    code for all of them so they cannot be told apart. Nothing is written. ``details``: the
+    entry and ``candidate_ids``, every offending candidate."""
+
+    code = "candidate_not_found"
+    http_status = 422
+
+
+class CandidateStale(EpistrelError):
+    """A draft save names a catalog image candidate generated from other image inputs than the
+    draft now has (FR-IMG-4,7; #260): its appearance, visual identity, true age, rating or style
+    changed. Nothing is written. ``details``: the entry, ``candidate_ids`` and ``reason:
+    stale`` (FR-IMG-7's word)."""
+
+    code = "candidate_stale"
+    http_status = 409
+
+
+class ImageLimitReached(EpistrelError):
+    """An image request whose outputs do not fit a limit (FR-IMG-11; #262): ``used + reserved +
+    requested`` would pass ``limit`` at ``scope`` (``deployment`` or ``entry``) for ``period``
+    (the local date). Nothing is written and no job is created. ``details``: ``{scope, limit,
+    used, reserved, requested, period, resets_at}`` for the first failing scope in lock order
+    (deployment, then entry); ``resets_at`` is the next local midnight."""
+
+    code = "image_limit_reached"
+    http_status = 409
+
+
+class ImagesDisabled(EpistrelError):
+    """Image generation is off at a scope its limit sets to 0 (FR-IMG-11; #262), checked before
+    any full scope. Nothing is written. ``details``: ``{scope}``."""
+
+    code = "images_disabled"
+    http_status = 422
+
+
+class InvalidRange(EpistrelError):
+    """An image usage report's ``from`` after its ``to``, or a range longer than 366 days
+    (FR-IMG-11; #269). ``details``: ``{from, to}``."""
+
+    code = "invalid_range"
+    http_status = 422
+
+
+class InvalidTimeZone(EpistrelError):
+    """A ``deployment_time_zone`` that is not an IANA time zone (#262). Nothing is written.
+    ``details``: ``field``."""
+
+    code = "invalid_time_zone"
+    http_status = 422
+
+
+class ImageCandidateNotFound(EpistrelError):
+    """A read or URL of a catalog image candidate that is not the entry's live candidate
+    (unknown, another entry's, attached, discarded or expired: indistinguishable; #260).
+    ``details``: the entry and ``candidate_id``."""
+
+    code = "not_found"
+    http_status = 404
+
+
 class NotPublished(EpistrelError):
     """A read of the published entry before its first publish: read the draft
     (``?draft=true``) instead. ``details``: the entry (``character_id`` or ``scenario_id``)."""
@@ -1735,6 +1799,43 @@ class CertificationRecordConflict(EpistrelError):
     http_status = 409
 
 
+class InvalidEvidence(EpistrelError):
+    """An image-checker certification's evidence does not hold (NFR-QUAL-12; #270), and nothing
+    was recorded. ``details``: ``reason`` (``schema`` with ``errors``, ``unknown_policy``,
+    ``not_image_output``, ``mismatch``, ``verdict``, ``uncertifiable``, ``report_path``,
+    ``report_hash``)."""
+
+    code = "invalid_evidence"
+    http_status = 422
+
+
+class AttestationNotAllowed(EpistrelError):
+    """An external attestation for a policy that is not ``external_evidence_only`` (#270, ADR-182):
+    such a policy is certified only by an E-11 run. ``details``: ``policy_id``."""
+
+    code = "attestation_not_allowed"
+    http_status = 422
+
+
+class EvalRunNotAllowed(EpistrelError):
+    """An eval run for a policy flagged ``external_evidence_only`` (the seeded minors policy; #270,
+    ADR-182): Epistrel never measures its false negatives, so only an external attestation
+    certifies it. ``details``: ``policy_id``."""
+
+    code = "eval_run_not_allowed"
+    http_status = 422
+
+
+class InvalidSetting(EpistrelError):
+    """A deployment setting whose value the stored data refuses (#270's ``image_check_floors``:
+    an unknown or non-image-output policy, or ``max_fn`` on an ``external_evidence_only``
+    policy). Nothing is written. ``details``: ``field``, ``policy_id`` and ``reason``
+    (``unknown_policy``, ``not_image_output``, ``fn_not_measurable``)."""
+
+    code = "invalid_setting"
+    http_status = 422
+
+
 class CertificationRunInProgress(EpistrelError):
     """A certification run for this fingerprint is queued or running (#233): ``details``:
     ``run_id``, ``fingerprint``."""
@@ -1925,4 +2026,85 @@ class EvalRunNotFound(EpistrelError):
     """No eval run has that id (#532)."""
 
     code = "eval_run_not_found"
+    http_status = 404
+
+
+class PositionInvalid(EpistrelError):
+    """A story image's position is not active (FR-IMG-5; #261): an inactive or uncommitted
+    turn, a beat its active variant does not have, or a slot after a turn other than the story's
+    last completed one (a slot is never inserted into the past). Nothing is written.
+    ``details``: ``field``, ``reason`` (``turn_inactive``, ``beat_out_of_range`` or
+    ``not_last_completed_turn``)."""
+
+    code = "position_invalid"
+    http_status = 422
+
+
+class ViewpointInvalid(EpistrelError):
+    """A story image's ``audience_viewpoint`` is neither ``omniscient`` nor ``character:<id>``
+    of a character of the story (FR-IMG-5; #261). ``details``: ``field``."""
+
+    code = "viewpoint_invalid"
+    http_status = 422
+
+
+class CameraPovInvalid(EpistrelError):
+    """A story image's ``camera_pov`` has an unknown kind or a bad shape: a character camera
+    without its ``character_id``, or another kind with one (FR-IMG-5; #261). ``details``:
+    ``field``."""
+
+    code = "camera_pov_invalid"
+    http_status = 422
+
+
+class CameraPovNotPresent(EpistrelError):
+    """A story image's ``over_the_shoulder``/``first_person`` camera names a character not
+    authoritatively present at the image's position (FR-IMG-5; #261). ``details``: ``field``."""
+
+    code = "camera_pov_not_present"
+    http_status = 422
+
+
+class ViewpointProtectedContent(EpistrelError):
+    """A story image's prompt, negative prompt, caption or alt text holds content its audience
+    viewpoint does not hold (FR-IMG-8, NFR-PRIV-4; #263): a protected name, alias or term
+    (#148), or words of a beat the viewpoint did not perceive. No job is created. ``details``:
+    ``field`` only, never the term."""
+
+    code = "viewpoint_protected_content"
+    http_status = 422
+
+
+class SubjectsNotAllowed(EpistrelError):
+    """A story image generation request declared ``depicted_subjects`` without a consumer
+    ``prompt`` (FR-IMG-9; #263): the prompt builder fills them. ``details``: ``field``."""
+
+    code = "subjects_not_allowed"
+    http_status = 422
+
+
+class SubjectInvalid(EpistrelError):
+    """A story image upload or consumer prompt declared a depicted subject that is no character
+    of the story (FR-IMG-9; #266): a story image declares the story's ``character`` ids only.
+    ``details``: ``field`` (``…depicted_subjects[i]``) and ``index``."""
+
+    code = "subject_invalid"
+    http_status = 422
+
+
+class ViewpointPerceivedNothing(EpistrelError):
+    """A story image's audience viewpoint perceived nothing at the position (FR-IMG-8; #263):
+    no beat, no one present and no location it holds. Refused before any prompt-model call,
+    reservation or job. ``details``: ``field`` (``body.audience_viewpoint``)."""
+
+    code = "viewpoint_perceived_nothing"
+    http_status = 422
+
+
+class StoryImageNotFound(EpistrelError):
+    """The story has no visible image with that id for the read (FR-IMG-5; #261): unknown,
+    another story's, discarded or dormant with its turn, deleted, or for another audience
+    viewpoint. ``details``: ``story_id`` and ``image_id``."""
+
+    code = "not_found"
     http_status = 404

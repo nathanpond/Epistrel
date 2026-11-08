@@ -721,6 +721,14 @@ async def _insert_media(
                 "created_at": clock.now(),
                 "created_by": principal,
                 "poster_media_id": None if poster is None else ids.get(str(poster), str(poster)),
+                # #261: a story image's asset says what its inputs were built from.
+                "viewpoint_basis": line.get("viewpoint_basis"),
+                # #272: the check the source recorded, as it recorded it (this deployment's
+                # own verdicts live only in ``guardrail_check_results``).
+                "check_status": line.get("check_status") or "unchecked",
+                "check_model": line.get("check_model"),
+                "check_endpoint": line.get("check_endpoint"),
+                "policy_results": line.get("policy_results") or [],
             }
         )
     # Posters first: an asset names its poster.

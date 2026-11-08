@@ -95,6 +95,7 @@ from epistrel.core.events.operation import Operation, append_stage, stage_entry
 from epistrel.core.events.types import REQUESTED_EFFECT, MessageRendered, RequestedEffect
 from epistrel.core.history import filtered_turn_beats, staged_message, story_player_view
 from epistrel.core.idempotency import IdempotentCall
+from epistrel.core.images import story_images
 from epistrel.core.membership import Position
 from epistrel.core.settings_schema import OMNISCIENT
 from epistrel.core.states import contingency
@@ -113,6 +114,7 @@ from epistrel.core.turns.beats import TurnBeat, beat_event_ids, stage_beats
 from epistrel.core.turns.staged import route_narration
 from epistrel.core.viewpoint import is_omniscient
 from epistrel.core.world_clock.service import turn_clock_of
+from epistrel.orchestrator.images import auto as auto_images
 from epistrel.orchestrator.jobs.handlers import outbox as dispatcher
 from epistrel.orchestrator.jobs.worker import listen_dsn
 from epistrel.orchestrator.lite.schemas import FinishedMessage, RespondResult
@@ -862,6 +864,8 @@ async def complete_deterministically(
         "resumed": True,
     }
     op.add_commit_step(partial(write_report, operation_id=op.operation_id, report=report))
+    # #265 (FR-IMG-6): the intent's illustration points, queued in the completion's commit.
+    op.add_commit_step(partial(auto_images.queue_staged, op=op, pipeline="structured"))
     op.turn_stage = StagedTurnStage.COMPLETED
     op.stage_turn(COMPLETION)
     await op.commit()
@@ -1128,6 +1132,10 @@ async def recompose(db: AsyncEngine, operation_id: str) -> RespondResult:
         world = await turn_clock_of(
             conn, story_id, int(row.narrative_turn), int(row.turn_variant or 0)
         )
+        images = await story_images.images_for_operation(
+            conn, story_id, int(row.narrative_turn), int(row.turn_variant or 0), viewpoint
+        )
+        pending = await auto_images.pending_images(conn, operation_id)  # #265
     return RespondResult(
         message=FinishedMessage(message_id=reply.message_id, text=reply.text, mode="deterministic"),
         beats=filtered.items,
@@ -1142,6 +1150,8 @@ async def recompose(db: AsyncEngine, operation_id: str) -> RespondResult:
         state_effects=changed,
         reconciliation=reconciliation,
         clock=world,
+        images=images,
+        pending_images=pending,
     )
 
 

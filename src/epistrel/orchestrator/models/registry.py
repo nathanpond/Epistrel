@@ -7,11 +7,20 @@ with a ``ContentCategory``. Prompt templates (``prompts.py``) and the payload bu
 purpose declares.
 
 ``DELIVERED`` holds the purposes a model call may use today; ``PORTS`` the separate ports
-delivered so far (``embedding``, #138: not a chat completion, so it has no template and no
-response schema, but its own capability floor, input schema and ``model_config`` row);
-``RESERVED`` names every other purpose (and port) FR-MODEL-2 enumerates, with the milestone
-that delivers it. Purposes join ``DELIVERED`` as the capabilities that use them land
-(FR-MODEL-13, §22).
+(``embedding``, #138, and the image adapter ``image_generation``, #254: not chat completions, so
+they have no template and no response schema, but each its own floor, input schema and
+``model_config`` row); ``RESERVED`` names every other purpose (and port) FR-MODEL-2 enumerates,
+with the milestone that delivers it. Purposes join ``DELIVERED`` as the capabilities that use
+them land (FR-MODEL-13, §22). M8 delivered the last three (``image_prompt``, ``image_check`` and
+the ``image_generation`` port), so ``RESERVED`` is empty; the machinery stays for later ones.
+
+A purpose's ``default_model_key`` names the row it falls back to: ``default``, a delivered
+purpose declared before it, or its **own name**, meaning its own row only, with no fallback to
+any other (``image_check``, #254: a vision checker is never the house chat model; a port is
+always its own row). ``OWN_ROW_ONLY`` lists both kinds.
+
+``HOSTED_SAFETY_RETENTION`` is the sentence the model guide prints in both safety purposes'
+rows (``SAFETY_PURPOSES``: ``guardrail_check`` and ``image_check``, FR-IMG-13).
 
 The registry validates itself at import: a field with no category (its own, or one on an
 enclosing field) or a category the purpose ``never_receives`` raises ``RegistryError``.
@@ -24,9 +33,9 @@ import typing
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.json_schema import SkipJsonSchema
 
 
@@ -125,6 +134,25 @@ class ContentCategory(StrEnum):
     as a belief, #170); never a purpose that judges or compresses the story's own records."""
     """The say a witness heard (#162): the speaker's name, the words as the witness perceived
     them, the visible manner, the claims they carry and the intent as the witness reads it."""
+    IMAGE = "image"
+    """An image's own bytes (#254, FR-IMG-13): a generated output, or an upload, sent to
+    ``image_check`` for the output policies (#258 sends it as a downscaled data URL)."""
+    SUBJECT_LABEL = "subject_label"
+    """An opaque label of a subject in an image's safety context (``character_1`` …; #257
+    widens the shapes): never a name the prompt does not contain."""
+    VISUAL_DESCRIPTOR = "visual_descriptor"
+    """What an image shows, in visual terms only: a subject's perceivable appearance and
+    apparent age band, the visual style, and, in a safety context, the descriptors the prompt
+    already uses for a subject. Never a true age, a name the prompt lacks, or story text."""
+    IMAGE_PROMPT = "image_prompt"
+    """A built image prompt and its negative prompt (#254): what the image adapter generates
+    from, and what ``guardrail_check`` and ``image_check`` judge; with its generation
+    parameters for the adapter (seed, size or aspect ratio, quality, count)."""
+    CAPTION_ALT_TEXT = "caption_alt_text"
+    """An image's caption and alt text, as ``image_check`` judges them with the image."""
+    REFERENCE_IMAGE = "reference_image"
+    """A reference image the image adapter is given: one the audience has perceived (FR-IMG-5),
+    as a media asset id the adapter resolves to a signed or data URL (#255)."""
 
 
 class StructuredOutput(StrEnum):
@@ -149,6 +177,9 @@ class CapabilityFloor:
 
     structured_output: StructuredOutput
     min_context_tokens: int = 8_192
+    vision: bool = False
+    """The model takes image input (``image_check``, #254). Declared, not probed: a ``PUT``
+    of ``image_check`` records the floor and sends nothing."""
 
 
 class RegistryError(Exception):
@@ -301,6 +332,12 @@ class GenerationInputs(InputSchema):
     """A structured render's time contract (FR-CLOCK-6,7,17; #194, ``clock_contract.j2``): the
     fixed ``## Time`` section (time advances, ``time`` steps, ``flashback``), present when the
     story runs the world clock."""
+    illustrate_instruction: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=1_000)
+    """Automatic illustration's instruction (FR-IMG-6; #265): one fixed line per pipeline
+    (``orchestrator.images.auto``'s ``LITE_ILLUSTRATE_INSTRUCTION`` at the end of a Lite prompt's
+    ``## Your part``, ``STRUCTURED_ILLUSTRATE_INSTRUCTION`` after a beat render's beat rules),
+    present only when the story is ``auto``, an image adapter is configured and its per-turn cap
+    is above 0; it never names the cap."""
     player_input: PlayerInput
     player_authority: Annotated[Literal["", "own_character", "co_author"], C.CONSTRAINT] = ""
     """A Lite prompt's ``## Player authority`` (FR-RESP-11; #180): the story's setting, rendered
@@ -418,8 +455,10 @@ class RegenerationInputs(GenerationInputs):
     )
 
 
-SUBJECT_LABEL_PATTERN = r"^character_[1-9][0-9]{0,3}$"
-"""Positional labels only (``character_1`` …): a subject's name can never reach the model."""
+SUBJECT_LABEL_PATTERN = r"^(character|subject|figure)_[1-9][0-9]{0,3}$"
+"""Positional labels only (``character_1`` … for a text check's cast; ``subject_1`` … and
+``figure_1`` … for an image's safety context, #257): a subject's name can never reach the
+model."""
 
 
 class Subject(InputSchema):
@@ -438,6 +477,43 @@ class Subject(InputSchema):
     routing, for a character placed elsewhere."""
 
 
+IMAGE_DESCRIPTORS_MAX = 20
+IMAGE_TEXT_MAX = 8_000
+
+
+SubjectClass = Literal["adult", "minor", "indeterminate"]
+
+
+class ImageSubject(InputSchema):
+    """One subject of an image's safety context (FR-IMG-12,13; #254, #257): an opaque label
+    (``subject_1`` … for a character, ``figure_1`` … for a figure that resolves to none), its
+    true age (``None`` for a figure), its classification (indeterminate counts as a minor) and
+    the visual descriptors the prompt already uses for it. No name, no story text."""
+
+    label: Annotated[
+        str,
+        StringConstraints(pattern=SUBJECT_LABEL_PATTERN),
+        Field(examples=["subject_1"]),
+        C.SUBJECT_LABEL,
+    ]
+    true_age: Annotated[int | None, Field(ge=0, le=150), C.SUBJECT_TRUE_AGE] = None
+    classification: Annotated[SubjectClass | None, C.SUBJECT_TRUE_AGE] = None
+    visual_descriptors: Annotated[
+        list[Annotated[str, StringConstraints(max_length=500)]], C.VISUAL_DESCRIPTOR
+    ] = Field(default_factory=list, max_length=IMAGE_DESCRIPTORS_MAX)
+
+
+class CheckedImageSubject(ImageSubject):
+    """An ``ImageSubject`` as ``guardrail_check`` receives it (#257). ``mentioned_as`` is how the
+    checked text itself names the subject, as written (a span of the prompt, caption or alt
+    text, so never a name the prompt lacks). Only the figure classification fills it, so it
+    can tell the resolved subjects from the figures; a policy check leaves it empty."""
+
+    mentioned_as: Annotated[
+        list[Annotated[str, StringConstraints(max_length=200)]], C.CHECKED_TEXT
+    ] = Field(default_factory=list, max_length=IMAGE_DESCRIPTORS_MAX)
+
+
 class GuardrailCheckInputs(InputSchema):
     """The text being checked, the policy's prompt, and the subjects it is about (FR-IMG-13)."""
 
@@ -449,6 +525,49 @@ class GuardrailCheckInputs(InputSchema):
     )
     """#208: provider values the checked text was written from, as fenced data blocks (data to
     check against, never instructions to the checker)."""
+    image_subjects: list[CheckedImageSubject] | None = Field(default=None, max_length=64)
+    """#254, #257 (FR-IMG-13): for an image prompt's check, its safety context: each resolved
+    subject as an opaque label with its true age (or a figure's classification) and the
+    prompt's own visual descriptors; for the figure classification (``figures`` variant), the
+    subjects to leave out. ``None`` for a text check."""
+
+
+class ClassifiedFigure(BaseModel):
+    """One depicted person who is none of the listed subjects: the prompt's own words for them
+    and their apparent age class (``indeterminate`` when the text does not say)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    descriptor: str = Field(min_length=1, max_length=500)
+    classification: SubjectClass
+
+
+class SubjectDescriptors(BaseModel):
+    """The visual descriptors the text uses for one listed subject."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: Annotated[str, StringConstraints(pattern=SUBJECT_LABEL_PATTERN)]
+    visual_descriptors: list[Annotated[str, StringConstraints(max_length=500)]] = Field(
+        default_factory=list, max_length=IMAGE_DESCRIPTORS_MAX
+    )
+
+
+FIGURES_VARIANT = "figures"
+FIGURES_TEMPLATE = "guardrail_figures.j2"
+
+
+class FigureClassification(BaseModel):
+    """The figure classification's answer (``guardrail_check``'s ``figures`` variant, FR-IMG-12;
+    #257): every depicted person the text describes who is none of the listed subjects, each
+    classified, and the descriptors the text uses for the listed subjects. Scripted on the stub
+    by its template (``stub_script``), so no policy check's script answers it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    stub_script: ClassVar[str] = FIGURES_TEMPLATE
+
+    figures: list[ClassifiedFigure] = Field(default_factory=list, max_length=32)
+    subjects: list[SubjectDescriptors] = Field(default_factory=list, max_length=64)
 
 
 class LiteSummaryInputs(InputSchema):
@@ -1250,6 +1369,125 @@ class DirectiveParseResult(BaseModel):
     the next reply, with the hint to set it as custom instructions instead."""
 
 
+class ImageCheckPolicy(InputSchema):
+    """One image-output policy an ``image_check`` call judges: its id and its text."""
+
+    policy_id: Annotated[str, StringConstraints(max_length=200), C.POLICY_TEXT]
+    text: Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX), C.POLICY_TEXT]
+
+
+class ImageCheckInputs(InputSchema):
+    """One ``image_check`` call (FR-IMG-3,13; #254, sent by #258): the image, its prompt,
+    caption and alt text, the safety context's subjects and the image-output policies to judge.
+    No story text, no beliefs, no name the prompt lacks."""
+
+    image: Annotated[str, C.IMAGE]
+    """The image as a data URL (#258: downscaled to at most 1024 px)."""
+    prompt: Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX), C.IMAGE_PROMPT] = ""
+    caption: Annotated[str, StringConstraints(max_length=2_000), C.CAPTION_ALT_TEXT] = ""
+    alt_text: Annotated[str, StringConstraints(max_length=2_000), C.CAPTION_ALT_TEXT] = ""
+    subjects: list[ImageSubject] = Field(default_factory=list, max_length=64)
+    policies: list[ImageCheckPolicy] = Field(default_factory=list, max_length=64)
+
+
+type ImageVerdict = Literal["pass", "violation", "uncertain"]
+
+
+class ImageCheckVerdict(BaseModel):
+    """``image_check``'s answer: a verdict per policy id. An omitted id, or a value outside
+    the three, counts as ``uncertain`` (#258). The free-form map has no strict wire form on
+    api.anthropic.com, so that endpoint is sent this call as parse-validate-retry (#761)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    verdicts: dict[str, ImageVerdict] = Field(default_factory=dict)
+
+
+class ImagePromptSubject(InputSchema):
+    """A subject as the image's audience perceives it (FR-IMG-5,12): its visual identity, its
+    apparent age band and its catalog base appearance. Never a true age or a restricted
+    reference."""
+
+    description: Annotated[str, StringConstraints(max_length=4_000), C.VISUAL_DESCRIPTOR]
+    age_band: Annotated[str, StringConstraints(max_length=64), C.VISUAL_DESCRIPTOR] = ""
+    base_appearance_prompt: Annotated[
+        str, StringConstraints(max_length=2_000), C.VISUAL_DESCRIPTOR
+    ] = ""
+    label: Annotated[str, StringConstraints(max_length=64), C.VISUAL_DESCRIPTOR] = ""
+    """A story image's opaque label for the subject (``person 1``; #263): never a name."""
+
+
+class ImagePromptInputs(InputSchema):
+    """One ``image_prompt`` call (FR-IMG-2; #254, built by #259 and #263): what the audience
+    perceived of the subjects and the scene, the visual style, the rating's image guidance and
+    what the image is for (#259's ``orchestrator.images.prompt_builder`` builds it). The
+    ``base_appearance`` variant (``image_prompt_base_appearance.j2``) drafts a character's base
+    appearance prompt from ``subjects[0].description`` alone (FR-CAT-4)."""
+
+    subjects: list[ImagePromptSubject] = Field(default_factory=list, max_length=16)
+    scene: Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX), C.SCENE] = ""
+    visual_style: Annotated[str, StringConstraints(max_length=2_000), C.VISUAL_DESCRIPTOR] = ""
+    rating_image_guidance: Annotated[
+        str, StringConstraints(max_length=4_000), C.RATING_GUIDANCE
+    ] = ""
+    purpose: Annotated[str, StringConstraints(max_length=200), C.CONSTRAINT] = ""
+    """What the image is for (a catalog portrait, a story image at a position)."""
+    beats: Annotated[
+        list[Annotated[str, StringConstraints(max_length=IMAGE_TEXT_MAX)]], C.SCENE
+    ] = Field(default_factory=list, max_length=200)
+    """A story image's scene (#263): the beats its audience viewpoint perceived, in order."""
+    location: Annotated[str, StringConstraints(max_length=4_000), C.SCENE] = ""
+    """A story image's location as its audience viewpoint perceived it (#263)."""
+    camera: Annotated[str, StringConstraints(max_length=500), C.CONSTRAINT] = ""
+    """A story image's framing (#263): composition only."""
+    instruction: Annotated[str, StringConstraints(max_length=500), C.CONSTRAINT] = ""
+    """A fixed rewrite instruction (#263), never a protected term."""
+
+
+IMAGE_PROMPT_MAX = 2_000
+"""The longest prompt ``image_prompt`` may answer (#259)."""
+
+
+def _not_blank_prompt(value: str) -> str:
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+class ImagePromptResult(BaseModel):
+    """``image_prompt``'s answer: the prompt the adapter generates from (1 to 2,000
+    characters, never blank). The negative prompt, seed and references never pass through the
+    model (#259)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: Annotated[
+        str, Field(min_length=1, max_length=IMAGE_PROMPT_MAX), AfterValidator(_not_blank_prompt)
+    ]
+
+    @classmethod
+    def stub_example(cls, digest: str, messages: Sequence[Any]) -> dict[str, Any]:
+        """The stub's default answer: a prompt named by the request's hash (#254)."""
+        return {"prompt": f"stub image {digest[:12]}"}
+
+
+class ImageGenerationInputs(InputSchema):
+    """What the image adapter receives (FR-IMG-1,13; the ``image_generation`` port): the built
+    prompt, its parameters and the perceivable reference images. Never a true age or the safety
+    context (FR-IMG-12)."""
+
+    prompt: Annotated[str, C.IMAGE_PROMPT]
+    negative_prompt: Annotated[str | None, C.IMAGE_PROMPT] = None
+    seed: Annotated[int | None, C.IMAGE_PROMPT] = None
+    size: Annotated[str | None, C.IMAGE_PROMPT] = None
+    aspect_ratio: Annotated[str | None, C.IMAGE_PROMPT] = None
+    quality: Annotated[str | None, C.IMAGE_PROMPT] = None
+    n: Annotated[int, C.IMAGE_PROMPT] = 1
+    reference_images: Annotated[list[str], C.REFERENCE_IMAGE] = Field(
+        default_factory=list, max_length=4
+    )
+
+
 # -- purposes ---------------------------------------------------------------------------------
 
 
@@ -1314,7 +1552,19 @@ class EmbeddingFloor:
 
 
 @dataclass(frozen=True)
-class Port:
+class ImageGenerationFloor:
+    """The recommended minimum an image adapter's model must meet (FR-MODEL-10 for the port,
+    #254): it generates images from a text prompt. What else it supports (seeds, reference
+    images, sizes) is discovered per endpoint, never assumed (FR-IMG-1, #255)."""
+
+    generates_images: bool = True
+
+
+type PortFloor = EmbeddingFloor | ImageGenerationFloor
+
+
+@dataclass(frozen=True)
+class Port[F: PortFloor]:
     """A delivered port (FR-MODEL-2's separately ported capability): configured through its
     own ``model_config`` row (``default_model_key``, its own name, with no fallback to the
     ``default`` row) and called through its own adapter, never as a chat completion."""
@@ -1322,7 +1572,7 @@ class Port:
     name: str
     description: str
     default_model_key: str
-    floor: EmbeddingFloor
+    floor: F
     input_schema: type[InputSchema]
     hot_path: bool
     never_receives: frozenset[ContentCategory]
@@ -1381,9 +1631,17 @@ GUARDRAIL_CHECK = Purpose(
     capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
     input_schema=GuardrailCheckInputs,
     template="guardrail_check.j2",
+    variants=types.MappingProxyType({FIGURES_VARIANT: FIGURES_TEMPLATE}),
     hot_path=True,
     never_receives=_EVERYTHING
-    - {C.CHECKED_TEXT, C.POLICY_TEXT, C.SUBJECT_TRUE_AGE, C.EXTERNAL_DATA},
+    - {
+        C.CHECKED_TEXT,
+        C.POLICY_TEXT,
+        C.SUBJECT_TRUE_AGE,
+        C.EXTERNAL_DATA,
+        C.SUBJECT_LABEL,
+        C.VISUAL_DESCRIPTOR,
+    },
     response_schema=GuardrailVerdict,
 )
 
@@ -1769,11 +2027,64 @@ LITE_REWRITE_PARSE = Purpose(
 """``lite_rewrite_parse`` (#700): one call per Lite rewrite session the author opens with an
 instruction, and one per answer that re-reads it (``orchestrator.rewrite.lite``)."""
 
-RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = (
-    ReservedPurpose("image_prompt", "Writes image prompts.", "M8", defaults_to="generation"),
-    ReservedPurpose("image_check", "Vision checks of image outputs; no default.", "M8"),
-    ReservedPurpose("image_generation", "The image-generation port (FR-IMG-1).", "M8", kind="port"),
+IMAGE_PROMPT = Purpose(
+    name="image_prompt",
+    description=(
+        "Writes an image prompt from what the image's audience has perceived: the subjects' "
+        "visual identities and apparent age bands, the scene, the visual style and the rating's "
+        "image guidance (FR-IMG-2). Catalog candidates (#259) and story images (#263)."
+    ),
+    default_model_key=GENERATION.name,
+    capability_floor=CapabilityFloor(structured_output=StructuredOutput.PARSE_VALIDATE_RETRY),
+    input_schema=ImagePromptInputs,
+    template="image_prompt.j2",
+    variants=types.MappingProxyType({"base_appearance": "image_prompt_base_appearance.j2"}),
+    hot_path=False,
+    # What the audience perceived, visually: never a true age, a policy, a belief or story text.
+    never_receives=_EVERYTHING - {C.VISUAL_DESCRIPTOR, C.SCENE, C.RATING_GUIDANCE, C.CONSTRAINT},
+    response_schema=ImagePromptResult,
+    story_scoped=False,
 )
+"""``image_prompt`` (#254): defaults to ``generation``'s row (then the ``default`` row). It runs
+for catalog entries outside any story, so no engine profile routes it (#121's rule). Its
+``base_appearance`` variant drafts a character's base appearance prompt (#259)."""
+
+IMAGE_CHECK = Purpose(
+    name="image_check",
+    description=(
+        "Checks one image against the image-output policies, with its prompt, caption, alt "
+        "text and the safety context's subject labels, true ages and visual descriptors "
+        "(FR-IMG-3,13). A vision-capable model; no default: unset, every image-output policy "
+        "evaluation fails closed (`image_check_unconfigured`)."
+    ),
+    default_model_key="image_check",
+    capability_floor=CapabilityFloor(
+        structured_output=StructuredOutput.PARSE_VALIDATE_RETRY, vision=True
+    ),
+    input_schema=ImageCheckInputs,
+    template="image_check.j2",
+    hot_path=False,
+    never_receives=_EVERYTHING
+    - {
+        C.IMAGE,
+        C.IMAGE_PROMPT,
+        C.CAPTION_ALT_TEXT,
+        C.POLICY_TEXT,
+        C.SUBJECT_LABEL,
+        C.SUBJECT_TRUE_AGE,
+        C.VISUAL_DESCRIPTOR,
+    },
+    response_schema=ImageCheckVerdict,
+    story_scoped=False,
+)
+"""``image_check`` (#254; called by #258): its own row only, never the ``default`` row (a
+vision checker is not the house chat model), so an unconfigured deployment reports it
+``unset``. It checks catalog candidates and uploads outside any story, so no engine profile
+routes it."""
+
+RESERVED_PURPOSES: tuple[ReservedPurpose, ...] = ()
+"""Empty since M8 (#254 delivered the last three); tests register one to keep the refusal of a
+reserved purpose covered (``tests/model_support.py::reserved_purpose``)."""
 
 
 # -- validation -------------------------------------------------------------------------------
@@ -1877,11 +2188,29 @@ EMBEDDING = Port(
     never_receives=_EVERYTHING - {C.MEMORY_TEXT},
 )
 
-PORTS: Mapping[str, Port] = types.MappingProxyType({EMBEDDING.name: EMBEDDING})
+IMAGE_GENERATION = Port(
+    name="image_generation",
+    description=(
+        "The image adapter (FR-IMG-1): generates images through the `ImageGenerator` port "
+        "(`orchestrator.images.port`) with the adapter its row names (`params.adapter`; "
+        "OpenRouter is bundled, #255). With no adapter, model or key, every generation entry "
+        "point answers 409 `not_configured` and uploads keep working."
+    ),
+    default_model_key="image_generation",
+    floor=ImageGenerationFloor(),
+    input_schema=ImageGenerationInputs,
+    hot_path=False,
+    # The built prompt, its parameters and perceivable references: never the safety context.
+    never_receives=_EVERYTHING - {C.IMAGE_PROMPT, C.REFERENCE_IMAGE},
+)
+
+PORTS: Mapping[str, Port[PortFloor]] = types.MappingProxyType(
+    {EMBEDDING.name: EMBEDDING, IMAGE_GENERATION.name: IMAGE_GENERATION}
+)
 """The ports delivered so far, by name (configurable like purposes, never chat-completed)."""
 
 
-def validate_port(port: Port) -> None:
+def validate_port(port: Port[PortFloor]) -> None:
     """Raise ``RegistryError`` unless every input is tagged and none is a forbidden category."""
     forbidden = schema_categories(port.input_schema) & port.never_receives
     if forbidden:
@@ -1908,12 +2237,12 @@ def _build(purposes: tuple[Purpose, ...]) -> Mapping[str, Purpose]:
         ):
             raise RegistryError(f"{purpose.name}: declared twice")
         parent = purpose.default_model_key
-        if parent != DEFAULT_MODEL_KEY and (
+        if parent not in (DEFAULT_MODEL_KEY, purpose.name) and (
             parent not in built or built[parent].default_model_key != DEFAULT_MODEL_KEY
         ):
             raise RegistryError(
-                f"{purpose.name}: defaults to {parent!r}, which is not a delivered purpose "
-                "declared before it that defaults to the default row"
+                f"{purpose.name}: defaults to {parent!r}, which is not its own row or a "
+                "delivered purpose declared before it that defaults to the default row"
             )
         built[purpose.name] = purpose
     return types.MappingProxyType(built)
@@ -1939,9 +2268,29 @@ DELIVERED: Mapping[str, Purpose] = _build(
         DIRECTIVE_PARSE,
         LITE_REWRITE_REACH,
         LITE_REWRITE_PARSE,
+        IMAGE_PROMPT,
+        IMAGE_CHECK,
     )
 )
 """Purposes a model call may use now, by name."""
+
+OWN_ROW_ONLY: frozenset[str] = frozenset(
+    {*PORTS, *(name for name, purpose in DELIVERED.items() if purpose.default_model_key == name)}
+)
+"""The ports and the purposes that read their own ``model_config`` row only, never the
+``default`` row (``image_check``, #254): unset until an operator configures them."""
+
+SAFETY_PURPOSES: tuple[str, ...] = (GUARDRAIL_CHECK.name, IMAGE_CHECK.name)
+"""The image safety path's purposes (FR-IMG-13): their guide rows carry
+``HOSTED_SAFETY_RETENTION``."""
+
+HOSTED_SAFETY_RETENTION = (
+    "When this purpose is routed to a hosted provider, the images and true ages it receives "
+    "leave the deployment, are kept under that provider's terms and are outside Epistrel's "
+    "erasure boundary; to keep them in-house, route both `guardrail_check` and `image_check` "
+    "to self-hosted models."
+)
+"""FR-IMG-13's retention sentence, verbatim in both safety purposes' guide rows."""
 
 STORY_PURPOSES: Mapping[str, Purpose] = types.MappingProxyType(
     {name: purpose for name, purpose in DELIVERED.items() if purpose.story_scoped}
@@ -1979,11 +2328,19 @@ __all__ = [
     "EXTRACTION_MAX_BEATS",
     "EXTRACTION_MAX_CLAIMS",
     "EXTRACTION_MIN_CONFIDENCE",
+    "FIGURES_TEMPLATE",
+    "FIGURES_VARIANT",
+    "HOSTED_SAFETY_RETENTION",
+    "IMAGE_CHECK",
+    "IMAGE_GENERATION",
+    "IMAGE_PROMPT",
+    "IMAGE_PROMPT_MAX",
     "IMPORTANCE_SCORING",
     "LITE_PARSE_FACTS_MAX",
     "LITE_PARSE_RECENT_MAX",
     "LITE_REWRITE_PARSE",
     "LITE_REWRITE_REACH",
+    "OWN_ROW_ONLY",
     "PORTS",
     "QUALITY_JUDGE",
     "RATING_SUGGESTION",
@@ -1993,6 +2350,7 @@ __all__ = [
     "REWRITE_PARSE",
     "REWRITE_RECORD",
     "RULE_DEFAULT_MARKER",
+    "SAFETY_PURPOSES",
     "SALIENCE_DETECTION",
     "SALIENCE_LAST_BEATS",
     "SALIENCE_MAX_BEATS",
@@ -2013,6 +2371,8 @@ __all__ = [
     "BeliefAdjudicationResult",
     "CapabilityFloor",
     "CharacterDefinition",
+    "CheckedImageSubject",
+    "ClassifiedFigure",
     "ConsolidationInputs",
     "ConsolidationRecord",
     "ConsolidationResult",
@@ -2032,9 +2392,20 @@ __all__ = [
     "ExtractionBeat",
     "ExtractionInputs",
     "ExtractionResult",
+    "FigureClassification",
     "GenerationInputs",
     "GuardrailCheckInputs",
     "GuardrailVerdict",
+    "ImageCheckInputs",
+    "ImageCheckPolicy",
+    "ImageCheckVerdict",
+    "ImageGenerationFloor",
+    "ImageGenerationInputs",
+    "ImagePromptInputs",
+    "ImagePromptResult",
+    "ImagePromptSubject",
+    "ImageSubject",
+    "ImageVerdict",
     "ImportanceScore",
     "ImportanceScoringInputs",
     "InputSchema",
@@ -2051,6 +2422,7 @@ __all__ = [
     "Modality",
     "PlayerInput",
     "Port",
+    "PortFloor",
     "Purpose",
     "PurposeStatus",
     "QualityJudgeInputs",
@@ -2079,6 +2451,8 @@ __all__ = [
     "SceneContext",
     "StructuredOutput",
     "Subject",
+    "SubjectClass",
+    "SubjectDescriptors",
     "SuggestedConcern",
     "SuggestedElement",
     "SuggestedLocation",

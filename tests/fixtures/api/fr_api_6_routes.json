@@ -597,75 +597,109 @@
       "milestone": "M3"
     },
     {
-      "item": "images — generate candidates for a catalog entry",
+      "item": "images — generate candidates for a catalog entry (character)",
       "method": "POST",
-      "path": "/catalog/{type}/{id}/images/generate",
-      "status": "not_yet",
+      "path": "/catalog/characters/{character_id}/images/generate",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — attach a candidate to the draft",
+      "item": "images — generate candidates for a catalog entry (scenario)",
       "method": "POST",
-      "path": "/catalog/{type}/{id}/images/candidates/{cid}/attach",
-      "status": "not_yet",
+      "path": "/catalog/scenarios/{scenario_id}/images/generate",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — attach a candidate to the draft (character: a draft save naming {candidate_id})",
+      "method": "PATCH",
+      "path": "/catalog/characters/{character_id}",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — attach a candidate to the draft (scenario: a draft save naming {candidate_id})",
+      "method": "PATCH",
+      "path": "/catalog/scenarios/{scenario_id}",
+      "status": "present",
       "milestone": "M8"
     },
     {
       "item": "images — build an image prompt without generating",
       "method": "POST",
       "path": "/image-prompts",
-      "status": "not_yet",
+      "status": "present",
       "milestone": "M8"
     },
     {
       "item": "images — request or upload a story image",
       "method": "POST",
-      "path": "/stories/{id}/images",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/images",
+      "status": "present",
       "milestone": "M8"
     },
     {
       "item": "images — delete a story image",
       "method": "DELETE",
-      "path": "/stories/{id}/images/{image_id}",
-      "status": "not_yet",
+      "path": "/stories/{story_id}/images/{image_id}",
+      "status": "present",
       "milestone": "M8"
     },
     {
       "item": "images — read an image job",
       "method": "GET",
       "path": "/image-jobs/{job_id}",
-      "status": "not_yet",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — list a catalog job's candidates",
+      "item": "images — list a catalog job's candidates (character)",
       "method": "GET",
-      "path": "/catalog/{type}/{id}/images/candidates",
-      "status": "not_yet",
+      "path": "/catalog/characters/{character_id}/images/candidates",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — preview a candidate (content)",
+      "item": "images — list a catalog job's candidates (scenario)",
       "method": "GET",
-      "path": "/catalog/{type}/{id}/images/candidates/{cid}/content",
-      "status": "not_yet",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates",
+      "status": "present",
       "milestone": "M8"
     },
     {
-      "item": "images — preview a candidate (signed URL)",
+      "item": "images — preview a candidate (content) (character)",
       "method": "GET",
-      "path": "/catalog/{type}/{id}/images/candidates/{cid}/url",
-      "status": "not_yet",
+      "path": "/catalog/characters/{character_id}/images/candidates/{candidate_id}/content",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (content) (scenario)",
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}/content",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (signed URL) (character)",
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/images/candidates/{candidate_id}/url",
+      "status": "present",
+      "milestone": "M8"
+    },
+    {
+      "item": "images — preview a candidate (signed URL) (scenario)",
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}/url",
+      "status": "present",
       "milestone": "M8"
     },
     {
       "item": "images — cancel an image job",
       "method": "DELETE",
       "path": "/image-jobs/{job_id}",
-      "status": "not_yet",
-      "milestone": "M8",
-      "note": "docs/02 §9 names no path for the cancel; this one is a placeholder for M8's plan"
+      "status": "present",
+      "milestone": "M8"
     },
     {
       "item": "operations — read status and stages by id",
@@ -797,13 +831,18 @@
   "extras": [
     {
       "method": "GET",
+      "path": "/stories/{story_id}/images/{image_id}",
+      "why": "#261: one story image for its audience viewpoint (history and respond hold them in place)"
+    },
+    {
+      "method": "GET",
       "path": "/stories/{story_id}/outbox",
       "why": "#679: every outbox row of the story, any status (the reconciliation read lists only the unconfirmed)"
     },
     {
       "method": "GET",
       "path": "/stories/{story_id}/operations",
-      "why": "#681: the operations read's list, filterable by label (staged_turn, genesis, \u2026)"
+      "why": "#681: the operations read's list, filterable by label (staged_turn, genesis, …)"
     },
     {
       "method": "POST",
@@ -951,6 +990,16 @@
       "why": "#234: declare a certification stale (drift)"
     },
     {
+      "method": "POST",
+      "path": "/admin/certifications/image-check",
+      "why": "#270: record an image checker's certification for one policy (NFR-QUAL-12, ADR-182)"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/certifications/image-check/{certification_id}/invalidate",
+      "why": "#270: withdraw an image checker's certification"
+    },
+    {
       "method": "GET",
       "path": "/admin/evals/runs",
       "why": "#532: the eval runs (committed reports and certification runs)"
@@ -1059,6 +1108,21 @@
       "method": "GET",
       "path": "/admin/stories/imports/{job_id}",
       "why": "FR-STORE-7/FR-ADMIN-4: story import (#250)"
+    },
+    {
+      "method": "POST",
+      "path": "/catalog/characters/{character_id}/draft/visual-identity/draft-base-prompt",
+      "why": "FR-CAT-4: a base appearance prompt drafted from the draft's appearance, not saved (#259)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/catalog/characters/{character_id}/images/candidates/{candidate_id}",
+      "why": "FR-IMG-7: discard a candidate before it expires (#260)"
+    },
+    {
+      "method": "DELETE",
+      "path": "/catalog/scenarios/{scenario_id}/images/candidates/{candidate_id}",
+      "why": "FR-IMG-7: discard a candidate before it expires (#260)"
     }
   ],
   "outside": [
@@ -1551,6 +1615,26 @@
       "method": "GET",
       "path": "/stories/{story_id}/providers/{name}/binding",
       "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/image-usage",
+      "requirement": "FR-IMG-11"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/image-usage",
+      "requirement": "FR-IMG-11"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/image-usage",
+      "requirement": "FR-IMG-11"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/image-usage",
+      "requirement": "FR-IMG-11"
     }
   ]
 }

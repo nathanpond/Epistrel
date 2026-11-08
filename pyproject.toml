@@ -22,6 +22,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=26.1.0",
+    "tzdata>=2026.5",
     "uvicorn[standard]>=0.30",
 ]
 
@@ -168,6 +169,24 @@ ignore_imports = [
     "epistrel.core.erasure.records -> epistrel.core.feedback",
     "epistrel.core.erasure.erase -> epistrel.core.feedback",
 ]
+
+[[tool.importlinter.contracts]]
+# FR-IMG-12 (#257): two data paths. The image generation path (the adapters and the port: what
+# the image model receives) never imports the safety context or the image path's canonical-age
+# reader. Direct imports only: the port's own types reach Core, and a module the generation path
+# shares with the safety path is not a leak by itself. #259 added the prompt builder
+# (`epistrel.orchestrator.images.prompt_builder`), which reads the catalog through
+# `epistrel.core.images.perceived` and gets only an apparent age band from it.
+# `tests/gates/test_image_paths_contract.py` checks that it exists as written, is kept and bites.
+name = "images-generation-path-has-no-ages"
+type = "forbidden"
+source_modules = [
+    "epistrel.orchestrator.images.adapters",
+    "epistrel.orchestrator.images.port",
+    "epistrel.orchestrator.images.prompt_builder",
+]
+forbidden_modules = ["epistrel.core.images.safety", "epistrel.core.catalog.ages"]
+allow_indirect_imports = true
 
 [[tool.importlinter.contracts]]
 # NFR-QUAL-8 (#134): the eval harness never runs in a turn. Nothing in the engine (Core, the

@@ -7,6 +7,8 @@
     uv run python -m epistrel.evals run --adapter stub --all --seeds 2 --fail-on-gate
     uv run python -m epistrel.evals run --preset standard …  # #227: lite|standard|full|max
     uv run python -m epistrel.evals run --suite smoke …     # rerun one suite into today's run
+    uv run python -m epistrel.evals run --suite e11 --preflight --base-url … --model … \
+        --database-url …                                  # #271: one image through the checker
     uv run python -m epistrel.evals index                    # regenerate docs/evals/INDEX.md
     uv run python -m epistrel.evals index --check            # #235: INDEX.md current (lint)
     uv run epistrel evals certify --presets standard,full,max --base-url … --model … \
@@ -66,6 +68,7 @@ import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from epistrel.evals import authoring
 from epistrel.evals import check as checks
@@ -92,6 +95,10 @@ from epistrel.evals.runner import (
 )
 from epistrel.evals.suites import SUITES, MalformedCase, get_suites
 
+if TYPE_CHECKING:
+    from epistrel.evals.suites.e11_image_policies import Preflight
+
+E11 = "e11"
 EX_FAILED = 1
 EX_USAGE = 2
 API_KEY_ENV = "EPISTREL_EVALS_API_KEY"
@@ -202,7 +209,18 @@ def parser() -> argparse.ArgumentParser:
         help="the preset the scratch stories play under and the fingerprint names (default "
         "full); a suite the preset does not enable is reported not_applicable (#227)",
     )
-    run.add_argument("--seeds", type=_positive, default=DEFAULT_SEEDS, help="seeds (default 2)")
+    run.add_argument("--seeds", type=_positive, help=f"seeds (default {DEFAULT_SEEDS}; 3 for e11)")
+    run.add_argument(
+        "--floors",
+        help="e11 only (#270): image_check_floors for this run, a JSON file or inline JSON "
+        "({policy_id: {max_fn, max_fp}}; default: the deployment's setting)",
+    )
+    run.add_argument(
+        "--preflight",
+        action="store_true",
+        help="e11 only (#271): send one synthetic PNG through the image checker, print its "
+        "latency and the run's estimated time, and exit (non-zero when no verdict came back)",
+    )
     run.add_argument("--seed-base", type=int, default=DEFAULT_SEED_BASE, help="the first seed")
     run.add_argument("--sample", type=_positive, help="a seeded subset of each set's cases")
     run.add_argument(
@@ -245,7 +263,14 @@ def parser() -> argparse.ArgumentParser:
     from epistrel.evals import certify_cli
 
     certify_cli.add_parser(sub)
-    sub.add_parser("author", help="regenerate #157's labeled sets from their authoring modules")
+    author = sub.add_parser(
+        "author",
+        help="regenerate #157's labeled sets from their authoring modules; `author e11 …` "
+        "generates E-11's image set from a local image model (#270)",
+    )
+    from epistrel.evals.authoring import e11 as e11_authoring
+
+    e11_authoring.add_arguments(author)
     sub.add_parser("digest", help="regenerate docs/evals/sets-digest.md")
     index = sub.add_parser("index", help="regenerate docs/evals/INDEX.md from the reports")
     index.add_argument(
@@ -335,6 +360,19 @@ async def _calibrate(args: argparse.Namespace) -> int:
 
 async def _run(args: argparse.Namespace) -> int:
     adapter = _adapter(args)
+    if args.suite and E11 in args.suite:
+        if len(set(args.suite)) > 1:
+            print("error: e11 runs on its own (`run --suite e11`)", file=sys.stderr)
+            return EX_USAGE
+        return await _run_e11(args, adapter)
+    if args.floors is not None:
+        print("error: --floors is e11's (`run --suite e11 --floors …`)", file=sys.stderr)
+        return EX_USAGE
+    if args.preflight:
+        print("error: --preflight is e11's (`run --suite e11 --preflight`)", file=sys.stderr)
+        return EX_USAGE
+    if args.seeds is None:
+        args.seeds = DEFAULT_SEEDS
     if adapter == "openai" and not (args.base_url and args.model):
         print("error: a real-model run needs --base-url and --model", file=sys.stderr)
         return EX_USAGE
@@ -403,6 +441,141 @@ async def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _e11_taken(args: argparse.Namespace) -> list[Path]:
+    """The E-11 runs already written (a same-day rerun takes ``-2``…)."""
+    return [*Path(args.json_dir).glob("e11-*.json"), *Path(args.reports_dir).glob("e11-*.md")]
+
+
+async def _run_e11(args: argparse.Namespace, adapter: AdapterName) -> int:
+    """``run --suite e11`` (#270; ``suites.e11_image_policies``): configure the image checker
+    (``--model`` at ``--base-url``; the stub's ``stub-vision`` on the stub), play the set, write
+    the report (``docs/evals/e11-<fingerprint>-<date>.md`` for a real model,
+    ``build/evals/e11-stub-report.md`` for the stub) and the records it earned. Exit 2 for
+    refused floors, 1 for a set that breaks the rules or a run with harness errors.
+    ``--preflight`` (#271) checks one synthetic image instead and exits 1 when no verdict came
+    back. A local run records LM Studio's quantization of the checker."""
+    from epistrel.evals import e11_safety
+    from epistrel.evals.runner import engine_for, host_of
+    from epistrel.evals.suites import e11_image_policies as e11
+    from epistrel.orchestrator.images import output_check
+    from epistrel.orchestrator.models import config as model_config
+    from epistrel.orchestrator.models.adapter import ModelParams
+    from epistrel.tools.generated import REPO_ROOT
+
+    if adapter == "openai" and not (args.base_url and args.model):
+        print("error: a real-model run needs --base-url and --model", file=sys.stderr)
+        return EX_USAGE
+    try:
+        floors = e11.parse_floors(args.floors)
+    except (e11.FloorsInvalid, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EX_USAGE
+    config = _config(args, adapter)
+    now = datetime.now(UTC)
+    seeds = seeds_from(args.seeds or e11.DEFAULT_SEEDS, args.seed_base)
+    async with engine_for(config, None) as engine:
+        if adapter == "openai":
+            await model_config.write_config(
+                engine.db,
+                output_check.PURPOSE,
+                keybox=engine.models.keybox,
+                principal="system:evals",
+                base_url=config.base_url,
+                model=config.model,
+                api_key=config.api_key,
+                params=ModelParams(timeout=120.0),
+            )
+        else:
+            await model_config.write_config(
+                engine.db,
+                output_check.PURPOSE,
+                keybox=engine.models.keybox,
+                principal="system:evals",
+                model="stub-vision",
+            )
+        found = await output_check.checker(engine.models, engine.db)
+        if found is None:  # pragma: no cover - configured just above
+            print("error: no image_check model", file=sys.stderr)
+            return EX_FAILED
+        print(f"image checker {found.model}: fingerprint {found.fingerprint}")
+        if args.preflight:
+            return _preflight_result(
+                await e11.preflight(engine, config, sets_dir=args.sets_dir, seeds=len(seeds))
+            )
+        quantization = (
+            await e11.lmstudio_quantization(config.base_url, config.model)
+            if adapter == "openai" and host_of(config).kind == "local"
+            else None
+        )
+        taken = _e11_taken(args)
+        run_id = e11.report_name(found.fingerprint, now, taken)
+        try:
+            report = await e11.run_e11(
+                e11.E11Run(
+                    engine=engine,
+                    config=config,
+                    seeds=seeds,
+                    run_id=run_id,
+                    sets_dir=args.sets_dir,
+                    floors=floors,
+                    concurrency=args.concurrency,
+                    now=now,
+                    quantization=quantization,
+                )
+            )
+        except e11.FloorsInvalid as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return EX_USAGE
+        except e11_safety.SafetyRefusal as exc:
+            print("error: the E-11 set breaks the rules:", file=sys.stderr)
+            for problem in exc.problems:
+                print(f"  {problem}", file=sys.stderr)
+            return EX_FAILED
+    markdown = args.markdown or (
+        BUILD_DIR / "e11-stub-report.md" if adapter == "stub" else args.reports_dir / f"{run_id}.md"
+    )
+    json_path = args.json_dir / f"{run_id}.json"
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report.as_json(), indent=2, sort_keys=True) + "\n", "utf-8")
+    written, records = e11.write_outputs(report, markdown, repo_root=REPO_ROOT)
+    print(f"wrote {written} and {json_path}: verdict {report.verdict}")
+    for policy in report.policies:
+        print(
+            f"  {policy.policy_id}: {policy.verdict}"
+            + (f" ({policy.uncertifiable})" if policy.uncertifiable else "")
+        )
+    for record in records:
+        print(f"  record {record}")
+    if report.harness_errors:
+        for error in report.harness_errors:
+            print(f"  {error}", file=sys.stderr)
+        return EX_FAILED
+    if args.fail_on_gate and report.verdict == Verdict.failed.value:
+        return EX_FAILED
+    return 0
+
+
+def _preflight_result(found: Preflight) -> int:
+    """Print ``run --suite e11 --preflight``'s outcome."""
+    verdicts = ", ".join(f"{k}: {v}" for k, v in sorted(found.verdicts.items())) or "none"
+    if not found.ok:
+        print(f"preflight failed after {found.latency_s:.1f} s: {found.error}", file=sys.stderr)
+        return EX_FAILED
+    print(f"preflight passed: a verdict in {found.latency_s:.1f} s ({verdicts})")
+    if found.cases:
+        print(
+            f"estimated run time: {found.cases} cases x {found.seeds} seeds x "
+            f"{found.latency_s:.1f} s x 1.2 = {found.estimate_s / 3600:.1f} h"
+        )
+    else:
+        per_check = found.latency_s * 1.2
+        print(
+            f"no E-11 set yet: about {per_check:.1f} s a check, so 1,000 cases x {found.seeds} "
+            f"seeds take about {1000 * found.seeds * per_check / 3600:.1f} h"
+        )
+    return 0
+
+
 def _write(
     args: argparse.Namespace, adapter: AdapterName, final: reports.Report, json_path: Path
 ) -> Path:
@@ -468,6 +641,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.check_sets:
         return check_sets()
     if args.command == "author":
+        if args.suite == E11:
+            from epistrel.evals.authoring import e11 as e11_authoring
+
+            return e11_authoring.main(args)
         for path in authoring.write(DEFAULT_SETS_DIR):
             print(f"wrote {path}")
         return 0

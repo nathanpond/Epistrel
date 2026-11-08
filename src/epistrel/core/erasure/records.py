@@ -48,6 +48,7 @@ from epistrel.core.tables.commitments import thunks
 from epistrel.core.tables.divergences import divergences
 from epistrel.core.tables.exposures import exposures
 from epistrel.core.tables.facts import facts
+from epistrel.core.tables.images import image_candidates, image_jobs
 from epistrel.core.tables.media import SubjectKind, media_upload_sessions
 from epistrel.core.tables.memories import memories
 from epistrel.core.tables.outbox import external_effect_outbox
@@ -61,6 +62,7 @@ from epistrel.core.tables.propositions import (
 )
 from epistrel.core.tables.scheduled_events import scheduled_events
 from epistrel.core.tables.states import state_changes, state_definitions, state_proposals
+from epistrel.core.tables.story_images import story_images
 
 STORY_SCOPE = "story"
 """The ``scope`` of a story's configuration change, stored result and policy."""
@@ -436,6 +438,115 @@ def scheduled_event_record(row: Any) -> Record:
         for index, o in enumerate(getattr(row, "shared_owners", None) or ())
     ]
     return Record(scheduled_events.name, str(row.id), _str(row.story_id), {}, tuple(declared))
+
+
+ASSET_PREFIX = "asset"
+"""The dotted-path prefix of an asset's texts inside a story image's or a candidate's record."""
+
+
+def _asset_fields(row: Any) -> dict[str, str | None]:
+    """The asset's texts (``media_record``'s fields) under ``asset.``, from the ``asset_*``
+    columns a reader joined (absent ones read as none)."""
+    generation = getattr(row, "asset_generation", None)
+    generation = generation if isinstance(generation, Mapping) else {}
+    return {
+        f"{ASSET_PREFIX}.caption": _str(getattr(row, "asset_caption", None)),
+        f"{ASSET_PREFIX}.alt_text": _str(getattr(row, "asset_alt_text", None)),
+        f"{ASSET_PREFIX}.generation_metadata.prompt": _str(generation.get("prompt")),
+        f"{ASSET_PREFIX}.generation_metadata.negative_prompt": _str(
+            generation.get("negative_prompt")
+        ),
+    }
+
+
+def _asset_subjects(row: Any) -> list[Declared]:
+    """The subjects the joined asset declares (``asset_subjects``)."""
+    found: list[Declared] = []
+    for index, subject in enumerate(getattr(row, "asset_subjects", None) or ()):
+        if isinstance(subject, Mapping) and subject.get("kind") and subject.get("id"):
+            found.append(
+                (
+                    SubjectKind(str(subject["kind"])),
+                    str(subject["id"]),
+                    f"depicted_subjects[{index}]",
+                )
+            )
+    return found
+
+
+def story_image_record(row: Any) -> Record:
+    """A story image (#261, #266), scope ``story``: its stored prompt (a generated image's,
+    #263) and its asset's caption, alt text and generation prompts (``asset.*``, when the reader
+    joined them: a story image's asset is indexed here, in its story, and never as a catalog
+    medium), and as declared subjects the character of a ``character:<id>`` audience, a
+    character camera's character and the subjects its asset depicts."""
+    declared: list[Declared] = []
+    audience = _str(getattr(row, "audience_viewpoint", None)) or ""
+    if audience.startswith("character:"):
+        declared.append((SubjectKind.CHARACTER, audience.removeprefix("character:"), "audience"))
+    camera = getattr(row, "camera_pov", None) or {}
+    if isinstance(camera, Mapping) and camera.get("character_id"):
+        declared.append((SubjectKind.CHARACTER, str(camera["character_id"]), "camera_pov"))
+    declared += _asset_subjects(row)
+    return Record(
+        story_images.name,
+        str(row.id),
+        _str(row.story_id),
+        {"prompt": _str(getattr(row, "prompt", None)), **_asset_fields(row)},
+        tuple(declared),
+    )
+
+
+def image_candidate_record(row: Any) -> Record:
+    """A catalog image candidate (#260, #266), scope ``catalog``: a character entry's own
+    character (``entry``) and the subjects its asset depicts are declared, and its asset's
+    caption, alt text and generation prompts (``asset.*``) are scanned."""
+    declared: list[Declared] = []
+    if str(row.entry_kind) == "character":
+        declared.append((SubjectKind.CATALOG_CHARACTER, str(row.entry_id), "entry"))
+    declared += _asset_subjects(row)
+    return Record(image_candidates.name, str(row.id), None, _asset_fields(row), tuple(declared))
+
+
+IMAGE_JOB_PARAM_TEXTS = ("caption", "alt_text")
+"""The texts of a job's ``params`` that the index scans besides its prompts."""
+
+
+def image_job_record(row: Any) -> Record:
+    """A story image job (#256, #266), scope ``story``: its ``prompt`` and ``negative_prompt``
+    and the caption and alt text its params carry, and as declared subjects its depicted
+    subjects (``params.depicted_subjects``), the subjects its prompt was checked with
+    (``params.prompt_subjects``) and the character of a ``character:<id>`` audience. A catalog
+    job has no story and is not indexed (its reader skips it). An automatic job's prompt is
+    empty until it prepares (#265), which indexes it again."""
+    params = row.params if isinstance(row.params, Mapping) else {}
+    declared: list[Declared] = []
+    target = row.target if isinstance(row.target, Mapping) else {}
+    audience = _str(target.get("audience_viewpoint")) or ""
+    if audience.startswith("character:"):
+        declared.append(
+            (SubjectKind.CHARACTER, audience.removeprefix("character:"), "target.audience")
+        )
+    for index, subject in enumerate(params.get("depicted_subjects") or ()):
+        if isinstance(subject, Mapping) and subject.get("kind") and subject.get("id"):
+            declared.append(
+                (
+                    SubjectKind(str(subject["kind"])),
+                    str(subject["id"]),
+                    f"params.depicted_subjects[{index}]",
+                )
+            )
+    for index, subject in enumerate(params.get("prompt_subjects") or ()):
+        character = subject.get("character_id") if isinstance(subject, Mapping) else subject
+        if isinstance(character, str) and character:
+            declared.append((SubjectKind.CHARACTER, character, f"params.prompt_subjects[{index}]"))
+    fields: dict[str, str | None] = {
+        "prompt": _str(row.prompt),
+        "negative_prompt": _str(row.negative_prompt),
+    }
+    for key in IMAGE_JOB_PARAM_TEXTS:
+        fields[f"params.{key}"] = _str(params.get(key))
+    return Record(image_jobs.name, str(row.id), _str(row.story_id), fields, tuple(declared))
 
 
 def outbox_record(row: Any) -> Record:
@@ -863,9 +974,11 @@ async def read_personas(conn: AsyncConnection, story_id: str | None) -> list[Rec
 
 
 async def read_media(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """The catalog's media assets (#105), as ``media_record`` indexes them: a story image's
+    asset (one with a ``viewpoint_basis``, #261) is indexed with its story image instead."""
     if story_id is not None:
         return []
-    found = await conn.execute(select(media_assets))
+    found = await conn.execute(select(media_assets).where(media_assets.c.viewpoint_basis.is_(None)))
     return [media_record(r) for r in found]
 
 
@@ -1032,6 +1145,58 @@ async def read_scheduled_events(conn: AsyncConnection, story_id: str | None) -> 
     return await _story_rows(conn, scheduled_events, story_id, scheduled_event_record)
 
 
+def asset_columns() -> tuple[Any, ...]:
+    """The asset columns ``story_image_record`` and ``image_candidate_record`` read, labelled
+    as they expect (join ``media_assets`` on the row's ``asset_id``)."""
+    m = media_assets.c
+    return (
+        m.depicted_subjects.label("asset_subjects"),
+        m.caption.label("asset_caption"),
+        m.alt_text.label("asset_alt_text"),
+        m.generation_metadata.label("asset_generation"),
+    )
+
+
+async def read_story_images(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's images (#261), with their assets' depicted subjects and texts, as
+    ``story_image_record`` indexes them."""
+    if story_id is None:
+        return []
+    found = await conn.execute(
+        select(story_images, *asset_columns())
+        .join(media_assets, media_assets.c.id == story_images.c.asset_id, isouter=True)
+        .where(story_images.c.story_id == story_id)
+    )
+    return [story_image_record(r) for r in found]
+
+
+async def read_image_candidates(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """The catalog's image candidates (#260), with their assets, as ``image_candidate_record``
+    indexes them (a story has none)."""
+    if story_id is not None:
+        return []
+    found = await conn.execute(
+        select(image_candidates, *asset_columns()).join(
+            media_assets, media_assets.c.id == image_candidates.c.asset_id, isouter=True
+        )
+    )
+    return [image_candidate_record(r) for r in found]
+
+
+async def read_image_jobs(conn: AsyncConnection, story_id: str | None) -> list[Record]:
+    """A story's image jobs (#256), as ``image_job_record`` indexes them (catalog jobs are not
+    indexed)."""
+    if story_id is None:
+        return []
+    j = image_jobs.c
+    found = await conn.execute(
+        select(j.id, j.story_id, j.target, j.prompt, j.negative_prompt, j.params).where(
+            j.story_id == story_id
+        )
+    )
+    return [image_job_record(r) for r in found]
+
+
 async def read_outbox(conn: AsyncConnection, story_id: str | None) -> list[Record]:
     """A story's outbox rows (#210), as ``outbox_record`` indexes them."""
     return await _story_rows(conn, external_effect_outbox, story_id, outbox_record)
@@ -1069,7 +1234,10 @@ async def index_rows(conn: AsyncConnection, table: Any, where: Any, build: Any) 
 
 
 __all__ = [
+    "ASSET_PREFIX",
+    "IMAGE_JOB_PARAM_TEXTS",
     "alias_record",
+    "asset_columns",
     "belief_record",
     "belief_transition_record",
     "character_draft_record",
@@ -1086,6 +1254,8 @@ __all__ = [
     "fact_record",
     "idempotency_id",
     "idempotency_record",
+    "image_candidate_record",
+    "image_job_record",
     "index_rows",
     "media_record",
     "memory_record",
@@ -1102,17 +1272,21 @@ __all__ = [
     "read_beliefs",
     "read_divergences",
     "read_exposures",
+    "read_image_candidates",
+    "read_image_jobs",
     "read_outbox",
     "read_scheduled_events",
     "read_state_changes",
     "read_state_definitions",
     "read_state_proposals",
+    "read_story_images",
     "read_thunks",
     "scheduled_event_record",
     "snapshot_record",
     "state_change_record",
     "state_definition_record",
     "state_proposal_record",
+    "story_image_record",
     "story_record",
     "text_fields",
     "thunk_record",

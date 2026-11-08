@@ -1,0 +1,8 @@
+{
+  "dedupes": false,
+  "inconclusive": true,
+  "model": "black-forest-labs/flux-3-image-klein",
+  "recorded_at": "2026-11-08T05:14:38+00:00",
+  "total_cost": "0.036",
+  "unknown_cost_calls": 0
+}

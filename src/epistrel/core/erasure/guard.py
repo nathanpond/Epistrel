@@ -416,6 +416,17 @@ CONTENT_WRITE_PATHS: tuple[WritePath, ...] = (
     WritePath("epistrel.core.world_clock.stops", DIRECT),
     # #261: a story image's row is written in its own operation's commit step.
     WritePath("epistrel.core.images.story_images", OPERATION),
+    # #266: a generated asset's declared subjects (``insert_generated_asset``) and the own-image
+    # rule's character are guarded; a story job's prompt is checked by its target's
+    # revalidation (``check_content``) before anything is promoted.
+    WritePath("epistrel.core.images.store", CATALOG_REFERENCES),
+    WritePath("epistrel.core.images.subjects", CATALOG_REFERENCES),
+    WritePath(
+        "epistrel.core.images.candidates",
+        EXEMPT,
+        "a candidate row holds ids only (its entry, job, asset, slot, revision and fingerprint); "
+        "its asset's declared subjects pass the guard in core.images.store",
+    ),
     # #221: amendments and their parts are rows written in a rewrite_session's commit step.
     WritePath("epistrel.core.amendments.store", DIRECT),
     # #223: a rewrite session's instruction and free-text answers (author text) and its plan.

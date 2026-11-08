@@ -212,13 +212,22 @@ class StoryDepicted(BaseModel):
     id: str
 
 
+class CatalogDepicted(BaseModel):
+    """The subject a built catalog character prompt depicts (FR-IMG-9; #266): the character
+    itself."""
+
+    kind: Literal["catalog_character"] = "catalog_character"
+    id: str
+
+
 class BuiltImagePrompt(BaseModel):
     """A built image prompt and its parameters, for a consumer that generates its own images
     (FR-IMG-2): the prompt, the negative prompt, the seed, the ``perceivable`` reference image
     ids, and exactly one of ``size`` and ``aspect_ratio`` (a story image's: neither, the
-    deployment's defaults apply); and the resolved ``target``. A story image's adds the
-    ``depicted_subjects`` and its ``viewpoint_basis`` (``filtered_inputs``; #263). No model,
-    fingerprint or add-on."""
+    deployment's defaults apply); and the resolved ``target``. ``depicted_subjects``: a story
+    image's depicted characters (#263), a catalog character's the character itself and a
+    scenario's none (#266). A story image's adds its ``viewpoint_basis``
+    (``filtered_inputs``). No model, fingerprint or add-on."""
 
     prompt: str
     negative_prompt: str | None
@@ -227,7 +236,7 @@ class BuiltImagePrompt(BaseModel):
     size: str | None
     aspect_ratio: str | None
     target: ResolvedTarget | StoryImagePromptTarget
-    depicted_subjects: list[StoryDepicted] | None = Field(
+    depicted_subjects: list[StoryDepicted | CatalogDepicted] | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
     viewpoint_basis: Literal["filtered_inputs"] | None = Field(
@@ -704,6 +713,7 @@ __all__ = [
     "WRITE_DEADLINE_S",
     "BaseAppearanceRequest",
     "BuiltImagePrompt",
+    "CatalogDepicted",
     "DraftedBaseAppearance",
     "ImagePrompt",
     "ImagePromptRequest",

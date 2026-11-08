@@ -117,6 +117,7 @@ from epistrel.core.erasure.index import (
 )
 from epistrel.core.erasure.records import character_draft_record, character_version_record
 from epistrel.core.errors import CharacterNotFound, InvalidRequest
+from epistrel.core.images.subjects import include_own
 from epistrel.core.media.assets import assert_referenceable, rating_version
 from epistrel.core.media.checks import image_check_of
 from epistrel.core.ports import Ports
@@ -388,6 +389,11 @@ class DeletedCharacter:
 # -- the service -------------------------------------------------------------------------------
 
 
+def _image_ids(document: Mapping[str, Any] | None) -> set[str]:
+    """The media ids of a draft's image slots and reference images."""
+    return {media_id for _, media_id in (*images_of(document), *reference_images_of(document))}
+
+
 class CharacterCatalog(CatalogService):
     """Catalog characters on the generic catalog service."""
 
@@ -412,8 +418,10 @@ class CharacterCatalog(CatalogService):
         owner: str,
         listing_status: str,
     ) -> None:
-        """A character is created with its companion scenario (FR-CAT-5; #116)."""
+        """A character is created with its companion scenario (FR-CAT-5; #116); its images
+        depict it (FR-IMG-9; #266)."""
         await companion.create(conn, entry_id, document, owner=owner, listing_status=listing_status)
+        await include_own(conn, entry_id, _image_ids(document))
 
     async def saved(
         self,
@@ -422,8 +430,11 @@ class CharacterCatalog(CatalogService):
         document: Mapping[str, Any],
         previous: Mapping[str, Any],
     ) -> None:
-        """A changed content rating reaches the companion's draft (until set there; #116)."""
+        """A changed content rating reaches the companion's draft (until set there; #116); an
+        image it adds (an attached candidate's included) depicts the character (FR-IMG-9;
+        #266)."""
         await companion.follow_rating(conn, entry_id, document, previous)
+        await include_own(conn, entry_id, _image_ids(document) - _image_ids(previous))
 
     async def archived(self, conn: AsyncConnection, entry_id: str, archived: bool) -> None:
         """The companion is archived and unarchived with its character (FR-CAT-5; #116)."""

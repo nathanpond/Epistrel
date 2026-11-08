@@ -5701,6 +5701,10 @@ class Engine:
                 version=resolved.version,
                 draft_revision=resolved.draft_revision,
             ),
+            # FR-IMG-9 (#266): a catalog character's images depict the character itself.
+            depicted_subjects=[prompt_builder.CatalogDepicted(id=target.id)]
+            if target.kind == "character"
+            else [],
         )
 
     async def _build_story_image_prompt(
@@ -6283,7 +6287,8 @@ class Engine:
         ``camera_pov``, ``depicted_subjects``, optional caption, alt text and rating),
         ``content`` its bytes. 422 ``position_invalid`` (an inactive position, or a slot after
         any turn but the last completed one), ``viewpoint_invalid``, ``camera_pov_invalid``,
-        ``camera_pov_not_present``, ``subjects_required``, in that order, before the bytes are
+        ``camera_pov_not_present``, ``subjects_required``, ``subject_invalid`` (a declared
+        subject that is no character of the story; #266), in that order, before the bytes are
         checked; then #258's upload path (415, 413, ``rating_retired``, with an ``image_check``
         model 422 ``guardrail_violation`` or 503 ``image_check_unavailable``, the moderation
         hook's refusals); 409 ``story_archived``, ``story_paused`` or ``revision_conflict``. The
@@ -6375,7 +6380,9 @@ class Engine:
         ``story_paused``; 409 ``not_configured``, ``image_check_unconfigured`` (before any
         prompt-model call); 422 ``subjects_required``, ``subjects_not_allowed``,
         ``position_invalid``, ``viewpoint_invalid``, ``camera_pov_invalid``,
-        ``camera_pov_not_present``, ``viewpoint_perceived_nothing``,
+        ``camera_pov_not_present``, ``subject_invalid`` (a declared subject that is no
+        character of the story; 409 ``erased_subject_referenced`` for an erased one),
+        ``viewpoint_perceived_nothing``,
         ``viewpoint_protected_content``, ``guardrail_violation``; 409 ``image_limit_reached``,
         422 ``images_disabled``; 503 ``image_prompt_unavailable``, ``model_unavailable``.
         Idempotent under its key (story-scoped)."""
@@ -6405,6 +6412,7 @@ class Engine:
                     request.audience_viewpoint,
                     request.camera_pov,
                     at=story_image_target.FIELD,
+                    subjects=request.depicted_subjects if consumer else None,
                 )
                 if consumer:
                     style, style_negative, guidance = await story_perceived.style_and_guidance(

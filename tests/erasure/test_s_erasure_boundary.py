@@ -1339,3 +1339,64 @@ async def test_s_erasure_boundary__m7_rewrite(
         assert markers
         assert all(set(m) <= {"erasure_id", "at", "type", "from_turn", "to_turn"} for m in markers)
         assert erased.ed.bobby not in json.dumps(markers)
+
+
+@pytest.mark.part("M8", "FR-ADMIN-6; NFR-PRIV-2")
+async def test_s_erasure_boundary__m8_images(
+    pg_url: str, tmp_path: Path, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """M8 (#266): images are inside the boundary. #124's residue scan (``verify``) finds Marcus
+    in the story's images, their assets and its image jobs' prompts before he is erased from the
+    story, and nowhere in them after: the images that declare or name him are gone, and every
+    job prompt that named him is null. A catalog-scope erasure of a catalog character leaves
+    nothing of her in the candidates or their assets (the catalog scan).
+
+    Complement asserted: Jenni's queued job keeps its prompt, which the scan still finds for her,
+    and the visual-only upload stays."""
+    from epistrel.core.erasure.redact import Redactor
+    from epistrel.core.erasure.verify import verify
+    from tests import catalog_image_support as cs
+    from tests import image_subject_support as subj
+    from tests import story_image_generation_support as sg
+    from tests.image_job_support import image_settings_for
+
+    settings = image_settings_for(pg_url, tmp_path)
+    marcus, jenni = Redactor(["Marcus"]), Redactor(["Jenni"])
+    image_tables = {"story_images", "image_jobs", "media_assets"}
+    async with sg.generation_app(settings, engine) as app:
+        found = await subj.story_images(app, engine)
+        story, ids = found.story_id, found.ids
+        async with engine.connect() as conn:
+            before = await verify(conn, story, marcus)
+        assert image_tables <= set(before.tables)
+
+        erased = await e.erase(app.client, "character", ids["Marcus"], story, confirm_all=True)
+        assert erased["residue"] == 0
+        async with engine.connect() as conn:
+            after = await verify(conn, story, marcus)
+            kept = await verify(conn, story, jenni)
+        assert not image_tables & set(after.tables)
+        assert kept.tables.get("image_jobs", 0) >= 1
+        jobs = await subj.jobs(engine, list(found.jobs.values()))
+        for name in ("built", "prompted", "waiting"):
+            assert (jobs[found.jobs[name]].prompt, jobs[found.jobs[name]].negative_prompt) == (
+                None,
+                None,
+            )
+        assert jobs[found.jobs["kept_job"]].prompt.startswith(subj.JENNI_PROMPT)
+        assert found.images["visual"] in await subj.image_ids(engine, story)
+
+    async with cs.candidate_app(settings, engine) as catalog:
+        made = await subj.catalog_candidates(catalog)
+        her = Redactor([subj.ERASED_NAME])
+        async with engine.connect() as conn:
+            before = await verify(conn, None, her)
+        assert "media_assets" in before.tables
+        erased = await e.erase(catalog.client, "catalog_character", made.erased)
+        assert erased["residue"] == 0
+        async with engine.connect() as conn:
+            after = await verify(conn, None, her)
+        assert after.count == 0
+        assert await subj.candidate_ids(engine, [made.candidates["kept"]]) == {
+            made.candidates["kept"]
+        }

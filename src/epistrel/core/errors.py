@@ -2038,6 +2038,15 @@ class SubjectsNotAllowed(EpistrelError):
     http_status = 422
 
 
+class SubjectInvalid(EpistrelError):
+    """A story image upload or consumer prompt declared a depicted subject that is no character
+    of the story (FR-IMG-9; #266): a story image declares the story's ``character`` ids only.
+    ``details``: ``field`` (``…depicted_subjects[i]``) and ``index``."""
+
+    code = "subject_invalid"
+    http_status = 422
+
+
 class ViewpointPerceivedNothing(EpistrelError):
     """A story image's audience viewpoint perceived nothing at the position (FR-IMG-8; #263):
     no beat, no one present and no location it holds. Refused before any prompt-model call,

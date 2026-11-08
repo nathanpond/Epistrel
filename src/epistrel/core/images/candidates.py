@@ -25,15 +25,16 @@ compare: it locks the candidates (``FOR UPDATE``; the entry row is already locke
 update), refuses an unknown, expired or other entry's candidate (422 ``candidate_not_found``),
 then a fingerprint other than the saved draft's (409 ``candidate_stale``), and otherwise makes
 each asset ``live`` (FR-IMG-7's "attached" is #105's ``live``), owned by the entry's current
-owner, and deletes the candidate rows. A new rating version never makes a candidate stale: the
-fingerprint holds the rating's id.
+owner, and deletes the candidate rows (and their index rows). A new rating version never makes
+a candidate stale: the fingerprint holds the rating's id.
 
 **Removal** deletes the candidate row and its asset row (the bytes after commit, through
 ``core.media.sweep.collect_blob``, which keeps bytes another asset row still names):
-``discard`` (idempotent), ``delete_for_entry`` (the entry's delete, in its transaction), and
+``discard`` (idempotent), ``delete_for_entry`` (the entry's delete, in its transaction),
 ``expire_batch`` (the ``image_candidate_expiry`` task: past ``expires_at``, ``FOR UPDATE SKIP
-LOCKED``, so an attach holding the lock wins). Nothing else does: the general media sweep skips
-``candidate`` assets, and ``catalog.image_candidates`` is a media reference source.
+LOCKED``, so an attach holding the lock wins), and an erasure's catalog pass (``remove``, #266:
+the candidates that declare or name the subject). Nothing else does: the general media sweep
+skips ``candidate`` assets, and ``catalog.image_candidates`` is a media reference source.
 """
 
 from __future__ import annotations
@@ -56,7 +57,7 @@ from sqlalchemy import insert as sql_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import clock
-from epistrel.core.erasure.index import drop_references
+from epistrel.core.erasure.index import drop_many, drop_references
 from epistrel.core.errors import (
     CandidateNotFound,
     CandidateStale,
@@ -466,7 +467,25 @@ async def insert(
                 for candidate_id, asset_id in zip(ids, asset_ids, strict=True)
             ],
         )
+        await index_candidates(conn, ids, fresh=True)
     return ids
+
+
+async def index_candidates(
+    conn: AsyncConnection, candidate_ids: Sequence[str], *, fresh: bool = False
+) -> None:
+    """(Re)write the candidates' ``subject_references`` rows (#266: catalog scope, the entry's
+    character and the asset's subjects declared, the asset's texts scanned), in ``conn``'s
+    transaction."""
+    from epistrel.core.erasure.index import index_records
+    from epistrel.core.erasure.records import asset_columns, image_candidate_record
+
+    rows = await conn.execute(
+        select(image_candidates, *asset_columns())
+        .join(media_assets, media_assets.c.id == image_candidates.c.asset_id, isouter=True)
+        .where(image_candidates.c.id.in_(list(candidate_ids)))
+    )
+    await index_records(conn, [image_candidate_record(r) for r in rows], fresh=fresh)
 
 
 def _candidate_ref(value: Any) -> str | None:
@@ -623,6 +642,7 @@ async def attach(
                 principal=principal,
             )
     await conn.execute(delete(image_candidates).where(image_candidates.c.id.in_(list(found))))
+    await drop_many(conn, image_candidates.name, found)
     return {c: found[c].asset_id for c in candidate_ids}
 
 
@@ -635,6 +655,7 @@ async def _remove(conn: AsyncConnection, rows: Sequence[Any]) -> list[str]:
     await conn.execute(
         delete(image_candidates).where(image_candidates.c.id.in_([str(r.id) for r in rows]))
     )
+    await drop_many(conn, image_candidates.name, [str(r.id) for r in rows])
     checksums = list(
         await conn.scalars(
             delete(media_assets)
@@ -667,6 +688,23 @@ async def discard(
                 image_candidates.c.entry_kind == entry_kind,
                 image_candidates.c.entry_id == entry_id,
             )
+            .with_for_update()
+        )
+    ).all()
+    return await _remove(conn, rows)
+
+
+async def remove(conn: AsyncConnection, candidate_ids: Sequence[str]) -> list[str]:
+    """Delete the candidates ``candidate_ids`` with their asset rows, whatever their entry (an
+    erasure's catalog pass, #266), in ``conn``'s transaction: the checksums to collect after
+    commit."""
+    if not candidate_ids:
+        return []
+    rows = (
+        await conn.execute(
+            select(image_candidates.c.id, image_candidates.c.asset_id)
+            .where(image_candidates.c.id.in_(list(candidate_ids)))
+            .order_by(image_candidates.c.id)
             .with_for_update()
         )
     ).all()
@@ -782,11 +820,13 @@ __all__ = [
     "fingerprint_of",
     "image_input_fingerprint",
     "image_inputs",
+    "index_candidates",
     "insert",
     "jcs",
     "list_for_entry",
     "live_candidate",
     "referenced_ids",
+    "remove",
     "resolve",
     "substituted",
 ]

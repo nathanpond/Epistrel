@@ -189,7 +189,9 @@ image_jobs = Table(
     Column("target", JSONB, nullable=False),
     Column("origin", JSONB, nullable=False),
     Column("viewpoint", Text, nullable=True),
-    Column("prompt", Text, nullable=False),
+    # Null once an erasure redacted it (#266, migration 0139); empty for an automatic job until
+    # it prepares (#265).
+    Column("prompt", Text, nullable=True),
     Column("negative_prompt", Text, nullable=True),
     Column("params", JSONB, nullable=False),
     Column("status", Text, nullable=False, server_default=text("'queued'")),

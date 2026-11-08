@@ -772,7 +772,18 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         f"{_RECORDS}:read_scenario_versions",
     ),
     SubjectWriter("personas", ("epistrel.core.catalog.personas",), f"{_RECORDS}:read_personas"),
-    SubjectWriter("media_assets", ("epistrel.core.media.assets",), f"{_RECORDS}:read_media"),
+    # #266: a generated catalog asset (a candidate's, ``core.images.store``) and the own-image
+    # rule (``core.images.subjects``) write media too; a story image's asset is indexed with
+    # its story image instead.
+    SubjectWriter(
+        "media_assets",
+        (
+            "epistrel.core.media.assets",
+            "epistrel.core.images.store",
+            "epistrel.core.images.subjects",
+        ),
+        f"{_RECORDS}:read_media",
+    ),
     SubjectWriter(
         "media_upload_sessions",
         ("epistrel.core.media.uploads",),
@@ -815,11 +826,20 @@ SUBJECT_WRITERS: tuple[SubjectWriter, ...] = (
         ("epistrel.core.world_clock.stops",),
         f"{_RECORDS}:read_scheduled_events",
     ),
-    # Story images (#261): a generated image's stored prompt (#263), and the audience's, the
-    # camera's and the asset's depicted characters as declared subjects.
+    # Story images (#261, #266): a generated image's stored prompt (#263) and its asset's
+    # caption, alt text and prompts, and the audience's, the camera's and the asset's depicted
+    # characters as declared subjects.
     SubjectWriter(
         "story_images", ("epistrel.core.images.story_images",), f"{_RECORDS}:read_story_images"
     ),
+    # #266: a catalog candidate (its entry's character, its asset's subjects and texts) and a
+    # story image job (its prompts, caption and alt text, and its depicted subjects).
+    SubjectWriter(
+        "image_candidates",
+        ("epistrel.core.images.candidates",),
+        f"{_RECORDS}:read_image_candidates",
+    ),
+    SubjectWriter("image_jobs", ("epistrel.core.images.store",), f"{_RECORDS}:read_image_jobs"),
     # The outbox (#210): an effect's texts (the render's reason, positional); a character-scoped
     # value declares its character. Its writer is the outbox module (intent, dispatcher and
     # intake writes alike).
@@ -858,15 +878,11 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "rebuild and a fork), which are indexed",
     "turn_queue": "transient: a queued turn's request until it runs (its input is then an event)",
     "jobs": "transient work items, deleted by the retention sweep",
-    "image_jobs": "an image job's prompt, request and outcome (#256); indexing and redacting "
-    "what names a subject is #266's, with the images themselves",
     "image_reservations": "one provider attempt per row (#256): tokens, send states, provider "
     "references, applied parameters and counts, no prompt; #262's accounting (counter keys, "
     "counts, states)",
     "image_limit_counters": "deployment accounting (#262): limit scopes, keys, dates and counts, "
     "no story content",
-    "image_candidates": "a catalog candidate's ids, slot, draft revision, fingerprint and expiry "
-    "(#260), no text; its asset row is #266's, with the images themselves",
     "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "
     "counts (#249); the archive's own lines are not indexed",
     "timers": "transient: a timer's kind and target id",

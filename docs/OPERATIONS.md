@@ -117,6 +117,7 @@ Audit views show the same markers: `GET /stories/{id}/history?viewpoint=omniscie
 - catalog drafts and published versions, and scenario reports
 - personas
 - media metadata and bytes (declared subjects, captions, alt text and prompts)
+- images that declare a subject or mention it in their prompt, caption or alt text, including story images and image candidates (both deleted; a story image's asset and bytes with it, unless another story's image still uses them), and the prompts of story image jobs that depict or name the subject (emptied; an unfinished job is cancelled)
 - media assets that depict or name only the subject: under `erasure_shared_media = purge` (the default) the asset and its bytes are deleted; under `retire`, an asset another record still uses stays on disk, retired, with the subject removed from its metadata
 - message feedback and its history
 - feedback exports not yet downloaded (the subject is redacted in their cases)

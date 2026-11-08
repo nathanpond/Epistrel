@@ -81,6 +81,7 @@ from collections.abc import (
     AsyncIterator,
     Awaitable,
     Callable,
+    Collection,
     Mapping,
     Sequence,
 )
@@ -1132,6 +1133,10 @@ async def _insert(
             **check.values(),
         )
     )
+    if viewpoint_basis is not None:
+        # A story image's asset (#261) is indexed with its ``story_images`` row, in its story's
+        # scope (#266): a catalog erasure never reaches into a story (FR-STORE-14).
+        return
     subjects: list[Declared] = [
         (subject.kind, subject.id, DECLARED_FIELD) for subject in request.depicted_subjects or []
     ]
@@ -1642,14 +1647,19 @@ def _values(source: ReferenceSource, path_param: str) -> tuple[str, str]:
     )
 
 
-async def referenced(conn: AsyncConnection, media_ids: Sequence[str]) -> set[str]:
+async def referenced(
+    conn: AsyncConnection, media_ids: Sequence[str], *, skip: Collection[str] = ()
+) -> set[str]:
     """Which of ``media_ids`` some record of ``MEDIA_REFERENCE_SOURCES`` names, found by
-    querying the records (never by a counter)."""
+    querying the records (never by a counter). ``skip`` leaves out the sources of those
+    tables (``schema.table``: a caller that counts their rows itself, #266)."""
     wanted = list(dict.fromkeys(media_ids))
     found: set[str] = set()
     if not wanted:
         return found
     for source in await _present_sources(conn):
+        if source.table in skip:
+            continue
         source_from, value = _values(source, "path")
         params: dict[str, Any] = {"ids": wanted}
         if source.path is not None:

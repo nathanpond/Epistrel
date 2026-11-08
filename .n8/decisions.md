@@ -12931,6 +12931,48 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the instruction goes in through `GenerationInputs.illustrate_instruction` (`C.CONSTRAINT`, classified `TURN` in `check-character-context`), rendered by `lite_generation.j2`, `structured_generation.j2` and `narrator_generation.j2`. The three template edits move every preset fingerprint again, and `docs/evals/INDEX.md` is regenerated (presets stay uncertified until M9). `docs/models.md` and `docs/openapi.json` are regenerated. Docs: FR-IMG-6 gets an as-built note (the commit transaction, the 0–4 cap, Lite), and so does docs/02 §4.13. `OPERATIONS.md` gets an "Automatic illustration" paragraph and the three metrics: `epistrel_image_auto_jobs_queued_total{pipeline}`, `epistrel_image_auto_points_dropped_total{reason}` and `epistrel_image_auto_hints_dropped_total`.
   **Why:** the planner's fixed constants and metric names. The fingerprint move follows the #760 ad-hoc entry's precedent: M9 re-certifies.
   **Issue:** #265
+- **Decision:** #266 step 0. Run 42440435790 on `b007204` (#265) was still running when #266 started, with every finished job green. #266 made no #265 fix.
+  **Why:** the orchestrator's step 0. The run's final state is in #266's completion comment.
+  **Issue:** #265, #266
+- **Decision:** a story image's asset is indexed only through its `story_images` row, in the story's scope. `story_image_record` gains the asset's caption, alt text and generation prompts (under `asset.*`) next to its stored prompt and declared subjects. `media.commit` (`_insert`) skips its catalog `media_record` when the asset has a `viewpoint_basis`, and `read_media` (the rebuild) leaves such assets out. A catalog erasure's `_erase_media` and `verify_catalog` skip them (`viewpoint_basis IS NULL`), and `verify_story` scans the story's image assets.
+  **Why:** the planner's "a story image indexes its asset (scope `story`, story_id)". A catalog record can't carry a story id. `index_records` keys rows by `(record_table, record_id)`, so a second `media_assets` record in story scope would overwrite the catalog one. Without the move, a catalog erasure of Linda would rewrite or purge a story's image whose caption names her, which FR-STORE-14 forbids (the #504 path too). No migration: no story image exists outside M8's unreleased branch.
+  **Issue:** #266
+- **Decision:** `image_candidates` and `image_jobs` leave `EXEMPT_TABLES` for `SUBJECT_WRITERS`.
+  - `records.image_candidate_record` (catalog scope) declares a character entry's own character and the asset's depicted subjects, and scans the asset's texts. Its writer is `core.images.candidates`: `insert` indexes, while `attach` and `_remove` drop the rows.
+  - `records.image_job_record` (story jobs only; a catalog job isn't indexed) scans `prompt`, `negative_prompt` and `params.caption`/`alt_text`. It declares `params.depicted_subjects`, `params.prompt_subjects` and the audience's character. Its writer is `core.images.store`: `insert_job` indexes, and so does `update_job` when it rewrites prompt, params or target (an automatic job's preparation, #265).
+  - Generated catalog assets (candidates') were never indexed. `insert_generated_asset` now indexes them with `media_record` and runs `assert_not_erased` on their declared subjects.
+  - `CONTENT_WRITE_PATHS`: `core.images.store` and `core.images.subjects` are `CATALOG_REFERENCES`. `core.images.candidates` is `EXEMPT` (ids only; its asset is guarded in the store).
+  **Why:** the AC's Indexing bullet and the planner's registries. A catalog job's prompt has no erasure clause in the AC (only story-scoped jobs are redacted), so it stays unindexed.
+  **Issue:** #266
+- **Decision:** migration `0139_image_job_prompt_redaction` makes `image_jobs.prompt` nullable. `store._job` reads a null prompt as `""`, because only an ended job is ever redacted. The downgrade writes `''` and restores `NOT NULL`.
+  **Why:** the AC redacts job prompts "to null". The alternative, an empty string, can't be told apart from an automatic job that hasn't prepared yet (#265). Relaxing the constraint is a column change, not a new table or a key change, so Rule 4 doesn't apply.
+  **Issue:** #266
+- **Decision:** the story pass's image steps (`_erase_story_images`, `_erase_image_jobs`) run after the transient work and before the subject's own rows.
+  - A story image, on any membership, is reached when its record declares the subject (asset subjects, audience, camera) or holds a certain or confirmed mention. It is deleted through `_delete`, with a marker and its edges.
+  - Its asset is purged, bytes after commit through the erasure's `collect`, unless another `story_images` row (a fork's) or any other reference source still names it. `assets.referenced` gains `skip=`, so the dry run excludes the rows it would delete.
+  - Every image job of the story is read, as `_redact_transient` reads queued turns. A job is reached when it declares the subject or its prompt or negative prompt certainly names them. A reached job has both prompts nulled and is cancelled in the transaction if unfinished (`store.cancel_in`, mirroring `cancel_job` in core: new token, discarded attempt, reservations released, queued `jobs` row finished, `image_job_ended` audit row, `status_reason: erased`).
+  - Every job's `params`, `safety_context` and `status_detail` are redacted span by span, so a job that only names the subject in its caption keeps its prompt.
+  - Counts: `records.story_images`, `records.image_jobs` and `records.media_assets`, with `media` counting the purged assets.
+  **Why:** the AC's Erasure bullets and the planner's reach lines. The span redaction keeps the residue scan at zero, since `image_jobs` is a `story_id` table it reads whole. An unprepared automatic job has no prompt or subjects yet, and it prepares from the erased story.
+  **Issue:** #266
+- **Decision:** the catalog pass runs `_erase_candidates` first. A candidate that declares the subject (its own entry's, or an asset depicting her) or whose asset texts name her is deleted with its asset through the new `candidates.remove`, and its checksums are collected after commit. The companions' candidates, deleted with the character by its own delete, have their checksums read first (`entry_checksums`) and collected too. Counts: `records["catalog.image_candidates"]`, with `media` also counted. The #504 story-character path reaches candidates through the same `_catalog_records` scan, with the story's names.
+  **Why:** the AC's catalog-candidate bullet and the #260 hand-off ("erasure's catalog delete leaves the bytes to the orphan step"), which this replaces with collection after commit.
+  **Issue:** #266, #260
+- **Decision:** declarations. A story upload and a consumer prompt declare the story's `character` ids only. `story_images.check_subjects` runs in `place_at` after `subjects_required` and answers 422 `subject_invalid` (a new code, with `details.field` and `index`), then `assert_not_erased` (409). The catalog `POST /image-prompts` answer lists `{kind: catalog_character, id}` for a character (`CatalogDepicted`) and `[]` for a scenario. Lists from uploads keep their order: only the own-image rule sorts.
+  **Why:** the planner's Discretion lines. Sorting declared lists on upload would change answers existing tests pin (#105's `dict.fromkeys` order), for no erasure benefit.
+  **Issue:** #266
+- **Decision:** the own-image rule (`core/images/subjects.include_own`) runs from the catalog character service's `created` and `saved` hooks. It covers the images a write adds (primary, gallery, reference images, attached candidates). Inside the write's transaction, after the entry row's update, it locks the asset rows `FOR UPDATE` in id order, adds `{catalog_character, id}` sorted by `(kind, id)`, and re-indexes a catalog asset. The guard runs first. Detaching never removes the character. No immutability trigger exists on `media_assets`, so no migration is needed. Likewise, no trigger on `story_images`, `image_candidates` or `image_jobs` refuses an erasure's delete or update, so the planner's "GUC allow-list" needs no change.
+  **Why:** the AC's Own images bullet and the planner's lock order.
+  **Issue:** #266
+- **Decision:** the erasure response points to the boundary as #125 specified. The route's description ends with ``GET /admin/erasure/boundary``, and C-24 asserts that link and the boundary's `VISUAL_ONLY` and new `IMAGES` items. No `boundary` field is added to the response body.
+  **Why:** #125's contract. A new response field would be an API change the AC doesn't ask for.
+  **Issue:** #266
+- **Decision:** the tests. `test_c_24__m8_subjects` (`part("M8", "FR-IMG-9; FR-ADMIN-6,8")`) goes in `tests/conformance/test_c_24.py`, and `test_s_erasure_boundary__m8_images` (`part("M8", "FR-ADMIN-6; NFR-PRIV-2")`) in `tests/erasure/test_s_erasure_boundary.py`. The helpers go in the new `tests/image_subject_support.py`. docs/04's S-ERASURE-BOUNDARY gains an [M8] clause, and its FR-ADMIN-6 and NFR-PRIV-2 rows gain `S-ERASURE-BOUNDARY (M8)`.
+  **Why:** the test plan and its replan line (one file per ID and milestone).
+  **Issue:** #266
+- **Decision:** #792 is filed (needs-triage, no milestone). `test_a_story_character_is_erased_from_the_catalog` (#504) depends on test order. C-22's leftover "Wren Calloway" catalog characters add candidate mentions to its dry run whenever both run in one session.
+  **Why:** the problem is outside #266's scope (catalog character fixtures), and CI's shards don't pair the two files.
+  **Issue:** #266, #792
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

@@ -962,7 +962,8 @@ async def test_i_25__m8_story_races(
       ``checking`` with ``waiting_on: pause``, its staged bytes and reservation kept; once the
       check ends it evaluates the new rating's policy, and is attached when the image passes
       it, or ends ``stale`` with ``policy_changed`` naming it when it fails;
-    - a depicted subject erased → ``stale``, ``erased``;
+    - a depicted subject erased → ``cancelled``, ``erased``, by the erasure itself (#266), its
+      prompt emptied;
     - the story gone → ``target_gone`` (a story's deletion is refused while its image is being
       made, 423 ``story_busy``, and removes its jobs with it: the job is pointed at a story that
       no longer exists).
@@ -1033,8 +1034,17 @@ async def test_i_25__m8_story_races(
         erased_story, erased_ids = await si.scene(app.client, 1)
         erased = await rv.started(app, erased_story, **rv.consumer(1, [erased_ids["Jenni"]]))
         await e.erase(app.client, "character", erased_ids["Jenni"], erased_story, confirm_all=True)
-        assert (await erased.finished())["image_job"] == "stale"
-        await _ended_stale(app, erased_story, erased.job_id, "erased")
+        # #266: the erasure cancels it in its own transaction (its prompt emptied); the worker
+        # is fenced at promotion and attaches nothing.
+        assert (await erased.finished())["image_job"] == "fenced"
+        row = await rv.job(app.lib.db, erased.job_id)
+        assert (row["status"], row["status_reason"], row["prompt"]) == ("cancelled", "erased", None)
+        assert await _promoted(app, erased_story, erased.job_id) == []
+        assert rv.staging(app, erased.job_id) == []
+        assert "held" not in await rv.reservations(app.lib.db, erased.job_id)
+        audit = await rv.audit_reason(app.lib.db, erased.job_id)
+        assert audit is not None, erased.job_id
+        assert audit["reason"] == "erased", audit
         kept = await rv.started(app, erased_story, **rv.consumer(1, [erased_ids["Marcus"]]))
         assert (await kept.finished())["image_job"] == "promoted"
 

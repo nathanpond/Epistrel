@@ -392,6 +392,7 @@ ERROR_STATUS: dict[str, int] = {
     "camera_pov_not_present": 422,
     "viewpoint_protected_content": 422,
     "subjects_not_allowed": 422,
+    "subject_invalid": 422,
     "viewpoint_perceived_nothing": 422,
     "transfer_target_invalid": 422,
     "transfer_target_required": 422,
@@ -1085,6 +1086,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "viewpoint_invalid",
         "camera_pov_invalid",
         "camera_pov_not_present",
+        # #266: a declared subject that is no character of the story.
+        "subject_invalid",
         *_UPLOADED,
         "use_multipart",
         "story_archived",

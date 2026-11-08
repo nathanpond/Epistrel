@@ -98,8 +98,11 @@ class ErasureBody(DeploymentMutationResponse):
     )
     prose_segments: int = Field(description="Text fields redacted (fields, not spans).")
     media: int = Field(
-        description="Story scope: the images the subject's characters show (they stay). "
-        "Catalog scope: the media assets purged, retired or rewritten."
+        description="Story scope: the images the subject's characters show (they stay), and "
+        "the assets of the story images deleted with the subject that no other record used "
+        "(purged). Catalog scope: the media assets purged, retired or rewritten, and the image "
+        "candidates deleted. Rows (`story_images`, `catalog.image_candidates`, `image_jobs` "
+        "redacted) are counted in `records`."
     )
     idempotency_results: int = Field(description="Stored idempotency results purged.")
     regeneration: str = Field(
@@ -228,12 +231,16 @@ class ErasureBody(DeploymentMutationResponse):
         "where it did (a beat the subject said becomes `[erased]` whole, keeping its place), "
         "stored results that name it are purged, the rolling-summary segments that named it "
         "are summarised again from the redacted window (or stay redacted without a model), "
-        "and the projections are rebuilt. It bumps the story's revision, so a turn in flight "
+        "and the projections are rebuilt. Story images that depict or name the subject (FR-IMG-9) "
+        "are deleted, each with an erasure marker, with their assets and bytes unless a fork's "
+        "copy still uses them; image jobs that depict or name it have their prompts emptied and "
+        "are cancelled if unfinished. It bumps the story's revision, so a turn in flight "
         "starts over, and runs on archived and paused stories too. **Catalog scope**: the "
         "catalog character (every version, its draft and companion) or the persona is "
         "deleted, the scenarios and other catalog records that name it are redacted, media "
         "depicting or naming only the subject are purged (or kept retired when another "
-        "record still references them and `erasure_shared_media` is `retire`), and stories "
+        "record still references them and `erasure_shared_media` is `retire`), image candidates "
+        "that depict or name it are deleted, and stories (their images included) "
         "are never touched: `referencing_stories` lists those to erase separately. A story "
         "erasure lists the catalog drafts promoted from the story (`promoted_drafts`), which it "
         "leaves untouched, with the catalog-scope request (`follow_up`) that erases the subject "

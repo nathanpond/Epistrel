@@ -556,3 +556,167 @@ async def test_c_24__m8_consumer_prompt(image_settings: Settings, engine: AsyncE
         await sg.generated(app, story, position=at, audience_viewpoint=bobby)
         built = (await sg.story_image_rows(engine, story))[-1]
         assert (built["source"], built["viewpoint_basis"]) == ("generated", "filtered_inputs")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-9; FR-ADMIN-6,8")
+async def test_c_24__m8_subjects(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Images declare who they depict, and erasure reaches them through it (#266).
+
+    - **Declared.** A story upload without ``depicted_subjects`` (omitted, or ``null``) is 422
+      ``subjects_required``; ``[]`` is accepted. A subject that is no character of the story
+      (another kind, or an unknown id) is 422 ``subject_invalid`` at its index, and so is one
+      in a consumer prompt; a consumer prompt without the field is ``subjects_required``.
+    - **Filled.** An image Epistrel built from Bobby's perception lists the characters it
+      depicts (Jenni and Marcus, story ``character`` ids), and not the guard behind the curtain
+      Bobby cannot perceive.
+    - **Own images.** A catalog character's reference images and its candidates list the
+      character; an attached candidate keeps it.
+    - **Erasure.** Erasing Marcus from the story removes the images that declare him (an upload,
+      the built image) and those that name him (an upload's caption, a consumer prompt), with
+      their assets; a queued job whose prompt names him is cancelled with its prompt emptied.
+      Erasing a catalog character removes her candidates and the candidate whose prompt names
+      her.
+    - **Boundary.** An upload that declares nobody and names nobody remains, and the erasure
+      boundary says that a visual-only subject is out of scope.
+    - **Viewpoint.** A Bobby-viewpoint read of an image depicting the masked stranger carries no
+      ``depicted_subjects``.
+
+    Complements asserted: Jenni's upload, her queued job and the other character's unnamed
+    candidate survive; the media read of the masked-stranger image lists Marcus."""
+    from epistrel.core.erasure import boundary as erasure_boundary
+    from tests import catalog_image_support as cs
+    from tests import erasure_support as e
+    from tests import image_subject_support as subj
+    from tests import story_image_generation_support as sg
+    from tests import story_image_support as si
+    from tests.story_support import WRITE
+
+    async with sg.generation_app(image_settings, engine) as app:
+        found = await subj.story_images(app, engine)
+        story, ids = found.story_id, found.ids
+        bobby = sg.character(ids["Bobby"])
+        held = await subj.image_ids(engine, story)
+
+        omitted = si.meta(subj.SLOT, bobby, omit_subjects=True)
+        for metadata in (omitted, {**omitted, "depicted_subjects": None}):
+            refused = await si.upload(app.client, story, metadata)
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == "subjects_required"
+        for subject in (
+            {"kind": "catalog_character", "id": new_ulid()},
+            {"kind": "character", "id": new_ulid()},
+        ):
+            refused = await si.upload(
+                app.client,
+                story,
+                si.meta(subj.SLOT, bobby, subjects=[*subj.marcus(ids), subject]),
+            )
+            assert refused.status_code == 422, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "subject_invalid"
+            assert error["details"]["field"] == "body.metadata.depicted_subjects[1]"
+        consumer_refusals: tuple[tuple[dict[str, Any], str, str], ...] = (
+            ({}, "subjects_required", "body.depicted_subjects"),
+            (
+                {"depicted_subjects": [{"kind": "character", "id": new_ulid()}]},
+                "subject_invalid",
+                "body.depicted_subjects[0]",
+            ),
+        )
+        for extra, code, field_name in consumer_refusals:
+            refused = await sg.request(
+                app,
+                story,
+                position=subj.AT,
+                audience_viewpoint=bobby,
+                prompt=subj.JENNI_PROMPT,
+                **extra,
+            )
+            assert refused.status_code == 422, refused.text
+            assert refused.json()["error"]["code"] == code
+            assert refused.json()["error"]["details"]["field"] == field_name
+        assert await subj.image_ids(engine, story) == held
+
+        rows = {str(r["id"]): r for r in await sg.story_image_rows(engine, story)}
+        built = rows[found.images["built"]]["asset_subjects"]
+        assert {s["kind"] for s in built} == {"character"}
+        assert {s["id"] for s in built} >= {ids["Jenni"], ids["Marcus"]}
+        assert ids["Guard"] not in {s["id"] for s in built}
+        assert rows[found.images["visual"]]["asset_subjects"] == []
+
+        erased = await e.erase(app.client, "character", ids["Marcus"], story, confirm_all=True)
+        gone = {"declared", "named", "built", "prompted"}
+        assert erased["records"]["story_images"] == len(gone)
+        assert erased["media"] >= len(gone)
+        assert erased["records"]["image_jobs"] >= 3
+        assert erased["residue"] == 0
+        kept = {found.images[n] for n in ("visual", "other")}
+        assert await subj.image_ids(engine, story) == kept
+        assets = [found.assets[n] for n in (*gone, "visual", "other")]
+        assert await subj.asset_ids(engine, assets) == {
+            found.assets[n] for n in ("visual", "other")
+        }
+        jobs = await subj.jobs(engine, list(found.jobs.values()))
+        waiting, kept_job = jobs[found.jobs["waiting"]], jobs[found.jobs["kept_job"]]
+        assert (waiting.status, waiting.status_reason, waiting.prompt) == (
+            "cancelled",
+            "erased",
+            None,
+        )
+        assert jobs[found.jobs["prompted"]].prompt is None
+        assert jobs[found.jobs["prompted"]].status == "promoted"
+        assert kept_job.status == "queued"
+        assert subj.JENNI_PROMPT in kept_job.prompt
+
+        stated = await subj.boundary(app.client)
+        assert erasure_boundary.VISUAL_ONLY in stated["out_of_scope"]
+        assert erasure_boundary.IMAGES in stated["in_scope"]
+        schema = (await app.client.get("/openapi.json")).json()
+        assert "/admin/erasure/boundary" in schema["paths"]["/admin/erasure"]["post"]["description"]
+
+        stranger = await sg.stranger_scene(app, engine)
+        seen_by = sg.character(stranger.ids["Bobby"])
+        await sg.generated(
+            app, stranger.story_id, position={"turn": 1, "beat": 2}, audience_viewpoint=seen_by
+        )
+        [image] = await sg.story_image_rows(engine, stranger.story_id)
+        items = await si.history(app.client, stranger.story_id, seen_by)
+        [item] = [i for i in items if i.get("kind") == "image"]
+        assert "depicted_subjects" not in item
+        single = await si.get(app.client, stranger.story_id, str(image["id"]), seen_by)
+        assert single.status_code == 200, single.text
+        assert "depicted_subjects" not in single.json()
+        media = await app.client.get(f"/media/{image['asset_id']}", headers=WRITE)
+        assert media.status_code == 200, media.text
+        assert stranger.ids["Marcus"] in {s["id"] for s in media.json()["depicted_subjects"]}
+
+    async with cs.candidate_app(image_settings, engine) as catalog:
+        made = await subj.catalog_candidates(catalog)
+        own_kind = {"kind": "catalog_character", "id": made.erased}
+        for reference in made.references:
+            assert own_kind in await subj.depicted(engine, reference)
+        found_rows = await cs.candidate_rows(engine, list(made.candidates.values()))
+        candidates = {r.id: r for r in found_rows}
+        assert own_kind in await subj.depicted(engine, candidates[made.candidates["own"]].asset_id)
+        kept_asset = candidates[made.candidates["kept"]].asset_id
+        revision = (await cs.draft(catalog, made.kept))["draft_revision"]
+        attached = await cs.save(
+            catalog,
+            made.kept,
+            revision,
+            public_card={"images": {"gallery": [{"candidate_id": made.candidates["kept"]}]}},
+        )
+        assert attached.status_code == 200, attached.text
+        assert await subj.depicted(engine, kept_asset) == [
+            {"kind": "catalog_character", "id": made.kept}
+        ]
+
+        erased = await e.erase(catalog.client, "catalog_character", made.erased)
+        assert erased["records"]["catalog.image_candidates"] == 2
+        assert erased["residue"] == 0
+        assert await subj.candidate_ids(engine, list(made.candidates.values())) == set()
+        dropped = [candidates[made.candidates[n]].asset_id for n in ("own", "named")]
+        assert await subj.asset_ids(engine, [*dropped, kept_asset]) == {kept_asset}

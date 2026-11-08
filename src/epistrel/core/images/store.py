@@ -12,6 +12,13 @@ or prompt text in a log line: ids, codes and counts only.
 ``insert_generated_asset`` writes a promoted output's ``media_assets`` row (``source =
 generated``). A job target's ``promote`` calls it inside the promote transaction, so the row and
 the attachment commit together.
+
+**The subject index** (FR-ADMIN-6, FR-IMG-9; #266). A story job is indexed in its story
+(``records.image_job_record``: its prompts, caption and alt text, and its depicted subjects) when
+it is inserted and whenever ``update_job`` rewrites its prompt or params (an automatic job's
+preparation, #265); a catalog job is not indexed. A generated catalog asset (a candidate's) is
+indexed as a medium (``records.media_record``) and its declared subjects pass the erasure guard
+(``assert_not_erased``); a story image's asset is indexed with its ``story_images`` row instead.
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import cast, func, insert, select, update
@@ -139,7 +147,7 @@ def _job(row: Any) -> ImageJob:
         target=dict(m["target"] or {}),
         origin=dict(m["origin"] or {}),
         viewpoint=m["viewpoint"],
-        prompt=m["prompt"],
+        prompt=m["prompt"] or "",  # null: erased (#266); such a job has ended
         negative_prompt=m["negative_prompt"],
         params=dict(m["params"] or {}),
         status=ImageJobStatus(m["status"]),
@@ -229,8 +237,43 @@ async def insert_job(conn: AsyncConnection, job: NewJob) -> tuple[str, str]:
             safety_context=None if job.safety_context is None else dict(job.safety_context),
         )
     )
+    if job.story_id is not None:
+        from epistrel.core.erasure.index import index_records
+        from epistrel.core.erasure.records import image_job_record
+
+        row = SimpleNamespace(
+            id=job.job_id,
+            story_id=job.story_id,
+            target=dict(job.target),
+            prompt=job.prompt,
+            negative_prompt=job.negative_prompt,
+            params=dict(job.params),
+        )
+        await index_records(conn, [image_job_record(row)], fresh=True)
     await notify(conn, job.job_id, ImageJobStatus.QUEUED)
     return job.job_id, token
+
+
+INDEXED_JOB_COLUMNS = frozenset({"prompt", "negative_prompt", "params", "target"})
+"""The columns whose change re-indexes a story job (``records.image_job_record`` reads them)."""
+
+
+async def index_job(conn: AsyncConnection, job_id: str) -> None:
+    """(Re)write a story job's ``subject_references`` rows from its row (a catalog job has
+    none), in ``conn``'s transaction."""
+    from epistrel.core.erasure.index import index_records
+    from epistrel.core.erasure.records import image_job_record
+
+    j = image_jobs.c
+    row = (
+        await conn.execute(
+            select(j.id, j.story_id, j.target, j.prompt, j.negative_prompt, j.params).where(
+                j.id == job_id, j.story_id.is_not(None)
+            )
+        )
+    ).one_or_none()
+    if row is not None:
+        await index_records(conn, [image_job_record(row)])
 
 
 async def read_job(conn: AsyncConnection, job_id: str, *, lock: bool = False) -> ImageJob | None:
@@ -339,6 +382,65 @@ async def update_job(conn: AsyncConnection, job_id: str, **values: Any) -> None:
     await conn.execute(
         update(image_jobs).where(image_jobs.c.id == job_id).values(updated_at=clock.now(), **values)
     )
+    if INDEXED_JOB_COLUMNS & values.keys():
+        await index_job(conn, job_id)
+
+
+QUEUE_KIND = "image_job"
+"""The ``jobs`` row kind that runs an image job (``orchestrator.jobs.worker.IMAGE_JOB_KIND``)."""
+ERASED_REASON = "erased"
+"""``status_reason`` of a job an erasure cancelled (#266)."""
+
+
+async def cancel_in(conn: AsyncConnection, job_id: str, *, reason: str = ERASED_REASON) -> bool:
+    """Cancel a job that has not ended inside ``conn``'s transaction, as
+    ``orchestrator.images.jobs.cancel_job`` does (an erasure's, #266, holding the story lock): a
+    new attempt token fences any worker at promote, the current attempt is discarded, every
+    reservation it holds is released (#262), a queued ``jobs`` row is finished and an
+    ``image_job_ended`` audit row is written. The staged bytes are the staging sweep's. ``False``
+    for a job that has already ended."""
+    from epistrel.core import audit
+    from epistrel.core.context import SYSTEM_PRINCIPAL
+    from epistrel.core.images import limits
+    from epistrel.core.tables import jobs as jobs_table
+    from epistrel.core.tables.audit_log import AuditKind
+
+    job = await read_job(conn, job_id, lock=True)
+    if job is None or job.terminal:
+        return False
+    await set_status(
+        conn, job_id, ImageJobStatus.CANCELLED, status_reason=reason, attempt_token=new_token()
+    )
+    await update_reservation(
+        conn, job_id, job.attempt_token, outcome=AttemptOutcome.DISCARDED.value
+    )
+    await limits.release_all(conn, job_id)
+    await conn.execute(
+        update(jobs_table)
+        .where(
+            jobs_table.c.kind == QUEUE_KIND,
+            jobs_table.c.status == "queued",
+            jobs_table.c.payload["image_job_id"].astext == job_id,
+        )
+        .values(
+            status="done",
+            result={"image_job": ImageJobStatus.CANCELLED.value},
+            updated_at=clock.now(),
+        )
+    )
+    await audit.record(
+        conn,
+        AuditKind.IMAGE_JOB_ENDED,
+        principal=SYSTEM_PRINCIPAL,
+        story_id=job.story_id,
+        details={
+            "job_id": job_id,
+            "attempt_token": job.attempt_token,
+            "outcome": ImageJobStatus.CANCELLED.value,
+            "reason": reason,
+        },
+    )
+    return True
 
 
 async def set_result(conn: AsyncConnection, job_id: str, result: Mapping[str, Any]) -> None:
@@ -393,6 +495,15 @@ async def insert_generated_asset(
     transaction (a target's promote); its id. The blob ``checksum`` is already in the
     store: until the transaction commits, nothing names it, and the media sweep's orphan step
     only removes a blob nothing names after an hour."""
+    from epistrel.core.erasure.guard import assert_not_erased
+
+    # No new medium depicts a subject a catalog-scope erasure removed (FR-ADMIN-9; #127, #266).
+    await assert_not_erased(
+        conn,
+        [str(s.get("id")) for s in depicted_subjects if s.get("id")],
+        field="depicted_subjects",
+        path=__name__,
+    )
     asset_id = new_ulid()
     await conn.execute(
         insert(media_assets).values(
@@ -422,16 +533,28 @@ async def insert_generated_asset(
             viewpoint_basis=viewpoint_basis,
         )
     )
+    if viewpoint_basis is None:
+        # A catalog candidate's asset is a catalog medium (#266); a story image's is indexed
+        # with its ``story_images`` row, in its story.
+        from epistrel.core.erasure.index import index_records
+        from epistrel.core.erasure.records import media_record
+
+        row = (await conn.execute(select(media_assets).where(media_assets.c.id == asset_id))).one()
+        await index_records(conn, [media_record(row)], fresh=True)
     return asset_id
 
 
 __all__ = [
     "CHANNEL_PREFIX",
+    "ERASED_REASON",
+    "QUEUE_KIND",
     "ImageJob",
     "NewJob",
     "Reservation",
     "append_policy_results",
+    "cancel_in",
     "channel",
+    "index_job",
     "insert_generated_asset",
     "insert_job",
     "new_token",

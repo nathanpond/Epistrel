@@ -985,7 +985,10 @@ async def test_i_23__m8_catalog_prompt(image_settings: Settings, engine: AsyncEn
             "size",
             "aspect_ratio",
             "target",
+            "depicted_subjects",
         }
+        # FR-IMG-9 (#266): a catalog character's images depict the character itself.
+        assert found["depicted_subjects"] == [{"kind": "catalog_character", "id": character_id}]
         assert await ip.image_rows(engine) == before
 
         [call] = ip.prompt_calls(stub)

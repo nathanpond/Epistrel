@@ -9,14 +9,16 @@ The columns are enumerated from ``information_schema``, not listed by hand, so a
 story adds is scanned without a change here:
 
 - **story scope**: every ``public`` table with a ``story_id`` column, over its ``text``,
-  ``character varying``, ``jsonb`` and array columns, for the story's rows; the story's own row
-  (``stories.id``); its configuration changes (``config_changes``, ``scope = 'story'``); and its
-  idempotency keys, its own (``scope = 'story'``) and the deployment-scoped ones bound to one of
-  its operations (its creation's).
-- **catalog scope**: every table of the ``catalog`` schema, ``personas`` and ``media_assets``,
-  and the deployment-scoped records the catalog index covers: stored results of
-  deployment-scoped keys, story-less events, policies and operation reports, and the
-  deployment's configuration changes.
+  ``character varying``, ``jsonb`` and array columns, for the story's rows (its image jobs, #266,
+  among them); the story's own row (``stories.id``); its configuration changes
+  (``config_changes``, ``scope = 'story'``); its idempotency keys, its own (``scope = 'story'``)
+  and the deployment-scoped ones bound to one of its operations (its creation's); and the assets
+  of its story images (``media_assets``, #266), which belong to the story.
+- **catalog scope**: every table of the ``catalog`` schema (``image_candidates`` among them),
+  ``personas`` and ``media_assets`` but a story image's asset (one with a ``viewpoint_basis``:
+  a catalog erasure never touches it, FR-STORE-14), and the deployment-scoped records the
+  catalog index covers: stored results of deployment-scoped keys, story-less events, policies
+  and operation reports, and the deployment's configuration changes.
 
 Never scanned: ``subject_references`` (the index, purged by the erasure itself),
 ``erasure_ledger`` (identifiers and keyed hashes only) and hash columns (a column whose name
@@ -46,6 +48,10 @@ HASH_COLUMNS = frozenset({"read_set"})
 CATALOG_SCHEMA = "catalog"
 CATALOG_PUBLIC_TABLES = ("personas", "media_assets")
 STORY_SCOPE = "story"
+STORY_IMAGE_ASSETS = "media_assets"
+"""The story scan's label for its story images' assets (#266)."""
+CATALOG_MEDIA = "viewpoint_basis IS NULL"
+"""The catalog's media: every asset but a story image's (#261, #266)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +191,16 @@ async def verify_story(conn: AsyncConnection, story_id: str, redactor: Redactor)
         "(SELECT operation_id FROM operations WHERE story_id = :s)",
         params,
     )
+    read += await _scan(
+        conn,
+        redactor,
+        residue,
+        STORY_IMAGE_ASSETS,
+        _quoted("public", "media_assets"),
+        public.get("media_assets", []),
+        "id IN (SELECT asset_id FROM story_images WHERE story_id = :s)",
+        params,
+    )
     return Residue({k: v for k, v in residue.items() if v}, read)
 
 
@@ -212,7 +228,7 @@ async def verify_catalog(conn: AsyncConnection, redactor: Redactor) -> Residue:
             table,
             _quoted("public", table),
             public.get(table, []),
-            "true",
+            CATALOG_MEDIA if table == "media_assets" else "true",
             {},
         )
     for table, where in (

@@ -19,17 +19,18 @@ access: a character camera names a character authoritatively present at the posi
 ``camera_pov_invalid``.
 
 **Upload** (``POST /stories/{id}/images``; ``upload``): the checks run in the order
-``position_invalid`` → ``viewpoint_invalid`` → ``camera_pov_invalid`` →
-``camera_pov_not_present`` → ``subjects_required`` (``depicted_subjects`` declared, ``[]``
-declaring none), before the bytes are checked; then #258's upload path checks the staged image
-(``passed``, or ``unchecked`` without a checker) outside the story lock, and one operation
-stores the asset (``source = uploaded``, ``viewpoint_basis = none``, owned by the story's owner,
-its rating the request's or the story's; a looser one answers a ``rating_looser`` warning,
-FR-RATE-5) and places the image. At a beat that operation is a ``story_image`` operation
-anchored at the turn's active variant (it follows the turn), at a slot an inter-turn slot
-operation (``slot_position(op)`` is ``N⁺k``; truncating to N discards it, FR-STORE-31). Under
-the story lock the commit re-checks the position: a turn whose active variant changed, or a
-slot whose last completed turn moved, is 422 ``position_invalid`` and nothing is written.
+``position_invalid`` → ``viewpoint_invalid`` → ``camera_pov_invalid`` → ``camera_pov_not_present`` →
+``subjects_required`` (``depicted_subjects`` declared, ``[]`` declaring none) → ``subject_invalid``
+(each declared subject a ``character`` of the story, #266) and #127's ``erased_subject_referenced``,
+before the bytes are checked; then #258's upload path checks the staged image (``passed``, or
+``unchecked`` without a checker) outside the story lock, and one operation stores the asset
+(``source = uploaded``, ``viewpoint_basis = none``, owned by the story's owner, its rating the
+request's or the story's; a looser one answers a ``rating_looser`` warning, FR-RATE-5) and places
+the image. At a beat that operation is a ``story_image`` operation anchored at the turn's active
+variant (it follows the turn), at a slot an inter-turn slot operation (``slot_position(op)`` is
+``N⁺k``; truncating to N discards it, FR-STORE-31). Under the story lock the commit re-checks the
+position: a turn whose active variant changed, or a slot whose last completed turn moved, is 422
+``position_invalid`` and nothing is written.
 
 **Visibility.** A row is visible when its membership is ``active`` (it follows the operation
 that placed it: truncate, untruncate, regenerate, swap and fork need no image-specific code,
@@ -85,6 +86,7 @@ from epistrel.core.errors import (
     PositionInvalid,
     StoryImageNotFound,
     StoryNotFound,
+    SubjectInvalid,
     SubjectsRequired,
     ViewpointInvalid,
     refuse_nul,
@@ -102,7 +104,7 @@ from epistrel.core.membership import (
 )
 from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX, OMNISCIENT
 from epistrel.core.tables import characters, events, media_assets, operations, stories
-from epistrel.core.tables.media import CheckStatus, MediaKind, MediaSource
+from epistrel.core.tables.media import CheckStatus, MediaKind, MediaSource, SubjectKind
 from epistrel.core.tables.story_images import (
     CHARACTER_CAMERAS,
     CameraKind,
@@ -483,10 +485,12 @@ async def place_at(
     at: str = METADATA_FIELD,
     content_rating_id: str | None = None,
     subjects_declared: bool = True,
+    subjects: Sequence[media.DepictedSubject] | None = None,
 ) -> Placement:
     """A story image's position, audience and camera checked, in the module docstring's order
     (``position_invalid`` → ``viewpoint_invalid`` → ``camera_pov_invalid`` →
-    ``camera_pov_not_present`` → ``subjects_required`` when ``subjects_declared`` is false),
+    ``camera_pov_not_present`` → ``subjects_required`` when ``subjects_declared`` is false →
+    ``subject_invalid`` and 409 ``erased_subject_referenced`` for the declared ``subjects``),
     fields reported under ``at``; the rating is ``content_rating_id`` or the story's (422 when
     neither exists). An upload and a generation request (#263) share it."""
     from epistrel.core.images.safety import present_at
@@ -521,6 +525,8 @@ async def place_at(
             "(an empty list declares none)",
             {"field": f"{at}.depicted_subjects"},
         )
+    if subjects is not None:
+        await check_subjects(conn, subjects, cast, at=at)
     story_rating = None if story.content_rating_id is None else str(story.content_rating_id)
     rating = content_rating_id or story_rating
     if rating is None:
@@ -542,6 +548,30 @@ async def place_at(
     )
 
 
+async def check_subjects(
+    conn: AsyncConnection,
+    subjects: Sequence[media.DepictedSubject],
+    cast: Collection[str],
+    *,
+    at: str = METADATA_FIELD,
+) -> None:
+    """A story image's declared subjects (FR-IMG-9; #266): each a ``character`` of the story
+    (``cast``), else 422 ``subject_invalid`` at its index; then #127's guard, 409
+    ``erased_subject_referenced`` for one a catalog-scope erasure removed (#504)."""
+    from epistrel.core.erasure.guard import assert_not_erased
+
+    for index, subject in enumerate(subjects):
+        if subject.kind is not SubjectKind.CHARACTER or subject.id not in cast:
+            raise SubjectInvalid(
+                "a story image declares the story's characters only: `depicted_subjects` "
+                "names no character of this story",
+                {"field": f"{at}.depicted_subjects[{index}]", "index": index},
+            )
+    await assert_not_erased(
+        conn, [s.id for s in subjects], field=f"{at}.depicted_subjects", path=__name__
+    )
+
+
 async def place(conn: AsyncConnection, story_id: str, request: StoryImageUpload) -> Placement:
     """The upload's checks, in the module docstring's order, before any byte is checked."""
     return await place_at(
@@ -552,6 +582,7 @@ async def place(conn: AsyncConnection, story_id: str, request: StoryImageUpload)
         request.camera_pov,
         content_rating_id=request.content_rating_id,
         subjects_declared=request.depicted_subjects is not None,
+        subjects=request.depicted_subjects,
     )
 
 
@@ -956,11 +987,13 @@ async def _event_id(conn: AsyncConnection, operation_id: str, kind: str) -> str:
 
 
 async def _index(conn: AsyncConnection, image_id: str) -> None:
-    from epistrel.core.erasure.records import story_image_record
+    """The image's ``subject_references`` rows (#266): its own and its asset's, in story scope
+    (the asset is never indexed as a catalog medium)."""
+    from epistrel.core.erasure.records import asset_columns, story_image_record
 
     row = (
         await conn.execute(
-            select(story_images, media_assets.c.depicted_subjects.label("asset_subjects"))
+            select(story_images, *asset_columns())
             .join(media_assets, media_assets.c.id == story_images.c.asset_id)
             .where(story_images.c.id == image_id)
         )
@@ -1217,6 +1250,7 @@ __all__ = [
     "as_recorded",
     "audience_character",
     "camera_of",
+    "check_subjects",
     "delete",
     "get_image",
     "images_for_history",

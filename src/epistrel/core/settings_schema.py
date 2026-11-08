@@ -230,6 +230,12 @@ held to what that character could know: a presupposition it had no path to is ac
 both, with an ``implausible_knowledge`` notice under ``confirm``."""
 DEFAULT_CO_AUTHOR_KNOWLEDGE: CoAuthorKnowledge = "confirm"
 DEFAULT_INTERACTION_MODE: InteractionMode = "sequential"
+IllustrationMode = Literal["on_request", "auto"]
+"""FR-IMG-6 (#265): whether a story's images are made only when the consumer asks
+(``on_request``) or also automatically at the points a render marks (``auto``)."""
+DEFAULT_ILLUSTRATION_MODE: IllustrationMode = "on_request"
+DEFAULT_MAX_AUTO_IMAGES_PER_TURN = 1
+MAX_AUTO_IMAGES_PER_TURN_LIMIT = 4
 TIE_BREAK_PATTERN = r"^(request_order|director|state:[a-z][a-z0-9_]{0,63})$"
 """FR-MULTI-8 (#175): a ``simultaneous`` turn's tie-break, ``request_order`` (the earlier-named
 primary's action stands), ``director`` (one narrator call chooses) or ``state:<name>`` (#188: a
@@ -469,6 +475,24 @@ class StorySettings(BaseModel):
     under ``own_character``, under Lite, or without per-character partitions. Genesis copies the
     scenario's ``story_settings_defaults.co_author_knowledge``. Interpretive: the turn's notices
     depend on it."""
+
+    illustration_mode: Annotated[IllustrationMode, PROSPECTIVE] = DEFAULT_ILLUSTRATION_MODE
+    """Automatic illustration (FR-IMG-6; #265): ``on_request`` (the default) makes a story image
+    only when the consumer asks; ``auto`` also queues one image job per illustration point a
+    turn's render marks (a new location, a first appearance, a turning point; Lite included,
+    at no extra model call), up to ``max_auto_images_per_turn``, in the turn's own commit. Each
+    job is the turn's output viewpoint's, framed ``third_person``, with ``system`` as its
+    principal; it builds its prompt, runs the checks and reserves inside the job. Accepted
+    whatever the image adapter or the limits; with no adapter nothing is queued. Prospective:
+    read at the turn's start."""
+
+    max_auto_images_per_turn: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_AUTO_IMAGES_PER_TURN, ge=0, le=MAX_AUTO_IMAGES_PER_TURN_LIMIT
+    )
+    """How many illustration points of one turn are queued under ``illustration_mode = auto``
+    (FR-IMG-6; #265), 0 to 4, default 1: the first in beat order, the rest dropped. A story
+    setting, not an accounting limit (the image limits are the deployment's and the catalog
+    entries', #262); 0 turns automatic illustration off. Prospective."""
 
     @field_validator("default_output_viewpoint")
     @classmethod

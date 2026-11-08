@@ -352,6 +352,45 @@ def count_revalidation(outcome: str) -> None:
     IMAGE_REVALIDATION.labels(outcome=outcome).inc()
 
 
+IMAGE_AUTO_JOBS_QUEUED = Counter(
+    "epistrel_image_auto_jobs_queued",
+    "Automatic illustration jobs queued in a turn's commit, by pipeline (lite, structured; #265).",
+    ("pipeline",),
+)
+IMAGE_AUTO_POINTS_DROPPED = Counter(
+    "epistrel_image_auto_points_dropped",
+    "Illustration points a turn marked that were not queued: beyond the story's "
+    "max_auto_images_per_turn (cap), or on a beat the turn did not commit (unmapped; #265).",
+    ("reason",),
+)
+IMAGE_AUTO_HINTS_DROPPED = Counter(
+    "epistrel_image_auto_hints_dropped",
+    "Illustration hints dropped as invalid: a Lite tag whose value is not one of the three "
+    "reasons, or a structured render's illustrate entry that does not validate (#265).",
+)
+IMAGE_AUTO_POINT_REASONS = frozenset({"cap", "unmapped"})
+
+
+def count_auto_queued(pipeline: str, n: int) -> None:
+    """Count ``n`` automatic illustration jobs a turn queued (``pipeline``: lite, structured)."""
+    if n:
+        IMAGE_AUTO_JOBS_QUEUED.labels(pipeline=pipeline).inc(n)
+
+
+def count_auto_points_dropped(reason: str, n: int = 1) -> None:
+    """Count ``n`` illustration points not queued (``cap`` or ``unmapped``)."""
+    if reason not in IMAGE_AUTO_POINT_REASONS:
+        raise ValueError(f"unknown dropped-point reason {reason}")
+    if n:
+        IMAGE_AUTO_POINTS_DROPPED.labels(reason=reason).inc(n)
+
+
+def count_auto_hints_dropped(n: int = 1) -> None:
+    """Count ``n`` invalid illustration hints dropped."""
+    if n:
+        IMAGE_AUTO_HINTS_DROPPED.inc(n)
+
+
 _STEP_LABEL = re.compile(r"^[a-z][a-z_]{0,63}$")
 OTHER_STEP = "other"
 
@@ -543,6 +582,10 @@ __all__ = [
     "HOT_COUNTS_CORRECTED",
     "HOT_SCOPES",
     "HTTP_DURATION",
+    "IMAGE_AUTO_HINTS_DROPPED",
+    "IMAGE_AUTO_JOBS_QUEUED",
+    "IMAGE_AUTO_POINTS_DROPPED",
+    "IMAGE_AUTO_POINT_REASONS",
     "IMAGE_COUNTER_DRIFT",
     "IMAGE_REVALIDATION",
     "IMAGE_REVALIDATION_OUTCOMES",
@@ -566,6 +609,9 @@ __all__ = [
     "THUNKS",
     "TURN_DEGRADATION",
     "SchedulerGauges",
+    "count_auto_hints_dropped",
+    "count_auto_points_dropped",
+    "count_auto_queued",
     "count_budget_rejected",
     "count_degradation",
     "count_perception_repair",

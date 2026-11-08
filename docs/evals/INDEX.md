@@ -16,10 +16,10 @@ procedure.
 
 | Preset | Fingerprint | Certification | Floors passed | Floors failed | Insufficient | Interventions covered | Interventions insufficient | Model | Seeds | Date (UTC) | Report |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| Lite | `2e85109a0c24` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
-| Standard | `443af45359e2` | uncertified (preset changed since certification 01M6MRZKZPYJCWJXVKANAV4F12) | — | — | — | — | — | — | — | — | — |
-| Full | `7f7956250424` | uncertified (preset changed since certification 01M6RG1VX91P04T98PK7Z7EXBJ) | — | — | — | — | — | — | — | — | — |
-| Max | `492736d820b9` | uncertified (preset changed since certification 01M6P9X2PV6WTJMN7YN81M6GYM) | — | — | — | — | — | — | — | — | — |
+| Lite | `f86c9f1732b4` | uncertified (not certified in M7; `--presets lite` certifies it) | — | — | — | — | — | — | — | — | — |
+| Standard | `0f82060354d4` | uncertified (preset changed since certification 01M6MRZKZPYJCWJXVKANAV4F12) | — | — | — | — | — | — | — | — | — |
+| Full | `4d3325358cb5` | uncertified (preset changed since certification 01M6RG1VX91P04T98PK7Z7EXBJ) | — | — | — | — | — | — | — | — | — |
+| Max | `ead05134d273` | uncertified (preset changed since certification 01M6P9X2PV6WTJMN7YN81M6GYM) | — | — | — | — | — | — | — | — | — |
 
 ## Runs
 

@@ -753,6 +753,11 @@ CLASSES: dict[str, tuple[FieldClass, Use | None]] = {
     "story_settings_defaults.audit_retention_days": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.allow_new_arrivals": (FieldClass.configuration, Use.story_setting),
     "story_settings_defaults.player_view": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.illustration_mode": (FieldClass.configuration, Use.story_setting),
+    "story_settings_defaults.max_auto_images_per_turn": (
+        FieldClass.configuration,
+        Use.story_setting,
+    ),
     "story_settings_defaults.policies[].name": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].applies_to": (FieldClass.configuration, Use.policy),
     "story_settings_defaults.policies[].rule": (FieldClass.configuration, Use.policy),

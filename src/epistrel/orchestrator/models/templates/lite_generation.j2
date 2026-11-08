@@ -8,7 +8,8 @@ definition as labelled author notes (never a public card) in request order, each
 facts), the pinned memories, the rolling summary, then the constant preamble: who
 is voiced, in request order, and the one line that separates the characters' knowledge
 (FR-LITE-5: by instruction only), and on a guardrail regeneration one constraint line per
-violated output policy (#68); then the story's ``## Player authority`` instruction (#180,
+violated output policy (#68), and with automatic illustration (#265, FR-IMG-6) its one fixed
+illustrate instruction; then the story's ``## Player authority`` instruction (#180,
 FR-RESP-11: its only Lite effect). With the prompt-only clock and States (#203, FR-LITE-5),
 ``## Time`` (the current time and the scheduled events) and ``## Tracked values`` (the
 player-visible States and their values) follow the rolling summary, shown only. Empty sections
@@ -86,6 +87,9 @@ Each character knows only what their notes and the scene show.
 {% for constraint in policy_constraints %}
 {{ constraint }}
 {% endfor %}
+{% if illustrate_instruction %}
+{{ illustrate_instruction }}
+{% endif %}
 {% if player_authority == "co_author" %}
 
 ## Player authority

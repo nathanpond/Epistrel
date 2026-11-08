@@ -100,7 +100,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from epistrel.core import audit, clock
 from epistrel.core.config_changes import read_section
 from epistrel.core.context import SYSTEM_PRINCIPAL
-from epistrel.core.errors import EpistrelError, ImageLimitReached, ImagesDisabled, InvalidRequest
+from epistrel.core.errors import (
+    EpistrelError,
+    GuardrailViolation,
+    ImageLimitReached,
+    ImagesDisabled,
+    InvalidRequest,
+)
 from epistrel.core.idempotency import ResultCodec
 from epistrel.core.ids import ULID_PATTERN
 from epistrel.core.images import limits, store
@@ -1107,6 +1113,14 @@ class ImageJobRunner:
         self.settings = settings
         config = await self.rt.models.images.config()
         params = config.image_params or ImageGenerationParams()
+        if _needs_preparing(job):
+            # #265: an automatic job builds its prompt, is checked and reserves here.
+            stopped = await self._prepare(job, target)
+            if stopped is not None:
+                return stopped
+            job = await self.read()
+            if job is None or job.terminal:
+                return {"image_job": None if job is None else job.status.value}
         begun = await self._resume_or_begin(job)
         if isinstance(begun, dict):
             return begun
@@ -1126,6 +1140,152 @@ class ImageJobRunner:
                 return ended
             attempt = ended
         return {"image_job": "fenced"}
+
+    async def _prepare(self, job: ImageJob, target: ImageTarget) -> dict[str, Any] | None:
+        """#265: an automatic job's first step (``auto.queue_points`` queued it with no prompt
+        and no reservation). Before any prompt building, reservation or provider call,
+        ``image_check`` unset while an image-output policy applies ends it
+        ``failed``/``image_check_unconfigured``. Its target's revalidation then ends it
+        ``target_gone`` or ``stale`` or defers it (a paused story), and the target's ``prepare``
+        builds and checks its prompt: a refused prompt ends it ``failed``/``guardrail_violation``
+        naming the policies, another refusal ``failed`` with its code, an unavailable model is
+        retried with #70's backoff. Last, one transaction stores the prompt, the params and the
+        safety context, and reserves the first attempt (#262): a refusal ends it ``cap_reached``
+        (``image_limit_reached`` or ``images_disabled``). The run's result when it stops here,
+        else ``None``."""
+        try:
+            await ensure_image_check_configured(
+                self.rt.models, await image_output_policy_set(self.rt.db)
+            )
+        except ImageCheckUnconfigured as exc:
+            await end_job(
+                self.rt,
+                job.id,
+                ImageJobStatus.FAILED,
+                reason=FAIL_CLOSED,
+                policy_ids=list(exc.policy_ids),
+            )
+            return {"image_job": ImageJobStatus.FAILED.value, "reason": FAIL_CLOSED}
+        prepare = getattr(target, "prepare", None)
+        if prepare is None:
+            await end_job(self.rt, job.id, ImageJobStatus.FAILED, reason="target_unavailable")
+            return {"image_job": ImageJobStatus.FAILED.value, "reason": "target_unavailable"}
+        async with self.rt.db.begin() as conn:
+            try:
+                found = await revalidate(target, conn, job)
+            except TargetGone:
+                found = Gone()
+        if isinstance(found, Gone):
+            await end_job(self.rt, job.id, ImageJobStatus.TARGET_GONE)
+            return {"image_job": ImageJobStatus.TARGET_GONE.value}
+        if isinstance(found, Stale):
+            # No prompt can be built for a position the timeline left: the job ends now.
+            await end_job(
+                self.rt,
+                job.id,
+                ImageJobStatus.STALE,
+                reason=found.reason,
+                policy_ids=list(found.detail.get("policy_ids") or ()),
+                detail=found.detail,
+            )
+            return {"image_job": ImageJobStatus.STALE.value, "reason": found.reason}
+        if isinstance(found, Wait):
+            return {
+                "image_job": job.status.value,
+                "waiting_on": WAITING_ON_PAUSE,
+                REQUEUE_IN: found.recheck_s,
+            }
+        try:
+            prepared: PreparedImageJob = await prepare(self.rt, job)
+        except GuardrailViolation as exc:
+            violations = exc.details.get("violations") or ()
+            ids = [str(v["policy_id"]) for v in violations if v.get("policy_id")]
+            async with self.rt.db.begin() as conn:
+                await store.append_policy_results(
+                    conn,
+                    job.id,
+                    [
+                        {
+                            "attempt_token": job.attempt_token,
+                            "output": None,
+                            "policy_id": p,
+                            "result": "violation",
+                        }
+                        for p in ids
+                    ],
+                )
+                await _end_in(
+                    conn,
+                    job.id,
+                    ImageJobStatus.FAILED,
+                    reason=GuardrailViolation.code,
+                    policy_ids=ids,
+                )
+            logger.info("image job %s: its prompt was refused (%d policies)", job.id, len(ids))
+            return {"image_job": ImageJobStatus.FAILED.value, "reason": GuardrailViolation.code}
+        except EpistrelError as exc:
+            if exc.http_status == 503 and not self.last_try:
+                raise ImageJobRetry(exc.code) from None
+            await end_job(self.rt, job.id, ImageJobStatus.FAILED, reason=exc.code)
+            return {"image_job": ImageJobStatus.FAILED.value, "reason": exc.code}
+        return await self._store_prepared(job, prepared)
+
+    async def _store_prepared(
+        self, job: ImageJob, prepared: PreparedImageJob
+    ) -> dict[str, Any] | None:
+        """The prepared prompt stored on the job and its first attempt reserved, in one
+        transaction (``_prepare``)."""
+        request = prepared.request
+        capped: str | None = None
+        async with self.rt.db.begin() as conn:
+            current = await store.read_job(conn, job.id, lock=True)
+            if (
+                current is None
+                or current.terminal
+                or current.attempt_token != job.attempt_token
+                or not _needs_preparing(current)
+            ):
+                return {"image_job": "fenced"}
+            auto = dict(current.params.get("auto") or {})
+            await store.update_job(
+                conn,
+                job.id,
+                prompt=request.prompt,
+                negative_prompt=request.negative_prompt,
+                params={
+                    **current.params,
+                    **request.params(),
+                    "caption": request.caption,
+                    "alt_text": request.alt_text,
+                    "prompt_subjects": [
+                        s.model_dump(mode="json") for s in request.depicted_subjects
+                    ],
+                    **prepared.extra_params,
+                    "auto": {**auto, "prepared": True},
+                },
+                safety_context=None
+                if prepared.safety_context is None
+                else dict(prepared.safety_context),
+            )
+            ready = await store.read_job(conn, job.id)
+            assert ready is not None  # noqa: S101 - locked above
+            try:
+                async with conn.begin_nested():
+                    await limits.reserve(conn, ready, ready.attempt_token, requested_outputs(ready))
+            except (ImageLimitReached, ImagesDisabled) as exc:
+                period = exc.details.get("period") or await limits.current_period(conn)
+                await _end_in(
+                    conn,
+                    job.id,
+                    ImageJobStatus.CAP_REACHED,
+                    reason=exc.code,
+                    detail={"scope": exc.details.get("scope"), "period": period},
+                )
+                capped = exc.code
+        if capped is not None:
+            logger.info("image job %s ended cap_reached (%s)", job.id, capped)
+            return {"image_job": ImageJobStatus.CAP_REACHED.value, "reason": capped}
+        return None
 
     async def _gone(self, job: ImageJob, target: ImageTarget, token: str) -> bool:
         """Whether the target is gone (``revalidate``): then the job ends ``target_gone`` at
@@ -1832,6 +1992,12 @@ class ImageJobRunner:
                 await target.on_terminal(conn, ended)
                 crash.hit("images.promote.before_commit")
         return fenced, asset_ids, outcome
+
+
+def _needs_preparing(job: ImageJob) -> bool:
+    """Whether ``job`` is an automatic one (#265) that has not built its prompt yet."""
+    auto = job.params.get("auto")
+    return isinstance(auto, Mapping) and not auto.get("prepared")
 
 
 def _passed_before(job: ImageJob, token: str) -> bool:

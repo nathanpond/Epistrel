@@ -332,6 +332,12 @@ class GenerationInputs(InputSchema):
     """A structured render's time contract (FR-CLOCK-6,7,17; #194, ``clock_contract.j2``): the
     fixed ``## Time`` section (time advances, ``time`` steps, ``flashback``), present when the
     story runs the world clock."""
+    illustrate_instruction: Annotated[str, C.CONSTRAINT] = Field(default="", max_length=1_000)
+    """Automatic illustration's instruction (FR-IMG-6; #265): one fixed line per pipeline
+    (``orchestrator.images.auto``'s ``LITE_ILLUSTRATE_INSTRUCTION`` at the end of a Lite prompt's
+    ``## Your part``, ``STRUCTURED_ILLUSTRATE_INSTRUCTION`` after a beat render's beat rules),
+    present only when the story is ``auto``, an image adapter is configured and its per-turn cap
+    is above 0; it never names the cap."""
     player_input: PlayerInput
     player_authority: Annotated[Literal["", "own_character", "co_author"], C.CONSTRAINT] = ""
     """A Lite prompt's ``## Player authority`` (FR-RESP-11; #180): the story's setting, rendered

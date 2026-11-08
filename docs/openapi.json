@@ -7165,6 +7165,16 @@
             "description": "The viewpoint a read or respond falls back to when the request names none and has no\nactor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).\nInterpretive: a Lite turn depends on it (#64).",
             "title": "Default Output Viewpoint"
           },
+          "illustration_mode": {
+            "default": "on_request",
+            "description": "Automatic illustration (FR-IMG-6; #265): ``on_request`` (the default) makes a story image\nonly when the consumer asks; ``auto`` also queues one image job per illustration point a\nturn's render marks (a new location, a first appearance, a turning point; Lite included,\nat no extra model call), up to ``max_auto_images_per_turn``, in the turn's own commit. Each\njob is the turn's output viewpoint's, framed ``third_person``, with ``system`` as its\nprincipal; it builds its prompt, runs the checks and reserves inside the job. Accepted\nwhatever the image adapter or the limits; with no adapter nothing is queued. Prospective:\nread at the turn's start.",
+            "enum": [
+              "on_request",
+              "auto"
+            ],
+            "title": "Illustration Mode",
+            "type": "string"
+          },
           "interaction_mode": {
             "anyOf": [
               {
@@ -7196,6 +7206,14 @@
             "default": null,
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
+          },
+          "max_auto_images_per_turn": {
+            "default": 1,
+            "description": "How many illustration points of one turn are queued under ``illustration_mode = auto``\n(FR-IMG-6; #265), 0 to 4, default 1: the first in beat order, the rest dropped. A story\nsetting, not an accounting limit (the image limits are the deployment's and the catalog\nentries', #262); 0 turns automatic illustration off. Prospective.",
+            "maximum": 4,
+            "minimum": 0,
+            "title": "Max Auto Images Per Turn",
+            "type": "integer"
           },
           "player_authority": {
             "default": "own_character",
@@ -24183,6 +24201,29 @@
         "title": "PendingErasureBody",
         "type": "object"
       },
+      "PendingImage": {
+        "description": "One automatic image a turn queued (FR-IMG-6; #265): its job, and the position it is\nplaced at when the job promotes it (``{turn, beat}``, the encoding above).",
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "position": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "`{turn, beat}`: after beat `beat` of turn `turn`, where the image is placed once its job promotes it.",
+            "title": "Position",
+            "type": "object"
+          }
+        },
+        "required": [
+          "job_id",
+          "position"
+        ],
+        "title": "PendingImage",
+        "type": "object"
+      },
       "Persona": {
         "description": "A saved persona (FR-CAT-6): its id, its owner (FR-AUTH-5, recorded for listing,\nattribution and offboarding only), its fields, and when it was created and last changed (an\nedit or an owner transfer).",
         "properties": {
@@ -34444,6 +34485,13 @@
             "title": "Output Viewpoint",
             "type": "string"
           },
+          "pending_images": {
+            "items": {
+              "$ref": "#/components/schemas/PendingImage"
+            },
+            "title": "Pending Images",
+            "type": "array"
+          },
           "player_view": {
             "anyOf": [
               {
@@ -35620,6 +35668,13 @@
           "output_viewpoint": {
             "title": "Output Viewpoint",
             "type": "string"
+          },
+          "pending_images": {
+            "items": {
+              "$ref": "#/components/schemas/PendingImage"
+            },
+            "title": "Pending Images",
+            "type": "array"
           },
           "player_view": {
             "anyOf": [
@@ -52054,6 +52109,21 @@
             ],
             "title": "Default Output Viewpoint"
           },
+          "illustration_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "on_request",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Illustration Mode"
+          },
           "interaction_mode": {
             "anyOf": [
               {
@@ -52068,6 +52138,19 @@
               }
             ],
             "title": "Interaction Mode"
+          },
+          "max_auto_images_per_turn": {
+            "anyOf": [
+              {
+                "maximum": 4.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Auto Images Per Turn"
           },
           "player_authority": {
             "anyOf": [
@@ -52276,6 +52359,23 @@
             "description": "The viewpoint a read or respond falls back to when the request names none and has no\nactor (FR-RESP-12): ``character:<id>``, never ``omniscient`` (#59 resolves it).\nInterpretive: a Lite turn depends on it (#64).",
             "title": "Default Output Viewpoint"
           },
+          "illustration_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "on_request",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Automatic illustration (FR-IMG-6; #265): ``on_request`` (the default) makes a story image\nonly when the consumer asks; ``auto`` also queues one image job per illustration point a\nturn's render marks (a new location, a first appearance, a turning point; Lite included,\nat no extra model call), up to ``max_auto_images_per_turn``, in the turn's own commit. Each\njob is the turn's output viewpoint's, framed ``third_person``, with ``system`` as its\nprincipal; it builds its prompt, runs the checks and reserves inside the job. Accepted\nwhatever the image adapter or the limits; with no adapter nothing is queued. Prospective:\nread at the turn's start.",
+            "title": "Illustration Mode"
+          },
           "interaction_mode": {
             "anyOf": [
               {
@@ -52307,6 +52407,21 @@
             "default": null,
             "description": "The story's override of the transcript rows per level-0 summary segment (#72).",
             "title": "Lite Summary Chunk"
+          },
+          "max_auto_images_per_turn": {
+            "anyOf": [
+              {
+                "maximum": 4,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "How many illustration points of one turn are queued under ``illustration_mode = auto``\n(FR-IMG-6; #265), 0 to 4, default 1: the first in beat order, the rest dropped. A story\nsetting, not an accounting limit (the image limits are the deployment's and the catalog\nentries', #262); 0 turns automatic illustration off. Prospective.",
+            "title": "Max Auto Images Per Turn"
           },
           "player_authority": {
             "anyOf": [
@@ -83981,10 +84096,12 @@
                           "generation_settings.temperature",
                           "generation_settings.top_p",
                           "guardrail_retry_budget",
+                          "illustration_mode",
                           "interaction_mode",
                           "lite_summary_chunk",
                           "lite_summary_max_tokens",
                           "lite_window_messages",
+                          "max_auto_images_per_turn",
                           "max_model_calls_per_turn",
                           "player_authority",
                           "player_view",
@@ -96290,7 +96407,7 @@
         ]
       },
       "patch": {
-        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a history rewrite places a correction whose absolute time the clock's anchor cannot decide, included and flagged `timing_uncertain` by default or asked of the author; read when a rewrite is planned), and `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`: how a backfill settles old text that contradicts itself, the latest or earliest statement canon, or the conflicts listed for the author while the story stays paused; read when a backfill starts), and `prune_policy` (`null`, the default, or `{older_than_days}` from 1 to 3650: the daily pruning run deletes the story's dormant continuations and discarded tails older than that; setting it deletes nothing by itself). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
+        "description": "Change the story's settings with a JSON merge patch (RFC 7396): a key present sets that setting and `null` resets it to its default. A story's settings describe the story: `turn_concurrency` (`reject` | `queue`), `turn_queue_max` (1-50; `null`: the deployment's default, 5), `default_output_viewpoint` (`character:<id>` of the cast, never `omniscient`), `regenerate_retry_budget` (0-10), `lite_summary_chunk` (2-200 rows per summary segment), `audit_retention_days` (1-3650; `null`: the deployment's) and `allow_new_arrivals` (whether a director pass, or a render as scene texture, may introduce new arrivals; default `true`), `interaction_mode` (`sequential` | `simultaneous`: how a turn with several primaries renders them; `null`: the scenario's, else `sequential`), `sequence_order` (`request` | `director`: who orders a sequential turn's primaries; `null`: `request`) and `simultaneous_tie_break` (`request_order` | `director` | `state:<name>`: how a simultaneous turn settles conflicting actions; `null`: `request_order`; `state:<name>` names a number State of the story, else 422 `tie_break_state_invalid`), `reactive_interjections` (whether reactive narration may give a reactive character a brief interjection; default `false`), `player_view` (`character` | `story`: whether a character viewpoint's output holds only what that character perceived, the audience filter, or every beat; default `character`; a no-op where perception is `none`) and `player_authority` (`own_character` | `co_author`: whether player input describing another character is a request that character resolves or narration of its observable actions, checked against its viewpoint and never its thoughts; default `own_character`; a Lite story gets it as a prompt instruction only) and `co_author_knowledge` (`confirm` | `free`: under `co_author` with per-character partitions, narration presupposing what its character could not know is accepted, with an `implausible_knowledge` notice under `confirm`, the default; no effect otherwise), and `ambiguous_retcon_timing` (`include_if_possible` | `ask_author`: how a history rewrite places a correction whose absolute time the clock's anchor cannot decide, included and flagged `timing_uncertain` by default or asked of the author; read when a rewrite is planned), and `backfill_conflict_policy` (`last_mention` | `first_mention` | `ask`: how a backfill settles old text that contradicts itself, the latest or earliest statement canon, or the conflicts listed for the author while the story stays paused; read when a backfill starts), and `prune_policy` (`null`, the default, or `{older_than_days}` from 1 to 3650: the daily pruning run deletes the story's dormant continuations and discarded tails older than that; setting it deletes nothing by itself), and `illustration_mode` (`on_request` | `auto`: under `auto`, each turn queues an image job per illustration point its render marks, Lite included, listed in the respond response's `pending_images`; default `on_request`) with `max_auto_images_per_turn` (an integer from 0 to 4, default 1: how many of a turn's points are queued). An unknown key is 422. The engine's dials are the story's engine profile's, overridden per story with `PATCH /stories/{id}/profile-overrides` (FR-PROF-5): a key that moved there (`generation_settings`, `lite_window_messages`, `lite_summary_max_tokens`, `max_model_calls_per_turn`, `turn_deadline`, `guardrail_retry_budget`) is 422 with `details.reason: superseded` and the profile setting that replaced it in `details.replacement`. `policies` (optional) upserts the story's own policies; an item that would relax a policy refuses the whole request with 422 `cannot_relax` before anything is written.\n\nEvery setting but `default_output_viewpoint`, `allow_new_arrivals`, `player_authority` and `co_author_knowledge` is prospective: it applies to requests that arrive after the write, never to a turn already running; those four are interpretive (a turn in flight is checked against them when it commits). A write that changes something moves the story's `config_revision`. The answer carries the budget the story's next turn plans with (`effective_budget`).",
         "operationId": "update_story_settings",
         "parameters": [
           {

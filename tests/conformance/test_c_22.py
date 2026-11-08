@@ -713,3 +713,45 @@ async def test_c_22__m8_story_no_checker(image_settings: Settings, engine: Async
         accepted = await sg.request(app, story, **body)
         assert accepted.status_code == 202, accepted.text
         assert len(app.prompt_calls()) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-3")
+async def test_c_22__m8_auto_no_checker(image_settings: Settings, engine: AsyncEngine) -> None:
+    """#265 (FR-IMG-3,6): a Lite story under ``illustration_mode = auto`` with the image adapter
+    configured and ``image_check`` unset (the seeded minors policy applies). A reply marking a
+    point commits and lists its job, which is always queued in the turn's commit. Run, the job
+    ends ``failed`` with ``status_reason: image_check_unconfigured`` as its first step: no
+    ``image_reservations`` row, no ``image_prompt`` call and no adapter call.
+
+    Complement asserted: with an ``image_check`` model set, the next turn's job promotes."""
+    from tests import auto_illustration_support as ai
+    from tests import story_image_generation_support as sg
+    from tests import story_image_support as si
+    from tests.image_job_support import configure as configure_images
+
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await si.scene(app.client, 0)
+        await app.configure(check=False)
+        bobby = ids[si.BOBBY]
+        await ai.set_auto(app.client, story)
+
+        played = await ai.lite_turn(app, story, bobby)
+        assert played.status_code == 200, played.text
+        [pending] = played.json()["pending_images"]
+        ended = await sg.run(app, pending["job_id"])
+        assert ended["image_job"] == "failed", ended
+        view = await ai.job_view(app, pending["job_id"])
+        assert (view["status"], view["status_reason"]) == ("failed", "image_check_unconfigured")
+        assert MINORS in (view["policy_ids"] or [])
+        assert await ai.reservations(engine, story) == 0
+        assert app.prompt_calls() == []
+        assert app.generator.requests == []
+
+        await configure_images(app.lib, image_settings, sg.ADAPTER, check=True)
+        again = await ai.lite_turn(app, story, bobby)
+        [pending] = again.json()["pending_images"]
+        done = await sg.run(app, pending["job_id"])
+        assert done["image_job"] == "promoted", done
+        assert len(app.generator.requests) == 1

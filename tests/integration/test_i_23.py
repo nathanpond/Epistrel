@@ -103,6 +103,7 @@ from tests.openrouter_support import (
 )
 from tests.openrouter_support import adapter as openrouter_adapter
 from tests.openrouter_support import config as openrouter_config
+from tests.story_support import WRITE
 
 PORT = "/admin/model-config/image_generation"
 CANARY = "sk-canary-image-7c41d0e9a3b2f5e8"
@@ -1579,3 +1580,394 @@ async def test_i_23__m8_story_camera_pov(image_settings: Settings, engine: Async
             assert refused.json()["error"]["code"] == "camera_pov_not_present"
         assert await sg.counts(engine, story) == held
         assert len(app.prompt_calls()) == 2
+
+
+# -- #265: automatic illustration (FR-IMG-6) ------------------------------------------------------
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto(image_settings: Settings, engine: AsyncEngine) -> None:
+    """Automatic illustration in a Lite story, with the stub model, image adapter and checks.
+
+    - With the setting omitted (``on_request``), a reply ending in an illustrate tag queues
+      nothing (``pending_images: []``) and its prompt asks for no tag; the tag is stripped all
+      the same.
+    - Under ``auto``, a new-location reply queues one job, and the response lists it at the
+      reply beat. The job is ``system``'s, keyed ``auto:<operation_id>:0``, for the turn's
+      output viewpoint, ``third_person``, with its ``jobs`` row and no reservation yet. Run, it
+      builds its prompt, promotes, and the image is in history right after the reply.
+    - The turn's model calls are the same as without automatic illustration (one
+      ``generation``: the flag rides the single Lite prompt).
+    - A respond replayed under the same key answers the same jobs and queues none.
+    - Regenerating the turn queues the new variant's own job; the old one ends ``stale``
+      (``target_inactive``, ``regenerated``) at #264's revalidation. A one-time ``correct``
+      (ADR-174) queues the corrected turn's own job the same way.
+
+    Complement asserted: an untagged ``auto`` reply queues nothing."""
+    from epistrel.orchestrator.images.auto import LITE_ILLUSTRATE_INSTRUCTION
+    from tests import auto_illustration_support as ai
+    from tests import story_image_support as si
+
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await ai.lite_story(app)
+        bobby = ids[si.BOBBY]
+        viewpoint = sg.character(bobby)
+
+        off = await ai.lite_turn(app, story, bobby)
+        assert off.status_code == 200, off.text
+        assert off.json()["pending_images"] == []
+        assert off.json()["message"]["text"] == ai.REPLY
+        assert LITE_ILLUSTRATE_INSTRUCTION not in ai.generation_prompts(app)[-1]
+        assert await ai.auto_jobs(engine, story) == []
+
+        await ai.set_auto(app.client, story)
+        untagged = await ai.lite_turn(app, story, bobby, "The lamp gutters.")
+        assert untagged.json()["pending_images"] == []
+        assert LITE_ILLUSTRATE_INSTRUCTION in ai.generation_prompts(app)[-1]
+        assert await ai.auto_jobs(engine, story) == []
+
+        on = await ai.lite_turn(app, story, bobby, key="auto-turn-3")
+        assert on.status_code == 200, on.text
+        found = on.json()
+        assert found["message"]["text"] == ai.REPLY
+        assert found["call_counts"] == off.json()["call_counts"]
+        assert found["call_counts"]["generation"] == 1
+        [job] = await ai.auto_jobs(engine, story)
+        assert found["pending_images"] == [
+            {"job_id": str(job["id"]), "position": {"turn": 3, "beat": 2}}
+        ]
+        operation = job["origin"]["auto"]["operation_id"]
+        assert (job["principal"], job["idempotency_key"]) == ("system", f"auto:{operation}:0")
+        assert job["origin"]["auto"]["reason"] == "new_location"
+        assert (job["target"]["audience_viewpoint"], job["viewpoint"]) == (viewpoint, viewpoint)
+        assert job["target"]["camera_pov"] == {"kind": "third_person"}
+        assert (job["status"], job["prompt"]) == ("queued", "")
+        assert await ai.jobs_rows(engine, [str(job["id"])]) == 1
+        assert await ai.reservations(engine, story) == 0
+
+        replayed = await ai.lite_turn(app, story, bobby, key="auto-turn-3")
+        assert replayed.status_code == 200, replayed.text
+        assert replayed.json()["pending_images"] == found["pending_images"]
+        assert len(await ai.auto_jobs(engine, story)) == 1
+
+        # Regenerate turn 3 while its job is queued: the new variant queues its own job, and
+        # the old one ends stale when it runs.
+        app.stub.script("generation", [ai.tagged("The cellar breathes cold air.")])
+        regenerated = await app.client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE)
+        assert regenerated.status_code == 200, regenerated.text
+        old, new = await ai.auto_jobs(engine, story)
+        assert str(old["id"]) == str(job["id"])
+        assert regenerated.json()["pending_images"] == [
+            {"job_id": str(new["id"]), "position": {"turn": 3, "beat": 2}}
+        ]
+        assert (old["origin"]["variant"], new["origin"]["variant"]) == (1, 2)
+        assert new["origin"]["auto"]["operation_id"] != operation
+        assert new["idempotency_key"] == f"auto:{new['origin']['auto']['operation_id']}:0"
+
+        stale = await sg.run(app, str(old["id"]))
+        assert stale["image_job"] == "stale", stale
+        view = await ai.job_view(app, str(old["id"]))
+        assert (view["status"], view["status_reason"]) == ("stale", "target_inactive")
+        assert view["status_detail"]["cause"] == "regenerated"
+
+        done = await sg.run(app, str(new["id"]))
+        assert done["image_job"] == "promoted", done
+        assert (await ai.job_view(app, str(new["id"])))["status"] == "promoted"
+        items = await si.history(app.client, story, viewpoint)
+        [image_id] = si.image_ids(items)
+        before = si.after(items, image_id)
+        assert before is not None
+        assert (before["turn"], before["beat"]) == (3, 2)
+        ready = (await ai.auto_jobs(engine, story))[1]
+        assert ready["prompt"]
+        assert ready["params"]["source"] == "generated"
+
+        # A one-time correct (ADR-174) is a regeneration: the corrected turn queues its own.
+        app.stub.script("generation", [ai.tagged("The stair is gone.")])
+        corrected = await app.client.post(
+            f"/stories/{story}/correct",
+            json={"turn": 3, "player_input": {"say": "What was that noise?"}},
+            headers=WRITE,
+        )
+        assert corrected.status_code == 200, corrected.text
+        jobs = await ai.auto_jobs(engine, story)
+        assert len(jobs) == 3
+        assert corrected.json()["pending_images"] == [
+            {"job_id": str(jobs[2]["id"]), "position": {"turn": 3, "beat": 2}}
+        ]
+        assert jobs[2]["origin"]["variant"] == 3
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_structured(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A structured story under ``auto``: a character render marking three illustration points
+    (a duplicate on one beat and an invalid entry besides) queues only
+    ``max_auto_images_per_turn`` of them, the first in beat order, each at its committed beat;
+    the render's prompt carries the structured instruction.
+
+    Complement asserted: with a cap of 1 one job is queued; ``on_request``, the prompt has no
+    instruction and an emitted ``illustrate`` is ignored (the turn commits, nothing is
+    queued)."""
+    from epistrel.orchestrator.images.auto import STRUCTURED_ILLUSTRATE_INSTRUCTION
+    from tests import auto_illustration_support as ai
+    from tests.respond_support import body, respond
+    from tests.structured_turn_support import beat, renders_of, structured_story
+
+    beats = [
+        beat("say", "Look, the old mill.", intent="sincere"),
+        beat("do", "Ada points across the river."),
+        beat("do", "Ada steps onto the bridge."),
+    ]
+    marks: list[dict[str, Any]] = [
+        {"beat_index": 2, "reason": "turning_point"},
+        {"beat_index": 0, "reason": "new_location"},
+        {"beat_index": 0, "reason": "first_appearance"},
+        {"beat_index": 1, "reason": "first_appearance"},
+        {"beat_index": "one", "reason": "sunset"},
+    ]
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await structured_story(app.client, "Wren", "Ada")
+        await app.configure()
+
+        app.stub.script("generation", [ai.marked_render(beats, marks)])
+        off = await respond(app.client, story, body(ids["Wren"], "Ada, where are we?"))
+        assert off.status_code == 200, off.text
+        assert off.json()["pending_images"] == []
+        [call] = renders_of(app.stub)[-1:]
+        assert STRUCTURED_ILLUSTRATE_INSTRUCTION not in sg.payload(call)
+
+        await ai.set_auto(app.client, story, cap=2)
+        app.stub.script("generation", [ai.marked_render(beats, marks)])
+        on = await respond(app.client, story, body(ids["Wren"], "Ada, what now?"))
+        assert on.status_code == 200, on.text
+        [call] = renders_of(app.stub)[-1:]
+        assert STRUCTURED_ILLUSTRATE_INSTRUCTION in sg.payload(call)
+        first, second = await ai.auto_jobs(engine, story)
+        turn = on.json()["turn"]
+        # Beat 1 is the player's input: the render's beats are 2, 3 and 4.
+        assert on.json()["pending_images"] == [
+            {"job_id": str(first["id"]), "position": {"turn": turn, "beat": 2}},
+            {"job_id": str(second["id"]), "position": {"turn": turn, "beat": 3}},
+        ]
+        assert [j["origin"]["auto"]["reason"] for j in (first, second)] == [
+            "new_location",
+            "first_appearance",
+        ]
+        assert [j["origin"]["auto"]["k"] for j in (first, second)] == [0, 1]
+
+        await ai.set_auto(app.client, story, cap=1)
+        app.stub.script("generation", [ai.marked_render(beats, marks)])
+        one = await respond(app.client, story, body(ids["Wren"], "Ada, and then?"))
+        assert one.status_code == 200, one.text
+        assert len(one.json()["pending_images"]) == 1
+        assert len(await ai.auto_jobs(engine, story)) == 3
+
+
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_rejected_point(pg_url: str, tmp_path: Path) -> None:
+    """A point refused inside its job never touches the turn (on a scratch database: the
+    deployment's limits are deployment-wide).
+
+    - ``image_limit_deployment_day = 0``: the turn succeeds and lists the job, which ends
+      ``cap_reached`` with ``status_reason: images_disabled`` when it runs, with no reservation.
+    - A point whose prompt a policy refuses ends its job ``failed`` with ``status_reason:
+      guardrail_violation`` and the policy ids; the turn succeeded all the same.
+
+    Complement asserted: with the limits available the job promotes."""
+    from tests import auto_illustration_support as ai
+    from tests import story_image_support as si
+
+    async with ai.scratch_app(pg_url, tmp_path, "auto_rejected") as (app, db):
+        story, ids = await ai.lite_story(app)
+        bobby = ids[si.BOBBY]
+        await ai.set_auto(app.client, story)
+
+        await ai.deployment(db, image_limit_deployment_day=0)
+        capped = await ai.lite_turn(app, story, bobby)
+        assert capped.status_code == 200, capped.text
+        [pending] = capped.json()["pending_images"]
+        ended = await sg.run(app, pending["job_id"])
+        assert ended["image_job"] == "cap_reached", ended
+        view = await ai.job_view(app, pending["job_id"])
+        assert (view["status"], view["status_reason"]) == ("cap_reached", "images_disabled")
+        assert await ai.reservations(db, story) == 0
+
+        await ai.deployment(db, image_limit_deployment_day=200)
+        app.checks.prompt_violation = "auto_refused"
+        refused = await ai.lite_turn(app, story, bobby, ai.tagged(reason="turning_point"))
+        assert refused.status_code == 200, refused.text
+        [pending] = refused.json()["pending_images"]
+        ended = await sg.run(app, pending["job_id"])
+        assert ended["image_job"] == "failed", ended
+        view = await ai.job_view(app, pending["job_id"])
+        assert (view["status"], view["status_reason"]) == ("failed", "guardrail_violation")
+        assert view["policy_ids"] == ["auto_refused"]
+        assert await ai.reservations(db, story) == 0
+
+        app.checks.prompt_violation = None
+        passed = await ai.lite_turn(app, story, bobby)
+        [pending] = passed.json()["pending_images"]
+        done = await sg.run(app, pending["job_id"])
+        assert done["image_job"] == "promoted", done
+        assert await ai.reservations(db, story) == 1
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_cap_zero(image_settings: Settings, engine: AsyncEngine) -> None:
+    """``max_auto_images_per_turn = 0`` under ``auto``: a marked point queues no job and
+    ``pending_images`` is ``[]``; the prompt asks for no tag. Out-of-range and non-integer caps
+    and an unknown mode are 422, and nothing changes.
+
+    Complement asserted: a cap of 1 queues one job."""
+    from epistrel.orchestrator.images.auto import LITE_ILLUSTRATE_INSTRUCTION
+    from tests import auto_illustration_support as ai
+    from tests import story_image_support as si
+
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await ai.lite_story(app)
+        bobby = ids[si.BOBBY]
+        await ai.set_auto(app.client, story, cap=0)
+        for mode, cap in (("auto", 5), ("auto", -1), ("auto", True), ("auto", 1.0), ("always", 1)):
+            bad = await ai.illustrate(app.client, story, mode, cap)
+            assert bad.status_code == 422, (mode, cap, bad.text)
+        zero = await ai.lite_turn(app, story, bobby)
+        assert zero.status_code == 200, zero.text
+        assert zero.json()["pending_images"] == []
+        assert LITE_ILLUSTRATE_INSTRUCTION not in ai.generation_prompts(app)[-1]
+        assert await ai.auto_jobs(engine, story) == []
+
+        await ai.set_auto(app.client, story, cap=1)
+        one = await ai.lite_turn(app, story, bobby)
+        assert len(one.json()["pending_images"]) == 1
+        assert len(await ai.auto_jobs(engine, story)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-6")
+@pytest.mark.parametrize("point", ["before_commit", "after_commit_before_response"])
+async def test_i_23__m8_auto_jobs_in_commit_tx(
+    point: str, image_settings: Settings, engine: AsyncEngine, pg_url: str
+) -> None:
+    """The automatic jobs commit with their turn, in its transaction. A child engine (no job
+    worker) killed at ``point`` while it plays an ``auto`` Lite turn marking a point: just
+    before the commit (``before_commit``), neither the turn nor a job exists; after the commit,
+    before the response (``after_commit_before_response``), the turn and its job, with its
+    ``jobs`` row, are both there.
+
+    Complement asserted: each parameter asserts the other's absence or presence."""
+    import contextlib
+
+    from epistrel.core.idempotency import IDEMPOTENCY_HEADER
+    from epistrel.testing import crash
+    from epistrel.testing.faults import EngineProcess, StubRule, crash_at
+    from tests import auto_illustration_support as ai
+    from tests import story_image_support as si
+    from tests.auth_support import CREDENTIAL_A
+    from tests.crash_support import recover
+    from tests.image_job_support import clean, configure_child_adapter
+    from tests.model_support import CONFIG_KEY
+    from tests.respond_support import body, respond_client
+
+    say = "Is that a cellar door?"
+    async with (
+        restored_model_config(engine),
+        respond_client(image_settings, engine) as (
+            client,
+            lib,
+        ),
+    ):
+        try:
+            story, ids = await si.scene(client, 0)
+            await configure_child_adapter(lib, image_settings)
+            await ai.set_auto(client, story)
+            child = EngineProcess(
+                pg_url,
+                CREDENTIAL_A,
+                crash=crash_at(point, 1, "turn" if point == "before_commit" else None),
+                mode="api",
+                images=True,
+                config_key=CONFIG_KEY,
+                stub_rules=[StubRule((say,), ai.TAGGED, "generation")],
+            )
+            async with child, httpx.AsyncClient(base_url=child.base_url, timeout=30) as remote:
+                with contextlib.suppress(httpx.HTTPError):
+                    await remote.post(
+                        f"/stories/{story}/respond",
+                        json=body(ids[si.BOBBY], say),
+                        headers={**WRITE, IDEMPOTENCY_HEADER: f"auto-crash-{point}"},
+                    )
+                assert await child.wait_exit(30) == crash.EXIT_STATUS
+            await recover(engine)
+            async with engine.connect() as conn:
+                turns = await conn.scalar(
+                    text(
+                        "SELECT count(*) FROM operations WHERE story_id = :s AND kind = 'turn' "
+                        "AND status = 'committed'"
+                    ),
+                    {"s": story},
+                )
+            jobs = await ai.auto_jobs(engine, story)
+            if point == "before_commit":
+                assert (turns, jobs) == (0, [])
+            else:
+                assert turns == 1
+                [job] = jobs
+                assert job["status"] == "queued"
+                assert await ai.jobs_rows(engine, [str(job["id"])]) == 1
+        finally:
+            await clean(engine)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_staged(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A staged turn (#212: an effect on a synchronous write-capable provider's value) under
+    ``auto``: its intent commit stores the accepted point with the operation
+    (``turn_report.illustration``) and queues no job; the completion stage's commit queues it,
+    and the finished response lists it.
+
+    Complement asserted: the job was written after the intent committed (its ``created_at``
+    is past the intent's stage-log time)."""
+    import json as json_
+
+    from tests import auto_illustration_support as ai
+    from tests import effect_support as es
+    from tests import multi_support as ms
+    from tests import staged_support as sp
+    from tests.structured_turn_support import beat
+
+    async with sg.generation_app(image_settings, engine) as app:
+        await app.configure()
+        story, cal, _, _ = await sp.sync_story(app.client, engine, app.lib)
+        await ai.set_auto(app.client, story)
+        app.stub.reset()
+        sp.outcome_step(app.stub, beat("narration", sp.WENT))
+        marked = json_.loads(sp.purchase(cal))
+        marked["illustrate"] = [{"beat_index": 0, "reason": "turning_point"}]
+        ms.renders_for(app.stub, "Mira", json_.dumps(marked))
+        es.narrator(app.stub, es.render(beat("narration", sp.COUNTS)))
+
+        bought = await sp.buy(app.client, story, cal)
+        assert bought.status_code == 200, bought.text
+        op = await sp.staged_op(engine, story)
+        assert op.turn_stage == "completed"
+        [job] = await ai.auto_jobs(engine, story)
+        assert job["origin"]["auto"]["operation_id"] == str(op.operation_id)
+        assert job["origin"]["auto"]["reason"] == "turning_point"
+        assert bought.json()["pending_images"] == [
+            {"job_id": str(job["id"]), "position": job["origin"]["request_position"]}
+        ]
+        async with engine.connect() as conn:
+            report = await conn.scalar(
+                text("SELECT turn_report FROM operations WHERE operation_id = :o"),
+                {"o": str(op.operation_id)},
+            )
+        stored = report["illustration"]
+        assert stored["points"] == [
+            {"beat": job["origin"]["request_position"]["beat"], "reason": "turning_point"}
+        ]
+        [intent] = [e for e in op.stage_log if e.get("stage") == "intent"]
+        assert job["created_at"] > datetime.fromisoformat(str(intent["at"]))

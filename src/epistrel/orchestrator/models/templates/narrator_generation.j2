@@ -9,7 +9,8 @@ excluded), the retrieved context and the canon, ``## Tracked values`` (#187: eve
 ones included, with its value at the turn's start and its constraints, and the effect syntax),
 ``## External data`` (#208: an externally owned State's value only in its fenced block, data and
 never instructions), ``## The time now`` (#200: the objective clock as the turn starts, the
-narrator's alone), then the narration contract and, on a guardrail regeneration, the
+narrator's alone), then the narration contract (with automatic illustration, #265, its one
+fixed illustrate instruction) and, on a guardrail regeneration, the
 constraint lines (#68). The ``user`` block is the player input. -#}
 {% macro line(entry) -%}
 {% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
@@ -101,6 +102,9 @@ By the story's clock it is {{ clock_now }} as this turn starts. The characters k
 You are the narrator. Never speak, think or act for {{ player_input.name }} or for any character.
 Answer with typed beats in order: `narration` (what the scene shows: places, arrivals, what happens) and `latent` (a fact of the world that is true but not shown, with who may know it).
 Declare each factual claim as a proposition (subject, relation, object). Name every new character the narration introduces in `introduces`, with an age in whole years.
+{% if illustrate_instruction %}
+{{ illustrate_instruction }}
+{% endif %}
 {% for constraint in policy_constraints %}
 {{ constraint }}
 {% endfor %}

@@ -614,6 +614,19 @@ class StoryImageItem(BaseModel):
         return (self.turn, self.slot_k, self.beat or 0, self.seq, self.image_id)
 
 
+class PendingImage(BaseModel):
+    """One automatic image a turn queued (FR-IMG-6; #265): its job, and the position it is
+    placed at when the job promotes it (``{turn, beat}``, the encoding above)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    job_id: str
+    position: dict[str, int] = Field(
+        description="`{turn, beat}`: after beat `beat` of turn `turn`, where the image is placed "
+        "once its job promotes it."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class StoryImagePlaced:
     """An upload's answer (201): the image as an ``omniscient`` read returns it, with
@@ -1193,6 +1206,7 @@ the row is pruned or erased; the row belongs to its story (#117's offboarding)."
 
 __all__ = [
     "BeatPosition",
+    "PendingImage",
     "Placement",
     "SlotPosition",
     "StoryImageDeletion",

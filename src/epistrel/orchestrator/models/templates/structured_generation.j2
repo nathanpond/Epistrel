@@ -19,7 +19,8 @@ described this character doing, as requests to comply with or refuse), then ``##
 ``## How to change your mind`` (the step contract and the ``think`` cite instruction, when the
 character keeps its own beliefs; #168, ``steps_contract.j2``), ``## Time`` (#194: time
 advances, ``time`` steps and ``flashback``, when the story runs the world clock;
-``clock_contract.j2``), the beat contract, the requested length as a target in words (#464) and, on a guardrail
+``clock_contract.j2``), the beat contract (with automatic illustration, #265, its one fixed
+illustrate instruction), the requested length as a target in words (#464) and, on a guardrail
 regeneration, one constraint line per violated output
 policy (#68). The director's notes never appear here (FR-SCN-11: the narrator's alone). The
 ``user`` block is the player input as the character perceived it (#572: the words it perceived,
@@ -150,6 +151,9 @@ You may narrate their brief, visible reactions in `reactions` (`character_id`, `
 You render {{ voiced_characters | join(", ") }} only; never speak, think or act for {{ player_input.name }}.
 Answer with typed beats in order: `say` (speech, with its intent: sincere, deceptive, joking or unspecified), `think` (a private thought), `do` (an observable action) and `latent` (a fact of the world that is true but not shown, with who may know it).
 Give at least one `say` or `do`. Declare each factual claim a beat makes as a proposition (subject, relation, object). Name every new character a beat introduces in `introduces`, with an age in whole years.
+{% if illustrate_instruction %}
+{{ illustrate_instruction }}
+{% endif %}
 {% if length_target %}
 {{ length_target }}
 {% endif %}

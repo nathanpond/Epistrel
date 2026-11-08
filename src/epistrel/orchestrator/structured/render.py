@@ -105,6 +105,7 @@ from epistrel.core.turns.beats import (
     DeclaredReschedule,
 )
 from epistrel.orchestrator.budget import TurnBudget
+from epistrel.orchestrator.images.auto import IllustrateHints
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.adapter import Message, ModelParams
 from epistrel.orchestrator.models.errors import ModelUnavailable
@@ -900,6 +901,20 @@ class RenderedBeats(_Strict):
     items: ClassVar[Callable[[str], bool] | None] = None
     """#630: whether an effect's ``consideration`` names an entity of the story (``None``: not
     checked here)."""
+    illustrates: ClassVar[bool] = False
+    """#265 (FR-IMG-6): whether the schema has the optional ``illustrate`` hints (the story is
+    ``auto``); otherwise an emitted ``illustrate`` is ignored, never validated."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unasked_illustrate(cls, data: Any) -> Any:
+        if not cls.illustrates and isinstance(data, dict) and "illustrate" in data:
+            return {k: v for k, v in data.items() if k != "illustrate"}
+        return data
+
+    def hints(self) -> list[Any]:
+        """#265: the render's valid ``illustrate`` hints (none when it was not asked)."""
+        return list(getattr(self, "illustrate", None) or ())
 
     @model_validator(mode="after")
     def _structure(self) -> Self:
@@ -1014,19 +1029,27 @@ def render_schema(
     clock_level: str | None = None,
     clock_fixed: bool = False,
     items: Callable[[str], bool] | None = None,
+    illustrate: bool = False,
 ) -> type[RenderedBeats]:
     """The beat schema of one render: a character's (``actor_id``) or the narrator's
     (``None``), with ``render.max_beats`` as the beats' ``max_items``; #187: the story's States
     and its ``states.level``, which its effects are validated against; #194: the clock's level
     and whether its anchor fixes the time of day, which its time advances are; #630: ``items``,
-    whether an effect's ``consideration`` names an entity of the story."""
+    whether an effect's ``consideration`` names an entity of the story; #265: ``illustrate``,
+    the optional ``illustrate`` hints (``auto.IllustrateHints``: invalid entries dropped, never
+    a structural failure)."""
     name = "NarratorRender" if actor_id is None else "CharacterRender"
+    extra: dict[str, Any] = {}
+    if illustrate:
+        extra["illustrate"] = (IllustrateHints, Field(default_factory=list))
     model = create_model(
         name,
         __base__=RenderedBeats,
         beats=(Annotated[list[BeatDecl], Field(min_length=1, max_length=max_beats)], ...),
         steps=(Annotated[list[StepDecl], Field(max_length=max_beats)], Field(default_factory=list)),
+        **extra,
     )
+    model.illustrates = illustrate
     model.actor_id = actor_id
     model.player_id = player_id
     model.cast_ids = frozenset(cast_ids)

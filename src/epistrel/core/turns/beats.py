@@ -292,6 +292,10 @@ class TurnBeat:
     flashback: bool = False
     """#194 (FR-CLOCK-17): the beat recalls an earlier time: unpaced, unchecked against the
     present, and it moves nothing."""
+    illustrate: str | None = None
+    """#265 (FR-IMG-6): the illustration point its render marked on it (``new_location``,
+    ``first_appearance`` or ``turning_point``; the first hint naming it), under
+    ``illustration_mode = auto``; never stored on its event."""
 
     @property
     def declared(self) -> tuple[AssertedClaim, ...]:

@@ -44,6 +44,11 @@ never recomputes them. The worker sends exactly the stored prompt.
   included) with a fresh safety context (presence, true ages, aliases now); both are stored on
   the job for the output check and ``revalidate``. A refused prompt is ``Stale(policy_changed)``
   naming the policies.
+- ``prepare(runtime, job)`` (#265, an automatic job's first step, outside any lock): the prompt
+  built in the job, never at respond. It places the job at its position, reads the audience
+  viewpoint's perceived inputs and protected match, runs #263's prompt builder, then #257's
+  prompt check. The runner stores the prompt, the params the target fixes and the safety
+  context, then reserves (#262).
 - ``promote`` (inside the promotion's transaction, after ``revalidate`` answered ``Ok``): the
   output's ``media_assets`` row (``live``, owned by the story's owner, under its rating's current
   version, with the job's source, viewpoint basis and depicted subjects) and the
@@ -73,12 +78,14 @@ from epistrel.core.config_changes import read_section
 from epistrel.core.enums import OperationKind, OperationStatus, StoryStatus
 from epistrel.core.erasure.guard import Content, assert_not_erased, check_content
 from epistrel.core.errors import (
+    CameraPovNotPresent,
     ErasedSubjectReferenced,
     GuardrailViolation,
     PositionInvalid,
     StoryNotFound,
+    ViewpointPerceivedNothing,
 )
-from epistrel.core.images import story_images
+from epistrel.core.images import story_images, story_perceived
 from epistrel.core.images.safety import SafetyContext
 from epistrel.core.images.store import ImageJob, read_job, set_result, update_job
 from epistrel.core.membership import active_operation
@@ -99,7 +106,7 @@ from epistrel.core.tables import (
 from epistrel.core.tables.images import ImageJobKind, ImageJobStatus
 from epistrel.core.tables.media import MediaSource, MediaState
 from epistrel.core.tables.story_images import ViewpointBasis
-from epistrel.orchestrator.images import jobs
+from epistrel.orchestrator.images import jobs, prompt_builder
 
 if TYPE_CHECKING:
     from epistrel.orchestrator.images.jobs import ImageRuntime
@@ -182,6 +189,80 @@ def target_of(placement: story_images.Placement) -> dict[str, Any]:
         "camera_pov": dict(placement.camera_pov),
         "content_rating_id": placement.content_rating_id,
     }
+
+
+# -- the built prompt (#263; #265's automatic jobs build theirs in the job) --------------------
+
+
+async def perceived_view(
+    conn: AsyncConnection, placement: story_images.Placement, *, at: str
+) -> tuple[prompt_builder.PerceivedView, story_perceived.ViewpointMatcher]:
+    """A placement's perceived inputs as the prompt builder takes them, and the audience
+    viewpoint's protected match: 422 ``camera_pov_not_present`` for a character camera the
+    viewpoint does not perceive there, ``viewpoint_perceived_nothing`` when it perceived
+    nothing at the position."""
+    perceived = await story_perceived.story_perceived_inputs(conn, placement)
+    if not story_perceived.camera_perceived(perceived):
+        raise CameraPovNotPresent(
+            "the camera's character is not one the audience viewpoint perceives there",
+            {"field": f"{at}.camera_pov.character_id"},
+        )
+    if perceived.perceived_nothing:
+        raise ViewpointPerceivedNothing(
+            "the audience viewpoint perceived nothing at this position",
+            {"field": f"{at}.audience_viewpoint"},
+        )
+    matcher = await story_perceived.viewpoint_matcher(
+        conn, placement.story_id, placement.audience_viewpoint
+    )
+    return prompt_builder.story_view(perceived), matcher
+
+
+def builder_subjects(view: prompt_builder.PerceivedView) -> tuple[jobs.DepictedSubject, ...]:
+    """The prompt builder's depicted subjects of a story image (FR-IMG-9, #257's ``depicted``):
+    each cast member's own character id with its label, never a name."""
+    return tuple(
+        jobs.DepictedSubject(
+            character_id=s.subject_ids[0],
+            visual_descriptors=tuple(d for d in (s.label,) if d),
+            depicted=True,
+        )
+        for s in view.subjects
+        if s.subject_ids
+    )
+
+
+def asset_subject_ids(view: prompt_builder.PerceivedView) -> list[str]:
+    """The character ids a built story image's asset depicts (FR-IMG-9): each cast member, and a
+    recognised one's identity partner, in order."""
+    return list(dict.fromkeys(i for s in view.subjects for i in s.subject_ids))
+
+
+def built_job(
+    built: prompt_builder.ImagePrompt,
+    view: prompt_builder.PerceivedView,
+    *,
+    caption: str | None = None,
+    alt_text: str | None = None,
+) -> tuple[jobs.ImageJobRequest, dict[str, Any]]:
+    """A built story prompt's job request and the params the target fixes with it
+    (``source: generated``, ``viewpoint_basis: filtered_inputs``, the depicted subjects)."""
+    request = jobs.ImageJobRequest(
+        prompt=built.prompt,
+        negative_prompt=built.negative_prompt,
+        seed=built.seed,
+        reference_image_ids=built.reference_image_ids,
+        caption=caption,
+        alt_text=alt_text,
+        depicted_subjects=builder_subjects(view),
+    )
+    extra: dict[str, Any] = {
+        "source": MediaSource.GENERATED.value,
+        "viewpoint_basis": ViewpointBasis.FILTERED_INPUTS.value,
+        "depicted_subjects": [{"kind": "character", "id": i} for i in asset_subject_ids(view)],
+        "references_dropped": list(built.references_dropped),
+    }
+    return request, extra
 
 
 async def _owner(conn: AsyncConnection, story_id: str) -> str | None:
@@ -513,6 +594,43 @@ class StoryTarget:
             await update_job(conn, job.id, **values)
         return None
 
+    async def prepare(self, runtime: ImageRuntime, job: ImageJob) -> jobs.PreparedImageJob:
+        """#265: an automatic job's prompt, built in the job and never at respond: the
+        placement at the job's position (its turn's active variant, which ``revalidate`` just
+        held), the audience viewpoint's perceived inputs and protected match, #263's prompt
+        builder, then #257's prompt check (``GuardrailViolation``), with no lock held. The
+        caller stores the result and reserves."""
+        story_id = str(job.origin["story_id"])
+        async with runtime.db.connect() as conn:
+            placement = await story_images.place_at(
+                conn,
+                story_id,
+                request_position(job.origin),
+                str(job.target["audience_viewpoint"]),
+                job.target.get("camera_pov"),
+                at=FIELD,
+                content_rating_id=job.target.get("content_rating_id"),
+            )
+            view, matcher = await perceived_view(conn, placement, at=FIELD)
+        built = await prompt_builder.write_story_image_prompt(runtime.models, view, matcher)
+        request, extra = built_job(built, view)
+        context = await jobs.image_checks().check_prompt(
+            runtime,
+            jobs.PromptCheck(
+                ImageJobKind.STORY, job.target, job.origin, request, job.principal, job.viewpoint
+            ),
+        )
+        return jobs.PreparedImageJob(
+            ImageJobKind.STORY,
+            dict(job.target),
+            dict(job.origin),
+            request,
+            job.principal,
+            job.viewpoint,
+            None if context is None else context.as_json(),
+            extra,
+        )
+
     async def promote(
         self, conn: AsyncConnection, job: ImageJob, outputs: Sequence[jobs.PromotableOutput]
     ) -> list[str]:
@@ -578,7 +696,11 @@ __all__ = [
     "TARGET",
     "StoryImageQueued",
     "StoryTarget",
+    "asset_subject_ids",
+    "builder_subjects",
+    "built_job",
     "origin_of",
+    "perceived_view",
     "policy_set",
     "request_position",
     "target_of",

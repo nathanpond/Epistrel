@@ -97,7 +97,6 @@ from epistrel.core.erasure import erase as erasure
 from epistrel.core.erasure import guard as erasure_guard
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.errors import (
-    CameraPovNotPresent,
     EpistrelError,
     InvalidRequest,
     InvalidView,
@@ -109,7 +108,6 @@ from epistrel.core.errors import (
     SubjectNotFound,
     SubjectsNotAllowed,
     SubjectsRequired,
-    ViewpointPerceivedNothing,
     ViewpointProtectedContent,
     refuse_nul,
 )
@@ -642,26 +640,8 @@ def _body(model: Any) -> Any:
     return model.model_dump(mode="json")
 
 
-def _builder_subjects(
-    view: prompt_builder.PerceivedView,
-) -> tuple[image_jobs.DepictedSubject, ...]:
-    """The prompt builder's depicted subjects of a story image (FR-IMG-9, #257's ``depicted``):
-    each cast member's own character id with its label, never a name."""
-    return tuple(
-        image_jobs.DepictedSubject(
-            character_id=s.subject_ids[0],
-            visual_descriptors=tuple(d for d in (s.label,) if d),
-            depicted=True,
-        )
-        for s in view.subjects
-        if s.subject_ids
-    )
-
-
-def _asset_subject_ids(view: prompt_builder.PerceivedView) -> list[str]:
-    """The character ids a built story image's asset depicts (FR-IMG-9): each cast member, and a
-    recognised one's identity partner, in order."""
-    return list(dict.fromkeys(i for s in view.subjects for i in s.subject_ids))
+_builder_subjects = story_image_target.builder_subjects
+_asset_subject_ids = story_image_target.asset_subject_ids
 
 
 _POLICY_ITEMS: TypeAdapter[list[StoryPolicyItem]] = TypeAdapter(list[StoryPolicyItem])
@@ -5783,25 +5763,9 @@ class Engine:
     async def _story_image_view(
         self, conn: AsyncConnection, placement: story_images.Placement, *, at: str
     ) -> tuple[prompt_builder.PerceivedView, story_perceived.ViewpointMatcher]:
-        """A placement's perceived inputs as the prompt builder takes them, and the audience
-        viewpoint's protected match: 422 ``camera_pov_not_present`` for a character camera the
-        viewpoint does not perceive there, ``viewpoint_perceived_nothing`` when it perceived
-        nothing at the position."""
-        perceived = await story_perceived.story_perceived_inputs(conn, placement)
-        if not story_perceived.camera_perceived(perceived):
-            raise CameraPovNotPresent(
-                "the camera's character is not one the audience viewpoint perceives there",
-                {"field": f"{at}.camera_pov.character_id"},
-            )
-        if perceived.perceived_nothing:
-            raise ViewpointPerceivedNothing(
-                "the audience viewpoint perceived nothing at this position",
-                {"field": f"{at}.audience_viewpoint"},
-            )
-        matcher = await story_perceived.viewpoint_matcher(
-            conn, placement.story_id, placement.audience_viewpoint
-        )
-        return prompt_builder.story_view(perceived), matcher
+        """A placement's perceived inputs and protected match (``targets.story.perceived_view``,
+        shared with #265's automatic jobs)."""
+        return await story_image_target.perceived_view(conn, placement, at=at)
 
     async def draft_base_appearance_prompt(
         self, ctx: RequestContext, character_id: str, draft_revision: int | None = None
@@ -6480,23 +6444,9 @@ class Engine:
                 }
             else:
                 built = await prompt_builder.write_story_image_prompt(self.models, view, matcher)
-                job_request = image_jobs.ImageJobRequest(
-                    prompt=built.prompt,
-                    negative_prompt=built.negative_prompt,
-                    seed=built.seed,
-                    reference_image_ids=built.reference_image_ids,
-                    caption=request.caption,
-                    alt_text=request.alt_text,
-                    depicted_subjects=_builder_subjects(view),
+                job_request, extra = story_image_target.built_job(
+                    built, view, caption=request.caption, alt_text=request.alt_text
                 )
-                extra = {
-                    "source": MediaSource.GENERATED.value,
-                    "viewpoint_basis": ViewpointBasis.FILTERED_INPUTS.value,
-                    "depicted_subjects": [
-                        {"kind": "character", "id": i} for i in _asset_subject_ids(view)
-                    ],
-                    "references_dropped": list(built.references_dropped),
-                }
             prepared = await image_jobs.prepare_image_job(
                 self.image_runtime(),
                 ImageJobKind.STORY,

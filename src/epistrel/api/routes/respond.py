@@ -19,6 +19,7 @@ from epistrel.api.routes.history import (
     StateEffectModel,
     in_place,
 )
+from epistrel.core.images.story_images import PendingImage
 from epistrel.core.profiles.effective import ProfileVersionRef
 from epistrel.core.profiles.fingerprint import QualityStatus
 from epistrel.core.retrieval.coverage_marks import CoverageGap
@@ -328,6 +329,11 @@ class RespondResponse(MutationResponse):
     """#598 (FR-RESP-14): one ``implausible_knowledge`` notice per presupposition of the
     ``co_author`` player's narration the narrated character could not know (under
     ``co_author_knowledge = confirm``); absent when none."""
+    pending_images: list[PendingImage] = Field(default_factory=list)
+    """#265 (FR-IMG-6): the automatic images the turn queued under ``illustration_mode = auto``,
+    ``{job_id, position: {turn, beat}}`` in beat order. Follow each at ``GET
+    /image-jobs/{job_id}``; once promoted it appears in history at its position. Empty unless
+    the turn queued one. Image jobs never count against the turn's budget or deadline."""
 
     @classmethod
     def of(cls, result: RespondResult) -> RespondResponse:
@@ -381,6 +387,7 @@ class RespondResponse(MutationResponse):
                 RequiredEffectBody(**r) for r in result.reconciliation_required
             ],
             notices=[NoticeBody(**n) for n in result.notices],
+            pending_images=list(result.pending_images),
             coverage_gaps=[CoverageGap(**g) for g in result.coverage_gaps],
             budget=(
                 None

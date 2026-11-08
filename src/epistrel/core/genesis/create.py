@@ -978,6 +978,10 @@ def _settings(
         values["player_authority"] = defaults.player_authority
     if defaults.co_author_knowledge is not None:
         values["co_author_knowledge"] = defaults.co_author_knowledge
+    if defaults.illustration_mode is not None:
+        values["illustration_mode"] = defaults.illustration_mode  # #265
+    if defaults.max_auto_images_per_turn is not None:
+        values["max_auto_images_per_turn"] = defaults.max_auto_images_per_turn
     if defaults.required_providers and is_used(SETTING_CAPABILITIES[REQUIRED_PROVIDERS]):
         # Live since #204 delivered ``providers``: a turn needs each one bound.
         values[REQUIRED_PROVIDERS] = list(defaults.required_providers)

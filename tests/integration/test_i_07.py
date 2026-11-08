@@ -67,6 +67,7 @@ RESPONSE_FIELDS = {
     "quality_status",
     "profile",
     "config_revision",
+    "pending_images",  # #265: always listed, empty unless the turn queued an image
 }
 
 

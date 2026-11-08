@@ -525,8 +525,8 @@ GUARANTEES: tuple[GuaranteeRow, ...] = (
         in_story=False,
         note="A vision model checks each image against the image-output policies; with none "
         "configured, an image a policy applies to fails closed (FR-IMG-3). Measured per policy "
-        "by E-11's false-negative and false-positive rates (`nfr_qual_12.<policy>.fn|fp`); a "
-        "checker is certified per policy. The minors policy: " + MINORS_IMAGE_CHECK_LINE + ".",
+        "by E-11's false-negative and false-positive rates (`nfr_qual_12.<policy>.fn|fp`), one "
+        "certification per policy. The minors policy: " + MINORS_IMAGE_CHECK_LINE + ".",
     ),
     _row(
         "image_generation",

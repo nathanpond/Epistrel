@@ -102,7 +102,7 @@ states its `quality_status`, and `docs/evals/INDEX.md` publishes each preset's r
 - `author_directives`: The author's directions apply with author authority at the next inter-turn slot (FR-DIRECT-1,2): facts are checked by the contradiction rules, and narrative canon never supersedes them (FR-DIRECT-6). Lite form: prompt-only: a nudge for the next reply, or a lasting author fact in every later prompt, following timeline membership; no contradiction checking (Lite keeps no canon).
 - `quality_judge`: Eval only, never in a turn.
 - `image_prompt`: Writes an image prompt from what the image's audience perceived; the prompt then passes the image-prompt policies before anything is generated (FR-IMG-2,3).
-- `image_check`: A vision model checks each image against the image-output policies; with none configured, an image a policy applies to fails closed (FR-IMG-3). Measured per policy by E-11's false-negative and false-positive rates (`nfr_qual_12.<policy>.fn|fp`); a checker is certified per policy. The minors policy: certified only by external attestation; otherwise an uncertified backstop.
+- `image_check`: A vision model checks each image against the image-output policies; with none configured, an image a policy applies to fails closed (FR-IMG-3). Measured per policy by E-11's false-negative and false-positive rates (`nfr_qual_12.<policy>.fn|fp`), one certification per policy. The minors policy: certified only by external attestation; otherwise an uncertified backstop.
 - `image_generation`: The image adapter (FR-IMG-1): what it draws is the provider's; nobody sees an image until it has passed the checks.
 
 ## Outside the guarantee: voice and plot

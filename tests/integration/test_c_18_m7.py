@@ -24,6 +24,7 @@ from epistrel.core.db import make_engine
 from epistrel.core.ids import new_ulid
 from epistrel.core.profiles import certification, schema
 from epistrel.core.profiles.certification import HarnessOutcome, RunEstimate
+from epistrel.core.profiles.guarantees import MINORS_IMAGE_CHECK_LINE as ATTESTATION_RULE
 from epistrel.core.profiles.schema import Quality, Tag
 from epistrel.core.seeds.profiles import FULL_PRESET_ID
 from epistrel.core.settings_schema import (
@@ -313,7 +314,9 @@ def test_c_18__m7_quality_tags() -> None:
 def test_c_18__m7_no_floor_label() -> None:
     """``docs/guarantees.md`` names each model-dependent step's metric but never states a floor
     as met: outside its boundary prose no line says ``certified`` or ``meets``; the boundary
-    prose itself is there, and a document with the claim outside it is caught (complement)."""
+    prose itself is there, and a document with the claim outside it is caught (complement).
+    #270 (ADR-182): one M8 row states the rule by which the minors policy is certified
+    (``ATTESTATION_RULE``), not a floor met, so that phrase is set aside."""
 
     def claims(document: str) -> list[str]:
         outside = re.sub(
@@ -321,7 +324,7 @@ def test_c_18__m7_no_floor_label() -> None:
             "",
             document,
             flags=re.DOTALL,
-        )
+        ).replace(ATTESTATION_RULE, "")
         return [
             line for line in outside.splitlines() if re.search(r"\b(certified|meets)\b", line, re.I)
         ]
@@ -330,6 +333,7 @@ def test_c_18__m7_no_floor_label() -> None:
     assert QUALITY_BOUNDARY_START in document
     assert claims(document) == []
     assert claims(document + "\nThe Full preset meets every floor.\n") != []
+    assert claims(document + "\nThe Lite preset is certified for every floor.\n") != []
 
 
 # -- #234: the canary, stale, and the reported version -------------------------------------------

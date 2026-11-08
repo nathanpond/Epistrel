@@ -13157,6 +13157,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the AC, and the one-file-per-ID traceability rule. The table is append-only, so a shared database would keep each test's records.
   **Issue:** #270
 
+- **Decision (Rule 1):** CI run 42463436136 failed in three places, all fixed in the same story. (1) `test_c_18__m7_no_floor_label` forbids "certified" in `docs/guarantees.md` outside the boundary prose. The `image_check` row's note now reads "one certification per policy", and the test sets aside only the mandated `MINORS_IMAGE_CHECK_LINE` (C-14 M8's AC). It imports that line under the alias `ATTESTATION_RULE`, because the lexicon gate refuses M8 image terms in an M7 part. (2) `test_nul_text.get_operations` now counts `SHARED_ROUTES` operations served by a `GET` route, so it covers `list_image_check_certifications`. (3) The lexicon tests failed with (1)'s first wording and pass now.
+  **Why:** these were existing M7 checks over things this story changed. The AC requires the minors line verbatim in the guarantee table.
+  **Issue:** #270
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.

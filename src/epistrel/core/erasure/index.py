@@ -883,6 +883,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "counts, states); #268's request snapshot leaves the prompt and negative prompt out",
     "image_limit_counters": "deployment accounting (#262): limit scopes, keys, dates and counts, "
     "no story content",
+    "image_costs": "deployment accounting (#269): attempt ids, costs, currencies, counts and "
+    "dates, no story content",
     "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "
     "counts (#249); the archive's own lines are not indexed",
     "timers": "transient: a timer's kind and target id",

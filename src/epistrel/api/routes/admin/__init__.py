@@ -11,7 +11,7 @@ import re
 
 from fastapi import APIRouter
 
-from epistrel.api.routes import certifications
+from epistrel.api.routes import certifications, image_usage
 from epistrel.api.routes.admin import (
     beliefs,
     bundles,
@@ -49,6 +49,7 @@ router.include_router(verify.router)
 router.include_router(verify.gate_router)
 router.include_router(certifications.admin_router)
 router.include_router(certifications.evals_router)
+router.include_router(image_usage.admin_router)  # #269
 
 _SEGMENT = r"(?:^|/){}(?:/|$)"
 

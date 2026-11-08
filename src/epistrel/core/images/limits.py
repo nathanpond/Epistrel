@@ -32,6 +32,9 @@ then counters, of periods closed for ``image_accounting_retention_days``, but ne
 ``held`` record names them.
 
 Nothing here logs content: ids, scopes, periods and counts only (invariant 3).
+
+#269 hooks the cost rows (``core.images.costs``) into ``presume``, ``release_all`` (a call in
+flight at an ending), ``release_for_story`` and ``retain``.
 """
 
 from __future__ import annotations
@@ -530,6 +533,9 @@ async def presume(conn: AsyncConnection, record: ReservationRecord) -> Reservati
         applied_parameters=applied,
         outcome="presumed",
     )
+    from epistrel.core.images import costs  # here: costs builds on this module
+
+    await costs.record_attempt(conn, settled, costs.UNKNOWN, None)  # #269
     return settled
 
 
@@ -604,6 +610,10 @@ async def release_all(
             await presume(conn, record)
         else:
             await release(conn, record)
+            from epistrel.core.images import costs  # here: costs builds on this module
+
+            # #269: a call still in flight may bill; its cost is unknown until it returns.
+            await costs.record_unknown_if_sent(conn, record)
         count += 1
     return count
 
@@ -636,6 +646,9 @@ async def release_for_story(conn: AsyncConnection, story_id: str) -> int:
         .where(image_reservations.c.story_id == story_id)
         .values(story_id=None)
     )
+    from epistrel.core.images import costs  # here: costs builds on this module
+
+    await costs.detach_story(conn, story_id)  # #269: the cost rows are kept the same way
     return released
 
 
@@ -815,7 +828,8 @@ def retention_cutoff(settings: ImageJobSettings, *, now: datetime | None = None)
 async def retain(db: AsyncEngine, *, now: datetime | None = None) -> dict[str, int]:
     """Delete the accounting of periods before ``retention_cutoff``: first the records that are
     settled or released, then the counters no record names any more. Each batch is up to
-    ``RETENTION_BATCH`` rows, in its own transaction. Counts only."""
+    ``RETENTION_BATCH`` rows, in its own transaction; then #269's cost rows by their
+    ``period_date`` (``costs.purge``). Counts only."""
     settings = await read_section(db, ImageJobSettings)
     cutoff = retention_cutoff(settings, now=now)
     tz = settings.deployment_time_zone
@@ -885,6 +899,9 @@ async def retain(db: AsyncEngine, *, now: datetime | None = None) -> dict[str, i
         removed["counters"] += result.rowcount
         if result.rowcount < RETENTION_BATCH:
             break
+    from epistrel.core.images import costs  # here: costs builds on this module
+
+    removed["costs"] = await costs.purge(db, now=now)  # #269: by ``period_date``
     return removed
 
 

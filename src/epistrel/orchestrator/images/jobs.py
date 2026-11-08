@@ -94,6 +94,7 @@ import shutil
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -115,7 +116,7 @@ from epistrel.core.errors import (
 )
 from epistrel.core.idempotency import ResultCodec
 from epistrel.core.ids import ULID_PATTERN
-from epistrel.core.images import limits, store
+from epistrel.core.images import costs, limits, store
 from epistrel.core.images.errors import FencedToken
 from epistrel.core.images.store import ImageJob
 from epistrel.core.media import probe
@@ -1846,10 +1847,13 @@ class ImageJobRunner:
             else:
                 record = await limits.read_record(conn, job.id, attempt.token, lock=True)
             if record is not None and record.state is ReservationState.HELD:
-                await limits.settle(conn, record, len(outputs))
+                record = await limits.settle(conn, record, len(outputs))
             elif attempt.resend_of is None:
                 # Released by an ending while the call ran (a cancel); #267 settles late returns.
                 logger.info("image job %s: a return for a record that is not held", job.id)
+            if record is not None:
+                # #269: billed outputs cost what they cost, whatever becomes of them.
+                await costs.record_attempt(conn, record, attempts.cost_entry(cost), len(outputs))
             if not staged:
                 await store.update_reservation(
                     conn, job.id, attempt.token, outcome=AttemptOutcome.DISCARDED.value
@@ -1882,6 +1886,11 @@ class ImageJobRunner:
     async def _adapter_failed(
         self, job: ImageJob, attempt: _Attempt, exc: adapter_errors.ImageAdapterError
     ) -> dict[str, Any]:
+        # #269: a refusal before generation costs zero; any other failure's cost is unknown.
+        # A failed re-send's cost lands on the attempt it re-sent (#268).
+        entry = costs.of_error(exc.status, ambiguous=exc.ambiguous)
+        billed = None if exc.ambiguous else 0
+        costed = attempt.resend_of or attempt.token
         async with self.rt.db.begin() as conn:
             current = await store.read_job(conn, job.id, lock=True)
             if current is None or current.terminal or current.attempt_token != attempt.token:
@@ -1897,6 +1906,9 @@ class ImageJobRunner:
                         send_state=SendState.RETURNED.value,
                         outcome=AttemptOutcome.FAILED.value,
                     )
+                found = await limits.read_record(conn, job.id, costed)
+                if found is not None:
+                    await costs.record_attempt(conn, found, entry, billed)
                 fenced = True
             else:
                 fenced = False
@@ -1923,6 +1935,9 @@ class ImageJobRunner:
                         await store.update_reservation(
                             conn, job.id, token, outcome=AttemptOutcome.FAILED.value
                         )
+            found = await limits.read_record(conn, job.id, costed)
+            if found is not None:
+                await costs.record_attempt(conn, found, entry, billed)
         if not exc.retryable:
             await end_job(
                 self.rt, job.id, ImageJobStatus.FAILED, reason=_reason_of(exc), token=attempt.token
@@ -2427,10 +2442,13 @@ async def insert_output_asset(
 class AttemptView:
     """One provider attempt as a job read reports it (#267): its token, its outcome (``None``
     while in flight), what it reserved, and once settled what it used, its overage and extra
-    outputs (``None`` while ``held``), and its cost (``{amount, currency}``, ``"unknown"``, or
-    ``None`` before it is known; #269 reshapes it). #268 adds its ``send_state`` (``ambiguous``
-    for an ambiguous send), its settlement ``basis`` (``actual``, ``presumed`` or
-    ``corrected``) and, for an idempotent re-send, the attempt it re-sent (``resend_of``)."""
+    outputs (``None`` while ``held``). #268 adds its ``send_state`` (``ambiguous`` for an
+    ambiguous send), its settlement ``basis`` (``actual``, ``presumed`` or ``corrected``) and,
+    for an idempotent re-send, the attempt it re-sent (``resend_of``). #269: its ``image_costs``
+    row's ``cost`` (a ``Decimal``; ``None`` unless known or zero), ``cost_status`` (``known``,
+    ``zero`` or ``unknown``), ``currency``, ``outputs_billed`` and ``accounting``, all ``None``
+    while the attempt has no cost row (held, never sent, or a re-send, whose cost is on the
+    attempt it re-sent)."""
 
     attempt_token: str
     outcome: str | None
@@ -2438,11 +2456,15 @@ class AttemptView:
     used: int | None
     overage: int | None
     extra_outputs: int | None
-    cost: Any
     started_at: datetime | None
     send_state: str = SendState.SENDING.value
     basis: str = SettlementBasis.ACTUAL.value
     resend_of: str | None = None
+    cost: Decimal | None = None
+    cost_status: str | None = None
+    currency: str | None = None
+    outputs_billed: int | None = None
+    accounting: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2474,17 +2496,22 @@ class ImageJobView:
     """#267: when a confirming adapter's status polling for a stalled attempt gives up."""
     confirm_fallback: bool = False
     """#267 (sticky): the job fell back to the non-confirming rule."""
+    usage: costs.JobUsage | None = None
+    """#269: the job's ``outputs_used``, ``overage``, ``extra_outputs``, ``ambiguous_sends`` and
+    its cost totals (per currency, with the ``unknown`` and ``zero`` attempts), on read."""
 
 
 async def attempt_views(conn: AsyncConnection, job_id: str) -> tuple[AttemptView, ...]:
     """The job's provider attempts (records with a ``started_at``), by ``started_at``."""
     records = {r.attempt_token: r for r in await limits.records(conn, job_id)}
+    billed = await costs.attempt_costs(conn, job_id)
     found = [r for r in await store.reservations(conn, job_id) if r.started_at is not None]
     found.sort(key=lambda r: (r.started_at or r.created_at, r.attempt_token))
     views: list[AttemptView] = []
     for row in found:
         record = records.get(row.attempt_token)
         held = record is None or record.state is ReservationState.HELD
+        cost = billed.get(row.attempt_token)
         views.append(
             AttemptView(
                 attempt_token=row.attempt_token,
@@ -2493,11 +2520,15 @@ async def attempt_views(conn: AsyncConnection, job_id: str) -> tuple[AttemptView
                 used=None if held or record is None else record.used,
                 overage=None if held or record is None else record.overage,
                 extra_outputs=None if held or record is None else record.extra_outputs,
-                cost=(row.applied_parameters or {}).get("cost"),
                 started_at=row.started_at,
                 send_state=row.send_state.value,
                 basis=SettlementBasis.ACTUAL.value if record is None else record.basis.value,
                 resend_of=row.resend_of,
+                cost=None if cost is None else cost.cost,
+                cost_status=None if cost is None else cost.cost_status.value,
+                currency=None if cost is None else cost.currency,
+                outputs_billed=None if cost is None else cost.outputs_billed,
+                accounting=None if cost is None else cost.accounting.value,
             )
         )
     return tuple(views)
@@ -2545,6 +2576,7 @@ async def read_view(conn: AsyncConnection, job_id: str) -> ImageJobView:
         waiting_for_horizon=job.waiting_for_horizon,
         confirm_deadline_at=job.confirm_deadline_at,
         confirm_fallback=job.confirm_fallback,
+        usage=await costs.job_usage(conn, job.id),
     )
 
 

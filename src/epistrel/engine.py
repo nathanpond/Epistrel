@@ -20,7 +20,7 @@ import time
 import types
 import typing
 from collections.abc import AsyncIterable, Awaitable, Callable, Mapping, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal, Protocol, overload
 
 from pydantic import BaseModel, SecretStr, TypeAdapter, ValidationError
@@ -126,6 +126,7 @@ from epistrel.core.idempotency import (
 from epistrel.core.idempotency import Scope as KeyScope
 from epistrel.core.ids import new_ulid
 from epistrel.core.images import candidates as image_candidates
+from epistrel.core.images import costs as image_costs
 from epistrel.core.images import perceived as image_perceived
 from epistrel.core.images import story_images, story_perceived
 from epistrel.core.media import assets as media
@@ -5639,6 +5640,67 @@ class Engine:
         await image_jobs.cancel_job(self.image_runtime(), job_id)
         async with self.db.connect() as conn:
             return await image_jobs.read_view(conn, job_id)
+
+    # -- image usage and cost (FR-IMG-11; #269) -----------------------------------------------
+
+    @refuses_nul()
+    async def get_image_usage(
+        self,
+        ctx: RequestContext,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> image_costs.DeploymentUsage:
+        """The deployment's image usage and cost per local day (``deployment_time_zone``),
+        ``from_date`` to ``to_date`` inclusive (default: the last 30 days through today, at most
+        366 days; 422 ``invalid_range`` otherwise), every retained day listed (zeros included)
+        and the range's totals: outputs used, overage, extra outputs, reserved (held now),
+        ambiguous sends, the ``unknown`` and ``zero`` cost attempts, and the known costs per
+        currency (never mixed or converted). Days the accounting retention purged are left out
+        (``retained_from``). A deleted story's costs stay in. Needs only the service credential."""
+        async with self.db.connect() as conn:
+            return await image_costs.deployment_usage(conn, from_date, to_date)
+
+    @refuses_nul()
+    async def get_story_image_usage(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        *,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> image_costs.ScopedUsage:
+        """A story's image usage and cost, from its reservation records and cost rows: all-time
+        totals and the active local days of the range (the same range rules as
+        ``get_image_usage``). There are no story limits. 404 for an unknown or deleted story
+        (its costs stay in the deployment's report)."""
+        async with self.db.connect() as conn:
+            found = await conn.scalar(
+                select(stories_table.c.id).where(stories_table.c.id == story_id)
+            )
+            if found is None:
+                raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
+            return await image_costs.story_usage(conn, story_id, from_date, to_date)
+
+    @refuses_nul()
+    async def get_entry_image_usage(
+        self,
+        ctx: RequestContext,
+        *,
+        character_id: str | None = None,
+        scenario_id: str | None = None,
+        from_date: date | None = None,
+        to_date: date | None = None,
+    ) -> image_costs.ScopedUsage:
+        """A catalog entry's image usage (its entry counters) and cost (its catalog jobs' cost
+        rows): all-time totals, the active local days of the range (the same range rules as
+        ``get_image_usage``) and today's entry limit (``image_limit_entry_day``, used, reserved
+        and remaining). Name exactly one of ``character_id`` and ``scenario_id``. 404 for an
+        unknown or deleted entry."""
+        kind, entry_id = catalog_images.entry_of(character_id, scenario_id)
+        async with self.db.connect() as conn:
+            await catalog_images.require_entry(conn, kind, entry_id)
+            return await image_costs.entry_usage(conn, kind, entry_id, from_date, to_date)
 
     # -- image prompts (FR-IMG-2, FR-CAT-4; #259) ----------------------------------------------
 

@@ -645,7 +645,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | FR-IMG-8 | M | M8 | I-23 (M8), I-24 (M8) |
 | FR-IMG-9 | M | M8 | C-24 (M8) |
 | FR-IMG-10 | M | M8 | I-24 (M8), C-24 (M8) |
-| FR-IMG-11 | M | M8 | I-26 (M8), C-24 (M8) |
+| FR-IMG-11 | M | M8 | I-23 (M8), I-26 (M8), C-24 (M8) |
 | FR-IMG-12 | M | M8 | I-24 (M8) |
 | FR-IMG-13 | M | M8 | I-24 (M8) |
 | FR-LITE-1 | M | M2 | I-18 (M2), I-18 (M3), I-18 (M4), I-18 (M6), I-22 (M2) |

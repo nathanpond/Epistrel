@@ -13079,6 +13079,56 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 1):** step 0. CI run 42452018867 on `831dba1` failed `test (integration-i-z)` in `test_i_24__m8_two_paths`. The age 36 appeared in a uuid `attempt_token` (`36066e49-…`), the #791 flake class. #267 put attempt tokens into the job view, so the cause is not 831dba1. `tests.image_safety_support.assert_no_age` now skips uuid-shaped strings as it skips ULIDs. #268 adds `resend_of`, another uuid, to the same view.
   **Why:** a random token holds no age. Left alone, the flake would hit about one run in ten, on every later push.
   **Issue:** #268, #791
+- **Decision:** step 0. CI run 42454335329 on `c6b35c5` (#268) finished green, `evals-zero-leak (full)` and `(standard)` included. Nothing to fix.
+  **Issue:** #268, #269
+- **Decision:** `image_costs` (in `core/tables/images.py`) has an `id` ULID primary key, a unique `(job_id, attempt_token)` (`uq_image_costs_attempt`), text and CHECK enums, the planner's value CHECKs (`cost IS NULL ⇔ unknown`, 0 when `zero`, `cost >= 0`, currency `^[A-Z]{3}$` and set exactly when `known`, `outputs_billed = 0` when `zero`), no foreign keys, and indexes on `period_date`, `story_id` and `(entry_kind, entry_id)`. Migration `0142_image_costs` chains on `0141`. It adds no enum type or operation kind, so `KEPT_ON_DOWNGRADE` is unchanged. Attempts settled before the migration get no row. The table joins `STORY_ID_EXCEPTIONS`, `bundles.NEVER`, the erasure index's `EXEMPT_TABLES` (no content) and determinism's `OPERATIONAL_TABLES` (random tokens). There is no immutability trigger: the planner asked for none.
+  **Why:** the AC's table, and the story's planned build line. A new table is planned here, so it is not a Rule 4 stop.
+  **Issue:** #269
+- **Decision:** the new module is `core/images/costs.py`. `record_attempt(conn, record, entry, outputs_billed, accounting=)` takes the reservation record (attribution, and `period_date` from its deployment `counter_keys` entry) and a `CostEntry`. Its hooks all run in the resolving transaction:
+  - the normal return in `jobs._generate`, recorded even when an ending released the record mid-call;
+  - `_adapter_failed`, fenced or not;
+  - every branch of `attempts.settle_attempt_in`: held, released, the presumed correction, `late_duplicate`'s fill-in, and `late_unaccounted` (`record_late_unaccounted`: a fresh row on the local `recorded_at` day, attributed from `image_jobs`);
+  - `release_at_horizon_in` (`unknown`, `outputs_billed` null);
+  - `limits.presume` (`unknown`, null);
+  - `limits.release_all` releasing a record still `sending`/`accepted` (`unknown`, filled in by a later return).
+
+  A re-send's cost is recorded on its `resend_of` record, its failure included. `applied_parameters.cost` is still written as before, so #267/#268's tests are untouched.
+  **Why:** the planner's "same transaction" key link. Only these places resolve an attempt that reached the provider. Recording at the release of an in-flight call keeps a call that never returns from going uncounted.
+  **Issue:** #269, #268
+- **Decision:** a provider-reported amount of 0 with a currency is `known` (0 in that currency), not `zero`. `zero` is only an adapter error with HTTP 400/401/402/403/413/429 that is not ambiguous, and its `outputs_billed` is 0. Every other error is `unknown`, with `outputs_billed` 0, or null for an ambiguous error such as a timeout. An amount that is negative, non-finite or ≥ 10^10, or a currency that is not three letters, is `unknown`. Amounts are rounded half-even to 8 decimals. Money is rendered with `costs.money` (`format(…, "f")`, so `0.00000000` and never `0E-8`).
+  **Why:** the planner's `zero` definition names only refusals before generation. A provider that says 0 has billed 0 in its currency. Rendering `str(Decimal)` from `numeric(18,8)` gives exponent form for 0.
+  **Issue:** #269
+- **Decision:** the fill-in. An `unknown` row becomes `known` or `zero` once (`filled_at`, original `period_date`). A known or zero row never changes. An unknown report onto an unknown row only fills a null `outputs_billed`. The result is `recorded`, `filled` or `unchanged`, and each logs ids, statuses and accounting only (`image_cost_recorded`, `image_cost_filled`).
+  **Why:** the planner's pass-2 writes and gate default "unknown → zero allowed".
+  **Issue:** #269
+- **Decision:** the reports' shape.
+  - Admin: `{from, to, retained_from, days[], totals}`. Every retained day of the range is listed, zeros included.
+  - Story: `{story_id, from, to, retained_from, all_time, days[]}`, with active days only and no `limits`.
+  - Entry: the same plus `entry_kind`, `entry_id` and `limits: {image_limit_entry_day, today_used, today_reserved, today_remaining}`.
+
+  The totals fields are `outputs_used, overage, extra_outputs, reserved, ambiguous_sends, cost_unknown_attempts, cost_zero_attempts, costs[{currency, known_total, known_attempts}]`, and zero rows are not in `costs`. Deployment and entry usage come from the counters, and story usage from `image_reservations` by `story_id`. `ambiguous_sends` counts records with `send_state = ambiguous` or `basis ∈ {presumed, corrected}` by their reservation day. The range defaults to the last 30 days through today, with a 366-day maximum and 422 `invalid_range` (new `core.errors.InvalidRange`, in `ERROR_STATUS` and `OPERATION_ERRORS`). A range starting before `retained_from` lists from `retained_from`.
+  **Why:** the planner's discretion lines and gate defaults. The AC's per-job definition of `ambiguous_sends` is used everywhere, so the three levels agree.
+  **Issue:** #269
+- **Decision:** `GET /image-jobs/{id}`. Each `attempts[]` entry's `cost` is now a decimal string or null, where it was `{amount, currency}` or `"unknown"`. Each entry gains `cost_status`, `currency`, `outputs_billed` and `accounting`, all null with no cost row: held, unsent, or a re-send's own row. The job body gains `usage: {outputs_used, overage, extra_outputs, ambiguous_sends}` and `cost: {costs[{currency, known_total, known_attempts}], unknown_attempts, zero_attempts}`. These are Console-visible changes, and `openapi.json` is regenerated.
+  **Why:** the AC's per-job reporting puts `usage` "alongside the cost totals". The gate default listed one flat object, but the AC names `usage`, so the counts go there and the costs into `cost`.
+  **Issue:** #269
+- **Decision:** the library is `Engine.get_image_usage(from_date=, to_date=)`, `get_story_image_usage(story_id, …)` (erasure-gated by its `story_id`) and `get_entry_image_usage(character_id=|scenario_id=, …)` (catalog-gated). The routes are in `api/routes/image_usage.py`. The admin one sits under `/admin`, and the entry routes are one per kind (`get_entry_image_usage_character`/`_scenario`). Each route has a C-03 step, plus a 422 step. The four routes are `outside` rows (FR-IMG-11) in `fr_api_6_routes.json`, and I-21 has `CALLS` entries for the story and entry routes. Query `from` is the alias of `from_date`.
+  **Why:** the planner's build and replan lines.
+  **Issue:** #269
+- **Decision:** retention. `limits.retain` also purges `image_costs` by `period_date` (`costs.purge`, batches of 1000, no state condition) and returns a `costs` count. #262's `test_i_26` retention asserts gained `"costs": 0`. A story's deletion nulls the cost rows' `story_id` in `limits.release_for_story`.
+  **Why:** the planner says the purge rides #262's `image_accounting_retention` task. Keeping it inside `retain` also makes #268's purge scenario produce a fresh `late_unaccounted` row.
+  **Issue:** #269, #262
+- **Decision:** the tests.
+  - `tests/conformance/test_c_24.py`: `test_c_24__m8_cost` and `test_c_24__m8_job_report`.
+  - `tests/integration/test_i_23.py`: `test_i_23__m8_story_cost`. docs/04 §15's FR-IMG-11 row gains `I-23 (M8)`.
+  - `tests/integration/test_image_usage.py`, a new file with no part markers: `test_usage_after_story_delete`, the ranges, retention, the entry report, the fill-in and the value rules.
+  - `test_i_26__m8_ambiguous[presumed_then_actual]` now also asserts the `late_unaccounted` cost row, which is #268's last AC box.
+  
+  Each test runs on its own scratch space.
+  **Why:** the test plan, and the traceability gate's one-file-per-ID rule.
+  **Issue:** #269, #268
+- **Decision (Rule 1):** the reports' `from`/`to` queries accept `YYYY-MM-DD` only (`image_usage.IsoDate`), as `IsoDateTime` does for date-times. C-01 found pydantic's lax `date` taking `to=0` as the epoch.
+  **Issue:** #269
 
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 

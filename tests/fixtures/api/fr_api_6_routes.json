@@ -1605,6 +1605,26 @@
       "method": "GET",
       "path": "/stories/{story_id}/providers/{name}/binding",
       "requirement": "FR-EXT-1"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/image-usage",
+      "requirement": "FR-IMG-11"
+    },
+    {
+      "method": "GET",
+      "path": "/stories/{story_id}/image-usage",
+      "requirement": "FR-IMG-11"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog/characters/{character_id}/image-usage",
+      "requirement": "FR-IMG-11"
+    },
+    {
+      "method": "GET",
+      "path": "/catalog/scenarios/{scenario_id}/image-usage",
+      "requirement": "FR-IMG-11"
     }
   ]
 }

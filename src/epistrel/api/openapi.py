@@ -352,6 +352,7 @@ ERROR_STATUS: dict[str, int] = {
     "media_retired": 422,
     "candidate_not_found": 422,
     "images_disabled": 422,
+    "invalid_range": 422,
     "invalid_time_zone": 422,
     "moderation_rejected": 422,
     "not_published": 422,
@@ -1048,6 +1049,13 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     },
     **{
         f"discard_image_candidate_{kind}": ("erasure_pending",)
+        for kind in ("character", "scenario")
+    },
+    # Image usage and cost (#269): a range the reports refuse.
+    "get_image_usage": ("invalid_range",),
+    "get_story_image_usage": ("invalid_range",),
+    **{
+        f"get_entry_image_usage_{kind}": ("not_found", "erasure_pending", "invalid_range")
         for kind in ("character", "scenario")
     },
     "create_scenario_draft": _SCENARIO_SAVE,

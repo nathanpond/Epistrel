@@ -64,6 +64,20 @@ commit; recovery reads it, never the live adapter). ``idempotency_key`` is
 re-send carries its stalled attempt's). ``send_state = ambiguous``
 marks an ambiguous send: a lease expiry found it ``sending`` and it could not be re-sent.
 
+#269 (FR-IMG-11's cost) adds ``image_costs``: one row per provider attempt that reached the
+provider, unique on ``(job_id, attempt_token)`` (a re-send's cost lands on the attempt it
+re-sent). It holds the attribution ``story_id``, ``entry_kind`` and ``entry_id`` (copied from the
+attempt's reservation record), the ``cost`` (``numeric(18,8)``, null exactly when
+``cost_status = unknown``, 0 when ``zero``), its ``currency`` (ISO 4217, upper case; set only
+when ``known``), ``outputs_billed`` (the outputs returned; null when nobody knows, such as a
+presumption or a horizon release), the ``accounting`` (``normal``, or ``late_unaccounted`` for a
+late return whose reservation record accounting retention had purged), ``period_date`` (the
+deployment counter's period in the record's ``counter_keys``; a ``late_unaccounted`` row's is
+its ``recorded_at``'s local day), ``recorded_at`` and ``filled_at`` (the one ``unknown`` → known
+or zero fill-in). No foreign keys: the rows are deployment accounting with no story content,
+outlive the job, the story (``core.stories.STORY_ID_EXCEPTIONS``: deletion nulls ``story_id``)
+and the entry, and are purged with the accounting retention (``limits.retain``).
+
 ``image_jobs.result`` (#260) holds what a successful job made beyond its ``asset_ids``: a catalog
 job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes.
 
@@ -93,9 +107,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     PrimaryKeyConstraint,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -333,6 +349,70 @@ image_limit_counters = Table(
     CheckConstraint("limit_value >= 0", name="limit_value"),
 )
 
+
+class CostStatus(StrEnum):
+    """What is known about one attempt's cost (FR-IMG-11; #269): ``known`` (the provider said),
+    ``zero`` (the provider refused before generating, so nothing was billed) or ``unknown``
+    (never summed as 0)."""
+
+    KNOWN = "known"
+    ZERO = "zero"
+    UNKNOWN = "unknown"
+
+
+class CostAccounting(StrEnum):
+    """``normal``, or ``late_unaccounted``: a late return whose reservation record accounting
+    retention had already purged (#268, #269)."""
+
+    NORMAL = "normal"
+    LATE_UNACCOUNTED = "late_unaccounted"
+
+
+COST_STATUS_CHECK = _in("cost_status", CostStatus)
+COST_ACCOUNTING_CHECK = _in("accounting", CostAccounting)
+COST_VALUE_CHECK = (
+    "(cost IS NULL) = (cost_status = 'unknown') AND (cost_status <> 'zero' OR cost = 0) "
+    "AND (cost IS NULL OR cost >= 0)"
+)
+COST_CURRENCY_CHECK = (
+    "(currency IS NULL OR currency ~ '^[A-Z]{3}$') "
+    "AND ((currency IS NOT NULL) = (cost_status = 'known'))"
+)
+COST_OUTPUTS_CHECK = (
+    "(outputs_billed IS NULL OR outputs_billed >= 0) "
+    "AND (cost_status <> 'zero' OR outputs_billed = 0)"
+)
+
+image_costs = Table(
+    "image_costs",
+    metadata,
+    Column("id", ulid_type(), primary_key=True),
+    Column("job_id", ulid_type(), nullable=False),
+    Column("attempt_token", UUID(as_uuid=False), nullable=False),
+    Column("story_id", ulid_type(), nullable=True),
+    Column("entry_kind", Text, nullable=True),
+    Column("entry_id", ulid_type(), nullable=True),
+    Column("cost", Numeric(18, 8), nullable=True),
+    Column("cost_status", Text, nullable=False),
+    Column("currency", Text, nullable=True),
+    Column("outputs_billed", Integer, nullable=True),
+    Column("accounting", Text, nullable=False, server_default=text("'normal'")),
+    Column("period_date", Date, nullable=False),
+    Column("recorded_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("filled_at", TIMESTAMP(timezone=True), nullable=True),
+    UniqueConstraint("job_id", "attempt_token", name="uq_image_costs_attempt"),
+    CheckConstraint(COST_STATUS_CHECK, name="cost_status"),
+    CheckConstraint(COST_ACCOUNTING_CHECK, name="accounting"),
+    CheckConstraint(COST_VALUE_CHECK, name="cost_value"),
+    CheckConstraint(COST_CURRENCY_CHECK, name="currency"),
+    CheckConstraint(COST_OUTPUTS_CHECK, name="outputs_billed"),
+    CheckConstraint(ENTRY_KIND_CHECK, name="entry_kind"),
+)
+
+Index("ix_image_costs_period_date", image_costs.c.period_date)
+Index("ix_image_costs_story_id", image_costs.c.story_id)
+Index("ix_image_costs_entry", image_costs.c.entry_kind, image_costs.c.entry_id)
+
 CANDIDATE_KIND_CHECK = "entry_kind IN ('character', 'scenario')"
 
 image_candidates = Table(
@@ -366,6 +446,8 @@ Index("ix_image_candidates_asset_id", image_candidates.c.asset_id)
 __all__ = [
     "TERMINAL_STATUSES",
     "AttemptOutcome",
+    "CostAccounting",
+    "CostStatus",
     "ImageJobKind",
     "ImageJobStatus",
     "LimitScope",
@@ -373,6 +455,7 @@ __all__ = [
     "SendState",
     "SettlementBasis",
     "image_candidates",
+    "image_costs",
     "image_jobs",
     "image_limit_counters",
     "image_reservations",

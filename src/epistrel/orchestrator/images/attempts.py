@@ -74,7 +74,8 @@ max(0, m - requested)``, ``basis = corrected``), the counters move by the differ
 are deleted unpromoted, and it is reported ``late_after_presumed``; any later delivery is
 ``late_duplicate``. A result before the horizon settles it ``held → settled``
 (``late_discarded``) and it is never presumed. A result whose record accounting retention purged
-is ``late_unaccounted`` (logged and counted; #269 records its cost) and changes no counter.
+is ``late_unaccounted`` (logged and counted, its cost on a ``late_unaccounted`` row, #269) and
+changes no counter.
 Every presumption and re-send counts as a failed attempt of the ``jobs`` row (#70's
 ``max_attempts``), so a job that keeps crashing mid-send ends ``failed``/``provider_unavailable``.
 ``recover_attempts`` is the start-up recovery hook that classifies records an earlier version
@@ -98,7 +99,7 @@ from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
-from epistrel.core.images import limits, store
+from epistrel.core.images import costs, limits, store
 from epistrel.core.images.store import ImageJob, Reservation
 from epistrel.core.settings_schema import ImageJobSettings
 from epistrel.core.tables import jobs as jobs_table
@@ -138,7 +139,8 @@ UNRESOLVED: frozenset[SendState] = IN_FLIGHT | {SendState.AMBIGUOUS}
 MAX_RESENDS = 2
 """Re-sends of one idempotency key before the attempt is treated as ambiguous (#268)."""
 LATE_UNACCOUNTED = "late_unaccounted"
-"""A result whose reservation record accounting retention purged (#268; never stored)."""
+"""A result whose reservation record accounting retention purged (#268): no outcome is stored,
+and its cost row's ``accounting`` says so (#269)."""
 RESEND = "resend"
 AMBIGUOUS = "ambiguous"
 RESOLVED = "resolved"
@@ -168,6 +170,14 @@ def cost_json(cost: AttemptCost | None) -> Any:
     if isinstance(cost, Cost):
         return {"amount": str(cost.amount), "currency": cost.currency}
     return cost
+
+
+def cost_entry(cost: AttemptCost | None) -> costs.CostEntry:
+    """An adapter's cost as an ``image_costs`` entry (#269): a ``Cost`` is ``known`` (rounded to
+    8 decimals), anything else ``unknown``."""
+    if isinstance(cost, Cost):
+        return costs.known(cost.amount, cost.currency)
+    return costs.UNKNOWN
 
 
 def usage_json(usage: ImageUsage | None) -> Any:
@@ -380,10 +390,11 @@ async def release_at_horizon_in(
         assert record is not None  # noqa: S101 - locked above
         logger.info("image job %s attempt %s: image_attempt_ambiguous", job_id, token)
     if record.send_state is SendState.AMBIGUOUS:
-        await limits.presume(conn, record)
+        await limits.presume(conn, record)  # its cost row: unknown (#269)
         logger.info("image job %s attempt %s: image_attempt_presumed", job_id, token)
         return AttemptOutcome.PRESUMED
     await limits.release(conn, record)
+    await costs.record_unknown_if_sent(conn, record)  # #269: unknown until a late return
     found = await store.read_reservation(conn, job_id, token)
     assert found is not None  # noqa: S101 - locked above
     applied = dict(found.applied_parameters or {})
@@ -450,7 +461,9 @@ async def settle_attempt_in(
     failure ``failed`` or ``cancelled``). A presumed one is corrected once
     (``late_after_presumed``, #268). A re-send's return (its row names ``resend_of``) settles
     the attempt it re-sent. ``None`` when the attempt has no record any more (#268's
-    ``late_unaccounted``: logged and counted, no counter changes; #269 records its cost)."""
+    ``late_unaccounted``: logged and counted, no counter changes). Every branch records the
+    attempt's cost in the same transaction (#269, ``costs.record_attempt``; a
+    ``late_unaccounted`` return on a fresh row of its own, ``costs.record_late_unaccounted``)."""
     own = await store.read_reservation(conn, job_id, attempt_token)
     if own is not None and own.resend_of is not None:
         # #268: a re-send's outputs count once, on the record that reserved them.
@@ -463,7 +476,10 @@ async def settle_attempt_in(
         )
         attempt_token = own.resend_of
     record = await limits.read_record(conn, job_id, attempt_token, lock=True)
+    entry = cost_entry(cost)
     if record is None:
+        # #269: the cost is still recorded, on its own row (accounting ``late_unaccounted``).
+        await costs.record_late_unaccounted(conn, job_id, attempt_token, entry, outputs)
         count_attempt_outcome(LATE_UNACCOUNTED)
         logger.info(
             "image job %s attempt %s: image_attempt_late %s",
@@ -477,7 +493,8 @@ async def settle_attempt_in(
     applied = dict(found.applied_parameters or {})
     if record.state is ReservationState.SETTLED and record.basis is SettlementBasis.PRESUMED:
         # #268: the presumed settlement's one correction.
-        await limits.correct(conn, record, outputs)
+        corrected = await limits.correct(conn, record, outputs)
+        await costs.record_attempt(conn, corrected, entry, outputs)  # #269: the one fill-in
         applied["cost"] = cost_json(cost) if cost is not None else UNKNOWN
         if usage is not None:
             applied["usage"] = usage_json(usage)
@@ -510,11 +527,13 @@ async def settle_attempt_in(
             # The one-time cost fill-in: an unknown cost becomes known, and never changes again.
             applied["cost"] = known
             await store.update_reservation(conn, job_id, attempt_token, applied_parameters=applied)
+        await costs.record_attempt(conn, record, entry, outputs)  # #269: filled in at most once
         count_attempt_outcome(AttemptOutcome.LATE_DUPLICATE.value)
         logger.info("image job %s attempt %s: late_duplicate", job_id, attempt_token)
         return AttemptOutcome.LATE_DUPLICATE
     outcome = held if record.state is ReservationState.HELD else released
-    await limits.settle(conn, record, outputs)
+    settled = await limits.settle(conn, record, outputs)
+    await costs.record_attempt(conn, settled, entry, outputs)  # #269
     applied["cost"] = cost_json(cost) if cost is not None else UNKNOWN
     if usage is not None:
         applied["usage"] = usage_json(usage)
@@ -714,6 +733,7 @@ __all__ = [
     "Poll",
     "Retry",
     "confirm",
+    "cost_entry",
     "cost_json",
     "count_failure",
     "fence_in",

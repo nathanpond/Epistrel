@@ -17,6 +17,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, JobId, route_flags
+from epistrel.core.images import costs
 from epistrel.orchestrator.images.jobs import (
     WAIT_MAX_S,
     WAIT_MIN_S,
@@ -34,7 +35,11 @@ STATUS_TEXT = (
     "null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` "
     "and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists "
     "its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it "
-    "`requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. "
+    "`requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, "
+    "`cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, "
+    "`outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra "
+    "outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero "
+    "attempts) total them. "
     "A worker that stalls past its lease is fenced: no attempt starts before the stalled "
     "call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never "
     "shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send "
@@ -86,10 +91,53 @@ class AttemptBody(BaseModel):
     extra_outputs: int | None = Field(
         description="Outputs beyond what was requested, discarded unchecked; null while held."
     )
-    cost: dict[str, str] | Literal["unknown"] | None = Field(
-        description="`{amount, currency}` in the provider's currency, `unknown` when the "
-        "provider gave none (never 0), or null before the attempt returned."
+    cost: str | None = Field(
+        description="The attempt's cost, a decimal string at the stored precision in "
+        "`currency`; `0` when `cost_status` is `zero`; null when it is `unknown` or the "
+        "attempt has no cost record (FR-IMG-11)."
     )
+    cost_status: Literal["known", "zero", "unknown"] | None = Field(
+        description="`known` (the provider reported it), `zero` (the provider refused before "
+        "generating, so nothing was billed) or `unknown` (no figure: counted, never 0). Null "
+        "while the attempt has no cost record: held, never sent, or a re-send (whose cost is "
+        "on the attempt it re-sent)."
+    )
+    currency: str | None = Field(description="ISO 4217 when `known`, null otherwise.")
+    outputs_billed: int | None = Field(
+        description="The outputs the provider returned for it; null while unknown (a "
+        "presumed send, a horizon release)."
+    )
+    accounting: Literal["normal", "late_unaccounted"] | None = Field(
+        description="`late_unaccounted` for a late result whose usage record retention had "
+        "already purged (its cost still counts); null with no cost record."
+    )
+
+
+class JobCurrencyCost(BaseModel):
+    """Known costs in one currency."""
+
+    currency: str
+    known_total: str = Field(description="A decimal string.")
+    known_attempts: int
+
+
+class JobCostBody(BaseModel):
+    """The job's cost (FR-IMG-11): known costs per currency, never mixed or converted, and the
+    `unknown` and `zero` attempts counted apart (an unknown cost is never added as 0)."""
+
+    costs: list[JobCurrencyCost]
+    unknown_attempts: int
+    zero_attempts: int
+
+
+class JobUsageBody(BaseModel):
+    """The job's usage (FR-IMG-11): outputs used, overage, extra outputs, and its ambiguous
+    sends (attempts presumed, corrected, or whose send was ambiguous)."""
+
+    outputs_used: int
+    overage: int
+    extra_outputs: int
+    ambiguous_sends: int
 
 
 class ImageJobBody(BaseModel):
@@ -147,10 +195,13 @@ class ImageJobBody(BaseModel):
         description="The job fell back to retrying with no definitive answer about a stalled "
         "call (sticky).",
     )
+    usage: JobUsageBody = Field(description="What the job's attempts used (FR-IMG-11).")
+    cost: JobCostBody = Field(description="What the job's attempts cost (FR-IMG-11).")
 
     @classmethod
     def of(cls, view: ImageJobView) -> ImageJobBody:
         ids = list(view.result_ids)
+        usage = view.usage or costs.JobUsage(0, 0, 0, 0, costs.CostTotals())
         return cls(
             job_id=view.job_id,
             kind="catalog" if view.kind == "catalog" else "story",
@@ -166,7 +217,11 @@ class ImageJobBody(BaseModel):
                     used=a.used,
                     overage=a.overage,
                     extra_outputs=a.extra_outputs,
-                    cost=a.cost,
+                    cost=None if a.cost is None else costs.money(a.cost),
+                    cost_status=a.cost_status,
+                    currency=a.currency,
+                    outputs_billed=a.outputs_billed,
+                    accounting=a.accounting,
                     send_state=a.send_state,
                     basis=a.basis,
                     resend_of=a.resend_of,
@@ -182,6 +237,24 @@ class ImageJobBody(BaseModel):
             waiting_for_horizon=view.waiting_for_horizon,
             confirm_deadline_at=view.confirm_deadline_at,
             confirm_fallback=view.confirm_fallback,
+            usage=JobUsageBody(
+                outputs_used=usage.outputs_used,
+                overage=usage.overage,
+                extra_outputs=usage.extra_outputs,
+                ambiguous_sends=usage.ambiguous_sends,
+            ),
+            cost=JobCostBody(
+                costs=[
+                    JobCurrencyCost(
+                        currency=c.currency,
+                        known_total=costs.money(c.known_total),
+                        known_attempts=c.known_attempts,
+                    )
+                    for c in usage.cost.costs
+                ],
+                unknown_attempts=usage.cost.unknown_attempts,
+                zero_attempts=usage.cost.zero_attempts,
+            ),
         )
 
 

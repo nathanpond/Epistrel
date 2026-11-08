@@ -24,7 +24,7 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +106,7 @@ from epistrel.api.routes.engine_profiles import (
 )
 from epistrel.api.routes.history import HistoryResponse
 from epistrel.api.routes.image_jobs import ImageJobBody
+from epistrel.api.routes.image_usage import DeploymentImageUsage, EntryImageUsage, StoryImageUsage
 from epistrel.api.routes.inspect import (
     BeliefsBody,
     DivergencesBody,
@@ -2915,6 +2916,35 @@ def _steps() -> list[Step]:
             ),
             lambda e, ids: _candidate_content(e, ids["character"], ids["candidate"]),
         ),
+        # -- image usage and cost (#269): the deployment's days, a story's, an entry's per kind,
+        # and a range the report refuses (422 on both).
+        Step(
+            "get_image_usage",
+            lambda ids: Rest("GET", "/admin/image-usage"),
+            lambda e, ids: _image_usage(e),
+        ),
+        Step(
+            "get_image_usage",
+            lambda ids: Rest(
+                "GET", "/admin/image-usage", params={"from": "2026-11-08", "to": "2026-11-01"}
+            ),
+            lambda e, ids: _image_usage(e, date(2026, 11, 8), date(2026, 11, 1)),
+        ),
+        Step(
+            "get_story_image_usage",
+            lambda ids: Rest("GET", f"{s}/image-usage"),
+            lambda e, ids: _story_image_usage(e, ids["story"]),
+        ),
+        Step(
+            "get_entry_image_usage",
+            lambda ids: Rest("GET", "/catalog/characters/{character}/image-usage"),
+            lambda e, ids: _entry_image_usage(e, character_id=ids["character"]),
+        ),
+        Step(
+            "get_entry_image_usage",
+            lambda ids: Rest("GET", "/catalog/scenarios/{scenario}/image-usage"),
+            lambda e, ids: _entry_image_usage(e, scenario_id=ids["scenario"]),
+        ),
         Step(
             "remove_model_override",
             lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
@@ -4152,6 +4182,29 @@ async def _queue_image_job(engine: Engine, ids: Ids) -> None:
     )
     async with engine.db.begin() as conn:
         ids["image_job"] = (await image_jobs.insert_image_job(conn, job, None)).job_id
+
+
+async def _image_usage(
+    engine: Engine, from_date: date | None = None, to_date: date | None = None
+) -> dict[str, Any]:
+    found = await engine.get_image_usage(CTX, from_date=from_date, to_date=to_date)
+    return dump(DeploymentImageUsage.of(found))
+
+
+async def _story_image_usage(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(StoryImageUsage.of(story_id, await engine.get_story_image_usage(CTX, story_id)))
+
+
+async def _entry_image_usage(
+    engine: Engine, *, character_id: str | None = None, scenario_id: str | None = None
+) -> dict[str, Any]:
+    found = await engine.get_entry_image_usage(
+        CTX, character_id=character_id, scenario_id=scenario_id
+    )
+    if character_id is not None:
+        return dump(EntryImageUsage.of("character", character_id, found))
+    assert scenario_id is not None
+    return dump(EntryImageUsage.of("scenario", scenario_id, found))
 
 
 async def _image_job(engine: Engine, job_id: str) -> dict[str, Any]:

@@ -934,6 +934,8 @@ CALLS: dict[tuple[str, str], Call] = {
     ("POST", f"{S}/images"): Call(409, STORY_IMAGE),
     ("GET", f"{S}/images/{{image_id}}"): Call(200, prepare=_story_image),
     ("DELETE", f"{S}/images/{{image_id}}"): Call(204, prepare=_story_image),
+    # #269: the story's image usage and cost (a read anyone with the credential may make)
+    ("GET", f"{S}/image-usage"): Call(200),
     # -- stories: its States (#186), on the story running States at prompt_only (#203)
     ("GET", f"{S}/states"): Call(200, prepare=_state_name),
     ("GET", f"{S}/states/{{name}}"): Call(200, prepare=_state_name),
@@ -1048,6 +1050,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{C}/images/candidates/{{candidate_id}}/content"): Call(404, prepare=_no_candidate),
     ("GET", f"{C}/images/candidates/{{candidate_id}}/url"): Call(404, prepare=_no_candidate),
     ("DELETE", f"{C}/images/candidates/{{candidate_id}}"): Call(204, prepare=_no_candidate),
+    ("GET", f"{C}/image-usage"): Call(200),  # #269
     # a base appearance prompt drafted from the draft, not saved (#259)
     ("POST", f"{C}/draft/visual-identity/draft-base-prompt"): Call(200),
     # -- catalog characters: reads of a `private` entry: the latest version as the card (the
@@ -1078,6 +1081,7 @@ CALLS: dict[tuple[str, str], Call] = {
     ("GET", f"{SC}/images/candidates/{{candidate_id}}/content"): Call(404, prepare=_no_candidate),
     ("GET", f"{SC}/images/candidates/{{candidate_id}}/url"): Call(404, prepare=_no_candidate),
     ("DELETE", f"{SC}/images/candidates/{{candidate_id}}"): Call(204, prepare=_no_candidate),
+    ("GET", f"{SC}/image-usage"): Call(200),  # #269
     # -- scenarios: reads of a `private` scenario, as for catalog characters
     ("GET", SC): Call(200, queries=ENTRY_READS, prepare=_published),
     ("GET", f"{SC}/versions"): Call(200, prepare=_published),

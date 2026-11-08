@@ -323,6 +323,7 @@ __all__ = [
 IMAGE_TABLES_CLEANUP = (
     "DELETE FROM catalog.image_candidates",
     "DELETE FROM image_reservations",
+    "DELETE FROM image_costs",
     "DELETE FROM image_limit_counters",
     "DELETE FROM image_jobs",
     "DELETE FROM jobs WHERE kind = 'image_job'",

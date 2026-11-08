@@ -544,6 +544,14 @@ class ImagesDisabled(EpistrelError):
     http_status = 422
 
 
+class InvalidRange(EpistrelError):
+    """An image usage report's ``from`` after its ``to``, or a range longer than 366 days
+    (FR-IMG-11; #269). ``details``: ``{from, to}``."""
+
+    code = "invalid_range"
+    http_status = 422
+
+
 class InvalidTimeZone(EpistrelError):
     """A ``deployment_time_zone`` that is not an IANA time zone (#262). Nothing is written.
     ``details``: ``field``."""

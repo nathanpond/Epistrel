@@ -12,6 +12,7 @@
 - #263: story images generated from what their audience viewpoint perceived, through the real
   story target (``tests/story_image_generation_support.py``): the whisper scene, Lite's delivered
   message, the stored prompt, the rating's guidance and the style, and the camera POV.
+- #269: a story's image usage and cost, reported from its records by ``story_id``.
 
 Every I-23 M8 part lives in this file (the traceability gate takes one file per test ID and
 milestone)."""
@@ -68,6 +69,7 @@ from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.models import config as model_config
 from epistrel.orchestrator.models.adapter import ModelParams
 from epistrel.testing.images import (
+    PASS,
     ScriptedChecks,
     TestImageTarget,
     installed_checks,
@@ -1974,3 +1976,58 @@ async def test_i_23__m8_auto_staged(image_settings: Settings, engine: AsyncEngin
         ]
         [intent] = [e for e in op.stage_log if e.get("stage") == "intent"]
         assert job["created_at"] > datetime.fromisoformat(str(intent["at"]))
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-11")
+async def test_i_23__m8_story_cost(pg_url: str, tmp_path: Path) -> None:
+    """``GET /stories/{id}/image-usage`` reports the story's image usage and cost from its
+    records and cost rows by ``story_id`` (FR-IMG-11): two outputs billed 0.04 USD each, one of
+    them discarded by the check, are both in ``outputs_used`` and in the cost, all-time and on
+    their day. The response carries no ``limits`` and no per-turn list: per-story admission is
+    the consumer's (#262).
+
+    Complement asserted: another story's image (and its cost) is not included in the first's,
+    and appears in its own."""
+    from tests.event_support import new_story
+    from tests.image_job_support import CTX, MINORS, prepared
+    from tests.image_limits_support import space
+    from tests.image_support import Outputs, StubImageGenerator
+    from tests.image_support import registered as registered_adapter
+
+    async with space(pg_url, tmp_path, "i23_cost") as sp:
+        story, other = await new_story(sp.db), await new_story(sp.db)
+        stub = StubImageGenerator(script=[])
+        with registered_adapter("stub_sync", stub), registered_target():
+            await sp.configure()
+            first = await sp.insert(prepared(story, origin=_turn_origin(story, 2)))
+            stub.script.extend([Outputs(), Outputs()])
+            with installed_checks(ScriptedChecks([MINORS, PASS], fail_closed=False)):
+                assert (await sp.run(first))["image_job"] == "promoted"
+            second = await sp.insert(prepared(other, origin=_turn_origin(other, 2)))
+            stub.script.append(Outputs(cost=Cost(Decimal("0.5"), "USD")))
+            with installed_checks(ScriptedChecks(fail_closed=False)):
+                assert (await sp.run(second))["image_job"] == "promoted"
+        found = await sp.client.get(f"/stories/{story}/image-usage", headers=bearer())
+        assert found.status_code == 200, found.text
+        body = found.json()
+        assert set(body) == {"story_id", "from", "to", "retained_from", "all_time", "days"}
+        assert "limits" not in body
+        assert "turns" not in body
+        usd = [{"currency": "USD", "known_total": "0.08000000", "known_attempts": 2}]
+        assert (body["all_time"]["outputs_used"], body["all_time"]["costs"]) == (2, usd)
+        [day] = body["days"]
+        assert (day["outputs_used"], day["costs"]) == (2, usd)
+        theirs = (await sp.client.get(f"/stories/{other}/image-usage", headers=bearer())).json()
+        assert (theirs["all_time"]["outputs_used"], theirs["all_time"]["costs"]) == (
+            1,
+            [{"currency": "USD", "known_total": "0.50000000", "known_attempts": 1}],
+        )
+        library = await sp.lib.get_story_image_usage(CTX, story)
+        assert library.all_time.outputs_used == 2
+
+
+def _turn_origin(story_id: str, turn: int) -> dict[str, Any]:
+    from tests.image_support import story_origin
+
+    return story_origin(story_id, turn=turn)

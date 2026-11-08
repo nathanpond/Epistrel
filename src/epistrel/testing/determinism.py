@@ -41,6 +41,7 @@ OPERATIONAL_TABLES = frozenset(
         "jobs",
         "image_jobs",
         "image_reservations",
+        "image_costs",
         "timers",
         "recurring_tasks",
         "worker_heartbeats",
@@ -51,7 +52,7 @@ OPERATIONAL_TABLES = frozenset(
     }
 )
 """Excluded: background work (image jobs and their attempts' reservation records too, #256,
-#262: their attempt tokens are random), timers,
+#262: their attempt tokens are random, and their cost rows, #269), timers,
 heartbeats, the turn queue and idempotency bookkeeping,
 and a rating change's check and its verdict cache (#118)."""
 

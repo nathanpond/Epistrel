@@ -409,17 +409,34 @@ async def test_i_26__m8_day_boundary(pg_url: str, tmp_path: Path) -> None:
             def noon(day: int) -> datetime:
                 return datetime(2026, 11, day, 12, 0, tzinfo=tz).astimezone(UTC)
 
-            assert await limits.retain(sp.db, now=noon(8)) == {"records": 0, "counters": 0}
+            assert await limits.retain(sp.db, now=noon(8)) == {
+                "records": 0,
+                "counters": 0,
+                "costs": 0,
+            }
             # 2026-11-07 closed a day ago: its settled record goes, then its counter.
-            assert await limits.retain(sp.db, now=noon(9)) == {"records": 1, "counters": 1}
+            # #269: the returned attempt's cost row goes with its day too.
+            assert await limits.retain(sp.db, now=noon(9)) == {
+                "records": 1,
+                "counters": 1,
+                "costs": 1,
+            }
             assert set(await counters(sp.db)) == {nov_8}
             assert {r["job_id"] for r in await all_records(sp.db)} == {nxt, doomed}
             # 2026-11-08: the released record goes, the held one and its counter stay.
-            assert await limits.retain(sp.db, now=noon(10)) == {"records": 1, "counters": 0}
+            assert await limits.retain(sp.db, now=noon(10)) == {
+                "records": 1,
+                "counters": 0,
+                "costs": 0,
+            }
             assert [r["job_id"] for r in await all_records(sp.db)] == [nxt]
             assert set(await counters(sp.db)) == {nov_8}
             await image_jobs.cancel_job(sp.lib.image_runtime(), nxt)
-            assert await limits.retain(sp.db, now=noon(10)) == {"records": 1, "counters": 1}
+            assert await limits.retain(sp.db, now=noon(10)) == {
+                "records": 1,
+                "counters": 1,
+                "costs": 0,
+            }
             assert await counters(sp.db) == {}
 
             # A story export carries no deployment accounting.
@@ -1587,6 +1604,15 @@ async def _presumed_then_actual(sp: Space) -> None:
         assert late == {"image_job": "fenced", "late": "late_unaccounted"}, late
         assert _metric("late_unaccounted") == unaccounted + 1
         assert await counters(sp.db) == kept_counters
+        # #269: its cost is recorded on a row of its own, on its recorded_at day.
+        cost = await _one(
+            sp,
+            "SELECT cost_status, cost, accounting, outputs_billed, entry_id IS NOT NULL AS e "
+            "FROM image_costs WHERE job_id = :j AND attempt_token = :t",
+            j=job_id,
+            t=old,
+        )
+        assert tuple(cost) == ("known", STUB_COST.amount, "late_unaccounted", 1, True)
         await assert_clean(sp.db)
 
 

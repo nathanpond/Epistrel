@@ -143,6 +143,7 @@ from epistrel.core.tables import (
     genesis_deferred,
     guardrail_check_results,
     idempotency_keys,
+    image_costs,
     image_jobs,
     image_reservations,
     jobs,
@@ -389,13 +390,14 @@ in ``STORY_TABLES`` is copied by ``core.fork``, so a new story-scoped table is c
 is named here."""
 
 STORY_ID_EXCEPTIONS: frozenset[str] = frozenset(
-    {audit_log.name, certification_runs.name, image_reservations.name}
+    {audit_log.name, certification_runs.name, image_reservations.name, image_costs.name}
 )
 """Deployment-level tables that carry a ``story_id`` but outlive the story: deletion nulls the
 column instead of removing the row. ``audit_log`` (#56), ``certification_runs`` (#233: a
 story's certification run is a deployment record) and ``image_reservations`` (#262, owner
 decision 13: image accounting; the records the story's jobs still hold are released first, and
-the limit counters and the records' ``counter_keys`` are untouched)."""
+the limit counters and the records' ``counter_keys`` are untouched) with ``image_costs`` (#269:
+the attempts' costs, so the deployment's usage report keeps them)."""
 
 STORY_DELETE_SETTING = "epistrel.allow_story_delete"
 """The transaction setting the ``events`` trigger reads to let one story's events be deleted."""

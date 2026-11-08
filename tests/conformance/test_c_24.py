@@ -46,6 +46,7 @@ from epistrel.testing.images import (
     installed_checks,
     registered_target,
 )
+from tests.auth_support import bearer
 from tests.image_job_support import (
     CTX,
     MINORS,
@@ -387,7 +388,6 @@ async def test_c_24__m8_limits(pg_url: str, tmp_path: Path) -> None:
 
     Complement asserted: the other entry's request is admitted, and with room left the retry
     runs (the counter's ``used`` counts every returned output)."""
-    from tests.auth_support import bearer
     from tests.event_support import new_story
     from tests.image_limits_support import all_records, assert_clean, deployment, space, today
     from tests.image_support import catalog_origin
@@ -720,3 +720,339 @@ async def test_c_24__m8_subjects(
         assert await subj.candidate_ids(engine, list(made.candidates.values())) == set()
         dropped = [candidates[made.candidates[n]].asset_id for n in ("own", "named")]
         assert await subj.asset_ids(engine, [*dropped, kept_asset]) == {kept_asset}
+
+
+# -- cost (#269) ----------------------------------------------------------------------------
+
+
+async def _token_of(db: AsyncEngine, job_id: str) -> str:
+    async with db.connect() as conn:
+        found = await conn.scalar(
+            text("SELECT attempt_token FROM image_jobs WHERE id = :j"), {"j": job_id}
+        )
+    return str(found)
+
+
+async def _cost_rows(db: AsyncEngine, job_id: str) -> list[dict[str, Any]]:
+    async with db.connect() as conn:
+        rows = await conn.execute(
+            text(
+                "SELECT attempt_token::text AS token, cost, cost_status, currency, "
+                "outputs_billed, accounting, period_date, story_id, entry_kind, entry_id "
+                "FROM image_costs WHERE job_id = :j ORDER BY recorded_at, id"
+            ),
+            {"j": job_id},
+        )
+        return [dict(r._mapping) for r in rows]
+
+
+async def _presumed(db: AsyncEngine, job_id: str) -> str:
+    """The job's attempt sent and lost mid-send (an ambiguous send, #268), presumed at its
+    horizon: the token."""
+    from datetime import timedelta
+
+    from epistrel.core import clock
+    from epistrel.core.images import store
+    from epistrel.orchestrator.images import attempts
+
+    token = await _token_of(db, job_id)
+    now = clock.now()
+    async with db.begin() as conn:
+        await store.update_reservation(
+            conn,
+            job_id,
+            token,
+            send_state="ambiguous",
+            started_at=now - timedelta(minutes=5),
+            horizon_at=now - timedelta(seconds=1),
+        )
+        assert await attempts.release_at_horizon_in(conn, job_id, token) is not None
+    return token
+
+
+def _totals(body: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        body["outputs_used"],
+        body["ambiguous_sends"],
+        body["cost_unknown_attempts"],
+        body["cost_zero_attempts"],
+        body["costs"],
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-11")
+async def test_c_24__m8_cost(pg_url: str, tmp_path: Path) -> None:
+    """FR-IMG-11's cost reporting, per job, story, entry and deployment, on stub generations
+    with scripted costs:
+
+    - a story job whose first output the check rejects and whose retry is kept costs both
+      attempts (0.04 USD each): a billed discarded output is in the cost and in
+      ``outputs_used``;
+    - an attempt the provider refused (400, before generating) is recorded at ``zero`` with no
+      currency and ``outputs_billed = 0``, counted in ``cost_zero_attempts``;
+    - an attempt without a cost is ``unknown``: counted in ``cost_unknown_attempts``, never
+      added to ``known_total`` as 0;
+    - a catalog entry's attempt billed in EUR the same day: two ``costs`` entries, never one
+      sum;
+    - ``ambiguous_sends`` counts the ambiguous records per job, story and day;
+    - a cost settled after local midnight lands on its reservation's day; a
+      ``late_unaccounted`` cost (its record purged) lands on its ``recorded_at`` day.
+
+    Complement asserted: a story with no images reports zeros and ``costs: []`` (no key
+    missing), and a clean job's ``ambiguous_sends`` is 0."""
+    from datetime import UTC, datetime, timedelta
+    from decimal import Decimal
+
+    from epistrel.core import clock
+    from epistrel.core.images import costs
+    from epistrel.orchestrator.images import attempts
+    from epistrel.orchestrator.images.errors import ImageRequestInvalid
+    from epistrel.orchestrator.images.port import Cost
+    from tests.event_support import new_story
+    from tests.image_limits_support import CatalogTarget, space
+    from tests.image_support import Fail, catalog_origin
+
+    usd, eur = Cost(Decimal("0.04"), "USD"), Cost(Decimal("1.5"), "eur")
+    async with space(pg_url, tmp_path, "c24_cost") as sp:
+        story, quiet = await new_story(sp.db), await new_story(sp.db)
+        entry = new_ulid()
+        stub = StubImageGenerator(script=[])
+        with (
+            registered(ADAPTER, stub),
+            registered_target(),
+            registered_target(CatalogTarget(), kind=ImageJobKind.CATALOG),
+        ):
+            await sp.configure()
+            await sp.set(deployment_time_zone="UTC")
+            today = clock.now().astimezone(UTC).date()
+
+            # A discarded output and its kept retry: both billed.
+            kept = await sp.insert(prepared(story))
+            stub.script.extend([Outputs(cost=usd), Outputs(cost=usd)])
+            with installed_checks(ScriptedChecks([MINORS, PASS], fail_closed=False)):
+                assert (await sp.run(kept))["image_job"] == "promoted"
+            # Refused before generating: zero.
+            refused = await sp.insert(prepared(story))
+            stub.script.append(Fail(ImageRequestInvalid(status=400)))
+            with installed_checks(ScriptedChecks(fail_closed=False)):
+                assert (await sp.run(refused))["image_job"] == "failed"
+            # No cost reported: unknown.
+            silent = await sp.insert(prepared(story))
+            stub.script.append(Outputs(cost="unknown"))
+            with installed_checks(ScriptedChecks(fail_closed=False)):
+                assert (await sp.run(silent))["image_job"] == "promoted"
+            # The entry's candidate, billed in EUR.
+            catalog = await sp.insert(
+                prepared(kind=ImageJobKind.CATALOG, origin=catalog_origin(entry), n=1)
+            )
+            stub.script.append(Outputs(cost=eur))
+            with installed_checks(ScriptedChecks(fail_closed=False)):
+                assert (await sp.run(catalog))["image_job"] == "candidates_ready"
+            # An ambiguous send, presumed at its horizon.
+            lost = await sp.insert(prepared(story))
+            await _presumed(sp.db, lost)
+            await image_jobs.cancel_job(sp.lib.image_runtime(), lost)
+
+        # Per attempt and per job.
+        rows = await _cost_rows(sp.db, kept)
+        assert [
+            (r["cost"], r["cost_status"], r["currency"], r["outputs_billed"]) for r in rows
+        ] == [
+            (Decimal("0.04"), "known", "USD", 1),
+            (Decimal("0.04"), "known", "USD", 1),
+        ]
+        assert {r["story_id"] for r in rows} == {story}
+        assert {r["period_date"] for r in rows} == {today}
+        [zero] = await _cost_rows(sp.db, refused)
+        assert (zero["cost"], zero["cost_status"], zero["currency"], zero["outputs_billed"]) == (
+            Decimal(0),
+            "zero",
+            None,
+            0,
+        )
+        [unknown] = await _cost_rows(sp.db, silent)
+        assert (unknown["cost"], unknown["cost_status"], unknown["outputs_billed"]) == (
+            None,
+            "unknown",
+            1,
+        )
+        [billed_eur] = await _cost_rows(sp.db, catalog)
+        assert (billed_eur["currency"], billed_eur["entry_kind"], billed_eur["entry_id"]) == (
+            "EUR",
+            "character",
+            entry,
+        )
+        assert billed_eur["story_id"] is None
+        job = await sp.client.get(f"/image-jobs/{kept}", headers=bearer())
+        assert job.status_code == 200, job.text
+        body = job.json()
+        assert body["cost"] == {
+            "costs": [{"currency": "USD", "known_total": "0.08000000", "known_attempts": 2}],
+            "unknown_attempts": 0,
+            "zero_attempts": 0,
+        }
+        assert body["usage"] == {
+            "outputs_used": 2,
+            "overage": 0,
+            "extra_outputs": 0,
+            "ambiguous_sends": 0,
+        }
+        assert [
+            (a["cost"], a["cost_status"], a["currency"], a["outputs_billed"], a["accounting"])
+            for a in body["attempts"]
+        ] == [("0.04000000", "known", "USD", 1, "normal")] * 2
+        silent_body = (await sp.client.get(f"/image-jobs/{silent}", headers=bearer())).json()
+        assert silent_body["cost"] == {"costs": [], "unknown_attempts": 1, "zero_attempts": 0}
+        assert silent_body["attempts"][0]["cost"] is None
+
+        # Per story, entry and deployment.
+        story_body = (await sp.client.get(f"/stories/{story}/image-usage", headers=bearer())).json()
+        assert _totals(story_body["all_time"]) == (
+            4,  # two kept-job outputs, the silent one, the presumed one
+            1,
+            2,  # the silent attempt and the presumed one
+            1,
+            [{"currency": "USD", "known_total": "0.08000000", "known_attempts": 2}],
+        )
+        assert [d["date"] for d in story_body["days"]] == [today.isoformat()]
+        async with sp.db.connect() as conn:
+            entry_usage = await costs.entry_usage(conn, "character", entry)
+        assert entry_usage.all_time.outputs_used == 1
+        assert entry_usage.all_time.cost.costs == (
+            costs.CurrencyTotal("EUR", Decimal("1.50000000"), 1),
+        )
+        admin = (
+            await sp.client.get(
+                "/admin/image-usage",
+                params={"from": today.isoformat(), "to": today.isoformat()},
+                headers=bearer(),
+            )
+        ).json()
+        [day] = admin["days"]
+        assert day["date"] == today.isoformat()
+        assert _totals(day) == (
+            5,
+            1,
+            2,
+            1,
+            [
+                {"currency": "EUR", "known_total": "1.50000000", "known_attempts": 1},
+                {"currency": "USD", "known_total": "0.08000000", "known_attempts": 2},
+            ],
+        )
+        assert admin["totals"] == {k: v for k, v in day.items() if k != "date"}
+        lost_body = (await sp.client.get(f"/image-jobs/{lost}", headers=bearer())).json()
+        assert lost_body["usage"]["ambiguous_sends"] == 1
+        assert lost_body["cost"] == {"costs": [], "unknown_attempts": 1, "zero_attempts": 0}
+
+        # Complement: a story with no images.
+        empty = (await sp.client.get(f"/stories/{quiet}/image-usage", headers=bearer())).json()
+        assert empty["all_time"] == {
+            "outputs_used": 0,
+            "overage": 0,
+            "extra_outputs": 0,
+            "reserved": 0,
+            "ambiguous_sends": 0,
+            "cost_unknown_attempts": 0,
+            "cost_zero_attempts": 0,
+            "costs": [],
+        }
+        assert empty["days"] == []
+
+        # Midnight: reserved at 23:59 local, settled at 00:01, on the reservation's day.
+        eve = datetime.combine(today - timedelta(days=2), datetime.min.time(), tzinfo=UTC)
+        with (
+            registered(ADAPTER, stub),
+            registered_target(),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            with clock.frozen_at(eve + timedelta(hours=23, minutes=59)):
+                late_night = await sp.insert(prepared(story))
+            stub.script.append(Outputs(cost=usd))
+            with clock.frozen_at(eve + timedelta(days=1, minutes=1)):
+                assert (await sp.run(late_night))["image_job"] == "promoted"
+                # A return for a record retention purged: late_unaccounted, on its own day.
+                stranger = "00000000-0000-4000-8000-000000000269"
+                assert (
+                    await attempts.settle_attempt(sp.db, late_night, stranger, 1, cost=usd) is None
+                )
+        [settled] = [r for r in await _cost_rows(sp.db, late_night) if r["token"] != stranger]
+        assert (settled["period_date"], settled["accounting"]) == (eve.date(), "normal")
+        async with sp.db.connect() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "SELECT period_date, accounting, story_id, cost FROM image_costs "
+                        "WHERE job_id = :j AND attempt_token = :t"
+                    ),
+                    {"j": late_night, "t": stranger},
+                )
+            ).one()
+        assert tuple(row) == (eve.date() + timedelta(days=1), "late_unaccounted", story, usd.amount)
+        by_day = (
+            await sp.client.get(
+                "/admin/image-usage",
+                params={
+                    "from": eve.date().isoformat(),
+                    "to": (eve.date() + timedelta(days=1)).isoformat(),
+                },
+                headers=bearer(),
+            )
+        ).json()
+        assert [
+            (d["date"], d["outputs_used"], [c["known_attempts"] for c in d["costs"]])
+            for d in by_day["days"]
+        ] == [
+            (eve.date().isoformat(), 1, [1]),
+            ((eve.date() + timedelta(days=1)).isoformat(), 0, [1]),
+        ]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-11")
+async def test_c_24__m8_job_report(pg_url: str, tmp_path: Path) -> None:
+    """``GET /image-jobs/{id}`` reports the job's usage next to its cost (FR-IMG-11): a job with
+    one ambiguous attempt (lost mid-send and presumed at its horizon) reads
+    ``ambiguous_sends: 1``, its presumed output in ``outputs_used`` and its cost ``unknown``.
+
+    Complement asserted: a clean job reads ``ambiguous_sends: 0``."""
+    from tests.event_support import new_story
+    from tests.image_limits_support import space
+
+    async with space(pg_url, tmp_path, "c24_job") as sp:
+        story = await new_story(sp.db)
+        stub = StubImageGenerator(script=[Outputs()])
+        with (
+            registered(ADAPTER, stub),
+            registered_target(),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            await sp.configure()
+            lost = await sp.insert(prepared(story))
+            token = await _presumed(sp.db, lost)
+            clean = await sp.insert(prepared(story))
+            assert (await sp.run(clean))["image_job"] == "promoted"
+            await image_jobs.cancel_job(sp.lib.image_runtime(), lost)
+        found = (await sp.client.get(f"/image-jobs/{lost}", headers=bearer())).json()
+        assert found["usage"] == {
+            "outputs_used": 1,
+            "overage": 0,
+            "extra_outputs": 0,
+            "ambiguous_sends": 1,
+        }
+        [attempt] = found["attempts"]
+        assert (attempt["attempt_token"], attempt["send_state"], attempt["basis"]) == (
+            token,
+            "ambiguous",
+            "presumed",
+        )
+        assert (attempt["cost_status"], attempt["outputs_billed"]) == ("unknown", None)
+        library = await sp.lib.get_image_job(CTX, lost)
+        assert library.usage is not None
+        assert library.usage.ambiguous_sends == 1
+        other = (await sp.client.get(f"/image-jobs/{clean}", headers=bearer())).json()
+        assert other["usage"]["ambiguous_sends"] == 0
+        assert other["cost"]["costs"] == [
+            {"currency": "USD", "known_total": "0.04000000", "known_attempts": 1}
+        ]

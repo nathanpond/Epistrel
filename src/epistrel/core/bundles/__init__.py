@@ -109,6 +109,7 @@ NEVER: frozenset[str] = frozenset(
         "jobs",
         "image_jobs",
         "image_reservations",
+        "image_costs",
         "turn_queue",
         "timers",
         "audit_log",

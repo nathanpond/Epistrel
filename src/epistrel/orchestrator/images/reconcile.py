@@ -20,7 +20,8 @@ row (actor ``cli:images-reconcile``, a count per scope). It never touches ``last
 
 ``image_accounting_retention`` runs daily too. It deletes the records, and then the counters, of
 periods closed for ``image_accounting_retention_days``, in batches of 1000, and never while a
-``held`` record names them (``limits.retain``).
+``held`` record names them (``limits.retain``), then the cost rows (#269) whose ``period_date``
+is before the same cutoff.
 """
 
 from __future__ import annotations

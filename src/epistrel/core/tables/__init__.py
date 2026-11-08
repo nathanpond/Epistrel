@@ -57,6 +57,7 @@ from epistrel.core.tables.hot_set import overflow_episodes
 from epistrel.core.tables.idempotency import idempotency_keys
 from epistrel.core.tables.images import (
     image_candidates,
+    image_costs,
     image_jobs,
     image_limit_counters,
     image_reservations,
@@ -163,6 +164,7 @@ __all__ = [
     "idempotency_keys",
     "image_candidates",
     "image_check_certifications",
+    "image_costs",
     "image_jobs",
     "image_limit_counters",
     "image_reservations",

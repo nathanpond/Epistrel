@@ -907,6 +907,22 @@
       "AttemptBody": {
         "description": "One provider attempt (FR-IMG-11; #267).",
         "properties": {
+          "accounting": {
+            "anyOf": [
+              {
+                "enum": [
+                  "normal",
+                  "late_unaccounted"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`late_unaccounted` for a late result whose usage record retention had already purged (its cost still counts); null with no cost record.",
+            "title": "Accounting"
+          },
           "attempt_token": {
             "title": "Attempt Token",
             "type": "string"
@@ -924,21 +940,43 @@
           "cost": {
             "anyOf": [
               {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "const": "unknown",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "`{amount, currency}` in the provider's currency, `unknown` when the provider gave none (never 0), or null before the attempt returned.",
+            "description": "The attempt's cost, a decimal string at the stored precision in `currency`; `0` when `cost_status` is `zero`; null when it is `unknown` or the attempt has no cost record (FR-IMG-11).",
             "title": "Cost"
+          },
+          "cost_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "known",
+                  "zero",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`known` (the provider reported it), `zero` (the provider refused before generating, so nothing was billed) or `unknown` (no figure: counted, never 0). Null while the attempt has no cost record: held, never sent, or a re-send (whose cost is on the attempt it re-sent).",
+            "title": "Cost Status"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "ISO 4217 when `known`, null otherwise.",
+            "title": "Currency"
           },
           "extra_outputs": {
             "anyOf": [
@@ -963,6 +1001,18 @@
             ],
             "description": "Null while in flight; then `promoted`, `rejected`, `failed`, `discarded`, `settled`, `adopted`, `cancelled`, `released_at_horizon`, `abandoned_fallback`, `late_discarded`, `late_after_horizon`, `presumed` (an ambiguous send counted as if it returned what it requested), `resent` (an idempotent re-send returned its result) or `late_after_presumed` (the actual result corrected a presumption once).",
             "title": "Outcome"
+          },
+          "outputs_billed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The outputs the provider returned for it; null while unknown (a presumed send, a horizon release).",
+            "title": "Outputs Billed"
           },
           "overage": {
             "anyOf": [
@@ -1028,7 +1078,11 @@
           "used",
           "overage",
           "extra_outputs",
-          "cost"
+          "cost",
+          "cost_status",
+          "currency",
+          "outputs_billed",
+          "accounting"
         ],
         "title": "AttemptBody",
         "type": "object"
@@ -7477,6 +7531,33 @@
         "title": "CreationSettings",
         "type": "object"
       },
+      "CurrencyCost": {
+        "description": "Known costs in one currency.",
+        "properties": {
+          "currency": {
+            "description": "ISO 4217, upper case.",
+            "title": "Currency",
+            "type": "string"
+          },
+          "known_attempts": {
+            "description": "The attempts with a known cost in this currency.",
+            "title": "Known Attempts",
+            "type": "integer"
+          },
+          "known_total": {
+            "description": "The sum of the known costs (a decimal string).",
+            "title": "Known Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "known_total",
+          "known_attempts"
+        ],
+        "title": "CurrencyCost",
+        "type": "object"
+      },
       "CurrentEntity": {
         "additionalProperties": false,
         "description": "The entity the job is working on now.",
@@ -7688,6 +7769,46 @@
           "id"
         ],
         "title": "DepictedSubject",
+        "type": "object"
+      },
+      "DeploymentImageUsage": {
+        "description": "``GET /admin/image-usage``: every retained day of the range, ascending, and the totals.",
+        "properties": {
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/ImageUsageDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "retained_from": {
+            "description": "The first day the accounting retention keeps; earlier days are left out.",
+            "format": "date",
+            "title": "Retained From",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/ImageUsageTotals"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "retained_from",
+          "days",
+          "totals"
+        ],
+        "title": "DeploymentImageUsage",
         "type": "object"
       },
       "DetectedClaimModel": {
@@ -11175,6 +11296,94 @@
           "outcome"
         ],
         "title": "Entry",
+        "type": "object"
+      },
+      "EntryImageUsage": {
+        "description": "A catalog entry's usage: all-time totals, the range's active days and today's limit.",
+        "properties": {
+          "all_time": {
+            "$ref": "#/components/schemas/ImageUsageTotals"
+          },
+          "days": {
+            "description": "Only the days with activity, ascending.",
+            "items": {
+              "$ref": "#/components/schemas/ImageUsageDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "entry_id": {
+            "title": "Entry Id",
+            "type": "string"
+          },
+          "entry_kind": {
+            "enum": [
+              "character",
+              "scenario"
+            ],
+            "title": "Entry Kind",
+            "type": "string"
+          },
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/EntryLimitsBody"
+          },
+          "retained_from": {
+            "description": "The first day the accounting retention keeps; earlier days are left out.",
+            "format": "date",
+            "title": "Retained From",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "retained_from",
+          "entry_kind",
+          "entry_id",
+          "all_time",
+          "days",
+          "limits"
+        ],
+        "title": "EntryImageUsage",
+        "type": "object"
+      },
+      "EntryLimitsBody": {
+        "description": "Today's entry limit (``image_limit_entry_day``, 0 = disabled) and its counter.",
+        "properties": {
+          "image_limit_entry_day": {
+            "title": "Image Limit Entry Day",
+            "type": "integer"
+          },
+          "today_remaining": {
+            "title": "Today Remaining",
+            "type": "integer"
+          },
+          "today_reserved": {
+            "title": "Today Reserved",
+            "type": "integer"
+          },
+          "today_used": {
+            "title": "Today Used",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "image_limit_entry_day",
+          "today_used",
+          "today_reserved",
+          "today_remaining"
+        ],
+        "title": "EntryLimitsBody",
         "type": "object"
       },
       "EntryLocation": {
@@ -16409,6 +16618,10 @@
             "title": "Confirm Fallback",
             "type": "boolean"
           },
+          "cost": {
+            "$ref": "#/components/schemas/JobCostBody",
+            "description": "What the job's attempts cost (FR-IMG-11)."
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -16487,6 +16700,10 @@
             "title": "Updated At",
             "type": "string"
           },
+          "usage": {
+            "$ref": "#/components/schemas/JobUsageBody",
+            "description": "What the job's attempts used (FR-IMG-11)."
+          },
           "waiting_for_horizon": {
             "default": false,
             "description": "A worker stalled past its lease with a provider call in flight: no attempt starts before that call's horizon (its timeout plus `image_attempt_grace_s`).",
@@ -16514,7 +16731,9 @@
           "status_reason",
           "attempts",
           "created_at",
-          "updated_at"
+          "updated_at",
+          "usage",
+          "cost"
         ],
         "title": "ImageJobBody",
         "type": "object"
@@ -16634,6 +16853,132 @@
           "id"
         ],
         "title": "ImagePromptTarget",
+        "type": "object"
+      },
+      "ImageUsageDay": {
+        "description": "One local day's totals.",
+        "properties": {
+          "ambiguous_sends": {
+            "description": "Attempts whose send was ambiguous.",
+            "title": "Ambiguous Sends",
+            "type": "integer"
+          },
+          "cost_unknown_attempts": {
+            "description": "Attempts whose cost is unknown (not 0).",
+            "title": "Cost Unknown Attempts",
+            "type": "integer"
+          },
+          "cost_zero_attempts": {
+            "description": "Attempts the provider did not bill.",
+            "title": "Cost Zero Attempts",
+            "type": "integer"
+          },
+          "costs": {
+            "description": "Known costs per currency.",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyCost"
+            },
+            "title": "Costs",
+            "type": "array"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "extra_outputs": {
+            "description": "Outputs beyond what was requested, discarded unchecked.",
+            "title": "Extra Outputs",
+            "type": "integer"
+          },
+          "outputs_used": {
+            "description": "Outputs counted as used.",
+            "title": "Outputs Used",
+            "type": "integer"
+          },
+          "overage": {
+            "description": "Outputs counted past their reservation.",
+            "title": "Overage",
+            "type": "integer"
+          },
+          "reserved": {
+            "description": "Outputs reserved by attempts still held now.",
+            "title": "Reserved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "outputs_used",
+          "overage",
+          "extra_outputs",
+          "reserved",
+          "ambiguous_sends",
+          "cost_unknown_attempts",
+          "cost_zero_attempts",
+          "costs",
+          "date"
+        ],
+        "title": "ImageUsageDay",
+        "type": "object"
+      },
+      "ImageUsageTotals": {
+        "description": "Usage and cost totals (FR-IMG-11).",
+        "properties": {
+          "ambiguous_sends": {
+            "description": "Attempts whose send was ambiguous.",
+            "title": "Ambiguous Sends",
+            "type": "integer"
+          },
+          "cost_unknown_attempts": {
+            "description": "Attempts whose cost is unknown (not 0).",
+            "title": "Cost Unknown Attempts",
+            "type": "integer"
+          },
+          "cost_zero_attempts": {
+            "description": "Attempts the provider did not bill.",
+            "title": "Cost Zero Attempts",
+            "type": "integer"
+          },
+          "costs": {
+            "description": "Known costs per currency.",
+            "items": {
+              "$ref": "#/components/schemas/CurrencyCost"
+            },
+            "title": "Costs",
+            "type": "array"
+          },
+          "extra_outputs": {
+            "description": "Outputs beyond what was requested, discarded unchecked.",
+            "title": "Extra Outputs",
+            "type": "integer"
+          },
+          "outputs_used": {
+            "description": "Outputs counted as used.",
+            "title": "Outputs Used",
+            "type": "integer"
+          },
+          "overage": {
+            "description": "Outputs counted past their reservation.",
+            "title": "Overage",
+            "type": "integer"
+          },
+          "reserved": {
+            "description": "Outputs reserved by attempts still held now.",
+            "title": "Reserved",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "outputs_used",
+          "overage",
+          "extra_outputs",
+          "reserved",
+          "ambiguous_sends",
+          "cost_unknown_attempts",
+          "cost_zero_attempts",
+          "costs"
+        ],
+        "title": "ImageUsageTotals",
         "type": "object"
       },
       "ImpactPreviewRequest": {
@@ -19020,6 +19365,87 @@
           "source_fact_id"
         ],
         "title": "InventoryBody",
+        "type": "object"
+      },
+      "JobCostBody": {
+        "description": "The job's cost (FR-IMG-11): known costs per currency, never mixed or converted, and the\n`unknown` and `zero` attempts counted apart (an unknown cost is never added as 0).",
+        "properties": {
+          "costs": {
+            "items": {
+              "$ref": "#/components/schemas/JobCurrencyCost"
+            },
+            "title": "Costs",
+            "type": "array"
+          },
+          "unknown_attempts": {
+            "title": "Unknown Attempts",
+            "type": "integer"
+          },
+          "zero_attempts": {
+            "title": "Zero Attempts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "costs",
+          "unknown_attempts",
+          "zero_attempts"
+        ],
+        "title": "JobCostBody",
+        "type": "object"
+      },
+      "JobCurrencyCost": {
+        "description": "Known costs in one currency.",
+        "properties": {
+          "currency": {
+            "title": "Currency",
+            "type": "string"
+          },
+          "known_attempts": {
+            "title": "Known Attempts",
+            "type": "integer"
+          },
+          "known_total": {
+            "description": "A decimal string.",
+            "title": "Known Total",
+            "type": "string"
+          }
+        },
+        "required": [
+          "currency",
+          "known_total",
+          "known_attempts"
+        ],
+        "title": "JobCurrencyCost",
+        "type": "object"
+      },
+      "JobUsageBody": {
+        "description": "The job's usage (FR-IMG-11): outputs used, overage, extra outputs, and its ambiguous\nsends (attempts presumed, corrected, or whose send was ambiguous).",
+        "properties": {
+          "ambiguous_sends": {
+            "title": "Ambiguous Sends",
+            "type": "integer"
+          },
+          "extra_outputs": {
+            "title": "Extra Outputs",
+            "type": "integer"
+          },
+          "outputs_used": {
+            "title": "Outputs Used",
+            "type": "integer"
+          },
+          "overage": {
+            "title": "Overage",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "outputs_used",
+          "overage",
+          "extra_outputs",
+          "ambiguous_sends"
+        ],
+        "title": "JobUsageBody",
         "type": "object"
       },
       "Kind": {
@@ -51735,6 +52161,52 @@
         "title": "StoryImageUploadedBody",
         "type": "object"
       },
+      "StoryImageUsage": {
+        "description": "``GET /stories/{story_id}/image-usage``: all-time totals and the range's active days.\nThere are no story limits.",
+        "properties": {
+          "all_time": {
+            "$ref": "#/components/schemas/ImageUsageTotals"
+          },
+          "days": {
+            "description": "Only the days with activity, ascending.",
+            "items": {
+              "$ref": "#/components/schemas/ImageUsageDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "retained_from": {
+            "description": "The first day the accounting retention keeps; earlier days are left out.",
+            "format": "date",
+            "title": "Retained From",
+            "type": "string"
+          },
+          "story_id": {
+            "title": "Story Id",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "retained_from",
+          "story_id",
+          "all_time",
+          "days"
+        ],
+        "title": "StoryImageUsage",
+        "type": "object"
+      },
       "StoryImageWarning": {
         "description": "What the upload did that the consumer should know: ``rating_looser`` (the image's\nrating lacks a guardrail the story's has; the story's rating still governs, FR-RATE-3,5).",
         "properties": {
@@ -59449,6 +59921,120 @@
         ]
       }
     },
+    "/admin/image-usage": {
+      "get": {
+        "description": "The deployment's image usage and cost per local day, every retained day of the range listed ascending (zeros included), and the range's `totals`. Usage, overage and reserved come from the deployment's daily counters; a deleted story's costs stay in. Every provider attempt counts: billed outputs whatever became of them (kept, discarded by a check, stale, unattached candidates, late or duplicate returns), attempts the provider refused before generating at zero (`cost_zero_attempts`), and attempts whose cost the provider gave no figure for in `cost_unknown_attempts`, never added as 0. `costs` lists the known costs per currency, never mixed or converted. `ambiguous_sends` counts the attempts sent when a worker was lost (presumed, or corrected once by the actual result). Money is a decimal string at the stored precision (8 decimals), in the provider's currency. The cost records hold no story content: they survive erasure, principal offboarding and the story's deletion, and go with the accounting retention (`image_accounting_retention_days`). `from` and `to` are local dates in `deployment_time_zone`, both inclusive; by default the last 30 days through today, at most 366 days; 422 `invalid_range` when `from` is after `to` or the range is longer.",
+        "operationId": "get_image_usage",
+        "parameters": [
+          {
+            "description": "The first local day (inclusive).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first local day (inclusive).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The last local day (inclusive).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last local day (inclusive).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentImageUsage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_range`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read the deployment's image usage and cost per day",
+        "tags": [
+          "admin",
+          "admin"
+        ]
+      }
+    },
     "/admin/model-config": {
       "get": {
         "operationId": "model_configuration",
@@ -66849,6 +67435,144 @@
         "x-epistrel-mutating": false
       }
     },
+    "/catalog/characters/{character_id}/image-usage": {
+      "get": {
+        "description": "A catalog character's image usage (its entry counters) and cost (its candidate jobs' attempts), all-time and for the range's days with activity, with today's entry limit (`image_limit_entry_day`; 0 disables it). 404 for an unknown or deleted character. Every provider attempt counts: billed outputs whatever became of them (kept, discarded by a check, stale, unattached candidates, late or duplicate returns), attempts the provider refused before generating at zero (`cost_zero_attempts`), and attempts whose cost the provider gave no figure for in `cost_unknown_attempts`, never added as 0. `costs` lists the known costs per currency, never mixed or converted. `ambiguous_sends` counts the attempts sent when a worker was lost (presumed, or corrected once by the actual result). Money is a decimal string at the stored precision (8 decimals), in the provider's currency. The cost records hold no story content: they survive erasure, principal offboarding and the story's deletion, and go with the accounting retention (`image_accounting_retention_days`). `from` and `to` are local dates in `deployment_time_zone`, both inclusive; by default the last 30 days through today, at most 366 days; 422 `invalid_range` when `from` is after `to` or the range is longer.",
+        "operationId": "get_entry_image_usage_character",
+        "parameters": [
+          {
+            "description": "The catalog character's id (a ULID).",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The catalog character's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C5"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The first local day (inclusive).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first local day (inclusive).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The last local day (inclusive).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last local day (inclusive).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryImageUsage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_range`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a catalog character's image usage and cost",
+        "tags": [
+          "images"
+        ]
+      }
+    },
     "/catalog/characters/{character_id}/images/candidates": {
       "get": {
         "description": "The character's live candidates (FR-IMG-7), oldest first (generation order), in keyset pages: `job_id` narrows to one job's (an unknown job answers an empty page). Each item is `{candidate_id, slot, job_id, draft_revision, expires_at, stale, media: {mime_type, size, width, height, source, check_status, check, generation_metadata}}`; `stale` is true when its image-input fingerprint differs from the draft's now, so an attach would be refused 409 `candidate_stale`. A candidate past `expires_at` is left out even before the expiry task deletes it. Candidates never appear in `GET /media`, a card or full projection, or a story. 404 for an unknown character. `unchecked` means Epistrel did not check this image; it carries no rating or viewpoint assurance from Epistrel and is never a pass. A `passed` image carries only the measured assurance of its checker (NFR-QUAL-12): the output check is a backstop with measured error rates, not an assurance that every image is safe.",
@@ -70082,6 +70806,144 @@
         "summary": "Archive a scenario",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/catalog/scenarios/{scenario_id}/image-usage": {
+      "get": {
+        "description": "A catalog scenario's image usage (its entry counters) and cost (its candidate jobs' attempts), all-time and for the range's days with activity, with today's entry limit (`image_limit_entry_day`; 0 disables it). 404 for an unknown or deleted scenario. Every provider attempt counts: billed outputs whatever became of them (kept, discarded by a check, stale, unattached candidates, late or duplicate returns), attempts the provider refused before generating at zero (`cost_zero_attempts`), and attempts whose cost the provider gave no figure for in `cost_unknown_attempts`, never added as 0. `costs` lists the known costs per currency, never mixed or converted. `ambiguous_sends` counts the attempts sent when a worker was lost (presumed, or corrected once by the actual result). Money is a decimal string at the stored precision (8 decimals), in the provider's currency. The cost records hold no story content: they survive erasure, principal offboarding and the story's deletion, and go with the accounting retention (`image_accounting_retention_days`). `from` and `to` are local dates in `deployment_time_zone`, both inclusive; by default the last 30 days through today, at most 366 days; 422 `invalid_range` when `from` is after `to` or the range is longer.",
+        "operationId": "get_entry_image_usage_scenario",
+        "parameters": [
+          {
+            "description": "The scenario's id (a ULID).",
+            "in": "path",
+            "name": "scenario_id",
+            "required": true,
+            "schema": {
+              "description": "The scenario's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C7"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Scenario Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The first local day (inclusive).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first local day (inclusive).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The last local day (inclusive).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last local day (inclusive).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntryImageUsage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_range`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a scenario's image usage and cost",
+        "tags": [
+          "images"
         ]
       }
     },
@@ -75755,7 +76617,7 @@
     },
     "/image-jobs/{job_id}": {
       "delete": {
-        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
         "operationId": "cancel_image_job",
         "parameters": [
           {
@@ -75874,7 +76736,7 @@
         "x-epistrel-mutating": false
       },
       "get": {
-        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
         "operationId": "get_image_job",
         "parameters": [
           {
@@ -87218,6 +88080,154 @@
         "summary": "Read the story's history for one output viewpoint",
         "tags": [
           "history"
+        ]
+      }
+    },
+    "/stories/{story_id}/image-usage": {
+      "get": {
+        "description": "A story's image usage and cost from its attempts' records by story (`all_time`), and the range's days with activity. There are no story limits: per-story admission is the consumer's. 404 once the story is deleted (its costs stay in `GET /admin/image-usage`). Every provider attempt counts: billed outputs whatever became of them (kept, discarded by a check, stale, unattached candidates, late or duplicate returns), attempts the provider refused before generating at zero (`cost_zero_attempts`), and attempts whose cost the provider gave no figure for in `cost_unknown_attempts`, never added as 0. `costs` lists the known costs per currency, never mixed or converted. `ambiguous_sends` counts the attempts sent when a worker was lost (presumed, or corrected once by the actual result). Money is a decimal string at the stored precision (8 decimals), in the provider's currency. The cost records hold no story content: they survive erasure, principal offboarding and the story's deletion, and go with the accounting retention (`image_accounting_retention_days`). `from` and `to` are local dates in `deployment_time_zone`, both inclusive; by default the last 30 days through today, at most 366 days; 422 `invalid_range` when `from` is after `to` or the range is longer.",
+        "operationId": "get_story_image_usage",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The first local day (inclusive).",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first local day (inclusive).",
+              "title": "From"
+            }
+          },
+          {
+            "description": "The last local day (inclusive).",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The last local day (inclusive).",
+              "title": "To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryImageUsage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `story_importing`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `invalid_range`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a story's image usage and cost",
+        "tags": [
+          "images"
         ]
       }
     },

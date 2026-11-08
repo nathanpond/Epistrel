@@ -1373,6 +1373,100 @@ async def test_i_23__m8_story_image_anchoring(
         assert si.image_ids(await si.history(client, story_id, si.character(ids[si.BOBBY]))) == []
 
 
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-5")
+async def test_i_23__m8_story_image_slot_deletion(
+    image_settings: Settings, engine: AsyncEngine, tmp_path: Path
+) -> None:
+    """#795: a deleted slot image stays deleted whatever happens to later turns. Three
+    omniscient images sit in the slots after turn 1 (``1⁺1..3``). The first, deleted once turn 2
+    has been played, stays out of history after turn 2 is regenerated. The second, deleted on
+    turn 2's second variant, stays out after a swap back to the first variant. Both stay out
+    after a truncate to the boundary ``1⁺3`` (it keeps their slots and drops turn 2), after its
+    untruncate, and after a truncate to genesis and its untruncate. A fork through ``1⁺3`` and an
+    export→import round trip do not bring them back either. The same holds for a slot after
+    genesis (``slot_after_turn: 0``) once turn 1 is regenerated, and after a swap back.
+
+    Complement asserted: before its delete, each image is in place in the omniscient read; the
+    truncate to genesis takes the slots away; and the third image, never deleted, comes through
+    the same regenerate, swap, truncates, fork and import."""
+    from tests import story_image_support as si
+    from tests.image_job_support import MINORS
+    from tests.image_support import StubImageChecker
+    from tests.model_support import admin_client, put, restored_model_config
+    from tests.respond_support import respond_client
+    from tests.story_support import WRITE
+
+    async def post(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        response = await client.post(path, json=body, headers=WRITE)
+        assert response.status_code in (200, 201), response.text
+        found: dict[str, Any] = response.json()
+        return found
+
+    async def omniscient(story_id: str) -> list[str]:
+        return si.image_ids(await si.history(client, story_id, si.OMNISCIENT))
+
+    async with (
+        restored_model_config(engine),
+        respond_client(image_settings, engine) as (client, epistrel),
+    ):
+        async with admin_client(image_settings, epistrel) as admin:
+            await put(admin, "image_check", {"model": "stub-vision"})
+        StubImageChecker(epistrel.models.stub).answer({MINORS: "pass"})
+
+        story, ids = await si.scene(client, turns=1)
+        slot = (await si.placed(client, story, si.meta({"slot_after_turn": 1}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        later = (await si.placed(client, story, si.meta({"slot_after_turn": 1}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        kept = (await si.placed(client, story, si.meta({"slot_after_turn": 1}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        await si.turn(client, story, ids)
+        assert await omniscient(story) == [slot, later, kept]
+        assert (await si.delete(client, story, slot)).status_code == 204
+        assert await omniscient(story) == [later, kept]
+
+        await post(f"/stories/{story}/regenerate", {})
+        assert await omniscient(story) == [later, kept]
+        # Deleted on turn 2's second variant, then a swap back to the first.
+        assert (await si.delete(client, story, later)).status_code == 204
+        await post(f"/stories/{story}/swap", {"to_variant_chain": {"turn": 2, "variant": 1}})
+        assert await omniscient(story) == [kept]
+
+        cut = await post(f"/stories/{story}/truncate", {"to_turn": 1, "slot": 3})
+        assert await omniscient(story) == [kept]
+        await post(f"/stories/{story}/untruncate", {"truncate_operation_id": cut["operation_id"]})
+        assert await omniscient(story) == [kept]
+        cut = await post(f"/stories/{story}/truncate", {"to_turn": 0})
+        assert await omniscient(story) == []
+        await post(f"/stories/{story}/untruncate", {"truncate_operation_id": cut["operation_id"]})
+        assert await omniscient(story) == [kept]
+        assert (await si.get(client, story, slot, si.OMNISCIENT)).status_code == 404
+
+        forked = await post(f"/stories/{story}/fork", {"at_turn": 1, "slot": 3})
+        assert len(await omniscient(forked["story_id"])) == 1
+
+        data = await si.exported(client, engine, story, tmp_path, blobs=epistrel._blob_bytes)
+        new_story = await si.imported(client, engine, data)
+        assert len(await omniscient(new_story)) == 1
+
+        # A slot after genesis: its deletion holds through regenerating turn 1.
+        story, ids = await si.scene(client, turns=0)
+        opening = (await si.placed(client, story, si.meta({"slot_after_turn": 0}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        await si.turn(client, story, ids)
+        assert await omniscient(story) == [opening]
+        assert (await si.delete(client, story, opening)).status_code == 204
+        await post(f"/stories/{story}/regenerate", {})
+        assert await omniscient(story) == []
+        await post(f"/stories/{story}/swap", {"to_variant_chain": {"turn": 1, "variant": 1}})
+        assert await omniscient(story) == []
+
+
 # -- #263: generated story images (FR-IMG-2, FR-IMG-5, FR-IMG-8) ---------------------------------
 
 

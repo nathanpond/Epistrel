@@ -33051,7 +33051,7 @@
         "type": "object"
       },
       "PruneImpact": {
-        "description": "The report (see the module docstring).",
+        "description": "The report (see the module docstring). #272: ``story_images`` is how many story image\nrows the chosen targets hold, ``media_assets_purgeable`` how many of their assets nothing\nelse would reference afterwards (the next media sweep purges them, #105's 24 h rule for a\nyoung asset unchanged).",
         "properties": {
           "excluded": {
             "items": {
@@ -33068,12 +33068,22 @@
             "title": "Lost Operations",
             "type": "array"
           },
+          "media_assets_purgeable": {
+            "default": 0,
+            "title": "Media Assets Purgeable",
+            "type": "integer"
+          },
           "retained": {
             "additionalProperties": {
               "type": "integer"
             },
             "title": "Retained",
             "type": "object"
+          },
+          "story_images": {
+            "default": 0,
+            "title": "Story Images",
+            "type": "integer"
           },
           "suggestions": {
             "items": {
@@ -33194,7 +33204,7 @@
         "type": "object"
       },
       "PruneResult": {
-        "description": "An applied pruning: its operation (``prune_id``), the revision after it, and what it\ndeleted by count.",
+        "description": "An applied pruning: its operation (``prune_id``), the revision after it, and what it\ndeleted by count (#272: ``deleted.story_images``, the story image rows).",
         "properties": {
           "deleted": {
             "additionalProperties": true,
@@ -46852,6 +46862,9 @@
         "properties": {
           "alt_text": {},
           "caption": {},
+          "check_endpoint": {},
+          "check_model": {},
+          "check_status": {},
           "content_rating_version_id": {},
           "depicted_subjects": {},
           "duration_ms": {},
@@ -46863,6 +46876,7 @@
           },
           "kind": {},
           "mime_type": {},
+          "policy_results": {},
           "poster_media_id": {},
           "sha256": {
             "pattern": "^[0-9a-f]{64}$",
@@ -46876,6 +46890,9 @@
         "required": [
           "alt_text",
           "caption",
+          "check_endpoint",
+          "check_model",
+          "check_status",
           "content_rating_version_id",
           "depicted_subjects",
           "duration_ms",
@@ -46884,6 +46901,7 @@
           "id",
           "kind",
           "mime_type",
+          "policy_results",
           "poster_media_id",
           "sha256",
           "size",
@@ -47623,121 +47641,6 @@
           "story_id"
         ],
         "title": "StoryBundleRecord_capability_coverage",
-        "type": "object"
-      },
-      "StoryBundleRecord_certification_runs": {
-        "additionalProperties": false,
-        "description": "One line of a story bundle's `records/certification_runs.jsonl` (or `catalog/certification_runs.jsonl`): a `certification_runs` row as exported (FR-STORE-7).",
-        "properties": {
-          "certification_id": {
-            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "checks_certification_id": {
-            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "error": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "estimate": {},
-          "fingerprint": {
-            "type": "string"
-          },
-          "finished_at": {
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-            "type": "string"
-          },
-          "job_id": {
-            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "kind": {
-            "type": "string"
-          },
-          "outcome": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "profile_id": {
-            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-            "type": "string"
-          },
-          "profile_version": {
-            "type": "integer"
-          },
-          "reference": {
-            "type": "boolean"
-          },
-          "report": {},
-          "requested_by": {
-            "type": "string"
-          },
-          "sample": {
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "seeds": {
-            "type": "integer"
-          },
-          "started_at": {
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "status": {
-            "type": "string"
-          },
-          "story_id": {
-            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "suites": {
-            "type": "array"
-          }
-        },
-        "required": [
-          "fingerprint",
-          "id",
-          "profile_id",
-          "profile_version",
-          "requested_by",
-          "seeds",
-          "suites"
-        ],
-        "title": "StoryBundleRecord_certification_runs",
         "type": "object"
       },
       "StoryBundleRecord_character_snapshots": {
@@ -62996,7 +62899,7 @@
     },
     "/admin/stories/exports/{job_id}/bundle": {
       "get": {
-        "description": "The export's archive (#249): a gzip-compressed POSIX tar whose first member is `manifest.json` (format `1.0.0`, the source story, the revision, each file's SHA-256), then `records/story.json`, `events.jsonl` and `records/<table>.jsonl`. 409 `export_not_ready` before it is written; 410 `export_expired` once it expired.",
+        "description": "The export's archive (#249): a gzip-compressed POSIX tar whose first member is `manifest.json` (format `1.1.0`, the source story, the revision, each file's SHA-256), then `records/story.json`, `events.jsonl` and `records/<table>.jsonl`. 409 `export_not_ready` before it is written; 410 `export_expired` once it expired.",
         "operationId": "open_export_bundle",
         "parameters": [
           {

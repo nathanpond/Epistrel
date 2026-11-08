@@ -328,7 +328,7 @@ async def test_i_10__m7_export_contents(
     settings: Settings, engine: AsyncEngine, tmp_path: Any
 ) -> None:
     """A story with three turns is exported (202, then the job): the
-    archive's first member is ``manifest.json`` (format ``1.0.0``, the source story, the
+    archive's first member is ``manifest.json`` (``bundles.FORMAT_VERSION``, the source story, the
     revision, each file's SHA-256 matching), every line is canonical JSON, every committed
     operation and event of the story is present, and no member is a projection, an index, a
     job, an idempotency result or the audit log. Two exports of one revision are identical but
@@ -360,7 +360,10 @@ async def test_i_10__m7_export_contents(
         members = bundles.read_archive(got.content)
         assert members[0][0] == "manifest.json"
         manifest = json.loads(members[0][1])
-        assert (manifest["format_version"], manifest["source_story_id"]) == ("1.0.0", story)
+        assert (manifest["format_version"], manifest["source_story_id"]) == (
+            bundles.FORMAT_VERSION,
+            story,
+        )
         by_path = dict(members[1:])
         for entry in manifest["files"]:
             assert hashlib.sha256(by_path[entry["path"]]).hexdigest() == entry["sha256"]
@@ -1455,8 +1458,9 @@ async def test_i_10__m7_import_older_format(
     settings: Settings, engine: AsyncEngine, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#250: a bundle of an older format is migrated line by line through
-    ``FORMAT_MIGRATIONS`` (here a test-registered step, with this deployment's format
-    monkeypatched to ``1.1.0``) and imports, every line through the step; a registered version
+    ``FORMAT_MIGRATIONS`` (here a test-registered step from this deployment's format, with the
+    format monkeypatched one MINOR ahead) and imports, every line through the step; a registered
+    version
     whose chain to the current format has a gap is ``unsupported_format_version``."""
     from epistrel.core.bundles import format as bundle_format
     from epistrel.core.bundles import importing
@@ -1471,13 +1475,16 @@ async def test_i_10__m7_import_older_format(
             seen.append(path)
             return line
 
-        monkeypatch.setattr(importing, "FORMAT_VERSION", "1.1.0")
-        monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, "1.0.0", ("1.1.0", step))
+        current = json.loads(bundles_read(data)[0][1])["format_version"]
+        major, minor, _ = current.split(".")
+        ahead = f"{major}.{int(minor) + 1}.0"
+        monkeypatch.setattr(importing, "FORMAT_VERSION", ahead)
+        monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, current, (ahead, step))
         migrated = await _import(client, engine, data)
         assert migrated.ready, migrated.status
         assert "records/story.json" in seen
         assert "events.jsonl" in seen
-        monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, "1.0.0", ("1.0.9", step))
+        monkeypatch.setitem(bundle_format.FORMAT_MIGRATIONS, current, (f"{current}9", step))
         gap = await _import(client, engine, data)
         assert gap.error["code"] == "unsupported_format_version", gap.error
 
@@ -2538,3 +2545,238 @@ async def test_i_10__m7_unregistered_provider(
         assert turn.json()["error"]["code"] == "provider_unregistered", turn.text
         assert stranger in turn.json()["error"]["details"]["providers"]
         assert await _operations(engine, made.story_id) == operations
+
+
+# -- M8: story images in bundles (#272) and deployment records (#773) ---------------------------
+
+
+def _rebundled(
+    data: bytes,
+    *,
+    version: str | None = None,
+    edit: Any = None,
+    add: tuple[tuple[str, bytes], ...] = (),
+) -> bytes:
+    """``data`` rebuilt: each member through ``edit(path, body)`` (``None`` drops it), ``add``
+    appended, the manifest's files (checksum, size, records) recomputed, its format set to
+    ``version`` when given."""
+    import hashlib
+
+    from epistrel.core import bundles
+
+    members = bundles.read_archive(data)
+    manifest = json.loads(members[0][1])
+    body: list[tuple[str, bytes]] = []
+    for name, content in members[1:]:
+        changed = content if edit is None else edit(name, content)
+        if changed is not None:
+            body.append((name, changed))
+    for name, content in add:
+        # In the canonical order: a table the export never writes sorts after the other
+        # records, before the erasure ledger and the media blobs.
+        at = next(
+            (
+                i
+                for i, (n, _) in enumerate(body)
+                if n.startswith("media/") or n == "records/erasure_ledger.jsonl"
+            ),
+            len(body),
+        )
+        body.insert(at, (name, content))
+    manifest["files"] = [
+        {
+            "path": name,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "size": len(content),
+            "records": None if name.startswith("media/") else content.count(b"\n"),
+        }
+        for name, content in body
+    ]
+    if version is not None:
+        manifest["format_version"] = version
+    return _tar([("manifest.json", json.dumps(manifest).encode()), *body])
+
+
+def _jsonl(content: bytes) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in content.splitlines() if line]
+
+
+async def _story_rows(engine: AsyncEngine, table: str, story_id: str) -> int:
+    return int(
+        await count(engine, f"SELECT count(*) FROM {table} WHERE story_id = '{story_id}'")  # noqa: S608
+    )
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-STORE-7")
+async def test_i_10__m8_images(pg_url: str, engine: AsyncEngine, tmp_path: Any) -> None:
+    """#272: a bundle round-trips story images (``FORMAT_VERSION`` ``1.1.0``).
+
+    - With no ``image_check`` model, importing a story holding an image is refused
+      ``rating_check_failed`` (``reason: image_unchecked``, the image listed) and leaves no
+      story.
+    - With a checker configured, the export carries ``records/story_images.jsonl`` (a deleted
+      image's row and its asset included) and each image's ``media.jsonl`` line with its
+      ``check_status``, ``policy_results`` and ``viewpoint_basis``; it has no image job,
+      reservation, cost or candidate member, though the story holds a job and its
+      reservation. The import makes new rows that keep their metadata (the images in place,
+      the assets' recorded check fields as the source recorded them), creates no image job,
+      reservation or cost row, and its gate re-checks the active image with this deployment's
+      checker, storing the verdicts as the new story's.
+    - A bundle carrying an ``records/image_jobs.jsonl`` member imports with that member
+      ignored: no ``image_jobs`` row.
+    - A ``1.0.0`` bundle (media lines without the ``1.1.0`` fields) imports through the format
+      step, with no story images."""
+    from epistrel.core import bundles
+    from tests import story_image_support as si
+    from tests.image_job_support import MINORS, clean, image_settings_for, insert, prepared
+    from tests.image_support import StubImageChecker, story_origin
+    from tests.model_support import admin_client, put, restored_model_config
+    from tests.respond_support import respond_client
+
+    settings = image_settings_for(pg_url, tmp_path)
+    async with (
+        restored_model_config(engine),
+        respond_client(settings, engine) as (client, lib),
+    ):
+        lib.prepare_media()
+        try:
+            story, _ = await si.scene(client, turns=2)
+            first = await si.placed(client, story, si.meta({"turn": 1, "beat": 2}, si.OMNISCIENT))
+            unchecked = await si.exported(client, engine, story, tmp_path, blobs=lib._blob_bytes)
+            stories_before = await count(engine, "SELECT count(*) FROM stories")
+            refused = await _import(client, engine, unchecked)
+            assert refused.error["code"] == "rating_check_failed", refused.error
+            assert refused.error["details"]["reason"] == "image_unchecked"
+            assert {
+                (v["position"]["kind"], v["position"]["id"])
+                for v in refused.error["details"]["violations"]
+            } == {("image", first["image_id"])}
+            assert await count(engine, "SELECT count(*) FROM stories") == stories_before
+
+            async with admin_client(settings, lib) as admin:
+                await put(admin, "image_check", {"model": "stub-vision"})
+            vision = StubImageChecker(lib.models.stub)
+            vision.answer({MINORS: "pass"})
+            second = await si.placed(
+                client, story, si.meta({"turn": 2, "beat": 2}, si.OMNISCIENT, caption="A pier.")
+            )
+            assert (await si.delete(client, story, first["image_id"])).status_code == 204
+            await insert(lib, prepared(story, origin=story_origin(story, turn=2, variant=1)))
+            assert await _story_rows(engine, "image_jobs", story) == 1
+            assert await _story_rows(engine, "image_reservations", story) == 1
+
+            data = await si.exported(client, engine, story, tmp_path, blobs=lib._blob_bytes)
+            members = dict(bundles.read_archive(data))
+            assert json.loads(members["manifest.json"])["format_version"] == "1.1.0"
+            images = _jsonl(members["records/story_images.jsonl"])
+            assert {i["id"] for i in images} == {first["image_id"], second["image_id"]}
+            media = {m["id"]: m for m in _jsonl(members["media.jsonl"])}
+            shown = media[second["media_id"]]
+            assert (shown["check_status"], shown["viewpoint_basis"]) == ("passed", "none")
+            assert [p["policy_id"] for p in shown["policy_results"]] == [MINORS]
+            assert shown["check_model"] == "stub-vision"
+            assert media[first["media_id"]]["check_status"] == "unchecked"
+            for never in (
+                "image_jobs",
+                "image_reservations",
+                "image_costs",
+                "image_candidates",
+                "image_limit_counters",
+            ):
+                assert f"records/{never}.jsonl" not in members
+                assert f"catalog/{never}.jsonl" not in members
+
+            calls = len(vision.calls)
+            new_story = await si.imported(client, engine, data)
+            assert len(vision.calls) == calls + 1
+            brought = [
+                i
+                for i in await si.history(client, new_story, si.OMNISCIENT)
+                if i.get("kind") == "image"
+            ]
+            assert [(i["turn"], i["beat"], i["caption"]) for i in brought] == [(2, 2, "A pier.")]
+            assert brought[0]["image_id"] != second["image_id"]
+            assert brought[0]["check_status"] == "passed"
+            assert brought[0]["check"]["model"] == "stub-vision"
+            assert await _story_rows(engine, "story_images", new_story) == 2
+            for never in ("image_jobs", "image_reservations", "image_costs"):
+                assert await _story_rows(engine, never, new_story) == 0
+            verdicts = await rows(
+                engine,
+                "SELECT record_key, policy_id FROM guardrail_check_results "
+                "WHERE story_id = :s AND record_key LIKE :k",
+                s=new_story,
+                k="image:%" + ":output",
+            )
+            assert [(r.record_key, r.policy_id) for r in verdicts] == [
+                (f"image:{brought[0]['image_id']}:output", MINORS)
+            ]
+
+            job_line = json.dumps({"id": "01JB0000000000000000000JOB", "story_id": story})
+            carried = _rebundled(
+                data, add=(("records/image_jobs.jsonl", job_line.encode() + b"\n"),)
+            )
+            ignored = await si.imported(client, engine, carried)
+            assert await _story_rows(engine, "image_jobs", ignored) == 0
+            assert await _story_rows(engine, "story_images", ignored) == 2
+
+            def older(path: str, content: bytes) -> bytes:
+                if path != "media.jsonl":
+                    return content
+                lines = []
+                for line in _jsonl(content):
+                    for field in (*bundles.MEDIA_FIELDS_1_1, "viewpoint_basis"):
+                        line.pop(field)
+                    lines.append(bundles.canonical(line))
+                return b"".join(lines)
+
+            old = await si.imported(client, engine, _rebundled(data, version="1.0.0", edit=older))
+            assert await _story_rows(engine, "story_images", old) == 0
+            assert [
+                i for i in await si.history(client, old, si.OMNISCIENT) if i.get("kind") == "image"
+            ] == []
+        finally:
+            await clean(engine)
+
+
+@pytest.mark.part("M8", "FR-STORE-7")
+async def test_i_10__m8_deployment_records(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#773, #272: every deployment-level table that carries a ``story_id`` (``core.stories.
+    STORY_ID_EXCEPTIONS``: the audit log, ``certification_runs``, the image accounting) is
+    ``NEVER`` in a bundle; the image-check certifications (#270) carry no ``story_id`` at all,
+    so no story table classification can reach them. Complement: a story whose
+    ``certification_runs`` row names it exports with no ``records/certification_runs.jsonl``
+    member, and the source row is untouched."""
+    from sqlalchemy import text
+
+    from epistrel.core import bundles
+    from epistrel.core.ids import new_ulid
+    from epistrel.core.stories import STORY_ID_EXCEPTIONS
+
+    assert sorted(STORY_ID_EXCEPTIONS - bundles.NEVER) == []
+    assert all(bundles.classify(name) == "NEVER" for name in STORY_ID_EXCEPTIONS)
+    assert "image_check_certifications" not in {t.name for t in bundles.story_tables()}
+
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-export")
+        run_id = new_ulid()
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO certification_runs (id, fingerprint, profile_id, "
+                    "profile_version, story_id, suites, seeds, requested_by) VALUES "
+                    "(:i, 'fp-773', :p, 1, :s, ARRAY['e-01'], 1, 'p-operator')"
+                ),
+                {"i": run_id, "p": new_ulid(), "s": story},
+            )
+        before = await rows(engine, "SELECT * FROM certification_runs WHERE id = :i", i=run_id)
+        members = dict(bundles.read_archive(await _exported(client, engine, story, tmp_path)))
+        assert "records/certification_runs.jsonl" not in members
+        assert all(run_id.encode() not in body for body in members.values())
+        assert await rows(engine, "SELECT * FROM certification_runs WHERE id = :i", i=run_id) == (
+            before
+        )

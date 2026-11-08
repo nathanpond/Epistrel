@@ -13,6 +13,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
@@ -49,16 +50,21 @@ class Scratch:
 
 
 @asynccontextmanager
-async def rating_db(pg_url: str) -> AsyncIterator[Scratch]:
+async def rating_db(pg_url: str, media_root: Path | None = None) -> AsyncIterator[Scratch]:
     """A fresh migrated database (dropped afterwards), the REST app over it (no lifespan, so no
-    worker runs until a test runs one), and the rating-check job bound to its models."""
+    worker runs until a test runs one), and the rating-check job bound to its models. With
+    ``media_root`` (#272): the media store there, prepared, and bound to the job too, so story
+    images can be uploaded and checked."""
     with migrated_database(pg_url, f"epistrel_rate_{secrets.token_hex(4)}") as url:
-        settings = auth_settings(url, model_adapter="stub", config_key=config_key())
+        extra: dict[str, Any] = {} if media_root is None else {"media_root": media_root}
+        settings = auth_settings(url, model_adapter="stub", config_key=config_key(), **extra)
         db = make_engine(settings)
         app = create_app(settings)
         lib: Engine = app.state.epistrel
         lib.bind(db)
-        rating_check_job.bind(lib.models)
+        if media_root is not None:
+            lib.prepare_media()
+        rating_check_job.bind(lib.models, None if media_root is None else lib.media)
         transport = httpx.ASGITransport(app=app)
         try:
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

@@ -29,8 +29,21 @@ an uncertain or unaffordable verdict follows the policy's ``on_uncertain``. Ever
 listed (a deterministic one does not end the check), in position order, as positions and
 policy identifiers only, never the text (invariant 3). Verdicts are cached per record and
 policy version (``guardrail_check_results``), so a check that is resumed or run again does not
-ask twice. A story image counts against the change when no image checker is configured
-(``image_unchecked``); M3 has no story images, so ``story_image_records`` answers none.
+ask twice.
+
+**Story images** (M8, #272; ``story_image_records``): each active image of every audience
+viewpoint is one record, ``image:<story_images id>`` at ``{kind: image, id}``. Its prompt is
+checked as text under ``image_prompt`` (a prompt violation has ``code: None``, as a text
+record's has), and the image itself against every applicable ``image_output`` policy through
+the injected ``image_check`` (the Orchestrator's ``check_output``, #258; core never imports
+the Orchestrator), which answers ``{policy_id: pass|violation|None}`` (``None``: uncertain,
+which follows the policy's ``on_uncertain``) or ``None`` when no checker can judge the image.
+An output violation has ``code: image_output``; an image no checker could judge is a violation
+coded ``image_unchecked`` per applicable image-output policy. Output verdicts are cached under
+``(record key + ":output", policy id, policy version)``, and an image's generation- or
+upload-time ``policy_results`` count as cached for the versions they cover (``load_cache``;
+never for an imported story, whose recorded results came from another deployment). Results
+are never written back to the asset's ``check_status``.
 
 When everything passes, ``finish`` applies the change in one transaction: the rating and the
 story's ``config_revision`` move, the config change is recorded with the principal who asked
@@ -115,6 +128,12 @@ RATING_CHECK_KIND = "rating_check"
 """The #70 job kind of a tightening's history check."""
 IMAGE_UNCHECKED = "image_unchecked"
 """The ``code`` of a violation for a story image no image checker could check."""
+IMAGE_OUTPUT = "image_output"
+"""The ``code`` of a violation the image check found in a story image itself (#272)."""
+IMAGE_KEY = "image:"
+"""A story image record's key prefix: ``image:<story_images id>``."""
+OUTPUT_SUFFIX = ":output"
+"""Appended to an image record's key for its output verdicts' cache key."""
 PLAYER_INPUT = "player_input"
 MESSAGE_RENDERED = "message_rendered"
 NON_TURN_ORDER = {"seed": 0, "pin": 1, "instruction": 2, "image": 3}
@@ -396,6 +415,9 @@ class HistoryRecord:
     text: str
     character_ids: tuple[str, ...] = ()
     image: bool = False
+    at: tuple[int, int] | None = None
+    """A story image's turn and variant (a slot image: the turn it follows), which a
+    reactivation check stamps (#120, #272)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +473,37 @@ class ModelCheck(Protocol):
 Progress = Callable[[int, int, Mapping[CacheKey, str]], Awaitable[None]]
 """``progress(done, total, verdicts)`` after each record, with the verdicts it reached."""
 
+ImageVerdicts = Mapping[str, Literal["pass", "violation"] | None]
+"""An image check's answer: per policy id, ``pass``, ``violation`` or ``None`` (uncertain)."""
+
+
+class ImageCheck(Protocol):
+    """One story image against the image-output ``policies`` not yet cached for it (the
+    Orchestrator's ``check_output``, #258): per policy, ``pass``, ``violation`` or ``None``
+    (uncertain); ``None`` when no checker can judge it (``image_check`` unset, or its bytes
+    unreadable). A checker that cannot answer raises (the check job retries)."""
+
+    async def __call__(
+        self, record: HistoryRecord, policies: Sequence[Policy]
+    ) -> ImageVerdicts | None: ...
+
+
+def output_key(record: HistoryRecord) -> str:
+    """The cache key of an image record's output verdicts."""
+    return record.key + OUTPUT_SUFFIX
+
+
+def image_output_policies(found: Iterable[Policy]) -> tuple[Policy, ...]:
+    """The policies of ``found`` that judge an image output. An age-conditioned one applies
+    whatever the cast (#258: the checker judges what the image shows)."""
+    return tuple(p for p in found if Target.IMAGE_OUTPUT in p.applies_to)
+
+
+def applies(policy: Policy, record: HistoryRecord) -> bool:
+    """Whether ``policy`` applies to ``record`` by scope (a character policy to its
+    character's records only)."""
+    return _applies(policy, record)
+
 
 def _applies(policy: Policy, record: HistoryRecord) -> bool:
     if policy.scope is Scope.CHARACTER:
@@ -479,10 +532,13 @@ async def evaluate_history(
     calls_per_record: int = 0,
     cache: Mapping[CacheKey, str] | None = None,
     progress: Progress | None = None,
-    image_check: Callable[[HistoryRecord], Awaitable[bool | None]] | None = None,
+    image_check: ImageCheck | None = None,
+    image_policies: Sequence[Policy] | None = None,
 ) -> HistoryResult:
     """Check every record against ``target_guardrails`` (the policies that apply, age
-    conditions already decided); see the module docstring."""
+    conditions already decided); see the module docstring. A story image's output is checked
+    against ``image_policies`` (default: the image-output ones of ``target_guardrails``), by
+    scope."""
     known = cache or {}
     violations: list[HistoryViolation] = []
     verdicts: dict[CacheKey, str] = {}
@@ -520,22 +576,44 @@ async def evaluate_history(
             if verdict == "violation":
                 violations.append(HistoryViolation(record.position, policy.id, policy.name))
         if record.image:
-            checked = None if image_check is None else await image_check(record)
-            if checked is None or checked:
-                outputs = [
-                    p
-                    for p in target_guardrails
-                    if Target.IMAGE_OUTPUT in p.applies_to and _applies(p, record)
-                ]
-                first = outputs[0] if outputs else None
-                violations.append(
-                    HistoryViolation(
-                        record.position,
-                        first.id if first else None,
-                        first.name if first else None,
-                        IMAGE_UNCHECKED if checked is None else None,
+            pool = image_output_policies(
+                target_guardrails if image_policies is None else image_policies
+            )
+            outputs = [p for p in pool if _applies(p, record)]
+            unknown: list[Policy] = []
+            for policy in outputs:
+                key = (output_key(record), policy.id, policy.version)
+                verdict = known.get(key)
+                if verdict is None:
+                    unknown.append(policy)
+                    continue
+                cached += 1
+                if verdict == "violation":
+                    violations.append(
+                        HistoryViolation(record.position, policy.id, policy.name, IMAGE_OUTPUT)
                     )
-                )
+            if unknown:
+                answers = None if image_check is None else await image_check(record, unknown)
+                if answers is not None:
+                    calls_made += 1
+                for policy in unknown:
+                    if answers is None:
+                        violations.append(
+                            HistoryViolation(
+                                record.position, policy.id, policy.name, IMAGE_UNCHECKED
+                            )
+                        )
+                        continue
+                    said = answers.get(policy.id)
+                    if said is None:
+                        verdict = _uncertain(policy)
+                    else:
+                        verdict = said
+                        found[(output_key(record), policy.id, policy.version)] = verdict
+                    if verdict == "violation":
+                        violations.append(
+                            HistoryViolation(record.position, policy.id, policy.name, IMAGE_OUTPUT)
+                        )
         calls_made += calls
         verdicts.update(found)
         if progress is not None:
@@ -550,13 +628,101 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _subject_characters(depicted: Any) -> tuple[str, ...]:
+    """The story characters among an asset's ``depicted_subjects``."""
+    return tuple(
+        str(d["id"])
+        for d in depicted or ()
+        if isinstance(d, Mapping) and d.get("kind") == "character" and d.get("id")
+    )
+
+
 async def story_image_records(
-    conn: AsyncConnection, story_id: str, operation_ids: Sequence[str] | None = None
+    conn: AsyncConnection,
+    story_id: str,
+    operation_ids: Sequence[str] | None = None,
+    *,
+    activating: Sequence[str] | None = None,
 ) -> list[HistoryRecord]:
-    """The story's active images (or, given ``operation_ids``, those turns' images, for a
-    reactivation check, #120), each by its prompt (FR-IMG-5). M3 has no story images
-    (``story_images`` arrives in M8, #272), so there are none."""
-    return []
+    """The story's images as history records (FR-IMG-5, FR-RATE-7; #272): one per image,
+    ``image:<id>`` at ``{kind: image, id}``, checked by its prompt (``""`` for an upload) under
+    ``image_prompt`` and as an image, its characters the story characters its asset depicts.
+
+    Without ``operation_ids``: every visible image of every audience viewpoint (a tightening,
+    an import). Given the turn operations ``operation_ids`` a reactivation would make active
+    (#120): the images at those turns' variants and the inter-turn slot images after those
+    turns, whose placing operation is among ``activating`` (every operation the edit makes
+    active; default ``operation_ids``) and whose deletion, if any, is neither active nor among
+    them. Each carries ``at``: its turn and variant (a slot image's: the turn it follows)."""
+    from epistrel.core.images.story_images import visible
+    from epistrel.core.membership import active_operation
+    from epistrel.core.tables import media_assets, story_images
+
+    s, m = story_images.c, media_assets.c
+    query = (
+        select(
+            s.id,
+            s.at_turn,
+            s.at_variant,
+            s.at_slot_k,
+            s.prompt,
+            m.depicted_subjects,
+        )
+        .join(media_assets, m.id == s.asset_id)
+        .where(s.story_id == story_id)
+        .order_by(s.at_turn, s.at_slot_k, s.at_beat, s.id)
+    )
+    turns: dict[int, int] = {}
+    if operation_ids is None:
+        query = query.where(visible())
+    else:
+        if not operation_ids:
+            return []
+        for chosen in await conn.execute(
+            select(operations.c.narrative_turn, operations.c.turn_variant).where(
+                operations.c.story_id == story_id,
+                operations.c.operation_id.in_(list(operation_ids)),
+                operations.c.narrative_turn.is_not(None),
+            )
+        ):
+            turns[int(chosen.narrative_turn)] = int(chosen.turn_variant or 0)
+        if not turns:
+            return []
+        placed = sorted({*operation_ids, *(activating or ())})
+        deletion = operations.alias("deletion")
+        deleted_after = (
+            select(deletion.c.operation_id)
+            .where(
+                deletion.c.operation_id == s.deleted_operation_id,
+                or_(active_operation(deletion), deletion.c.operation_id.in_(placed)),
+            )
+            .exists()
+        )
+        query = query.where(
+            s.operation_id.in_(placed),
+            s.at_turn.in_(sorted(turns)),
+            or_(s.deleted_operation_id.is_(None), ~deleted_after),
+        )
+    records: list[HistoryRecord] = []
+    for row in await conn.execute(query):
+        turn = int(row.at_turn)
+        variant = int(row.at_variant)
+        if operation_ids is not None:
+            if int(row.at_slot_k) == 0 and turns.get(turn) != variant:
+                continue  # a beat image of another variant of that turn
+            variant = turns[turn]
+        records.append(
+            HistoryRecord(
+                f"{IMAGE_KEY}{row.id}",
+                {"kind": "image", "id": str(row.id)},
+                Target.IMAGE_PROMPT,
+                row.prompt or "",
+                _subject_characters(row.depicted_subjects),
+                image=True,
+                at=(turn, variant),
+            )
+        )
+    return records
 
 
 def _dotted(loc: Sequence[str | int]) -> str:
@@ -766,10 +932,18 @@ async def turn_in_flight(db: AsyncEngine, story_id: str) -> bool:
 async def load_cache(
     conn: AsyncConnection, story_id: str, keys: Iterable[str]
 ) -> dict[CacheKey, str]:
-    """The stored verdicts of the story's records named by ``keys``."""
+    """The stored verdicts of the story's records named by ``keys`` (an image record's output
+    verdicts with them). A story image's recorded ``policy_results`` (the generation's or the
+    upload's check, #258) count as stored passes for the policy versions they name, unless the
+    story was imported: an import's recorded results came from another deployment (#272)."""
     wanted = sorted(set(keys))
     if not wanted:
         return {}
+    images = [k for k in wanted if k.startswith(IMAGE_KEY)]
+    lookup = sorted({*wanted, *(k + OUTPUT_SUFFIX for k in images)})
+    stored: dict[CacheKey, str] = {}
+    if images:
+        stored.update(await _recorded_image_results(conn, story_id, images))
     found = await conn.execute(
         select(
             guardrail_check_results.c.record_key,
@@ -778,10 +952,45 @@ async def load_cache(
             guardrail_check_results.c.verdict,
         ).where(
             guardrail_check_results.c.story_id == story_id,
-            guardrail_check_results.c.record_key.in_(wanted),
+            guardrail_check_results.c.record_key.in_(lookup),
         )
     )
-    return {(r.record_key, r.policy_id, int(r.policy_version)): r.verdict for r in found}
+    stored.update({(r.record_key, r.policy_id, int(r.policy_version)): r.verdict for r in found})
+    return stored
+
+
+async def _recorded_image_results(
+    conn: AsyncConnection, story_id: str, keys: Sequence[str]
+) -> dict[CacheKey, str]:
+    from epistrel.core.tables import media_assets, story_images
+
+    imported = await conn.scalar(
+        select(operations.c.operation_id)
+        .where(
+            operations.c.story_id == story_id,
+            operations.c.kind == OperationKind.IMPORT.value,
+        )
+        .limit(1)
+    )
+    if imported is not None:
+        return {}
+    ids = [k.removeprefix(IMAGE_KEY) for k in keys]
+    found: dict[CacheKey, str] = {}
+    for row in await conn.execute(
+        select(story_images.c.id, media_assets.c.policy_results)
+        .join(media_assets, media_assets.c.id == story_images.c.asset_id)
+        .where(story_images.c.story_id == story_id, story_images.c.id.in_(ids))
+    ):
+        for result in row.policy_results or ():
+            if not isinstance(result, Mapping):
+                continue
+            version = result.get("policy_version")
+            verdict = result.get("result")
+            if version is None or verdict not in ("pass", "violation"):
+                continue
+            key = f"{IMAGE_KEY}{row.id}{OUTPUT_SUFFIX}"
+            found[(key, str(result.get("policy_id")), int(version))] = str(verdict)
+    return found
 
 
 Guard = Callable[[AsyncConnection], Awaitable[None]]
@@ -820,31 +1029,40 @@ async def save_progress(
         await conn.execute(
             update(rating_check_jobs).where(rating_check_jobs.c.id == check.id).values(**values)
         )
-        if verdicts:
-            statement = pg_insert(guardrail_check_results).values(
-                [
-                    {
-                        "story_id": check.story_id,
-                        "record_key": key,
-                        "policy_id": policy_id,
-                        "policy_version": version,
-                        "verdict": verdict,
-                    }
-                    for (key, policy_id, version), verdict in verdicts.items()
-                ]
-            )
-            await conn.execute(
-                statement.on_conflict_do_update(
-                    index_elements=[
-                        guardrail_check_results.c.story_id,
-                        guardrail_check_results.c.record_key,
-                        guardrail_check_results.c.policy_id,
-                        guardrail_check_results.c.policy_version,
-                    ],
-                    set_={"verdict": statement.excluded.verdict, "at": func.now()},
-                )
-            )
+        await store_verdicts(conn, check.story_id, verdicts)
     return True
+
+
+async def store_verdicts(
+    conn: AsyncConnection, story_id: str, verdicts: Mapping[CacheKey, str]
+) -> None:
+    """Store ``verdicts`` as the story's (``guardrail_check_results``), in ``conn``'s
+    transaction; a verdict already stored for that key is replaced."""
+    if not verdicts:
+        return
+    statement = pg_insert(guardrail_check_results).values(
+        [
+            {
+                "story_id": story_id,
+                "record_key": key,
+                "policy_id": policy_id,
+                "policy_version": version,
+                "verdict": verdict,
+            }
+            for (key, policy_id, version), verdict in verdicts.items()
+        ]
+    )
+    await conn.execute(
+        statement.on_conflict_do_update(
+            index_elements=[
+                guardrail_check_results.c.story_id,
+                guardrail_check_results.c.record_key,
+                guardrail_check_results.c.policy_id,
+                guardrail_check_results.c.policy_version,
+            ],
+            set_={"verdict": statement.excluded.verdict, "at": func.now()},
+        )
+    )
 
 
 class Outcome(StrEnum):
@@ -1191,7 +1409,10 @@ async def purge_finished(conn: AsyncConnection, before: datetime, limit: int) ->
 
 
 __all__ = [
+    "IMAGE_KEY",
+    "IMAGE_OUTPUT",
     "IMAGE_UNCHECKED",
+    "OUTPUT_SUFFIX",
     "RATING_CHECK_KIND",
     "RATING_SETTING",
     "Check",
@@ -1200,6 +1421,8 @@ __all__ = [
     "HistoryRecord",
     "HistoryResult",
     "HistoryViolation",
+    "ImageCheck",
+    "ImageVerdicts",
     "ModelCheck",
     "Outcome",
     "RatingApplied",
@@ -1207,6 +1430,7 @@ __all__ = [
     "RatingChangeRequest",
     "RatingCheckStarted",
     "RatingCheckView",
+    "applies",
     "change_rating",
     "classify",
     "evaluate_history",
@@ -1214,10 +1438,12 @@ __all__ = [
     "fail",
     "finish",
     "get_check",
+    "image_output_policies",
     "live_guardrail_ids",
     "live_policies",
     "load_cache",
     "load_check",
+    "output_key",
     "pause_of",
     "position_key",
     "purge_finished",
@@ -1225,6 +1451,7 @@ __all__ = [
     "reconcile",
     "save_progress",
     "scenario_records",
+    "store_verdicts",
     "story_image_records",
     "turn_in_flight",
 ]

@@ -1182,8 +1182,15 @@ async def test_i_23__m8_story_images(
     same asset). An inter-turn slot upload is in place after its turn. A deleted image leaves
     every read (and a repeat delete is 204). Export then import shows the image in place in the
     new story; a prune of a truncated tail removes its image rows (complement: the active image
-    remains); an as-recorded read at an earlier checkpoint omits a later image."""
+    remains); an as-recorded read at an earlier checkpoint omits a later image.
+
+    #272: the uploads pass a configured image checker, so their recorded results cover the
+    minors policy and the untruncate and swap need no reactivation check, and the import's
+    guardrail gate re-checks the active images with it."""
     from tests import story_image_support as si
+    from tests.image_job_support import MINORS
+    from tests.image_support import StubImageChecker
+    from tests.model_support import admin_client, put, restored_model_config
     from tests.respond_support import respond_client
     from tests.story_support import READ, WRITE
 
@@ -1193,7 +1200,13 @@ async def test_i_23__m8_story_images(
         found: dict[str, Any] = response.json()
         return found
 
-    async with respond_client(image_settings, engine) as (client, epistrel):
+    async with (
+        restored_model_config(engine),
+        respond_client(image_settings, engine) as (client, epistrel),
+    ):
+        async with admin_client(image_settings, epistrel) as admin:
+            await put(admin, "image_check", {"model": "stub-vision"})
+        StubImageChecker(epistrel.models.stub).answer({MINORS: "pass"})
         story, ids = await si.scene(client, turns=2)
         bobby, jenni = si.character(ids[si.BOBBY]), si.character(ids[si.JENNI])
         for_bobby = (await si.placed(client, story, si.meta({"turn": 2, "beat": 1}, bobby)))[

@@ -755,3 +755,90 @@ async def test_c_22__m8_auto_no_checker(image_settings: Settings, engine: AsyncE
         done = await sg.run(app, pending["job_id"])
         assert done["image_job"] == "promoted", done
         assert len(app.generator.requests) == 1
+
+
+# -- rating checks over story images (#272) ------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-RATE-7")
+async def test_c_22__m8_rating(pg_url: str, tmp_path: Path) -> None:
+    """#272: tightening a story's rating checks its images as images. The story holds an
+    image uploaded with no image checker configured (stored ``unchecked``), and the target
+    rating adds a model-assisted policy for image outputs.
+
+    - With no ``image_check`` model the tightening is refused, listing the image
+      (``{kind: image, id}``) with ``code: image_unchecked`` for each image-output policy in
+      effect: the new one, and the seeded minors policy (an age-conditioned policy applies to
+      an image whatever the cast).
+    - With a stub checker that flags the image for the new policy, it is refused listing that
+      policy with ``code: image_output``.
+    - Complement: with one that passes it, the tightening applies; the output verdicts are
+      stored as the story's (``guardrail_check_results``) and the asset's own check fields are
+      not rewritten (still ``unchecked``)."""
+    from tests import image_rating_support as ir
+    from tests import story_image_support as si
+    from tests.rating_change_support import change_rating, check, rating_db, run_jobs, scalar
+
+    async with rating_db(pg_url, media_root=tmp_path / "media") as s:
+        target, policy = await ir.image_rating(s)
+
+        async def pictured() -> tuple[str, str]:
+            story, _ = await si.scene(s.client, turns=1)
+            meta = si.meta({"turn": 1, "beat": 2}, si.OMNISCIENT)
+            return story, (await si.placed(s.client, story, meta))["image_id"]
+
+        async def tighten(story: str) -> dict[str, Any]:
+            started = await change_rating(s.client, story, target)
+            assert started.status_code == 202, started.text
+            await run_jobs(s.db)
+            return await check(s.client, story, started.json()["job_id"])
+
+        def listed(image: str, code: str, *policies: tuple[str, str]) -> list[dict[str, Any]]:
+            return [
+                {
+                    "position": {"kind": "image", "id": image},
+                    "policy_id": pid,
+                    "policy_name": name,
+                    "code": code,
+                }
+                for pid, name in sorted(policies)
+            ]
+
+        story, image = await pictured()
+        flagged_story, flagged_image = await pictured()
+        unchecked = await tighten(story)
+        assert unchecked["status"] == "refused", unchecked
+        minors_name = next(
+            v["policy_name"] for v in unchecked["violations"] if v["policy_id"] == ir.MINORS
+        )
+        assert unchecked["violations"] == listed(
+            image, "image_unchecked", (policy.id, policy.name), (ir.MINORS, minors_name)
+        )
+
+        await ir.configure_checker(s)
+        vision = ir.answer(s, {ir.MINORS: "pass", policy.id: "violation"})
+        flagged = await tighten(flagged_story)
+        assert flagged["status"] == "refused", flagged
+        assert flagged["violations"] == listed(
+            flagged_image, "image_output", (policy.id, policy.name)
+        )
+        assert len(vision.calls) == 1
+
+        vision = ir.answer(s, {ir.MINORS: "pass", policy.id: "pass"})
+        applied = await tighten(story)
+        assert applied["status"] == "applied", applied
+        assert len(vision.calls) == 1
+        assert (await si.history(s.client, story, si.OMNISCIENT))[-1]["image_id"] == image
+        verdicts = await ir.output_verdicts(s, story)
+        assert verdicts == {(image, ir.MINORS): "pass", (image, policy.id): "pass"}
+        assert (
+            await scalar(
+                s.db,
+                "SELECT m.check_status FROM story_images i JOIN media_assets m "
+                "ON m.id = i.asset_id WHERE i.id = :i",
+                i=image,
+            )
+            == "unchecked"
+        )

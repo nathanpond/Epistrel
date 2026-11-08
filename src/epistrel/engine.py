@@ -942,7 +942,7 @@ class Engine:
         )
         extraction_job.bind(self.models)
         reembed_job.bind(self.models.embeddings)
-        rating_check_job.bind(self.models)
+        rating_check_job.bind(self.models, self.media)
         media_sweep_job.bind(self.media)
         # #256: image jobs generate through this Engine's adapter and stage in its media root.
         self._image_runtime_bound = self.image_runtime()
@@ -3035,6 +3035,7 @@ class Engine:
                     "compressor": self.ports.summary_compressor,
                     "collect": collect,
                     "models": self.models,
+                    "media": self.media,
                 },
             )
         )

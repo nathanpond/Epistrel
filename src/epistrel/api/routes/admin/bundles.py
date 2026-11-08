@@ -73,7 +73,7 @@ async def export_status(job_id: JobId, ctx: ContextDep, engine: EngineDep) -> Ex
     summary="Download a story export",
     description=(
         "The export's archive (#249): a gzip-compressed POSIX tar whose first member is "
-        "`manifest.json` (format `1.0.0`, the source story, the revision, each file's SHA-256), "
+        "`manifest.json` (format `1.1.0`, the source story, the revision, each file's SHA-256), "
         "then `records/story.json`, `events.jsonl` and `records/<table>.jsonl`. 409 "
         "`export_not_ready` before it is written; 410 `export_expired` once it expired."
     ),

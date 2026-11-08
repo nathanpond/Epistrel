@@ -5,10 +5,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.policies.model import (
     Effect,
@@ -22,12 +21,12 @@ from epistrel.core.policies.model import (
     WordlistRule,
 )
 from epistrel.core.ratings.change import (
+    IMAGE_OUTPUT,
     IMAGE_UNCHECKED,
     CacheKey,
     HistoryRecord,
     evaluate_history,
     position_key,
-    story_image_records,
 )
 from epistrel.core.ratings.stamp import stamp_of
 
@@ -206,30 +205,78 @@ async def test_cached_verdicts_are_not_asked_again() -> None:
 
 
 async def test_an_image_without_a_checker_counts_against_the_change() -> None:
-    """A story image (its prompt checked like a text) with no image checker configured is a
-    violation coded ``image_unchecked``; with a checker that passes it, only its prompt counts.
-    M3's story-image hook answers no images."""
+    """A story image (its prompt checked like a text) with no image checker is a violation
+    coded ``image_unchecked`` per applicable image-output policy; with a checker that passes
+    it, only its prompt counts; one that flags it is an ``image_output`` violation of that
+    policy. Output verdicts are cached under ``key + ":output"`` and not asked again; an
+    uncertain answer follows the policy's ``on_uncertain`` and is not cached."""
     prompts = _policy("p-prompt", _words("dragon"), applies_to=(Target.IMAGE_PROMPT,))
     output = _policy("p-out", _assisted(), applies_to=(Target.IMAGE_OUTPUT,))
+    other = _policy("p-other", _assisted(), applies_to=(Target.IMAGE_OUTPUT,))
     image = HistoryRecord(
-        "img-1", {"kind": "image", "id": "img-1"}, Target.IMAGE_PROMPT, "a calm sea", image=True
+        "image:img-1",
+        {"kind": "image", "id": "img-1"},
+        Target.IMAGE_PROMPT,
+        "a calm sea",
+        image=True,
     )
-    result = await evaluate_history([prompts, output], [image])
+    result = await evaluate_history([prompts, output, other], [image])
     assert [v.as_json() for v in result.violations] == [
         {
             "position": {"kind": "image", "id": "img-1"},
-            "policy_id": "p-out",
-            "policy_name": "name of p-out",
+            "policy_id": pid,
+            "policy_name": f"name of {pid}",
             "code": IMAGE_UNCHECKED,
         }
+        for pid in ("p-other", "p-out")
     ]
+    asked: list[list[str]] = []
 
-    async def passes(record: HistoryRecord) -> bool | None:
-        return False
+    def checker(answers: dict[str, Any]) -> Any:
+        async def check(record: HistoryRecord, policies: Any) -> Any:
+            asked.append([p.id for p in policies])
+            return answers
 
-    checked = await evaluate_history([prompts, output], [image], image_check=passes)
+        return check
+
+    checked = await evaluate_history(
+        [prompts, output, other],
+        [image],
+        image_check=checker({"p-out": "pass", "p-other": "pass"}),
+    )
     assert checked.passed
-    assert await story_image_records(cast(AsyncConnection, None), "s-1") == []
+    assert checked.verdicts == {
+        ("image:img-1", "p-prompt", 1): "pass",
+        ("image:img-1:output", "p-out", 1): "pass",
+        ("image:img-1:output", "p-other", 1): "pass",
+    }
+    flagged = await evaluate_history(
+        [prompts, output, other],
+        [image],
+        image_check=checker({"p-out": "violation", "p-other": None}),
+    )
+    assert [(v.policy_id, v.code) for v in flagged.violations] == [
+        ("p-other", IMAGE_OUTPUT),
+        ("p-out", IMAGE_OUTPUT),
+    ]
+    assert ("image:img-1:output", "p-other", 1) not in flagged.verdicts
+    asked.clear()
+    cached = await evaluate_history(
+        [prompts, output, other],
+        [image],
+        image_check=checker({"p-other": "pass"}),
+        cache={("image:img-1:output", "p-out", 1): "pass"},
+    )
+    assert cached.passed
+    assert asked == [["p-other"]]
+    assert cached.cached == 1
+    blue = HistoryRecord(
+        "image:img-2", {"kind": "image", "id": "img-2"}, Target.IMAGE_PROMPT, "a dragon", image=True
+    )
+    prompt_only = await evaluate_history(
+        [prompts, output], [blue], image_check=checker({"p-out": "pass"})
+    )
+    assert [(v.policy_id, v.code) for v in prompt_only.violations] == [("p-prompt", None)]
 
 
 async def test_progress_after_each_record() -> None:

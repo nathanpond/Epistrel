@@ -1404,3 +1404,73 @@ async def test_requires_check_covers_the_whole_path_a_swap_activates(pg_url: str
         found = await flags(tip)
         assert found[(2, 1)] is True
         assert found[(3, 1)] is False
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-RATE-7")
+async def test_reactivation_checks_images(pg_url: str, tmp_path: Any) -> None:
+    """#272: a reactivation checks the story images of the turns it would make active, the
+    inter-turn slot images after them included. A story's turn 2 holds an image after its reply
+    and a slot image after it, both uploaded with no image checker (``unchecked``); the story is
+    truncated to turn 1 and tightened to a rating whose policy judges image outputs. With no
+    ``image_check`` model the untruncate is held for its check and refused, listing both images
+    ``image_unchecked``, and turn 2's ``checked_guardrails`` stamp is unchanged.
+
+    Complement: with a stub checker that passes them, the next untruncate is reactivated and
+    turn 2 is stamped with the new policy. And a turn whose stamp is current is still checked
+    when one of its images has no stored verdict: an image uploaded unchecked onto an
+    already-stamped turn holds the untruncate back."""
+    from tests import image_rating_support as ir
+    from tests import story_image_support as si
+
+    async with rating_db(pg_url, media_root=tmp_path / "media") as s:
+        target, policy = await ir.image_rating(s)
+        story, _ = await si.scene(s.client, turns=2)
+        beat = (await si.placed(s.client, story, si.meta({"turn": 2, "beat": 2}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        slot = (await si.placed(s.client, story, si.meta({"slot_after_turn": 2}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        await _truncated(s, story, 1)
+        await _tightened(s, story, target)
+        before = await ir.stamp(s, story, 2)
+        assert policy.id not in reactivation.held_policies(before)
+
+        job = await _held(await _edit(s, story, "untruncate"), story)
+        refused = await _ended(s, story, job)
+        assert refused["status"] == "refused", refused
+        listed = {(v["position"]["id"], v["policy_id"], v["code"]) for v in refused["violations"]}
+        assert listed == {
+            (image, pid, "image_unchecked")
+            for image in (beat, slot)
+            for pid in (policy.id, ir.MINORS)
+        }
+        assert all(v["position"]["kind"] == "image" for v in refused["violations"])
+        assert await ir.stamp(s, story, 2) == before
+        assert (await _memberships(s, story))[-1] == (2, 1, "discarded")
+
+        # A current stamp, an image with no stored verdict (uploaded unchecked onto a turn
+        # already stamped): still held for its check.
+        fresh, _ = await si.scene(s.client, turns=2)
+        await _tightened(s, fresh, target)
+        assert policy.id in reactivation.held_policies(await ir.stamp(s, fresh, 2))
+        late = (await si.placed(s.client, fresh, si.meta({"turn": 2, "beat": 2}, si.OMNISCIENT)))[
+            "image_id"
+        ]
+        await _truncated(s, fresh, 1)
+
+        await ir.configure_checker(s)
+        vision = ir.answer(s, {ir.MINORS: "pass", policy.id: "pass"})
+        job = await _held(await _edit(s, story, "untruncate"), story)
+        undone = await _ended(s, story, job)
+        assert undone["status"] == "reactivated", undone
+        assert len(vision.calls) == 2
+        assert policy.id in reactivation.held_policies(await ir.stamp(s, story, 2))
+        assert set(si.image_ids(await si.history(s.client, story, si.OMNISCIENT))) == {beat, slot}
+
+        vision = ir.answer(s, {ir.MINORS: "pass", policy.id: "pass"})
+        job = await _held(await _edit(s, fresh, "untruncate"), fresh)
+        assert (await _ended(s, fresh, job))["status"] == "reactivated"
+        assert len(vision.calls) == 1
+        assert (late, policy.id) in await ir.output_verdicts(s, fresh)

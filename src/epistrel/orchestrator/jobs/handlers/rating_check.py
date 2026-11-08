@@ -11,7 +11,11 @@ The job's id is its ``rating_check_jobs`` row's. A run:
    when the cast has a minor) and the cached verdicts, in one snapshot;
 4. evaluates them (``change.evaluate_history``): deterministic policies first, then each
    model-assisted one through the ``guardrail_check`` purpose, one call at a time under its own
-   budget (never a turn's), at most ``rating_check_model_calls_per_record`` per record;
+   budget (never a turn's), at most ``rating_check_model_calls_per_record`` per record; a story
+   image is also checked as an image against every image-output policy in effect (an
+   age-conditioned one whatever the cast) through #258's ``check_output``
+   (``image_check``, #272: one ``image_check`` call per image beyond that budget), and stays
+   ``image_unchecked`` without an ``image_check`` model or a bound blob store;
 5. checkpoints progress and the new verdicts every ``CHECKPOINT`` records, and yields
    (requeues) after ``YIELD_AFTER_S`` well before the worker's runtime cap: the next run
    answers what was checked from the cache;
@@ -47,11 +51,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import clock
 from epistrel.core.config_changes import read_guardrail_settings, read_settings
 from epistrel.core.errors import EpistrelError
+from epistrel.core.media.store import BlobStore
 from epistrel.core.policies.model import ModelAssistedRule, Policy, Target
 from epistrel.core.ratings import change, reactivation
 from epistrel.core.ratings.stamp import live_policies
@@ -81,6 +86,7 @@ CALL_DEADLINE_S = 60.0
 """The deadline of one model-assisted check."""
 
 _bound: list[ModelAccessLayer] = []
+_media: list[BlobStore] = []
 
 
 class NoModels(RuntimeError):
@@ -88,15 +94,36 @@ class NoModels(RuntimeError):
     applies."""
 
 
-def bind(models: ModelAccessLayer | None) -> None:
-    """Make ``models`` the layer the job calls through; ``None`` unbinds."""
+def bind(models: ModelAccessLayer | None, media: BlobStore | None = None) -> None:
+    """Make ``models`` the layer the job calls through, and ``media`` the blob store a story
+    image's bytes are read from (#272; without one every image stays unchecked); ``None``
+    unbinds."""
     _bound.clear()
+    _media.clear()
     if models is not None:
         _bound.append(models)
+        if media is not None:
+            _media.append(media)
 
 
 def bound() -> ModelAccessLayer | None:
     return _bound[0] if _bound else None
+
+
+def bound_media() -> BlobStore | None:
+    return _media[0] if _media else None
+
+
+def image_check(
+    models: ModelAccessLayer | None, db: AsyncEngine, media: BlobStore | None
+) -> change.ImageCheck | None:
+    """#272: the story-image check of a history check (``StoryImageCheck``), or ``None`` (every
+    image unchecked) without a Model Access Layer or a blob store."""
+    if models is None or media is None:
+        return None
+    from epistrel.orchestrator.images.history_check import StoryImageCheck
+
+    return StoryImageCheck(models, db, media)
 
 
 class RatingCheckPayload(BaseModel):
@@ -205,6 +232,8 @@ async def _work(ctx: JobContext, guard: _Fence) -> JobOutput:
             calls_per_record=settings.rating_check_model_calls_per_record,
             cache=cache,
             progress=progress,
+            image_check=image_check(models, ctx.db, bound_media()),
+            image_policies=change.image_output_policies(found),
         )
     except _Yield:
         if buffered:
@@ -274,6 +303,8 @@ async def _reactivate(ctx: JobContext, guard: _Fence, check: change.Check) -> Jo
         calls_per_record=settings.rating_check_model_calls_per_record,
         cache=cache,
         progress=progress,
+        image_check=image_check(models, ctx.db, bound_media()),
+        image_policies=change.image_output_policies(pending.policies),
     )
     verdict = await reactivation.settle(ctx.db, check, pending, result, guard=guard)
     if verdict is reactivation.Verdict.RESTART:
@@ -328,4 +359,6 @@ __all__ = [
     "RatingCheckPayload",
     "bind",
     "bound",
+    "bound_media",
+    "image_check",
 ]

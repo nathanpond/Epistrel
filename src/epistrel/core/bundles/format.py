@@ -278,10 +278,32 @@ def validate_line(path: str, line: Any) -> None:
 
 Step = Callable[[str, dict[str, Any]], dict[str, Any] | None]
 """One format migration step: ``(member path, line) -> line`` (``None`` drops the line)."""
-FORMAT_MIGRATIONS: dict[str, tuple[str, Step]] = {}
+
+
+def _from_1_0(path: str, line: dict[str, Any]) -> dict[str, Any] | None:
+    """#272: a ``1.0.0`` line as ``1.1.0`` reads it. A media line gets ``viewpoint_basis``
+    (#261) and the check fields with their empty values (``unchecked``, no model, no endpoint,
+    no results); a ``story_images`` line, which ``1.0.0`` never defined, is dropped, so the
+    bundle imports with no story images (its assets, then unreferenced, fall to #105's
+    sweep)."""
+    if path == "records/story_images.jsonl":
+        return None
+    if path == "media.jsonl":
+        return {
+            "viewpoint_basis": None,
+            "check_status": "unchecked",
+            "check_model": None,
+            "check_endpoint": None,
+            "policy_results": [],
+            **line,
+        }
+    return line
+
+
+FORMAT_MIGRATIONS: dict[str, tuple[str, Step]] = {"1.0.0": ("1.1.0", _from_1_0)}
 """#250: the migrations from an older format, keyed by the version they read, each naming the
-version it produces; ``migrations_for`` chains them to ``bundles.FORMAT_VERSION``. Empty while
-no older format exists."""
+version it produces; ``migrations_for`` chains them to ``bundles.FORMAT_VERSION``. #272:
+``1.0.0`` → ``1.1.0`` (``_from_1_0``)."""
 
 
 def _minor_of(version: str) -> tuple[int, int]:

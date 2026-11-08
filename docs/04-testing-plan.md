@@ -734,7 +734,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | FR-RATE-4 | M | M2 | I-22 (M2), I-22 (M4), I-23 (M8) |
 | FR-RATE-5 | M | M3 | U-29 (M3), I-20 (M3), I-22 (M3) |
 | FR-RATE-6 | M | M3 | U-29 (M3), I-22 (M3) |
-| FR-RATE-7 | M | M3 | U-29 (M3), I-10 (M7), I-22 (M3), C-22 (M8) |
+| FR-RATE-7 | M | M3 | U-29 (M3), I-10 (M7), I-22 (M3), C-22 (M8), REACTIVATION-CHECKS-IMAGES (M8) |
 | FR-RATE-8 | M | M3 | C-21 (M3) |
 | FR-REPAIR-1 | M | M4 | I-12 (M4), S-COAT (M4), S-TENNIS (M4) |
 | FR-REPAIR-2 | M | M4 | I-12 (M4), S-TENNIS (M4) |

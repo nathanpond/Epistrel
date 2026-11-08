@@ -65,8 +65,13 @@ def test_crash_at_names_a_point_and_an_occurrence() -> None:
         "bundles.import.mid_records",
         "bundles.import.after_insert",
     }
-    # #256: an image job.
-    assert set(crash.IMAGE_POINTS) == {"images.after_stage", "images.promote.before_commit"}
+    # #256: an image job; #268: its two send points.
+    assert set(crash.IMAGE_POINTS) == {
+        "images.after_sending_commit",
+        "images.async.before_ack_commit",
+        "images.after_stage",
+        "images.promote.before_commit",
+    }
     assert (
         *faults.COMMIT_POINTS,
         *faults.STAGED_POINTS,

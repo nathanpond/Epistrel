@@ -360,7 +360,7 @@ def count_revalidation(outcome: str) -> None:
 IMAGE_ATTEMPT_OUTCOMES = Counter(
     "epistrel_image_attempt_outcomes",
     "Image provider attempts' outcomes, as written on their records, and late duplicate "
-    "returns (#267).",
+    "and late unaccounted returns (#267, #268).",
     ("outcome",),
 )
 IMAGE_ATTEMPT_OUTCOME_VALUES = frozenset(
@@ -377,6 +377,10 @@ IMAGE_ATTEMPT_OUTCOME_VALUES = frozenset(
         "late_discarded",
         "late_after_horizon",
         "late_duplicate",
+        "presumed",
+        "resent",
+        "late_after_presumed",
+        "late_unaccounted",
     }
 )
 

@@ -900,7 +900,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 | NFR-REL-2 | M | M2 | I-08 (M2), X-03 (M2), X-06 (M2) |
 | NFR-REL-3 | M | M2 | X-05 (M2), X-06 (M2) |
 | NFR-REL-4 | M | M2 | I-14 (M2), S-DOUBLE-SUBMIT (M2), X-04 (M2) |
-| NFR-REL-5 | M | M2 | X-07 (M2), X-07 (M3), X-07 (M6), X-07 (M7), X-07 (M8) |
+| NFR-REL-5 | M | M2 | X-07 (M2), X-07 (M3), X-07 (M6), X-07 (M7), X-07 (M8), I-26 (M8) |
 | NFR-SCALE-1 | M | M4 | P-06 (M4), P-10 (M4) |
 | NFR-SCALE-2 | M | M4 | I-16 (M4), X-01 (M4), X-01 (M7) |
 | NFR-SEC-1 | M | M2 | POLICY (M2) |

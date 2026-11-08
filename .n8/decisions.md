@@ -13032,6 +13032,54 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the owner's step of the recording AC.
   **Issue:** #255
 
+- **Decision:** a lease expiry that finds the current attempt still `sending` is the ambiguous case (FR-IMG-11), whether the worker crashed or only stalled. So a stalled `sync` call is now an ambiguous send: it is presumed at its horizon, not released. #267's non-confirming clauses in `test_i_26__m8_late_returns` (released at the horizon, a late return after it, a call that never returns) now run on an `async` non-confirming stub stalled in `collect`. That is an `accepted`, known request, which #267's rules still govern.
+  **Why:** docs/04 I-26's "Presumed, then the actual result" says a `sync` stub that "stalls ... and loses its lease" is marked `ambiguous`. FR-IMG-11 says the whole `sync` call is the ambiguity window.
+  **Issue:** #268, #267
+- **Decision:** `idempotency_key = sha256(f"{job_id}:{attempt_token}")` in lowercase hex (`store.idempotency_key_of`). The job id is the ULID as stored, and the token is canonical uuid text. The key, `request_snapshot` (`ImageRequest.model_dump` without `prompt` and `negative_prompt`: the records are deployment accounting, outlive story deletion and are exempt from the subject index; a re-send takes the job's prompt, so the erasure residue scan stays clean) and `capabilities_snapshot` (`{submission, idempotency_keys}`) commit with `sending`. `submit` always receives the key, and the registry strips it for an adapter that does not declare `idempotency_keys`.
+  **Why:** the AC's "both canonical uuid text" can only apply to the token, because job ids are ULIDs.
+  **Issue:** #268
+- **Decision:** recovery is `attempts.recover_attempt`. `fence_in` calls it, the lease-expiry hook now delegates to `fence_in`, and so does a run that finds its own current attempt in flight:
+  - `resend`: the snapshot declares `idempotency_keys`, a request snapshot exists, and the key was re-sent fewer than 2 times. The job is due at once and the job's run re-sends.
+  - `ambiguous`: the original record's `send_state = ambiguous`, waiting until the horizon.
+  - `resolved`: a late return already settled it.
+
+  A re-send's row is `limits.insert_unreserved_record` (`requested = 0`, no `counter_keys`) with `resend_of`, the original key and the request snapshot. The re-send moves the original record's `horizon_at` (and its timer) to the re-send's own horizon, so the reservation stays held while the re-send is in flight. `release_at_horizon_in` skips a record whose horizon is still ahead. Its result settles the original record (`resent`, held → settled). A superseded re-send row is `discarded`. A re-send that errors releases both records (original outcome `failed`) and follows the adapter error rules.
+  **Why:** the AC's "reservation and settlement stay on the old token's record". The horizon move keeps #267's release-at-horizon from freeing a reservation a live re-send still needs.
+  **Issue:** #268
+- **Decision:** a record still `sending` and `held` at its horizon is marked `ambiguous` and presumed, not released. This covers a re-sendable attempt that nothing re-sent, for example because its job ended first. `limits.release_all` presumes an ambiguous record instead of releasing it, unless it is kept to its horizon. That covers endings after the horizon and story deletion. `limits.presume` writes `basis = presumed`, `used = requested`, cost `unknown` and outcome `presumed`.
+  **Why:** FR-IMG-11 says the limits err toward generating less. Nobody can tell whether such a send reached the provider.
+  **Issue:** #268
+- **Decision:** the correction is `limits.correct`. It locks the record, then the counters in lock order (`_apply`). The deltas are the difference to `used = m`, `overage = extra_outputs = max(0, m − requested)`, and `reserved` is untouched. `settle_attempt_in` calls it for a `settled`/`presumed` record (outcome `late_after_presumed`, cost recorded). A delivery after `corrected` takes the existing `late_duplicate` branch. A pre-horizon delivery of an ambiguous record settles held → settled (`late_discarded`) and sets `send_state = returned`.
+  **Why:** the AC's Correction bullet and the planner's lock order.
+  **Issue:** #268
+- **Decision:** `late_unaccounted` is not stored. It is counted in `epistrel_image_attempt_outcomes_total{outcome}` (which also gains `presumed`, `resent` and `late_after_presumed`), logged with ids, and returned as the fenced run's `late`. The `image_costs` row with `accounting: late_unaccounted` is #269's: its table does not exist yet, and `settle_attempt_in` is where #269 hooks `costs.record_attempt`. The AC's "Late unaccounted" box stays unticked until #269.
+  **Why:** the planner says "`late_unaccounted` exists only on the #269 cost row and in logs".
+  **Issue:** #268, #269
+- **Decision:** a presumption or re-send counts against #70's `max_attempts`. The lease-expiry hook adds 1 to the `jobs` row's `failures` when it recovers a `sending` attempt. A run whose `failures ≥ job_max_attempts` ends the job `failed`/`provider_unavailable` instead of re-sending or retrying. A pending ambiguous attempt is presumed at its horizon first.
+  **Why:** the planner's "counts against #70's `max_attempts`, not `image_retry_budget`". Without it, a job that keeps crashing mid-send would loop until the daily limit stopped it.
+  **Issue:** #268
+- **Decision:** #262's legacy branch in `_resume_or_begin` is gone. A run that finds its current attempt still `sending` or `accepted` (the previous run raised mid-call, and #70 requeued the row without a lease expiry) fences it with `fence_in`, then hands it to `_after_fence`. No record is presumed outside the horizon path any more. Any other unresumable current record is released and a new attempt begins, as before.
+  **Why:** the handoff from #262 and #267 names this branch for replacement. One recovery path keeps crash and exception recovery identical.
+  **Issue:** #268, #262
+- **Decision (Rule 1):** the return transaction of a non-fenced run, and an adapter failure's, now locks the `image_jobs` row before any reservation row, which is the settlement path's order. The re-send test deadlocked without it: a deduplicating stub answered the stalled call and its re-send at once.
+  **Why:** the two transactions took the job row and the original record in opposite orders.
+  **Issue:** #268
+- **Decision:** `media_assets` gains `source_job_id`, `source_attempt_token` (the token the output was promoted under) and `output_index`, with a plain unique index `ux_media_assets_source_output`. Nulls are distinct, so uploads and imports are unaffected. `insert_output_asset` fills them for catalog candidates and story images. Bundle export and import list their columns explicitly, so imported assets carry nulls. `image_reservations` gains `resend_of`, `request_snapshot` and `capabilities_snapshot`. Migration `0141_image_send_recovery`: its downgrade maps `presumed` and `resent` to `settled`, and `late_after_presumed` to `late_after_horizon`.
+  **Why:** the AC's No double promotion and Send states bullets, and the planner's own migration.
+  **Issue:** #268
+- **Decision:** `attempts[]` entries (`AttemptView`, REST `AttemptBody`) gain `send_state`, `basis` and `resend_of`, and `openapi.json` is regenerated. This is Console-visible. A new recovery hook `image_attempts` (`attempts.recover_attempts`) classifies records an earlier version fenced in `sending`. `docs/OPERATIONS.md` gains an "Ambiguous sends" paragraph, which says a provider that forgot a key may bill twice. `docs/04` §15's NFR-REL-5 row gains `I-26 (M8)`.
+  **Why:** the planner's job-read and docs lines, and the traceability gate.
+  **Issue:** #268
+- **Decision:** the tests. `test_i_26__m8_ambiguous` (`part("M8", "FR-IMG-11; NFR-REL-5")`) is one function, parametrized by group (`crash_recovery`, `presumed_then_actual`, `submission_modes`), each on its own scratch space.
+  - `crash_recovery` kills a child engine (`EngineProcess(images=True, crash=crash_at(...))`, via `crashed_child`) on the space's database at `images.after_sending_commit` and `images.async.before_ack_commit`. Both points are added to `crash.IMAGE_POINTS`. The child gains the PNG adapters `faults_png_async` and `faults_png_idempotent`. The in-process run then recovers, with stubs registered under the same names.
+  - "Killed before `sending`" is a lease expiry with the record still `prepared`, because no crash point precedes the `sending` commit.
+  - The stub's idempotency cache (`StubImageGenerator(idempotency_keys=True)`) is in memory and answers a repeated key with the original result.
+  **Why:** the test plan and the replan's process-crash convention.
+  **Issue:** #268
+- **Decision (Rule 1):** step 0. CI run 42452018867 on `831dba1` failed `test (integration-i-z)` in `test_i_24__m8_two_paths`. The age 36 appeared in a uuid `attempt_token` (`36066e49-…`), the #791 flake class. #267 put attempt tokens into the job view, so the cause is not 831dba1. `tests.image_safety_support.assert_no_age` now skips uuid-shaped strings as it skips ULIDs. #268 adds `resend_of`, another uuid, to the same view.
+  **Why:** a random token holds no age. Left alone, the flake would hit about one run in ten, on every later push.
+  **Issue:** #268, #791
+
 ## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.

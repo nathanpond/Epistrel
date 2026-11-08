@@ -189,13 +189,14 @@ def names_in(value: str, names: Sequence[str]) -> list[str]:
 
 
 _ULID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def assert_no_age(value: Any, age: int, path: str = "$") -> None:
     """``value`` (a dumped view: dicts, lists, scalars) carries ``age`` nowhere. No key names
     an age (``age`` as an ``_``-separated token), no number equals it, and no string contains
-    its digits. ULIDs and ``datetime`` values are skipped: they are random, so they can hold
-    the digits by chance, and they carry no age (#791)."""
+    its digits. ULIDs, uuids (attempt tokens, #267/#268) and ``datetime`` values are skipped:
+    they are random, so they can hold the digits by chance, and they carry no age (#791)."""
     if isinstance(value, Mapping):
         for key, item in value.items():
             assert "age" not in str(key).lower().split("_"), f"{path}: key {key!r}"
@@ -206,7 +207,7 @@ def assert_no_age(value: Any, age: int, path: str = "$") -> None:
     elif isinstance(value, datetime):
         return
     elif isinstance(value, str):
-        if not _ULID.fullmatch(value):
+        if not (_ULID.fullmatch(value) or _UUID.fullmatch(value)):
             assert str(age) not in value, f"{path}: {value!r}"
     elif isinstance(value, int | float) and not isinstance(value, bool):
         assert value != age, f"{path}: {value!r}"

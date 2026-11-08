@@ -196,6 +196,7 @@ from epistrel.orchestrator.commit import directed
 from epistrel.orchestrator.embeddings.adapter import EMBEDDING as EMBEDDING_PORT
 from epistrel.orchestrator.embeddings.adapter import EmbeddingProbe
 from epistrel.orchestrator.embeddings.service import EmbeddingUnreachable
+from epistrel.orchestrator.images import attempts as image_attempts
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images import output_check, prompt_builder
 from epistrel.orchestrator.images import registry as image_registry
@@ -771,6 +772,16 @@ async def _end_rating_checks(conn: AsyncConnection) -> None:
     await rating_change.reconcile(conn, true())
 
 
+IMAGE_ATTEMPTS_HOOK = "image_attempts"
+"""The worker recovery hook that classifies every fenced image attempt left in ``sending``
+(#268, ``orchestrator.images.attempts.recover_attempts``): one no idempotent re-send can recover
+is an ambiguous send, held to its horizon and presumed there."""
+
+
+async def _recover_image_attempts(conn: AsyncConnection) -> None:
+    await image_attempts.recover_attempts(conn)
+
+
 CERTIFICATIONS_HOOK = "certifications"
 """The worker recovery hook that imports the committed certification records
 (``core.profiles.certification.SEEDS_DIR``, #233): idempotent, so a deployment on the reference
@@ -931,6 +942,7 @@ class Engine:
         register_recovery_hook(TURN_QUEUE_HOOK, self._recovery_hook)
         register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
         register_recovery_hook(CERTIFICATIONS_HOOK, _load_certifications)
+        register_recovery_hook(IMAGE_ATTEMPTS_HOOK, _recover_image_attempts)
         self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
         self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
 
@@ -965,6 +977,7 @@ class Engine:
             unregister_recovery_hook(TURN_QUEUE_HOOK)
             unregister_recovery_hook(RATING_CHECK_HOOK)
             unregister_recovery_hook(CERTIFICATIONS_HOOK)
+            unregister_recovery_hook(IMAGE_ATTEMPTS_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:

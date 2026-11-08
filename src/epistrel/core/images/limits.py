@@ -188,7 +188,8 @@ def counter_deltas(
     settled`` (#267: a late return after the record was released at its horizon, or a
     confirming adapter's adopted outputs) leaves ``reserved`` alone and adds ``used = m``,
     ``overage = m`` (nothing was reserved for them any more) and ``extra_outputs = max(0, m -
-    requested)``. Any other transition raises ``InvalidReservationTransition``."""
+    requested)``. Any other transition raises ``InvalidReservationTransition``. A presumed
+    settlement's one correction (#268) is ``correct``'s difference, not a state transition."""
     if old_state is None and new_state is ReservationState.HELD:
         return Deltas(reserved=requested)
     if old_state is ReservationState.HELD and new_state is ReservationState.RELEASED:
@@ -510,6 +511,70 @@ async def release(
     return released
 
 
+async def presume(conn: AsyncConnection, record: ReservationRecord) -> ReservationRecord:
+    """Settle an ambiguous send's ``held`` record as **presumed** (#268; FR-IMG-11), in
+    ``conn``'s transaction: ``used = requested`` (the outputs count as covered), ``basis =
+    presumed``, its cost ``unknown`` and its outcome ``presumed``; ``send_state`` stays
+    ``ambiguous``. Raises ``InvalidReservationTransition`` unless the record is ``held``."""
+    current = await read_record(conn, record.job_id, record.attempt_token, lock=True)
+    if current is None or current.state is not ReservationState.HELD:
+        raise InvalidReservationTransition("only a held record is presumed")
+    settled = await settle(conn, current, current.requested, basis=SettlementBasis.PRESUMED)
+    found = await store.read_reservation(conn, current.job_id, current.attempt_token)
+    applied = dict((found.applied_parameters if found is not None else None) or {})
+    applied["cost"] = "unknown"
+    await store.update_reservation(
+        conn,
+        current.job_id,
+        current.attempt_token,
+        applied_parameters=applied,
+        outcome="presumed",
+    )
+    return settled
+
+
+async def correct(conn: AsyncConnection, record: ReservationRecord, m: int) -> ReservationRecord:
+    """The one correction of a presumed settlement (#268; FR-IMG-11), in ``conn``'s
+    transaction: the record becomes what a ``held`` settlement with ``m`` outputs would have
+    recorded (``used = m``, ``overage = extra_outputs = max(0, m - requested)``), ``basis =
+    corrected``, and its snapshot's counters move by the difference (``reserved`` untouched).
+    Raises ``InvalidReservationTransition`` unless the record (re-read under lock) is a
+    ``settled`` one with ``basis = presumed``."""
+    if m < 0:
+        raise ValueError("a settlement returns at least 0 outputs")
+    current = await read_record(conn, record.job_id, record.attempt_token, lock=True)
+    if (
+        current is None
+        or current.state is not ReservationState.SETTLED
+        or current.basis is not SettlementBasis.PRESUMED
+    ):
+        raise InvalidReservationTransition("only a presumed settlement is corrected")
+    excess = max(0, m - current.requested)
+    deltas = Deltas(
+        used=m - current.used,
+        overage=excess - current.overage,
+        extra_outputs=excess - current.extra_outputs,
+    )
+    now = clock.now()
+    await conn.execute(
+        update(image_reservations)
+        .where(
+            image_reservations.c.job_id == current.job_id,
+            image_reservations.c.attempt_token == current.attempt_token,
+        )
+        .values(
+            used=m,
+            overage=excess,
+            extra_outputs=excess,
+            basis=SettlementBasis.CORRECTED.value,
+        )
+    )
+    await _apply(conn, current.counter_keys, deltas, at=now)
+    corrected = await read_record(conn, current.job_id, current.attempt_token)
+    assert corrected is not None  # noqa: S101 - locked above
+    return corrected
+
+
 async def release_all(
     conn: AsyncConnection, job_id: str, *, current_token: str | None = None
 ) -> int:
@@ -517,7 +582,9 @@ async def release_all(
     story's deletion), in ``conn``'s transaction; how many. With ``current_token`` (the job's
     token before the ending), a record of another token that is still in flight before its
     horizon is kept: a lease expiry fenced it (#267), and its horizon timer releases it, so a
-    late return still settles inside its reservation."""
+    late return still settles inside its reservation. An ambiguous send's record (#268) that is
+    not kept is presumed (``presume``), never released: the limits err toward generating
+    less."""
     now = clock.now()
     held = await conn.execute(
         select(image_reservations)
@@ -533,17 +600,21 @@ async def release_all(
         record = _record(row)
         if current_token is not None and fenced_in_flight(record, current_token, now):
             continue
-        await release(conn, record)
+        if record.send_state is SendState.AMBIGUOUS:
+            await presume(conn, record)
+        else:
+            await release(conn, record)
         count += 1
     return count
 
 
 def fenced_in_flight(record: ReservationRecord, current_token: str, now: datetime) -> bool:
     """Whether ``record`` is an attempt a lease expiry fenced that may still return before its
-    horizon (#267): another token than the job's current one, sent, and its horizon ahead."""
+    horizon (#267): another token than the job's current one, sent (an ambiguous send, #268,
+    included), and its horizon ahead."""
     return (
         record.attempt_token != current_token
-        and record.send_state in (SendState.SENDING, SendState.ACCEPTED)
+        and record.send_state in (SendState.SENDING, SendState.ACCEPTED, SendState.AMBIGUOUS)
         and record.horizon_at is not None
         and record.horizon_at > now
     )

@@ -18,6 +18,12 @@
   ``outputs``) on ``succeeded``, and their cost unless ``status_cost`` is off; ``collect``
   answers ``outputs``.
 
+A stub declaring ``idempotency_keys`` (#268) deduplicates like the provider it stands for: a
+``sync`` call carrying a key it has seen answers that key's original result (waiting for it if
+the original call is still running) without consuming a script entry, and records the key in
+``deduplicated``. The cache is in memory, so a re-send after a child engine was killed before
+its call reached the stub generates once.
+
 An exhausted script raises ``StubScriptExhausted``. ``requests`` records every
 ``(request, idempotency_key as received, attempt_ref)``; refs are ``stub-1``, ``stub-2`` …
 
@@ -156,6 +162,8 @@ class StubImageGenerator:
         self._pending: dict[str, Step] = {}
         self._statuses: dict[str, list[AttemptState]] = {}
         self._reports: dict[str, StatusSeq] = {}
+        self._keyed: dict[str, asyncio.Future[SubmitResult]] = {}
+        self.deduplicated: list[str] = []
 
     # -- the factory ------------------------------------------------------------------------
 
@@ -184,6 +192,10 @@ class StubImageGenerator:
         return step
 
     async def submit(self, request: ImageRequest, idempotency_key: str | None) -> SubmitResult:
+        if self._capabilities.idempotency_keys and idempotency_key:
+            known = await self._deduplicated(request, idempotency_key)
+            if known is not None:
+                return known
         ref = f"stub-{len(self.requests) + 1}"
         self.requests.append(Received(request, idempotency_key, ref))
         step = self._next()
@@ -198,9 +210,29 @@ class StubImageGenerator:
                 self._reports[ref] = final
             self._pending[ref] = step
             return SubmitResult(attempt_ref=ref)
-        done = await self._settle(step)
+        if not (self._capabilities.idempotency_keys and idempotency_key):
+            done = await self._settle(step)
+            images = done.images()
+            return SubmitResult(ref, images, ImageUsage(len(images)), done.cost)
+        found: asyncio.Future[SubmitResult] = asyncio.get_running_loop().create_future()
+        self._keyed[idempotency_key] = found
+        try:
+            done = await self._settle(step)
+        except BaseException as exc:
+            found.set_exception(exc)
+            raise
         images = done.images()
-        return SubmitResult(ref, images, ImageUsage(len(images)), done.cost)
+        found.set_result(SubmitResult(ref, images, ImageUsage(len(images)), done.cost))
+        return found.result()
+
+    async def _deduplicated(self, request: ImageRequest, key: str) -> SubmitResult | None:
+        """The original result for ``key`` (#268), or ``None`` when the key is new."""
+        original = self._keyed.get(key)
+        if original is None:
+            return None
+        self.requests.append(Received(request, key, f"stub-{len(self.requests) + 1}"))
+        self.deduplicated.append(key)
+        return await asyncio.shield(original)
 
     async def collect(self, attempt_ref: str) -> CollectResult:
         self.collected.append(attempt_ref)

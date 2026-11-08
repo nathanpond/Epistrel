@@ -11,7 +11,9 @@ image adapter a child engine process can register (``testing.faults serve --imag
   applies raises ``ImageCheckUnconfigured``), unless ``fail_closed=False``. ``stall`` makes each
   output check wait for an event first. ``prompt_violation`` refuses every prompt.
 - ``PngImageGenerator`` is a ``sync`` adapter answering ``n`` grey PNGs, written with the
-  standard library alone.
+  standard library alone. #268: ``submission="async"`` makes it acknowledge in ``submit`` and
+  answer from ``collect``, and ``idempotency_keys=True`` makes it declare that capability (a
+  child engine's crash tests need both: ``testing.faults`` registers the three variants).
 
 Nothing in ``create_app`` or the Engine imports this module.
 """
@@ -24,7 +26,7 @@ import zlib
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -199,29 +201,44 @@ def png(width: int = 16, height: int = 16, *, shade: int = 128) -> bytes:
 
 
 class PngImageGenerator:
-    """A ``sync`` image adapter answering ``n`` PNGs per call; its own factory."""
+    """An image adapter answering ``n`` PNGs per call (``sync`` by default); its own
+    factory."""
 
     COST = Cost(Decimal("0.01"), "USD")
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, submission: Literal["sync", "async"] = "sync", idempotency_keys: bool = False
+    ) -> None:
         self.calls = 0
+        self.submission: Literal["sync", "async"] = submission
+        self.idempotency_keys = idempotency_keys
+        self._pending: dict[str, int] = {}
 
     def __call__(self, config: ImageAdapterConfig) -> PngImageGenerator:
         return self
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(submission="sync")
+        return Capabilities(submission=self.submission, idempotency_keys=self.idempotency_keys)
+
+    def _images(self, n: int) -> tuple[ImageOutput, ...]:
+        return tuple(
+            ImageOutput(png(shade=(self.calls * 37 + i * 11) % 256), "image/png") for i in range(n)
+        )
 
     async def submit(self, request: ImageRequest, idempotency_key: str | None) -> SubmitResult:
         self.calls += 1
-        images = tuple(
-            ImageOutput(png(shade=(self.calls * 37 + i * 11) % 256), "image/png")
-            for i in range(request.n)
-        )
-        return SubmitResult(f"png-{self.calls}", images, ImageUsage(len(images)), self.COST)
+        ref = f"png-{self.calls}"
+        if self.submission == "async":
+            self._pending[ref] = request.n
+            return SubmitResult(attempt_ref=ref)
+        images = self._images(request.n)
+        return SubmitResult(ref, images, ImageUsage(len(images)), self.COST)
 
     async def collect(self, attempt_ref: str) -> CollectResult:
-        raise NotImplementedError("a sync adapter is never collected")
+        if self.submission != "async":
+            raise NotImplementedError("a sync adapter is never collected")
+        images = self._images(self._pending.pop(attempt_ref, 1))
+        return CollectResult(images, ImageUsage(len(images)), self.COST)
 
     async def aclose(self) -> None:
         return None

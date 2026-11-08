@@ -1068,6 +1068,17 @@ class _Attempt:
     usage: Any = None
     cost: Any = None
     attempt_ref: str | None = None
+    resend_of: str | None = None
+    """#268: an idempotent re-send's stalled attempt (whose record its result settles)."""
+    request: dict[str, Any] | None = None
+    """#268: the request a re-send sends again (the stalled attempt's ``request_snapshot``)."""
+    key: str | None = None
+    """#268: the idempotency key a re-send carries (the stalled attempt's)."""
+
+
+SNAPSHOT_EXCLUDED: set[str] = {"prompt", "negative_prompt"}
+"""What ``image_reservations.request_snapshot`` leaves out (#268): the prompt text stays on the
+job (where erasure and story deletion reach it); the records are deployment accounting."""
 
 
 def _image_request(job: ImageJob, seed: int, params: ImageGenerationParams) -> ImageRequest:
@@ -1328,17 +1339,28 @@ class ImageJobRunner:
         """The attempt this run starts with: the current one when it was never sent; the
         current one's staged outputs when a previous run staged them and stopped before its
         checks finished (a checker retry); with no record on the current token (a lease expiry
-        fenced the last one, #267), what ``_after_fence`` decides; otherwise (a crash after the
-        send, which #268 recovers) the attempt is discarded with its staged bytes and a new one
-        begins, reserved before its call (#262). Until #268, a discarded attempt the provider
-        may have received (``sending``, ``accepted``) is settled as presumed (its requested
-        outputs counted), and any other record it still holds is released. The run's result
+        fenced the last one, #267), what ``_after_fence`` decides. A current attempt still in
+        flight (``sending`` or ``accepted``: the previous run raised mid-call and #70 requeued
+        it without a lease expiry) is fenced as a lease expiry would (``attempts.fence_in``,
+        #268: an ambiguous send or an idempotent re-send), and ``_after_fence`` decides.
+        Otherwise the attempt is discarded with its staged bytes and a new one begins, reserved
+        before its call (#262), and any record it still holds is released. The run's result
         when it stops here (a horizon or confirmation wait, or ``cap_reached``); ``None`` when
         fenced."""
         async with self.rt.db.connect() as conn:
-            fenced = await store.read_reservation(conn, job.id, job.attempt_token) is None
-        if fenced:
+            found = await store.read_reservation(conn, job.id, job.attempt_token)
+        if found is None:
             return await self._after_fence(job, handle)
+        if found.send_state in attempts.IN_FLIGHT and found.outcome is None:
+            async with self.rt.db.begin() as conn:
+                locked = await store.read_job(conn, job.id, lock=True)
+                if locked is None or locked.terminal or locked.attempt_token != job.attempt_token:
+                    return None
+                await attempts.fence_in(conn, locked)
+            fresh = await self.read()
+            if fresh is None or fresh.terminal:
+                return {"image_job": None if fresh is None else fresh.status.value}
+            return await self._after_fence(fresh, handle)
         async with self.rt.db.begin() as conn:
             current = await store.read_reservation(conn, job.id, job.attempt_token)
             if current is None:
@@ -1360,21 +1382,13 @@ class ImageJobRunner:
                         applied,
                         attempt_ref=current.attempt_ref,
                     )
-            values: dict[str, Any] = {}
             if current.outcome is None:
-                values["outcome"] = AttemptOutcome.DISCARDED.value
-            if current.send_state is SendState.SENDING:
-                values["send_state"] = SendState.AMBIGUOUS.value
-            if values:
-                await store.update_reservation(conn, job.id, job.attempt_token, **values)
+                await store.update_reservation(
+                    conn, job.id, job.attempt_token, outcome=AttemptOutcome.DISCARDED.value
+                )
             record = await limits.read_record(conn, job.id, job.attempt_token, lock=True)
             if record is not None and record.state is ReservationState.HELD:
-                if current.send_state in (SendState.SENDING, SendState.ACCEPTED):
-                    await limits.settle(
-                        conn, record, record.requested, basis=SettlementBasis.PRESUMED
-                    )
-                else:
-                    await limits.release(conn, record)
+                await limits.release(conn, record)
             begun = await self._next_attempt(conn, job, job.attempt_token)
         await asyncio.to_thread(self._remove_attempt, job.id, job.attempt_token)
         if not isinstance(begun, str):
@@ -1395,8 +1409,16 @@ class ImageJobRunner:
         run asks #70 to come back then). At the horizon its record is released if it is still
         held, and then a ``confirms_completion`` adapter is asked (``attempts.confirm``): adopt,
         retry, or poll again later. Otherwise, and on a retry, a new attempt begins under the
-        current token (``_begin_current``)."""
+        current token (``_begin_current``).
+
+        #268: a stalled attempt still ``sending`` is recovered first (``recover_attempt``): an
+        idempotent one is re-sent at once (``_resend_in``), any other is an ambiguous send held
+        to its horizon and presumed there. A job whose ``jobs`` row has used up #70's
+        ``max_attempts`` (each presumption and re-send counts) ends
+        ``failed``/``provider_unavailable`` instead of sending again."""
         now = clock.now()
+        exhausted = self.failures >= self.rt.max_attempts
+        resend: _Attempt | None = None
         async with self.rt.db.begin() as conn:
             locked = await store.read_job(conn, job.id, lock=True)
             if locked is None or locked.terminal:
@@ -1407,7 +1429,15 @@ class ImageJobRunner:
                 return None  # another run began the attempt meanwhile
             await attempts.release_unsent(conn, locked)
             stalled = await attempts.stalled_record(conn, locked)
-            if stalled is not None:
+            if stalled is not None and stalled.send_state is SendState.SENDING:
+                recovered, original = await attempts.recover_attempt(
+                    conn, locked, stalled, resend=not exhausted
+                )
+                if recovered == attempts.RESEND and original is not None:
+                    resend = await self._resend_in(conn, locked, original, stalled)
+                else:
+                    stalled = original
+            if resend is None and stalled is not None:
                 horizon = stalled.horizon_at or now
                 if now < horizon:
                     await attempts.set_waiting(conn, job.id, True)
@@ -1420,6 +1450,17 @@ class ImageJobRunner:
                     }
                 await attempts.set_waiting(conn, job.id, False)
                 await attempts.release_at_horizon_in(conn, job.id, stalled.attempt_token)
+        if resend is not None:
+            return resend
+        if exhausted:
+            await end_job(
+                self.rt,
+                job.id,
+                ImageJobStatus.FAILED,
+                reason="provider_unavailable",
+                token=job.attempt_token,
+            )
+            return {"image_job": ImageJobStatus.FAILED.value, "reason": "provider_unavailable"}
         if (
             stalled is not None
             and stalled.attempt_ref is not None
@@ -1438,6 +1479,39 @@ class ImageJobRunner:
             if isinstance(decided, attempts.Adopt):
                 return await self._adopt(fresh, stalled, decided.status)
         return await self._begin_current(job)
+
+    async def _resend_in(
+        self,
+        conn: AsyncConnection,
+        job: ImageJob,
+        original: store.Reservation,
+        stalled: store.Reservation,
+    ) -> _Attempt:
+        """#268: the idempotent re-send of ``original`` under the job's current token, in
+        ``conn``'s transaction: a row that reserves nothing (``limits.insert_unreserved_record``)
+        naming ``resend_of``, with the original's key and request snapshot; its result settles
+        the original's record (``_generate``). A stalled earlier re-send (``stalled``) is
+        superseded."""
+        await attempts.supersede(conn, job.id, stalled)
+        token = job.attempt_token
+        await limits.insert_unreserved_record(conn, job, token)
+        await store.update_reservation(
+            conn,
+            job.id,
+            token,
+            resend_of=original.attempt_token,
+            idempotency_key=original.idempotency_key,
+            request_snapshot=original.request_snapshot,
+        )
+        applied = dict(original.applied_parameters or {})
+        return _Attempt(
+            token,
+            int(applied.get("seed", 0)),
+            applied.get("seed_source", "engine"),
+            resend_of=original.attempt_token,
+            request=original.request_snapshot,
+            key=original.idempotency_key,
+        )
 
     async def _adopt(
         self, job: ImageJob, stalled: store.Reservation, status: Any
@@ -1642,8 +1716,27 @@ class ImageJobRunner:
         image_attempt_grace_s``) and its seed. A return for a token a lease expiry, a retry or a
         cancel replaced goes through the settlement path only (``attempts``), and its bytes are
         deleted unpromoted."""
+        from epistrel.orchestrator.jobs import timers  # here: the jobs package imports us
+
         capabilities = handle.capabilities()
         started = clock.now()
+        request = (
+            # A re-send's snapshot holds no prompt text (accounting rows outlive their story):
+            # the job's prompt is sent with it again.
+            ImageRequest.model_validate(
+                {
+                    **attempt.request,
+                    "prompt": job.prompt,
+                    "negative_prompt": job.negative_prompt,
+                }
+            )
+            if attempt.request is not None
+            else _image_request(job, attempt.seed, params)
+        )
+        key = attempt.key or store.idempotency_key_of(job.id, attempt.token)
+        horizon = attempts.horizon_of(
+            started, attempts.request_timeout_s(params, capabilities), self.settings
+        )
         async with self.rt.db.begin() as conn:
             moved = await store.set_status(
                 conn,
@@ -1654,24 +1747,39 @@ class ImageJobRunner:
             )
             if not moved:
                 return {"image_job": "fenced"}
+            # #268: the key, the request and the adapter's capabilities commit before submit.
             await store.update_reservation(
                 conn,
                 job.id,
                 attempt.token,
                 send_state=SendState.SENDING.value,
                 started_at=started,
-                horizon_at=attempts.horizon_of(
-                    started, attempts.request_timeout_s(params, capabilities), self.settings
-                ),
+                horizon_at=horizon,
                 applied_parameters={"seed": attempt.seed, "seed_source": attempt.seed_source},
+                idempotency_key=key,
+                request_snapshot=request.model_dump(mode="json", exclude=SNAPSHOT_EXCLUDED),
+                capabilities_snapshot={
+                    "submission": capabilities.submission,
+                    "idempotency_keys": capabilities.idempotency_keys,
+                },
             )
-        request = _image_request(job, attempt.seed, params)
+            if attempt.resend_of is not None:
+                # The re-sent attempt's record stays held while its re-send is in flight.
+                await store.update_reservation(conn, job.id, attempt.resend_of, horizon_at=horizon)
+                await timers.schedule(
+                    conn, attempts.HORIZON_TIMER, f"{job.id}:{attempt.resend_of}", horizon
+                )
+                logger.info(
+                    "image job %s attempt %s: image_attempt_resent", job.id, attempt.resend_of
+                )
+        crash.hit("images.after_sending_commit")
         try:
-            result = await handle.submit(request, None)
+            result = await handle.submit(request, key)
             outputs: Sequence[ImageOutput] = result.outputs or ()
             usage, cost = result.usage, result.cost
             attempt.attempt_ref = result.attempt_ref
             if capabilities.submission == "async":
+                crash.hit("images.async.before_ack_commit")
                 async with self.rt.db.begin() as conn:
                     await store.update_reservation(
                         conn,
@@ -1706,8 +1814,13 @@ class ImageJobRunner:
                 )
         if fenced:
             await asyncio.to_thread(self._remove_attempt, job.id, attempt.token)
-            return {"image_job": "fenced", "late": None if late is None else late.value}
+            return {
+                "image_job": "fenced",
+                "late": attempts.LATE_UNACCOUNTED if late is None else late.value,
+            }
         async with self.rt.db.begin() as conn:
+            # The job row first, then the records: the settlement path's lock order (#268).
+            await store.read_job(conn, job.id, lock=True)
             await store.update_reservation(
                 conn,
                 job.id,
@@ -1717,10 +1830,24 @@ class ImageJobRunner:
                 applied_parameters={**applied, "usage": attempt.usage, "cost": attempt.cost},
                 outputs_returned=len(outputs),
             )
-            record = await limits.read_record(conn, job.id, attempt.token, lock=True)
+            if attempt.resend_of is not None:
+                # #268: a re-send's outputs count once, on the re-sent attempt's record.
+                await attempts.settle_attempt_in(
+                    conn,
+                    job.id,
+                    attempt.token,
+                    len(outputs),
+                    cost=cost,
+                    usage=usage,
+                    held=AttemptOutcome.RESENT,
+                    released=AttemptOutcome.RESENT,
+                )
+                record = None
+            else:
+                record = await limits.read_record(conn, job.id, attempt.token, lock=True)
             if record is not None and record.state is ReservationState.HELD:
                 await limits.settle(conn, record, len(outputs))
-            else:
+            elif attempt.resend_of is None:
                 # Released by an ending while the call ran (a cancel); #267 settles late returns.
                 logger.info("image job %s: a return for a record that is not held", job.id)
             if not staged:
@@ -1776,6 +1903,7 @@ class ImageJobRunner:
         if fenced:
             return {"image_job": "fenced", "error": exc.code}
         async with self.rt.db.begin() as conn:
+            await store.read_job(conn, job.id, lock=True)  # the settlement path's lock order
             await store.update_reservation(
                 conn,
                 job.id,
@@ -1783,10 +1911,18 @@ class ImageJobRunner:
                 send_state=SendState.RETURNED.value,
                 outcome=AttemptOutcome.FAILED.value,
             )
-            # No provider result arrived: the attempt's reservation is released (#262).
-            record = await limits.read_record(conn, job.id, attempt.token, lock=True)
-            if record is not None and record.state is ReservationState.HELD:
-                await limits.release(conn, record)
+            # No provider result arrived: the attempt's reservation is released (#262), and a
+            # failed re-send's (#268) the re-sent attempt's too.
+            for token in (attempt.token, attempt.resend_of):
+                if token is None:
+                    continue
+                record = await limits.read_record(conn, job.id, token, lock=True)
+                if record is not None and record.state is ReservationState.HELD:
+                    await limits.release(conn, record)
+                    if token != attempt.token:
+                        await store.update_reservation(
+                            conn, job.id, token, outcome=AttemptOutcome.FAILED.value
+                        )
         if not exc.retryable:
             await end_job(
                 self.rt, job.id, ImageJobStatus.FAILED, reason=_reason_of(exc), token=attempt.token
@@ -2252,7 +2388,9 @@ async def insert_output_asset(
     the checker's model and endpoint host, the per-policy results; #266 adds the depicted
     subjects). ``source`` is ``generated`` for an Epistrel-built prompt and
     ``generated_from_consumer_prompt`` for a consumer's (the target knows which, #263), and a
-    story image's ``viewpoint_basis`` (``filtered_inputs`` or ``protected_term_match``)."""
+    story image's ``viewpoint_basis`` (``filtered_inputs`` or ``protected_term_match``). The row
+    names the output (#268: the job, the attempt token it is promoted under and its index in the
+    provider's return order), whose unique index refuses a second promotion of it."""
     verdict = output.verdict
     passed = verdict.check_status == "passed"
     return await store.insert_generated_asset(
@@ -2276,6 +2414,9 @@ async def insert_output_asset(
         check_endpoint=verdict.endpoint if passed else None,
         policy_results=verdict.policy_results() if passed else [],
         viewpoint_basis=viewpoint_basis,
+        source_job_id=job.id,
+        source_attempt_token=job.attempt_token,
+        output_index=output.index,
     )
 
 
@@ -2287,7 +2428,9 @@ class AttemptView:
     """One provider attempt as a job read reports it (#267): its token, its outcome (``None``
     while in flight), what it reserved, and once settled what it used, its overage and extra
     outputs (``None`` while ``held``), and its cost (``{amount, currency}``, ``"unknown"``, or
-    ``None`` before it is known; #269 reshapes it)."""
+    ``None`` before it is known; #269 reshapes it). #268 adds its ``send_state`` (``ambiguous``
+    for an ambiguous send), its settlement ``basis`` (``actual``, ``presumed`` or
+    ``corrected``) and, for an idempotent re-send, the attempt it re-sent (``resend_of``)."""
 
     attempt_token: str
     outcome: str | None
@@ -2297,6 +2440,9 @@ class AttemptView:
     extra_outputs: int | None
     cost: Any
     started_at: datetime | None
+    send_state: str = SendState.SENDING.value
+    basis: str = SettlementBasis.ACTUAL.value
+    resend_of: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -2349,6 +2495,9 @@ async def attempt_views(conn: AsyncConnection, job_id: str) -> tuple[AttemptView
                 extra_outputs=None if held or record is None else record.extra_outputs,
                 cost=(row.applied_parameters or {}).get("cost"),
                 started_at=row.started_at,
+                send_state=row.send_state.value,
+                basis=SettlementBasis.ACTUAL.value if record is None else record.basis.value,
+                resend_of=row.resend_of,
             )
         )
     return tuple(views)

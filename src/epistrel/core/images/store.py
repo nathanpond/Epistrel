@@ -23,6 +23,7 @@ indexed as a medium (``records.media_record``) and its declared subjects pass th
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import Mapping, Sequence
@@ -152,6 +153,27 @@ class Reservation:
     """#267: ``started_at + request_timeout_s + image_attempt_grace_s``."""
     cancel_result: str | None = None
     last_status: str | None = None
+    idempotency_key: str | None = None
+    """#268: ``sha256("<job_id>:<attempt_token>")`` (lowercase hex), written at the ``sending``
+    commit; a re-send's is its stalled attempt's."""
+    resend_of: str | None = None
+    """#268: the stalled attempt an idempotent re-send re-sent (its record takes the
+    settlement)."""
+    request_snapshot: dict[str, Any] | None = None
+    """#268: the request sent, as JSON (``ImageRequest.model_dump``), without its prompt text."""
+    capabilities_snapshot: dict[str, Any] | None = None
+    """#268: the adapter's ``{submission, idempotency_keys}`` at the ``sending`` commit."""
+
+    @property
+    def resendable(self) -> bool:
+        """Whether its adapter declared ``idempotency_keys`` when it was sent (#268)."""
+        return bool((self.capabilities_snapshot or {}).get("idempotency_keys"))
+
+
+def idempotency_key_of(job_id: str, attempt_token: str) -> str:
+    """An attempt's provider idempotency key (#268; FR-IMG-11): the lowercase hex SHA-256 of
+    ``"<job_id>:<attempt_token>"`` (the token as canonical uuid text)."""
+    return hashlib.sha256(f"{job_id}:{uuid.UUID(attempt_token)!s}".encode()).hexdigest()
 
 
 def _job(row: Any) -> ImageJob:
@@ -204,6 +226,12 @@ def _reservation(row: Any) -> Reservation:
         horizon_at=m["horizon_at"],
         cancel_result=m["cancel_result"],
         last_status=m["last_status"],
+        idempotency_key=m["idempotency_key"],
+        resend_of=None if m["resend_of"] is None else str(m["resend_of"]),
+        request_snapshot=None if m["request_snapshot"] is None else dict(m["request_snapshot"]),
+        capabilities_snapshot=None
+        if m["capabilities_snapshot"] is None
+        else dict(m["capabilities_snapshot"]),
     )
 
 
@@ -532,12 +560,17 @@ async def insert_generated_asset(
     check_endpoint: str | None = None,
     policy_results: Sequence[Mapping[str, Any]] = (),
     viewpoint_basis: str | None = None,
+    source_job_id: str | None = None,
+    source_attempt_token: str | None = None,
+    output_index: int | None = None,
 ) -> str:
     """A promoted output's ``media_assets`` row (``kind = image``, ``source`` ``generated`` or
     ``generated_from_consumer_prompt``, with its output check's fields, #258) in ``conn``'s
     transaction (a target's promote); its id. The blob ``checksum`` is already in the
     store: until the transaction commits, nothing names it, and the media sweep's orphan step
-    only removes a blob nothing names after an hour."""
+    only removes a blob nothing names after an hour. ``source_job_id``, ``source_attempt_token``
+    and ``output_index`` name the output (#268): their unique index refuses a second promotion
+    of it."""
     from epistrel.core.erasure.guard import assert_not_erased
 
     # No new medium depicts a subject a catalog-scope erasure removed (FR-ADMIN-9; #127, #266).
@@ -574,6 +607,9 @@ async def insert_generated_asset(
             check_endpoint=check_endpoint,
             policy_results=[dict(r) for r in policy_results],
             viewpoint_basis=viewpoint_basis,
+            source_job_id=source_job_id,
+            source_attempt_token=source_attempt_token,
+            output_index=output_index,
         )
     )
     if viewpoint_basis is None:
@@ -597,6 +633,7 @@ __all__ = [
     "append_policy_results",
     "cancel_in",
     "channel",
+    "idempotency_key_of",
     "index_job",
     "insert_generated_asset",
     "insert_job",

@@ -53,6 +53,17 @@ non-confirming rule), and ``image_reservations.cancel_result`` (what the one ``c
 horizon answered: ``accepted``, ``not_supported`` or ``error``) and ``last_status`` (the last
 ``status`` answer). ``horizon_at`` is ``started_at + request_timeout_s + image_attempt_grace_s``.
 
+#268 (FR-IMG-11's ambiguous sends) adds ``image_reservations.resend_of`` (an idempotent re-send's
+row, ``requested = 0`` with no ``counter_keys``, names the stalled attempt whose key it re-sent:
+that attempt's record keeps the reservation and takes the settlement), ``request_snapshot`` (the
+``ImageRequest`` the attempt sent, as JSON, without its prompt and negative prompt: the records
+are deployment accounting and hold no story content; a re-send takes the job's prompt) and
+``capabilities_snapshot`` (the adapter's ``{submission, idempotency_keys}`` at the ``sending``
+commit; recovery reads it, never the live adapter). ``idempotency_key`` is
+``sha256("<job_id>:<attempt_token>")`` in lowercase hex, written at the ``sending`` commit (a
+re-send carries its stalled attempt's). ``send_state = ambiguous``
+marks an ambiguous send: a lease expiry found it ``sending`` and it could not be re-sent.
+
 ``image_jobs.result`` (#260) holds what a successful job made beyond its ``asset_ids``: a catalog
 job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes.
 
@@ -169,7 +180,10 @@ class AttemptOutcome(StrEnum):
     by its horizon), ``abandoned_fallback`` (``image_confirm_wait_max_s`` passed with no
     definitive status), and the fenced worker's late returns: ``late_discarded`` (before the
     horizon), ``late_after_horizon`` (after it) and ``late_duplicate`` (onto a settled record;
-    reported, never stored over the earlier outcome)."""
+    reported, never stored over the earlier outcome). #268 adds ``presumed`` (an ambiguous send
+    settled at its horizon as if it had returned its requested outputs), ``resent`` (an
+    idempotent re-send under a later token returned its result onto this record) and
+    ``late_after_presumed`` (the actual result corrected a presumed settlement once)."""
 
     PROMOTED = "promoted"
     REJECTED = "rejected"
@@ -183,6 +197,9 @@ class AttemptOutcome(StrEnum):
     LATE_DISCARDED = "late_discarded"
     LATE_AFTER_HORIZON = "late_after_horizon"
     LATE_DUPLICATE = "late_duplicate"
+    PRESUMED = "presumed"
+    RESENT = "resent"
+    LATE_AFTER_PRESUMED = "late_after_presumed"
 
 
 def _in(column: str, values: type[StrEnum]) -> str:
@@ -278,6 +295,9 @@ image_reservations = Table(
     Column("settled_at", TIMESTAMP(timezone=True), nullable=True),
     Column("cancel_result", Text, nullable=True),
     Column("last_status", Text, nullable=True),
+    Column("resend_of", UUID(as_uuid=False), nullable=True),
+    Column("request_snapshot", JSONB, nullable=True),
+    Column("capabilities_snapshot", JSONB, nullable=True),
     PrimaryKeyConstraint("job_id", "attempt_token", name="pk_image_reservations"),
     CheckConstraint(SEND_STATE_CHECK, name="send_state"),
     CheckConstraint(OUTCOME_CHECK, name="outcome"),

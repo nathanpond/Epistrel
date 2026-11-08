@@ -50,7 +50,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 from epistrel.core.tables.base import metadata, ulid_type
 
@@ -198,6 +198,11 @@ media_assets = Table(
     # (``filtered_inputs``, ``protected_term_match``, or ``none`` for an upload); ``NULL`` for an
     # asset that is no story image.
     Column("viewpoint_basis", Text, nullable=True),
+    # FR-IMG-11 (#268): a generated output's job, the attempt token it was promoted under and its
+    # index in the provider's return order; unique together, so no output is promoted twice.
+    Column("source_job_id", ulid_type(), nullable=True),
+    Column("source_attempt_token", UUID(as_uuid=False), nullable=True),
+    Column("output_index", Integer, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(SOURCE_CHECK, name="source"),
     CheckConstraint(CHECK_STATUS_CHECK, name="check_status"),
@@ -220,6 +225,14 @@ Index(
 )
 # The media sweep's "does a video name this poster" (#107).
 Index("ix_media_assets_poster_media_id", media_assets.c.poster_media_id)
+# Promotion at most once (FR-IMG-11; #268): one row per job, attempt token and output index.
+Index(
+    "ux_media_assets_source_output",
+    media_assets.c.source_job_id,
+    media_assets.c.source_attempt_token,
+    media_assets.c.output_index,
+    unique=True,
+)
 
 media_upload_sessions = Table(
     "media_upload_sessions",

@@ -1137,6 +1137,10 @@ MEDIA_COLUMNS = {
     "policy_results": ("jsonb", "NO"),
     # #261: a story image's asset says what its inputs were built from (null otherwise).
     "viewpoint_basis": ("text", "YES"),
+    # #268: a generated output's job, promoting attempt token and index (unique together).
+    "source_job_id": ("bpchar", "YES"),
+    "source_attempt_token": ("uuid", "YES"),
+    "output_index": ("int4", "YES"),
 }
 REFERENCE_COLUMNS = {
     "id": ("bpchar", "NO"),

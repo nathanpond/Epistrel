@@ -880,7 +880,7 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "jobs": "transient work items, deleted by the retention sweep",
     "image_reservations": "one provider attempt per row (#256): tokens, send states, provider "
     "references, applied parameters and counts, no prompt; #262's accounting (counter keys, "
-    "counts, states)",
+    "counts, states); #268's request snapshot leaves the prompt and negative prompt out",
     "image_limit_counters": "deployment accounting (#262): limit scopes, keys, dates and counts, "
     "no story content",
     "bundle_jobs": "an export's job record: ids, status, revision, file path, checksums and "

@@ -37,7 +37,10 @@ STATUS_TEXT = (
     "`requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. "
     "A worker that stalls past its lease is fenced: no attempt starts before the stalled "
     "call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never "
-    "shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). With an adapter that "
+    "shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send "
+    "leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it "
+    "(`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), "
+    "corrected once if its result arrives (`late_after_presumed`). With an adapter that "
     "confirms completion, the job asks the provider until `confirm_deadline_at`, then falls "
     "back to retrying (`confirm_fallback`). A job that failed on a policy also answers "
     "`policy_ids`. A story job "
@@ -58,7 +61,22 @@ class AttemptBody(BaseModel):
     outcome: str | None = Field(
         description="Null while in flight; then `promoted`, `rejected`, `failed`, `discarded`, "
         "`settled`, `adopted`, `cancelled`, `released_at_horizon`, `abandoned_fallback`, "
-        "`late_discarded` or `late_after_horizon`."
+        "`late_discarded`, `late_after_horizon`, `presumed` (an ambiguous send counted as if it "
+        "returned what it requested), `resent` (an idempotent re-send returned its result) or "
+        "`late_after_presumed` (the actual result corrected a presumption once)."
+    )
+    send_state: Literal["prepared", "sending", "accepted", "returned", "ambiguous"] = Field(
+        description="Where the send is: `ambiguous` when a worker was lost after the request "
+        "was recorded as sending but before the provider's identifier or result was "
+        "(FR-IMG-11): the provider may have generated, and may bill, for it."
+    )
+    basis: Literal["actual", "presumed", "corrected"] = Field(
+        description="How `used` is known: `actual` outputs, `presumed` (an ambiguous send's "
+        "requested outputs) or `corrected` once by the actual result."
+    )
+    resend_of: str | None = Field(
+        description="For an idempotent re-send, the attempt whose request and key it sent "
+        "again; its outputs count on that attempt (null otherwise)."
     )
     requested: int = Field(description="The outputs the attempt reserved.")
     used: int | None = Field(description="Outputs counted as usage; null while held.")
@@ -149,6 +167,9 @@ class ImageJobBody(BaseModel):
                     overage=a.overage,
                     extra_outputs=a.extra_outputs,
                     cost=a.cost,
+                    send_state=a.send_state,
+                    basis=a.basis,
+                    resend_of=a.resend_of,
                 )
                 for a in view.attempts
             ],

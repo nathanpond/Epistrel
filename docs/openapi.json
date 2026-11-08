@@ -911,6 +911,16 @@
             "title": "Attempt Token",
             "type": "string"
           },
+          "basis": {
+            "description": "How `used` is known: `actual` outputs, `presumed` (an ambiguous send's requested outputs) or `corrected` once by the actual result.",
+            "enum": [
+              "actual",
+              "presumed",
+              "corrected"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
           "cost": {
             "anyOf": [
               {
@@ -951,7 +961,7 @@
                 "type": "null"
               }
             ],
-            "description": "Null while in flight; then `promoted`, `rejected`, `failed`, `discarded`, `settled`, `adopted`, `cancelled`, `released_at_horizon`, `abandoned_fallback`, `late_discarded` or `late_after_horizon`.",
+            "description": "Null while in flight; then `promoted`, `rejected`, `failed`, `discarded`, `settled`, `adopted`, `cancelled`, `released_at_horizon`, `abandoned_fallback`, `late_discarded`, `late_after_horizon`, `presumed` (an ambiguous send counted as if it returned what it requested), `resent` (an idempotent re-send returned its result) or `late_after_presumed` (the actual result corrected a presumption once).",
             "title": "Outcome"
           },
           "overage": {
@@ -971,6 +981,30 @@
             "title": "Requested",
             "type": "integer"
           },
+          "resend_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For an idempotent re-send, the attempt whose request and key it sent again; its outputs count on that attempt (null otherwise).",
+            "title": "Resend Of"
+          },
+          "send_state": {
+            "description": "Where the send is: `ambiguous` when a worker was lost after the request was recorded as sending but before the provider's identifier or result was (FR-IMG-11): the provider may have generated, and may bill, for it.",
+            "enum": [
+              "prepared",
+              "sending",
+              "accepted",
+              "returned",
+              "ambiguous"
+            ],
+            "title": "Send State",
+            "type": "string"
+          },
           "used": {
             "anyOf": [
               {
@@ -987,6 +1021,9 @@
         "required": [
           "attempt_token",
           "outcome",
+          "send_state",
+          "basis",
+          "resend_of",
           "requested",
           "used",
           "overage",
@@ -75718,7 +75755,7 @@
     },
     "/image-jobs/{job_id}": {
       "delete": {
-        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
         "operationId": "cancel_image_job",
         "parameters": [
           {
@@ -75837,7 +75874,7 @@
         "x-epistrel-mutating": false
       },
       "get": {
-        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
         "operationId": "get_image_job",
         "parameters": [
           {

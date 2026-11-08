@@ -15,6 +15,7 @@ milestone)."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 from collections import Counter as Tally
 from datetime import UTC, date, datetime, timedelta
@@ -37,6 +38,7 @@ from epistrel.core.settings_schema import (
     IMAGE_COUNTER_RECONCILE_TASK,
 )
 from epistrel.core.tables.images import ImageJobKind, ImageJobStatus, ReservationState
+from epistrel.orchestrator.images import attempts
 from epistrel.orchestrator.images import jobs as image_jobs
 from epistrel.orchestrator.images import reconcile as image_reconcile
 from epistrel.orchestrator.jobs import queue
@@ -647,6 +649,9 @@ class _cli_settings:
 # -- late returns after lease expiry (#267) ---------------------------------------------------
 
 ASYNC_ADAPTER = "stub_async"
+PLAIN_ASYNC_ADAPTER = "stub_async_plain"
+"""An ``async`` stub that does not confirm completion: a stall in ``collect`` is a known
+request (#267), never an ambiguous send (#268)."""
 GRACE_S = 60
 """``image_attempt_grace_s``'s default: a stub attempt's horizon is ``started_at + 120 + 60``."""
 
@@ -758,9 +763,11 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
       ``image_attempt_horizon`` timer scheduled; the stalled token's promotion and counter
       changes are refused (``FencedToken``), and so is settling a record that is not its own;
     - before the horizon no retry starts (``waiting_for_horizon``, one provider call);
-    - non-confirming: the record is released at the horizon with cost ``unknown``; a retry starts
-      then, and the old call's late result is settled as overage (``late_after_horizon``)
-      without touching the retry's record or candidates;
+    - non-confirming (an ``async`` stub stalled in ``collect``, a known request: #268 makes a
+      ``sync`` stall an ambiguous send, ``test_i_26__m8_ambiguous``): the record is released at
+      the horizon with cost ``unknown``; a retry starts then, and the old call's late result is
+      settled as overage (``late_after_horizon``) without touching the retry's record or
+      candidates;
     - a stalled call returning before its horizon settles its own record (``late_discarded``:
       ``requested = 2``, one returned → ``used = 1``, ``overage = 0``, 2 off ``reserved``),
       nothing promoted, its bytes deleted; settling it again changes nothing
@@ -791,10 +798,12 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
 
     async with space(pg_url, tmp_path, "i26_late") as sp:
         stub = StubImageGenerator(script=[])
+        plain = StubImageGenerator(submission="async", script=[])
         confirming = StubImageGenerator(submission="async", confirms_completion=True, script=[])
         catalog = CatalogTarget()
         with (
             registered(ADAPTER, stub),
+            registered(PLAIN_ASYNC_ADAPTER, plain),
             registered(ASYNC_ADAPTER, confirming),
             registered_target(),
             registered_target(catalog, kind=ImageJobKind.CATALOG),
@@ -804,10 +813,11 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
             day = today()
 
             # -- non-confirming: fenced, parked, released at the horizon, retried, overage --
+            await configure_adapter(sp, PLAIN_ASYNC_ADAPTER)
             gate = asyncio.Event()
-            stub.script.extend([Stall(gate, Outputs(2)), Outputs(2)])
+            plain.script.extend([Stall(gate, Outputs(2)), Outputs(2)])
             job_id = await sp.insert(_catalog(new_ulid(), 2))
-            task, old = await _stalled_start(sp, stub, job_id)
+            task, old = await _stalled_start(sp, plain, job_id)
             sent = await _one(
                 sp,
                 "SELECT started_at, horizon_at, send_state FROM image_reservations "
@@ -815,7 +825,7 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
                 j=job_id,
                 t=old,
             )
-            assert sent.send_state == "sending"
+            assert sent.send_state == "accepted"
             assert sent.horizon_at == sent.started_at + timedelta(seconds=120 + GRACE_S)
             parked = await _one(
                 sp, "SELECT due_at FROM jobs WHERE payload->>'image_job_id' = :j", j=job_id
@@ -849,7 +859,7 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
             waited = await sp.run(job_id)
             assert waited["waiting_for_horizon"] is True
             assert waited[image_jobs.REQUEUE_IN] > 0
-            assert len(stub.requests) == 1, "no retry before the horizon"
+            assert len(plain.requests) == 1, "no retry before the horizon"
             await assert_clean(sp.db)
 
             before = await deployment(sp.db, day)
@@ -863,7 +873,7 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
 
             ran = await sp.run(job_id)
             assert ran["image_job"] == "candidates_ready", ran
-            assert len(stub.requests) == 2
+            assert len(plain.requests) == 2
             retry = await _token(sp, job_id)
             assert _counts(await _record(sp, job_id, retry)) == ("settled", 2, 2, 0, 0)
             view = await sp.lib.get_image_job(CTX, job_id)
@@ -892,6 +902,7 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
             await assert_clean(sp.db)
 
             # -- a return before the horizon: late_discarded; twice: late_duplicate --
+            await configure_adapter(sp, ADAPTER)
             gate = asyncio.Event()
             stub.script.append(Stall(gate, Outputs(1)))
             job_id = await sp.insert(_catalog(new_ulid(), 2))
@@ -921,10 +932,11 @@ async def test_i_26__m8_late_returns(pg_url: str, tmp_path: Path) -> None:
             # -- never returns: released at the horizon, cost unknown; then 3 after it --
             used = (await deployment(sp.db, day))["used"]
             await sp.set(image_limit_deployment_day=used + 1)
+            await configure_adapter(sp, PLAIN_ASYNC_ADAPTER)
             gate = asyncio.Event()
-            stub.script.append(Stall(gate, Outputs(3)))
+            plain.script.append(Stall(gate, Outputs(3)))
             job_id = await sp.insert(_story())
-            task, old = await _stalled_start(sp, stub, job_id)
+            task, old = await _stalled_start(sp, plain, job_id)
             await _past_horizon(sp, job_id, old)
             assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "released"
             assert _counts(await _record(sp, job_id, old)) == ("released", 1, 0, 0, 0)
@@ -1143,3 +1155,534 @@ async def configure_adapter(sp: Space, adapter: str) -> None:
     from tests.image_job_support import configure
 
     await configure(sp.lib, sp.settings, adapter)
+
+
+# -- ambiguous sends (#268) -------------------------------------------------------------------
+
+AMBIGUOUS_GROUPS = ("crash_recovery", "presumed_then_actual", "submission_modes")
+IDEMPOTENT_ADAPTER = "stub_idempotent"
+
+
+async def _killed(sp: Space, point: str, job_id: str) -> None:
+    """A child engine (images on) on the space's database, killed at ``point`` while it runs
+    ``job_id``, then the lost claim reaped as #70's recovery pass would."""
+    from tests.image_job_support import crashed_child
+
+    child = await crashed_child(sp.settings.database_url.get_secret_value(), point, job_id)
+    await child.__aexit__(None, None, None)
+    assert await _expire_lease(sp, job_id)
+
+
+async def _attempt_row(sp: Space, job_id: str, token: str) -> Any:
+    return await _one(
+        sp,
+        "SELECT send_state, idempotency_key, resend_of, request_snapshot, "
+        "capabilities_snapshot, outcome, outputs_returned, applied_parameters->'cost' AS cost, "
+        "requested, counter_keys, basis, state, used, overage, extra_outputs "
+        "FROM image_reservations WHERE job_id = :j AND attempt_token = :t",
+        j=job_id,
+        t=token,
+    )
+
+
+async def _jobs_row(sp: Space, job_id: str) -> Any:
+    return await _one(
+        sp,
+        "SELECT failures, due_at, due_at <= now() AS due FROM jobs "
+        "WHERE kind = 'image_job' AND payload->>'image_job_id' = :j",
+        j=job_id,
+    )
+
+
+async def _ambiguous_sends(sp: Space) -> int:
+    row = await _one(
+        sp, "SELECT count(*) AS n FROM image_reservations WHERE send_state = 'ambiguous'"
+    )
+    return int(row.n)
+
+
+async def _assets_of(sp: Space, job_id: str) -> list[Any]:
+    async with sp.db.connect() as conn:
+        rows = await conn.execute(
+            text(
+                "SELECT id, source_attempt_token, output_index FROM media_assets "
+                "WHERE source_job_id = :j ORDER BY output_index"
+            ),
+            {"j": job_id},
+        )
+        return list(rows)
+
+
+def _metric(outcome: str) -> float:
+    from prometheus_client import REGISTRY
+
+    found = REGISTRY.get_sample_value("epistrel_image_attempt_outcomes_total", {"outcome": outcome})
+    return 0.0 if found is None else found
+
+
+def _cost(cost: Any) -> dict[str, str]:
+    return {"amount": str(cost.amount), "currency": cost.currency}
+
+
+async def _crash_recovery(sp: Space) -> None:
+    """Child engines killed mid-send, then the reaper and an in-process run (the stubs are
+    registered here under the child's adapter names)."""
+    from sqlalchemy.exc import IntegrityError
+
+    from epistrel.core.images import store as image_store
+    from epistrel.core.tables.media import MediaState
+    from epistrel.testing import faults
+    from tests.image_support import Stall, png
+
+    idempotent = StubImageGenerator(idempotency_keys=True, script=[])
+    plain = StubImageGenerator(script=[])
+    acked = StubImageGenerator(submission="async", script=[])
+    deduplicating = StubImageGenerator(idempotency_keys=True, script=[])
+    with (
+        registered(faults.IMAGE_ADAPTER_IDEMPOTENT, idempotent),
+        registered(faults.IMAGE_ADAPTER, plain),
+        registered(faults.IMAGE_ADAPTER_ASYNC, acked),
+        registered(IDEMPOTENT_ADAPTER, deduplicating),
+        registered_target(),
+        registered_target(CatalogTarget(), kind=ImageJobKind.CATALOG),
+        installed_checks(ScriptedChecks(fail_closed=False)),
+    ):
+        day = today()
+
+        # -- killed after `sending` with idempotency_keys: re-sent at once, counted once --
+        await configure_adapter(sp, faults.IMAGE_ADAPTER_IDEMPOTENT)
+        idempotent.script.append(Outputs(1))
+        job_id = await sp.insert(_story())
+        old = await _token(sp, job_id)
+        await _killed(sp, "images.after_sending_commit", job_id)
+        sent = await _attempt_row(sp, job_id, old)
+        key = image_store.idempotency_key_of(job_id, old)
+        assert key == hashlib.sha256(f"{job_id}:{old}".encode()).hexdigest()
+        assert (sent.send_state, sent.idempotency_key, sent.outcome) == ("sending", key, None)
+        assert sent.capabilities_snapshot == {"submission": "sync", "idempotency_keys": True}
+        assert sent.request_snapshot["n"] == 1
+        assert {"prompt", "negative_prompt"}.isdisjoint(sent.request_snapshot), "no story text"
+        parked = await _jobs_row(sp, job_id)
+        assert (parked.due, parked.failures) == (True, 1), "due at once; one failed attempt"
+        view = await sp.lib.get_image_job(CTX, job_id)
+        assert view.waiting_for_horizon is False
+        before = await deployment(sp.db, day)
+        ran = await sp.run(job_id)
+        assert ran["image_job"] == "promoted", ran
+        new = await _token(sp, job_id)
+        assert new != old
+        (received,) = idempotent.requests
+        assert received.idempotency_key == key, "the stalled attempt's key, sent again"
+        assert received.request.prompt == "a lighthouse at dusk"
+        resend = await _attempt_row(sp, job_id, new)
+        assert (str(resend.resend_of), resend.requested, resend.counter_keys) == (old, 0, [])
+        assert resend.idempotency_key == key
+        assert resend.outcome == "promoted"
+        original = await _attempt_row(sp, job_id, old)
+        assert (original.state, original.used, original.basis, original.outcome) == (
+            "settled",
+            1,
+            "actual",
+            "resent",
+        )
+        assert original.send_state != "ambiguous", "an idempotent re-send is no ambiguous send"
+        after = await deployment(sp.db, day)
+        assert (after["used"], after["reserved"]) == (before["used"] + 1, before["reserved"] - 1)
+        (asset,) = await _assets_of(sp, job_id)
+        assert (str(asset.source_attempt_token), asset.output_index) == (new, 0)
+        view = await sp.lib.get_image_job(CTX, job_id)
+        assert [(a.attempt_token, a.send_state, a.basis, a.resend_of) for a in view.attempts] == [
+            (old, "returned", "actual", None),
+            (new, "returned", "actual", old),
+        ]
+        assert await _ambiguous_sends(sp) == 0
+        await assert_clean(sp.db)
+
+        # No output is promoted twice: the source triple is unique.
+        data = png(16, 16)
+        with pytest.raises(IntegrityError):
+            async with sp.db.begin() as conn:
+                await image_store.insert_generated_asset(
+                    conn,
+                    checksum=hashlib.sha256(data).hexdigest(),
+                    mime_type="image/png",
+                    size=len(data),
+                    width=16,
+                    height=16,
+                    owner="p-images",
+                    content_rating_version_id=(
+                        await conn.execute(
+                            text(
+                                "SELECT content_rating_version_id FROM media_assets WHERE id = :a"
+                            ),
+                            {"a": asset.id},
+                        )
+                    ).scalar_one(),
+                    generation_metadata={},
+                    state=MediaState.LIVE,
+                    created_by="p-images",
+                    source_job_id=job_id,
+                    source_attempt_token=new,
+                    output_index=0,
+                )
+
+        # -- the provider deduplicates: a stalled call and its re-send yield one result --
+        await configure_adapter(sp, IDEMPOTENT_ADAPTER)
+        gate = asyncio.Event()
+        deduplicating.script.append(Stall(gate, Outputs(1)))
+        job_id = await sp.insert(_story())
+        before = await deployment(sp.db, day)
+        task, old = await _stalled_start(sp, deduplicating, job_id)
+        assert (await _attempt_row(sp, job_id, old)).send_state == "sending"
+        rerun = asyncio.create_task(sp.run(job_id))
+        await _sent(deduplicating, 2)
+        gate.set()
+        late = await asyncio.wait_for(task, 30)
+        ran = await asyncio.wait_for(rerun, 30)
+        assert ran["image_job"] == "promoted", ran
+        assert late["image_job"] == "fenced", late
+        assert deduplicating.deduplicated == [image_store.idempotency_key_of(job_id, old)]
+        original = await _attempt_row(sp, job_id, old)
+        assert (original.state, original.used, original.overage) == ("settled", 1, 0)
+        assert original.outcome in ("resent", "late_discarded")
+        after = await deployment(sp.db, day)
+        assert after["used"] == before["used"] + 1, "the original result, counted once"
+        assert len(await _assets_of(sp, job_id)) == 1
+        await assert_clean(sp.db)
+
+        # -- killed after `sending` without it: ambiguous, presumed at the horizon, retried --
+        await configure_adapter(sp, faults.IMAGE_ADAPTER)
+        plain.script.append(Outputs(1))
+        job_id = await sp.insert(_story())
+        old = await _token(sp, job_id)
+        ambiguous = await _ambiguous_sends(sp)
+        await _killed(sp, "images.after_sending_commit", job_id)
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.send_state, record.state) == ("ambiguous", "held")
+        assert await _ambiguous_sends(sp) == ambiguous + 1, "the deployment's ambiguous sends + 1"
+        view = await sp.lib.get_image_job(CTX, job_id)
+        assert view.waiting_for_horizon is True
+        parked = await _jobs_row(sp, job_id)
+        assert (parked.due, parked.failures) == (False, 1)
+        waited = await sp.run(job_id)
+        assert waited["waiting_for_horizon"] is True
+        assert plain.requests == [], "no retry before the horizon"
+        await assert_clean(sp.db)
+        before = await deployment(sp.db, day)
+        await _past_horizon(sp, job_id, old)
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "presumed"
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "skipped"
+        record = await _attempt_row(sp, job_id, old)
+        assert (
+            record.state,
+            record.requested,
+            record.used,
+            record.basis,
+            record.cost,
+            record.outcome,
+            record.send_state,
+        ) == ("settled", 1, 1, "presumed", "unknown", "presumed", "ambiguous")
+        after = await deployment(sp.db, day)
+        assert (after["used"], after["reserved"]) == (before["used"] + 1, before["reserved"] - 1)
+        await assert_clean(sp.db)
+        ran = await sp.run(job_id)
+        assert ran["image_job"] == "promoted", ran
+        retry = await _token(sp, job_id)
+        assert len(plain.requests) == 1
+        assert _counts(await _record(sp, job_id, retry)) == ("settled", 1, 1, 0, 0)
+        assert [str(a.source_attempt_token) for a in await _assets_of(sp, job_id)] == [retry]
+        await assert_clean(sp.db)
+
+        # -- an async submit killed before its acknowledgement commits: ambiguous too --
+        await configure_adapter(sp, faults.IMAGE_ADAPTER_ASYNC)
+        acked.script.append(Outputs(1))
+        job_id = await sp.insert(_story())
+        old = await _token(sp, job_id)
+        await _killed(sp, "images.async.before_ack_commit", job_id)
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.send_state, record.state) == ("ambiguous", "held")
+        assert record.capabilities_snapshot["submission"] == "async"
+        await _past_horizon(sp, job_id, old)
+        assert (await sp.run(job_id))["image_job"] == "promoted"
+        assert (await _attempt_row(sp, job_id, old)).basis == "presumed"
+        await assert_clean(sp.db)
+
+        # -- killed before `sending`: a retry with no presumption and no ambiguity --
+        await configure_adapter(sp, faults.IMAGE_ADAPTER)
+        plain.script.append(Outputs(1))
+        job_id = await sp.insert(_story())
+        old = await _token(sp, job_id)
+        ambiguous = await _ambiguous_sends(sp)
+        assert await _expire_lease(sp, job_id)
+        assert (await _attempt_row(sp, job_id, old)).send_state == "prepared"
+        assert (await _jobs_row(sp, job_id)).failures == 0
+        ran = await sp.run(job_id)
+        assert ran["image_job"] == "promoted", ran
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.state, record.basis, record.outcome, record.used) == (
+            "released",
+            "actual",
+            "discarded",
+            0,
+        )
+        assert await _ambiguous_sends(sp) == ambiguous
+        await assert_clean(sp.db)
+
+
+async def _presumed_then_actual(sp: Space) -> None:
+    """A ``sync`` stub without ``idempotency_keys`` whose call stalls past the lease: the
+    in-process run is the stalled worker, the reaper fences it, and its late delivery is the
+    actual result."""
+    from epistrel.core.images import limits as image_limits
+    from tests.image_support import STUB_COST, Stall
+
+    stub = StubImageGenerator(script=[])
+    catalog = CatalogTarget()
+    with (
+        registered(ADAPTER, stub),
+        registered_target(),
+        registered_target(catalog, kind=ImageJobKind.CATALOG),
+        installed_checks(ScriptedChecks(fail_closed=False)),
+    ):
+        await sp.configure()
+        day = today()
+
+        # -- requested 2, presumed at the horizon, retried; then 1 arrives: corrected once --
+        gate = asyncio.Event()
+        stub.script.extend([Stall(gate, Outputs(1)), Outputs(2)])
+        job_id = await sp.insert(_catalog(new_ulid(), 2))
+        task, old = await _stalled_start(sp, stub, job_id)
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.send_state, record.state) == ("ambiguous", "held")
+        assert (await sp.run(job_id))["waiting_for_horizon"] is True
+        before = await deployment(sp.db, day)
+        await _past_horizon(sp, job_id, old)
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "presumed"
+        assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 2, 0, 0)
+        assert (await _attempt_row(sp, job_id, old)).cost == "unknown"
+        presumed = await deployment(sp.db, day)
+        assert (presumed["used"], presumed["reserved"]) == (
+            before["used"] + 2,
+            before["reserved"] - 2,
+        )
+        await assert_clean(sp.db)
+        ran = await sp.run(job_id)
+        assert ran["image_job"] == "candidates_ready", ran
+        retry = await _token(sp, job_id)
+        kept = list((await sp.lib.get_image_job(CTX, job_id)).result_ids)
+        assert _counts(await _record(sp, job_id, retry)) == ("settled", 2, 2, 0, 0)
+        mid = await deployment(sp.db, day)
+        late_before = _metric("late_after_presumed")
+        gate.set()
+        late = await asyncio.wait_for(task, 30)
+        assert late == {"image_job": "fenced", "late": "late_after_presumed"}, late
+        assert _metric("late_after_presumed") == late_before + 1
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.basis, record.used, record.overage, record.extra_outputs) == (
+            "corrected",
+            1,
+            0,
+            0,
+        )
+        assert (record.cost, record.outcome, record.outputs_returned) == (
+            _cost(STUB_COST),
+            "late_after_presumed",
+            1,
+        )
+        after = await deployment(sp.db, day)
+        assert (after["used"], after["overage"], after["extra_outputs"], after["reserved"]) == (
+            mid["used"] - 1,
+            mid["overage"],
+            mid["extra_outputs"],
+            mid["reserved"],
+        )
+        assert _counts(await _record(sp, job_id, retry)) == ("settled", 2, 2, 0, 0)
+        view = await sp.lib.get_image_job(CTX, job_id)
+        assert (view.status, list(view.result_ids)) == ("candidates_ready", kept)
+        assert staged(sp.lib.media, job_id) == []
+        await assert_clean(sp.db)
+        again = await attempts.settle_attempt(sp.db, job_id, old, 1, cost=STUB_COST)
+        assert again is not None
+        assert again.value == "late_duplicate"
+        assert await deployment(sp.db, day) == after
+        assert (await _attempt_row(sp, job_id, old)).basis == "corrected"
+        await assert_clean(sp.db)
+
+        # -- 3 for requested 2: used 3, overage 1, extra_outputs 1 --
+        gate = asyncio.Event()
+        stub.script.append(Stall(gate, Outputs(3)))
+        job_id = await sp.insert(_catalog(new_ulid(), 2))
+        task, old = await _stalled_start(sp, stub, job_id)
+        await _past_horizon(sp, job_id, old)
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "presumed"
+        await image_jobs.cancel_job(sp.lib.image_runtime(), job_id)
+        presumed = await deployment(sp.db, day)
+        gate.set()
+        assert (await asyncio.wait_for(task, 30))["late"] == "late_after_presumed"
+        assert _counts(await _record(sp, job_id, old)) == ("settled", 2, 3, 1, 1)
+        after = await deployment(sp.db, day)
+        assert (after["used"], after["overage"], after["extra_outputs"], after["reserved"]) == (
+            presumed["used"] + 1,
+            presumed["overage"] + 1,
+            presumed["extra_outputs"] + 1,
+            presumed["reserved"],
+        )
+        await assert_clean(sp.db)
+
+        # -- the presumed usage ends the retry `cap_reached`; it stays ended after the correction --
+        used = (await deployment(sp.db, day))["used"]
+        await sp.set(image_limit_deployment_day=used + 2)
+        gate = asyncio.Event()
+        stub.script.append(Stall(gate, Outputs(1)))
+        job_id = await sp.insert(_catalog(new_ulid(), 2))
+        task, old = await _stalled_start(sp, stub, job_id)
+        await _past_horizon(sp, job_id, old)
+        ended = await sp.run(job_id)
+        assert ended == {"image_job": "cap_reached", "reason": "image_limit_reached"}, ended
+        assert (await _attempt_row(sp, job_id, old)).basis == "presumed"
+        gate.set()
+        assert (await asyncio.wait_for(task, 30))["late"] == "late_after_presumed"
+        assert (await _attempt_row(sp, job_id, old)).used == 1
+        assert (await sp.lib.get_image_job(CTX, job_id)).status == "cap_reached"
+        await assert_clean(sp.db)
+        await sp.set(image_limit_deployment_day=200)
+
+        # -- an ambiguous attempt that delivers before its horizon is never presumed --
+        gate = asyncio.Event()
+        stub.script.append(Stall(gate, Outputs(1)))
+        job_id = await sp.insert(_catalog(new_ulid(), 2))
+        task, old = await _stalled_start(sp, stub, job_id)
+        assert (await _attempt_row(sp, job_id, old)).send_state == "ambiguous"
+        gate.set()
+        late = await asyncio.wait_for(task, 30)
+        assert late == {"image_job": "fenced", "late": "late_discarded"}, late
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.state, record.used, record.basis, record.send_state) == (
+            "settled",
+            1,
+            "actual",
+            "returned",
+        )
+        await _past_horizon(sp, job_id, old)
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "skipped"
+        assert (await _attempt_row(sp, job_id, old)).basis == "actual", "never presumed"
+        await image_jobs.cancel_job(sp.lib.image_runtime(), job_id)
+        await assert_clean(sp.db)
+
+        # -- after retention purged its records: late_unaccounted, no counter changes --
+        gate = asyncio.Event()
+        stub.script.append(Stall(gate, Outputs(1)))
+        job_id = await sp.insert(_catalog(new_ulid(), 2))
+        task, old = await _stalled_start(sp, stub, job_id)
+        await _past_horizon(sp, job_id, old)
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "presumed"
+        await image_jobs.cancel_job(sp.lib.image_runtime(), job_id)
+        purged = await image_limits.retain(sp.db, now=datetime.now(UTC) + timedelta(days=400))
+        assert purged["records"] >= 1
+        assert await records(sp.db, job_id) == []
+        kept_counters = await counters(sp.db)
+        unaccounted = _metric("late_unaccounted")
+        gate.set()
+        late = await asyncio.wait_for(task, 30)
+        assert late == {"image_job": "fenced", "late": "late_unaccounted"}, late
+        assert _metric("late_unaccounted") == unaccounted + 1
+        assert await counters(sp.db) == kept_counters
+        await assert_clean(sp.db)
+
+
+async def _submission_modes(sp: Space) -> None:
+    """``async`` stubs stalled in ``collect``: a known request, recovered through ``status``
+    when the stub confirms completion and held to its horizon when it does not; never an
+    ambiguous send."""
+    from tests.image_support import Stall, StatusSeq
+
+    plain = StubImageGenerator(submission="async", script=[])
+    confirming = StubImageGenerator(submission="async", confirms_completion=True, script=[])
+    with (
+        registered(ADAPTER, StubImageGenerator(script=[])),
+        registered(PLAIN_ASYNC_ADAPTER, plain),
+        registered(ASYNC_ADAPTER, confirming),
+        registered_target(),
+        installed_checks(ScriptedChecks(fail_closed=False)),
+    ):
+        await sp.configure()
+
+        # -- non-confirming: held to its horizon, released there, then the retry --
+        await configure_adapter(sp, PLAIN_ASYNC_ADAPTER)
+        gate = asyncio.Event()
+        plain.script.extend([Stall(gate, Outputs(1)), Outputs(1)])
+        job_id = await sp.insert(_story())
+        task, old = await _stalled_start(sp, plain, job_id)
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.send_state, record.state) == ("accepted", "held")
+        assert record.capabilities_snapshot == {"submission": "async", "idempotency_keys": False}
+        assert (await _jobs_row(sp, job_id)).failures == 0, "a known request is no failure"
+        assert (await sp.run(job_id))["waiting_for_horizon"] is True
+        await _past_horizon(sp, job_id, old)
+        assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "released"
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.send_state, record.basis, record.outcome) == (
+            "accepted",
+            "actual",
+            "released_at_horizon",
+        )
+        assert (await sp.run(job_id))["image_job"] == "promoted"
+        task.cancel()
+        assert await _ambiguous_sends(sp) == 0
+        await assert_clean(sp.db)
+
+        # -- confirming: recovered through status --
+        await configure_adapter(sp, ASYNC_ADAPTER)
+        gate = asyncio.Event()
+        confirming.script.append(Stall(gate, StatusSeq(["succeeded"], Outputs(1))))
+        job_id = await sp.insert(_story())
+        task, old = await _stalled_start(sp, confirming, job_id)
+        assert (await _attempt_row(sp, job_id, old)).send_state == "accepted"
+        await _past_horizon(sp, job_id, old)
+        assert (await sp.run(job_id))["image_job"] == "promoted"
+        record = await _attempt_row(sp, job_id, old)
+        assert (record.outcome, record.basis) == ("adopted", "actual")
+        task.cancel()
+        assert await _ambiguous_sends(sp) == 0
+        await assert_clean(sp.db)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-11; NFR-REL-5")
+@pytest.mark.parametrize("group", AMBIGUOUS_GROUPS)
+async def test_i_26__m8_ambiguous(pg_url: str, tmp_path: Path, group: str) -> None:
+    """I-26's "Ambiguous sends", "Presumed, then the actual result" and "Submission modes"
+    clauses (FR-IMG-11 part C; NFR-REL-5's recovery of attempts left in ``sending``), each group
+    on a scratch space of its own:
+
+    - ``crash_recovery``: a child engine killed at ``images.after_sending_commit`` with an
+      adapter declaring ``idempotency_keys`` → the attempt (its key ``sha256(job:token)``, its
+      request and capabilities snapshots committed before ``submit``) is re-sent at once under
+      a new token with the same key, on a row with ``resend_of``, ``requested = 0`` and no
+      ``counter_keys``; its output counts once on the original record (``resent``) and is
+      promoted under the new token; a deduplicating stub answers a stalled call and its
+      re-send with one result, counted once; the media source triple refuses a second
+      promotion. Without the capability → ``ambiguous``, held to its horizon, ``presumed``
+      there (``used = requested``, cost ``unknown``), then retried; the deployment's
+      ambiguous sends + 1. An async ``submit`` killed at ``images.async.before_ack_commit`` is
+      ambiguous too. A worker lost before ``sending`` retries with no presumption.
+    - ``presumed_then_actual``: a sync stall with ``requested = 2`` is ambiguous, presumed at
+      its horizon, retried; its late single output corrects the record once (``corrected``,
+      ``used = 1``, the counter's ``used`` down 1, ``reserved`` unchanged,
+      ``late_after_presumed``), nothing promoted and the retry undisturbed; again →
+      ``late_duplicate``; 3 for 2 → ``used = 3``, ``overage = extra_outputs = 1``; a job the
+      presumption ended ``cap_reached`` stays ended; a delivery before the horizon is
+      ``late_discarded`` and never presumed; after retention → ``late_unaccounted``.
+    - ``submission_modes``: an async stall in ``collect`` is ``accepted`` (a known request):
+      held to its horizon and released when the stub does not confirm, adopted through
+      ``status`` when it does; never ambiguous.
+
+    The reconciler reports no drift after every step. Complement asserted: an idempotent
+    re-send is no ambiguous send, a known request counts no failure, and a pre-horizon
+    delivery is never presumed."""
+    async with space(pg_url, tmp_path, f"i26_amb_{group[:8]}") as sp:
+        await {
+            "crash_recovery": _crash_recovery,
+            "presumed_then_actual": _presumed_then_actual,
+            "submission_modes": _submission_modes,
+        }[group](sp)

@@ -24,7 +24,9 @@ port. Options the child applies to itself before serving:
 - ``stub_rules`` (#213): ``StubRule``s the child's stub adapter answers with
   (``StubAdapter.when``), so a child plays scripted turns (a staged turn's render declaring an
   effect, its outcome step). They may be changed between restarts;
-- ``images`` (#256): the child registers ``testing.images``' PNG adapter as ``IMAGE_ADAPTER``,
+- ``images`` (#256): the child registers ``testing.images``' PNG adapter as ``IMAGE_ADAPTER``
+  (and, #268, its ``async`` and idempotent variants as ``IMAGE_ADAPTER_ASYNC`` and
+  ``IMAGE_ADAPTER_IDEMPOTENT``),
   the test target for ``story`` image jobs, and checks that pass every output (so a test can
   enqueue an image job and kill the child at an ``images.*`` crash point); ``config_key``
   (``EPISTREL_CONFIG_KEY``) lets it decrypt the image adapter's key the test configured;
@@ -432,6 +434,10 @@ def _script_stub(app: Any, path: str) -> None:
 
 IMAGE_ADAPTER = "faults_png"
 """The image adapter name a child started with ``images`` registers (#256)."""
+IMAGE_ADAPTER_ASYNC = "faults_png_async"
+"""#268: the child's ``async`` PNG adapter (it acknowledges in ``submit``)."""
+IMAGE_ADAPTER_IDEMPOTENT = "faults_png_idempotent"
+"""#268: the child's ``sync`` PNG adapter that declares ``idempotency_keys``."""
 
 
 def _images() -> None:
@@ -442,6 +448,10 @@ def _images() -> None:
     from epistrel.testing.images import PngImageGenerator, ScriptedChecks, TestImageTarget
 
     register_image_adapter(IMAGE_ADAPTER, PngImageGenerator(), replace=True)
+    register_image_adapter(IMAGE_ADAPTER_ASYNC, PngImageGenerator(submission="async"), replace=True)
+    register_image_adapter(
+        IMAGE_ADAPTER_IDEMPOTENT, PngImageGenerator(idempotency_keys=True), replace=True
+    )
     jobs.register_target(ImageJobKind.STORY, TestImageTarget())
     jobs.set_image_checks(ScriptedChecks(fail_closed=False))
 
@@ -571,6 +581,8 @@ __all__ = [
     "EX_ADDRESS_IN_USE",
     "FAULT_MARKER",
     "IMAGE_ADAPTER",
+    "IMAGE_ADAPTER_ASYNC",
+    "IMAGE_ADAPTER_IDEMPOTENT",
     "LISTENING",
     "POINTS",
     "STAGED_POINTS",

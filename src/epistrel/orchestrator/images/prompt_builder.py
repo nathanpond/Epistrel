@@ -50,11 +50,10 @@ from epistrel.core.images.perceived import (
     EntryTarget,
     read_perceived,
 )
-from epistrel.core.images.story_images import BeatPosition, Placement, SlotPosition
+from epistrel.core.images.story_images import BeatPosition, SlotPosition
 from epistrel.core.images.story_perceived import (
     StoryPerceived,
     ViewpointMatcher,
-    story_perceived_inputs,
 )
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.images.params import ImageGenerationParams
@@ -599,12 +598,6 @@ def story_view(perceived: StoryPerceived) -> PerceivedView:
     )
 
 
-async def build_story_image_inputs(conn: AsyncConnection, placement: Placement) -> PerceivedView:
-    """A story image's ``PerceivedView`` (FR-IMG-8): only what its audience viewpoint perceived
-    at the placement's position (``core.images.story_perceived``)."""
-    return story_view(await story_perceived_inputs(conn, placement))
-
-
 def with_guidance(prompt: str, view: PerceivedView) -> str:
     """A story image prompt with the rating's image guidance appended as its own section when
     it lacks it (FR-RATE-4)."""
@@ -725,7 +718,6 @@ __all__ = [
     "StoryDepicted",
     "StoryImagePromptTarget",
     "build_catalog_image_inputs",
-    "build_story_image_inputs",
     "capped_beats",
     "completed",
     "consumer_prompt",

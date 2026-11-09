@@ -76,6 +76,72 @@ def test_unresolvable_references_never_narrow_routing() -> None:
     assert planned.dropped == ("n", "input_references")
 
 
+def test_n_is_clamped_to_the_endpoints_max() -> None:
+    """#801: ``n`` above an endpoint's ``n.max`` is clamped to the smallest max the chosen
+    endpoints list (one call; the job settles the outputs it gets). Clamped to one, it is not
+    sent and is recorded dropped, as an unlisted ``n`` is. The recorded model lists
+    ``n: {max: 1}``, where ``n = 2`` used to be a non-retryable 400.
+
+    Complement asserted: an ``n`` within every max is sent as asked, and a listed ``n`` with no
+    max is not clamped."""
+    recorded = openrouter.parse_endpoints(
+        {"endpoints": [{"tag": "bfl", "supported_parameters": {"n": {"max": 1, "min": 1}}}]}
+    )
+    request = ImageRequest(prompt="p", n=2)
+    planned = openrouter.plan_body("m/x", request, openrouter.route_request(request, recorded))
+    assert "n" not in planned.body
+    assert planned.dropped == ("n",)
+    assert planned.requested["n"] == 2
+
+    two = openrouter.parse_endpoints(
+        {
+            "endpoints": [
+                {"tag": "a", "supported_parameters": {"n": {"max": 4}}},
+                {"tag": "b", "supported_parameters": {"n": {"max": 2}}},
+                {"tag": "c", "supported_parameters": {"size": {}}},
+            ]
+        }
+    )
+    many = ImageRequest(prompt="p", n=4)
+    planned = openrouter.plan_body("m/x", many, openrouter.route_request(many, two))
+    assert planned.body["n"] == planned.sent["n"] == 2
+    assert planned.dropped == ()
+    assert openrouter.applied_of(many, planned, two[1]).dropped_parameters == ()
+
+    within = ImageRequest(prompt="p", n=2)
+    planned = openrouter.plan_body("m/x", within, openrouter.route_request(within, two))
+    assert planned.body["n"] == 2
+    unbounded = openrouter.parse_endpoints(
+        {"endpoints": [{"tag": "u", "supported_parameters": ["n"]}]}
+    )
+    planned = openrouter.plan_body("m/x", many, openrouter.route_request(many, unbounded))
+    assert planned.body["n"] == 4
+
+
+def test_resolution_is_not_advertised() -> None:
+    """#801: no ``ImageRequest`` field carries ``resolution``, so it is not a canonical
+    parameter. On the recorded model (``resolution`` and ``aspect_ratio``, no ``size``) a
+    configured ``size`` is dropped and recorded under ``dropped_parameters``: sizes are not
+    translated (#255).
+
+    Complement asserted: a ratio on that model is sent."""
+    assert "resolution" not in openrouter.CANONICAL_PARAMETERS
+    endpoints = openrouter.parse_endpoints(
+        {
+            "endpoints": [
+                {"tag": "bfl", "supported_parameters": {"resolution": {}, "aspect_ratio": {}}}
+            ]
+        }
+    )
+    sized = ImageRequest(prompt="p", size="1024x1024")
+    planned = openrouter.plan_body("m/x", sized, openrouter.route_request(sized, endpoints))
+    assert "size" not in planned.body
+    assert planned.dropped == ("size",)
+    ratio = ImageRequest(prompt="p", aspect_ratio="1:1")
+    planned = openrouter.plan_body("m/x", ratio, openrouter.route_request(ratio, endpoints))
+    assert planned.body["aspect_ratio"] == "1:1"
+
+
 @pytest.mark.parametrize(
     ("usage", "cost"),
     [

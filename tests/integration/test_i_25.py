@@ -219,7 +219,9 @@ async def test_i_25__m8_crash_sweeps(
 ) -> None:
     """A worker killed after it staged an output (``images.after_stage``) leaves the staging
     object. The staging sweep skips it while the job is not terminal, however old; once the
-    job has ended it keeps it at ``staging_ttl - 1 s`` and deletes it past ``staging_ttl``. A
+    job has ended it keeps it at ``staging_ttl - 1 s`` and deletes it past ``staging_ttl``. The
+    media sweep never touches it, however old: it removes a stale staged upload beside it and
+    leaves ``tmp/images/<job>/<token>/`` to the staging sweep (#799). A
     worker killed with the promote transaction written and not committed
     (``images.promote.before_commit``) leaves a content-addressed blob no asset names: the media
     sweep's orphan step keeps it for its hour and deletes it after.
@@ -238,6 +240,18 @@ async def test_i_25__m8_crash_sweeps(
     assert kept["removed"] == 0
     assert kept["skipped_running"] >= 1
     assert job_dir.exists()
+    # Only the image staging sweep owns ``tmp/images/``: the media sweep's staging step removes
+    # a stale staged upload beside it and leaves the stale ``<job>/<token>/`` tree alone.
+    outputs = staged(store, staged_job)
+    stale_upload = store.staging_path(new_ulid())
+    stale_upload.write_bytes(b"crashed upload")
+    backdate(stale_upload, ttl + 600)
+    backdate(store.image_staging, ttl + 600)
+    swept = await media_sweep.sweep(lib.db, store)
+    assert swept["staged_removed"] >= 1
+    assert not stale_upload.exists()
+    assert staged(store, staged_job) == outputs
+    assert all(p.parent.parent == job_dir for p in outputs)
     await end_by_recovery(engine, staged_job)
     backdate(job_dir, ttl - 1)
     assert (await image_jobs.sweep_staging(lib.db, store, ttl_s=ttl))["removed"] == 0
@@ -914,6 +928,152 @@ async def test_i_25__m8_candidate_discard(image_settings: Settings, engine: Asyn
         assert sibling.status_code == 200, sibling.text
 
 
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-7")
+async def test_i_25__m8_candidate_not_found(image_settings: Settings, engine: AsyncEngine) -> None:
+    """Attaching a candidate that is not this entry's live candidate is 422
+    ``candidate_not_found``, with no change to the draft: another entry's candidate, one already
+    attached (its candidate row is gone), and one past ``expires_at`` that the expiry has not
+    swept yet (it is also unlisted and its content 404). Another entry's candidate is 404
+    through this entry's content and URL routes.
+
+    Complement asserted: the entry's own live candidate attaches, and one candidate may fill
+    two slots in the same save."""
+    async with cs.candidate_app(image_settings, engine) as app:
+        client = app.client
+        mine, other = await cs.characters(app, 2)
+        character_id, revision = mine["id"], mine["draft_revision"]
+        _, ids = await cs.generated(app, character_id, Outputs(n=3, size=(79, 45)))
+        _, theirs = await cs.generated(app, other["id"], Outputs(n=1, size=(79, 44)))
+
+        async def refused(images: dict[str, Any]) -> None:
+            before = await cs.draft(app, character_id)
+            found = await cs.save(app, character_id, revision, public_card={"images": images})
+            assert found.status_code == 422, found.text
+            assert found.json()["error"]["code"] == "candidate_not_found"
+            assert await cs.draft(app, character_id) == before
+
+        await refused({"primary": {"candidate_id": theirs[0]}})
+        foreign = cs.candidate_path(character_id, theirs[0])
+        for route in (f"{foreign}/content", f"{foreign}/url"):
+            assert (await client.get(route, headers=HEADERS)).status_code == 404
+
+        attached = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={"images": {"primary": {"candidate_id": ids[0]}}},
+        )
+        assert attached.status_code == 200, attached.text
+        revision = attached.json()["draft_revision"]
+        await refused({"gallery": [{"candidate_id": ids[0]}]})
+
+        await cs.expire_at(engine, [ids[1]], "-1 minute")
+        assert ids[1] not in _ids(await cs.listed(app, character_id))
+        expired = cs.candidate_path(character_id, ids[1])
+        assert (await client.get(f"{expired}/content", headers=HEADERS)).status_code == 404
+        await refused({"gallery": [{"candidate_id": ids[1]}]})
+
+        twice = await cs.save(
+            app,
+            character_id,
+            revision,
+            public_card={
+                "images": {
+                    "primary": {"candidate_id": ids[2]},
+                    "gallery": [{"candidate_id": ids[2]}],
+                }
+            },
+        )
+        assert twice.status_code == 200, twice.text
+        [row] = await cs.candidate_rows(engine, theirs)
+        assert (await cs.asset(engine, row.asset_id)).state == "candidate"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4,7")
+async def test_i_25__m8_candidates_none_pass(image_settings: Settings, engine: AsyncEngine) -> None:
+    """A catalog job whose every output fails the output check, on every attempt, ends
+    ``failed`` (``guardrail_violation``) with no candidates, no candidate rows and nothing
+    staged; each attempt is recorded ``rejected``.
+
+    Complement asserted: the same request with the check passing ends ``candidates_ready``
+    with its candidates."""
+    from epistrel.orchestrator.images.jobs import MINORS_POLICY_ID
+
+    async with cs.candidate_app(image_settings, engine) as app:
+        created = await cs.character(app)
+        app.checks.script = [MINORS_POLICY_ID]
+        app.script(*[Outputs(n=2, size=(81, 43)) for _ in range(12)])
+        accepted = await cs.generate(app, created["id"], n=2)
+        assert accepted.status_code == 202, accepted.text
+        job_id = accepted.json()["job_id"]
+        assert (await cs.run(app, job_id)) == {
+            "image_job": "failed",
+            "reason": "guardrail_violation",
+        }
+        job = (await app.client.get(f"/image-jobs/{job_id}", headers=HEADERS)).json()
+        assert (job["status"], job["status_reason"], job["candidate_ids"]) == (
+            "failed",
+            "guardrail_violation",
+            [],
+        )
+        assert job["attempts"]
+        assert {a["outcome"] for a in job["attempts"]} == {"rejected"}
+        assert _ids(await cs.listed(app, created["id"], job_id=job_id)) == []
+        assert staged(app.lib.media, job_id) == []
+        app.generator.script.clear()
+
+        app.checks.script = [PASS]
+        _, ids = await cs.generated(app, created["id"], Outputs(n=2, size=(81, 42)))
+        assert len(ids) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4,7")
+async def test_i_25__m8_candidate_target_gone_at_promotion(
+    image_settings: Settings, engine: AsyncEngine
+) -> None:
+    """Deleting the entry after its job's provider call, while the outputs are being checked,
+    ends the job ``target_gone`` at promotion: no candidate rows, no candidate assets for the
+    job, nothing staged.
+
+    Complement asserted: before the delete the job had made its one provider call."""
+    import asyncio
+
+    async with cs.candidate_app(image_settings, engine) as app:
+        created = await cs.character(app)
+        release = asyncio.Event()
+        app.checks.stall = release
+        app.script(Outputs(n=2, size=(83, 41)))
+        accepted = await cs.generate(app, created["id"], n=2)
+        assert accepted.status_code == 202, accepted.text
+        job_id = accepted.json()["job_id"]
+        task = asyncio.create_task(cs.run(app, job_id))
+        await asyncio.wait_for(app.checks.stalled.wait(), 15)
+        assert len(app.generator.requests) == 1
+        deleted = await app.client.delete(f"{cs.CHARACTERS}/{created['id']}", headers=HEADERS)
+        assert deleted.status_code == 204, deleted.text
+        release.set()
+        assert (await asyncio.wait_for(task, 30))["image_job"] == "target_gone"
+        job = (await app.client.get(f"/image-jobs/{job_id}", headers=HEADERS)).json()
+        assert (job["status"], job["candidate_ids"]) == ("target_gone", [])
+        assert staged(app.lib.media, job_id) == []
+        async with engine.connect() as conn:
+            rows = await conn.scalar(
+                text("SELECT count(*) FROM catalog.image_candidates WHERE job_id = :j"),
+                {"j": job_id},
+            )
+            assets = await conn.scalar(
+                text(
+                    "SELECT count(*) FROM media_assets WHERE state = 'candidate' "
+                    "AND generation_metadata->>'job_id' = :j"
+                ),
+                {"j": job_id},
+            )
+        assert (rows, assets) == (0, 0)
+
+
 # -- #264: story revalidation (FR-IMG-4; FR-ADMIN-9) ------------------------------------------
 
 
@@ -1121,7 +1281,8 @@ async def _tightening(
 
 
 @pytest.mark.integration
-async def test_revalidate_unrelated_amendment(
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_revalidate_unrelated_amendment(
     image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """An amendment (#221) correcting a beat of another turn leaves the image of turn 2 valid:
@@ -1144,7 +1305,8 @@ async def test_revalidate_unrelated_amendment(
 
 
 @pytest.mark.integration
-async def test_pause_max_wait(
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_pause_max_wait(
     image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """A job waiting on its paused story ends ``stale`` with ``paused_too_long`` once it has
@@ -1206,6 +1368,39 @@ async def test_i_25__m8_revalidate_point_in_time(
         assert await untruncate(app.lib.db, story) is not None
         assert (await rv.rerun(app, cut.job_id))["image_job"] == "stale"
         assert await _promoted(app, story, cut.job_id) == []
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_revalidate_erased(
+    image_settings: Settings,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A depicted subject erased while its image is being made, with the erasure's own cancel
+    (#266's ``store.cancel_in``) not reaching the job: the promotion's revalidation finds the
+    erased subject itself and ends the job ``stale`` with ``erased`` (#264's last line of
+    defence). Nothing is attached, its staging is deleted and it holds no reservation.
+
+    Complement asserted: an image of an undepicted, unerased character of the same story, made
+    after the erasure, is attached."""
+
+    async def no_cancel(conn: Any, job_id: str, **_: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(image_store, "cancel_in", no_cancel)
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await si.scene(app.client, 1)
+        await app.configure()
+        running = await rv.started(app, story, **rv.consumer(1, [ids["Jenni"]]))
+        await e.erase(app.client, "character", ids["Jenni"], story, confirm_all=True)
+        assert (await running.finished())["image_job"] == "stale"
+        await _ended_stale(app, story, running.job_id, "erased")
+
+        kept = await rv.started(app, story, **rv.consumer(1, [ids["Marcus"]]))
+        assert (await kept.finished())["image_job"] == "promoted"
+        assert len(await _promoted(app, story, kept.job_id)) == 1
 
 
 class _LockSpy(ScriptedChecks):

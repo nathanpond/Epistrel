@@ -296,7 +296,8 @@ async def test_i_26__m8_day_boundary(pg_url: str, tmp_path: Path) -> None:
       nulled and the attempt released, the counter rows stay, and the reconciler agrees;
     - the record's immutable columns refuse an update (``image_reservation_immutable``);
     - retention removes closed-day rows only after ``image_accounting_retention_days`` and only
-      once no record naming them is ``held``;
+      once no record naming them is ``held``: a settled or released record whose counter a
+      ``held`` record also names is kept, so the reconciler stays clean (#796);
     - a story export has no ``image_reservations`` member.
 
     Complement asserted: the same reservation at 00:01 lands on the next day, and the next day
@@ -423,21 +424,34 @@ async def test_i_26__m8_day_boundary(pg_url: str, tmp_path: Path) -> None:
             }
             assert set(await counters(sp.db)) == {nov_8}
             assert {r["job_id"] for r in await all_records(sp.db)} == {nxt, doomed}
-            # 2026-11-08: the released record goes, the held one and its counter stay.
-            assert await limits.retain(sp.db, now=noon(10)) == {
-                "records": 1,
-                "counters": 0,
-                "costs": 0,
-            }
-            assert [r["job_id"] for r in await all_records(sp.db)] == [nxt]
+            # 2026-11-08: a settled sibling of the held record, on the same counter (#796).
+            with at(early.astimezone(UTC)):
+                sibling = await sp.insert(_story())
+                async with sp.db.begin() as conn:
+                    (settling,) = await limits.records(conn, sibling)
+                    await limits.settle(conn, settling, 1)
+            await assert_clean(sp.db)
+            # While `nxt` is held, no record naming its counter goes: neither the released one
+            # nor the settled one, whose `used` the kept counter still carries.
+            removed = await limits.retain(sp.db, now=noon(10))
+            await assert_clean(sp.db)
+            assert removed == {"records": 0, "counters": 0, "costs": 0}
+            assert {r["job_id"] for r in await all_records(sp.db)} == {nxt, doomed, sibling}
             assert set(await counters(sp.db)) == {nov_8}
-            await image_jobs.cancel_job(sp.lib.image_runtime(), nxt)
+            # Complement: once the held record settles, the day's records and counter all go.
+            async with sp.db.begin() as conn:
+                (holding,) = await limits.records(conn, nxt)
+                await limits.settle(conn, holding, 1)
+            await assert_clean(sp.db)
             assert await limits.retain(sp.db, now=noon(10)) == {
-                "records": 1,
+                "records": 3,
                 "counters": 1,
                 "costs": 0,
             }
+            assert await all_records(sp.db) == []
             assert await counters(sp.db) == {}
+            await assert_clean(sp.db)
+            await image_jobs.cancel_job(sp.lib.image_runtime(), nxt)
 
             # A story export carries no deployment accounting.
             await sp.set(image_limit_deployment_day=10, deployment_time_zone="UTC")
@@ -1586,6 +1600,37 @@ async def _presumed_then_actual(sp: Space) -> None:
         await image_jobs.cancel_job(sp.lib.image_runtime(), job_id)
         await assert_clean(sp.db)
 
+        # -- cancelled, or its target lost, while ambiguous and before its horizon: the record
+        # stays held until the horizon and is presumed there, never released (#799) --
+        for ending in (ImageJobStatus.CANCELLED, ImageJobStatus.TARGET_GONE):
+            gate = asyncio.Event()
+            stub.script.append(Stall(gate, Outputs(1)))
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, stub, job_id)
+            record = await _attempt_row(sp, job_id, old)
+            assert (record.send_state, record.state) == ("ambiguous", "held")
+            runtime = sp.lib.image_runtime()
+            if ending is ImageJobStatus.CANCELLED:
+                await image_jobs.cancel_job(runtime, job_id)
+            else:
+                assert await image_jobs.end_job(runtime, job_id, ending)
+            assert (await sp.lib.get_image_job(CTX, job_id)).status == ending.value
+            record = await _attempt_row(sp, job_id, old)
+            assert (record.send_state, record.state) == ("ambiguous", "held"), ending
+            await assert_clean(sp.db)
+            await _past_horizon(sp, job_id, old)
+            assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "presumed"
+            record = await _attempt_row(sp, job_id, old)
+            assert (record.state, record.basis, record.used, record.send_state) == (
+                "settled",
+                "presumed",
+                2,
+                "ambiguous",
+            ), ending
+            gate.set()
+            assert (await asyncio.wait_for(task, 30))["late"] == "late_after_presumed"
+            await assert_clean(sp.db)
+
         # -- after retention purged its records: late_unaccounted, no counter changes --
         gate = asyncio.Event()
         stub.script.append(Stall(gate, Outputs(1)))
@@ -1698,7 +1743,9 @@ async def test_i_26__m8_ambiguous(pg_url: str, tmp_path: Path, group: str) -> No
       ``late_after_presumed``), nothing promoted and the retry undisturbed; again →
       ``late_duplicate``; 3 for 2 → ``used = 3``, ``overage = extra_outputs = 1``; a job the
       presumption ended ``cap_reached`` stays ended; a delivery before the horizon is
-      ``late_discarded`` and never presumed; after retention → ``late_unaccounted``.
+      ``late_discarded`` and never presumed; a job cancelled or ended ``target_gone`` while its
+      attempt is ambiguous keeps the record ``held`` until the horizon, where it is presumed,
+      not released (#799); after retention → ``late_unaccounted``.
     - ``submission_modes``: an async stall in ``collect`` is ``accepted`` (a known request):
       held to its horizon and released when the stub does not confirm, adopted through
       ``status`` when it does; never ambiguous.
@@ -1712,3 +1759,155 @@ async def test_i_26__m8_ambiguous(pg_url: str, tmp_path: Path, group: str) -> No
             "presumed_then_actual": _presumed_then_actual,
             "submission_modes": _submission_modes,
         }[group](sp)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-1,11")
+async def test_i_26__m8_confirm_edges(pg_url: str, tmp_path: Path) -> None:
+    """#267's confirmation edges, on a confirming ``async`` stub stalled past its horizon:
+
+    - a ``status`` of ``succeeded`` with zero outputs is a failure: the old record is settled
+      ``failed`` and a retry runs at once (one more provider call), ending ``candidates_ready``;
+    - a ``status`` call that raises is no answer: the run keeps polling
+      (``waiting_on_confirmation``, the record's ``last_status`` is ``error``) and retries
+      nothing;
+    - a lease lost with no attempt in flight advances the token and leaves the ``jobs`` row due
+      at once: not ``waiting_for_horizon``, no horizon timer.
+
+    The reconciler reports no drift after the first. Complement asserted: the zero-output
+    retry's own attempt promotes, and the raising ``status`` made no call."""
+    from tests.image_support import Stall, StatusSeq
+
+    async with space(pg_url, tmp_path, "i26_confirm") as sp:
+        confirming = StubImageGenerator(submission="async", confirms_completion=True, script=[])
+        with (
+            registered(ADAPTER, StubImageGenerator(script=[])),
+            registered(ASYNC_ADAPTER, confirming),
+            registered_target(),
+            registered_target(CatalogTarget(), kind=ImageJobKind.CATALOG),
+            installed_checks(ScriptedChecks(fail_closed=False)),
+        ):
+            await sp.configure()
+            await configure_adapter(sp, ASYNC_ADAPTER)
+
+            # Succeeded with zero outputs: failed, retried.
+            confirming.script.extend(
+                [
+                    Stall(
+                        asyncio.Event(),
+                        StatusSeq(["succeeded"], Outputs(2), status_outputs=Outputs(0)),
+                    ),
+                    Outputs(2),
+                ]
+            )
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, confirming, job_id)
+            sent = len(confirming.requests)
+            await _past_horizon(sp, job_id, old)
+            ran = await sp.run(job_id)
+            assert ran["image_job"] == "candidates_ready", ran
+            assert len(confirming.requests) == sent + 1
+            assert (await _outcome(sp, job_id, old))[0] == "failed"
+            task.cancel()
+            await assert_clean(sp.db)
+
+            # A status call that raises: still polling, nothing retried.
+            confirming.script.extend(
+                [Stall(asyncio.Event(), StatusSeq(["running"], Outputs(2))), Outputs(2)]
+            )
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, confirming, job_id)
+            sent = len(confirming.requests)
+            await _past_horizon(sp, job_id, old)
+
+            async def down(ref: str) -> Any:
+                raise RuntimeError("status endpoint down")
+
+            status = confirming.status
+            confirming.status = down  # type: ignore[method-assign,assignment]
+            try:
+                ran = await sp.run(job_id)
+            finally:
+                confirming.status = status  # type: ignore[method-assign]
+            assert ran.get("waiting_on_confirmation") is True, ran
+            assert len(confirming.requests) == sent
+            row = await _one(
+                sp,
+                "SELECT last_status FROM image_reservations "
+                "WHERE job_id = :j AND attempt_token = :t",
+                j=job_id,
+                t=old,
+            )
+            assert row.last_status == "error"
+            task.cancel()
+            confirming.script.clear()
+
+            # A lease lost with no attempt in flight: due at once, no horizon.
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            before = await _token(sp, job_id)
+            assert await _expire_lease(sp, job_id)
+            assert await _token(sp, job_id) != before
+            row = await _one(
+                sp,
+                "SELECT due_at <= now() AS due, "
+                "(SELECT waiting_for_horizon FROM image_jobs WHERE id = :j) AS waiting, "
+                "(SELECT count(*) FROM timers WHERE target LIKE :p) AS timers "
+                "FROM jobs WHERE payload->>'image_job_id' = :j",
+                j=job_id,
+                p=f"{job_id}:%",
+            )
+            assert (row.due, row.waiting, row.timers) == (True, False, 0)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-11; NFR-REL-5")
+async def test_i_26__m8_startup_recovery(pg_url: str, tmp_path: Path) -> None:
+    """#268's start-up hook (``attempts.recover_attempts``, the ``image_attempts`` recovery
+    hook) over attempts a dead process left in ``sending`` whose job's token already moved on:
+    without ``idempotency_keys`` the attempt becomes an ambiguous send, held to its horizon by
+    an ``image_attempt_horizon`` timer; with it the attempt stays ``sending`` for the
+    idempotent re-send, with no timer. A second pass finds nothing to do.
+
+    Complement asserted: before the pass both attempts are ``sending``."""
+    import uuid
+
+    from epistrel.testing import faults
+    from tests.image_job_support import crashed_child
+
+    with (
+        registered(faults.IMAGE_ADAPTER_IDEMPOTENT, StubImageGenerator(idempotency_keys=True)),
+        registered(faults.IMAGE_ADAPTER, StubImageGenerator(script=[])),
+        registered_target(),
+        registered_target(CatalogTarget(), kind=ImageJobKind.CATALOG),
+        installed_checks(ScriptedChecks(fail_closed=False)),
+    ):
+        async with space(pg_url, tmp_path, "i26_startup") as sp:
+            for adapter, after, recovered, horizon_timers in (
+                (faults.IMAGE_ADAPTER, "ambiguous", 1, 1),
+                (faults.IMAGE_ADAPTER_IDEMPOTENT, "sending", 0, 0),
+            ):
+                await configure_adapter(sp, adapter)
+                job_id = await sp.insert(_story())
+                old = await _token(sp, job_id)
+                child = await crashed_child(
+                    sp.settings.database_url.get_secret_value(),
+                    "images.after_sending_commit",
+                    job_id,
+                )
+                await child.__aexit__(None, None, None)
+                assert (await _attempt_row(sp, job_id, old)).send_state == "sending", adapter
+                async with sp.db.begin() as conn:
+                    await conn.execute(
+                        text("UPDATE image_jobs SET attempt_token = :t WHERE id = :j"),
+                        {"t": str(uuid.uuid4()), "j": job_id},
+                    )
+                async with sp.db.begin() as conn:
+                    assert await attempts.recover_attempts(conn) == recovered, adapter
+                async with sp.db.begin() as conn:
+                    assert await attempts.recover_attempts(conn) == 0, adapter
+                row = await _attempt_row(sp, job_id, old)
+                assert (row.send_state, row.state) == (after, "held"), adapter
+                timer = await _one(
+                    sp, "SELECT count(*) AS n FROM timers WHERE target = :t", t=f"{job_id}:{old}"
+                )
+                assert timer.n == horizon_timers, adapter

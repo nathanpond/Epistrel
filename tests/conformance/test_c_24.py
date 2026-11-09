@@ -30,8 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api.app import create_app
 from epistrel.api.openapi import ERROR_STATUS
 from epistrel.config import Settings
-from epistrel.core.errors import ImageLimitReached
+from epistrel.core.errors import ErasedSubjectReferenced, ImageLimitReached
 from epistrel.core.ids import new_ulid
+from epistrel.core.images import subjects as image_subjects
 from epistrel.core.media.checks import PASSED_STATEMENT, UNCHECKED_STATEMENT
 from epistrel.core.profiles import certification
 from epistrel.core.profiles.certification import ImageCheckCertificationRequest
@@ -602,16 +603,22 @@ async def test_c_24__m8_subjects(
       character; an attached candidate keeps it.
     - **Erasure.** Erasing Marcus from the story removes the images that declare him (an upload,
       the built image) and those that name him (an upload's caption, a consumer prompt), with
-      their assets; a queued job whose prompt names him is cancelled with its prompt emptied.
-      Erasing a catalog character removes her candidates and the candidate whose prompt names
-      her.
+      their assets, each deleted image leaving one ``erasure_marker`` event; a queued job
+      whose prompt names him is cancelled with its prompt emptied. Erasing a catalog character
+      removes her candidates and the candidate whose prompt names her.
     - **Boundary.** An upload that declares nobody and names nobody remains, and the erasure
       boundary says that a visual-only subject is out of scope.
     - **Viewpoint.** A Bobby-viewpoint read of an image depicting the masked stranger carries no
       ``depicted_subjects``.
 
+    - **Erased subjects refused (#799).** After a catalog-scope erasure of Jenni, a story upload
+      or a consumer prompt declaring her is 409 ``erased_subject_referenced`` with nothing
+      written, and attaching an image as an erased catalog character's own is refused too.
+
     Complements asserted: Jenni's upload, her queued job and the other character's unnamed
-    candidate survive; the media read of the masked-stranger image lists Marcus."""
+    candidate survive; the media read of the masked-stranger image lists Marcus; an upload and
+    a consumer prompt declaring Bobby are accepted (201, 202), and the kept character's own
+    attach passes."""
     from epistrel.core.erasure import boundary as erasure_boundary
     from tests import catalog_image_support as cs
     from tests import erasure_support as e
@@ -679,6 +686,17 @@ async def test_c_24__m8_subjects(
         assert erased["media"] >= len(gone)
         assert erased["records"]["image_jobs"] >= 3
         assert erased["residue"] == 0
+        async with engine.connect() as conn:
+            markers = (
+                await conn.scalars(
+                    text(
+                        "SELECT payload->>'record_id' FROM events WHERE story_id = :s "
+                        "AND type = 'erasure_marker' AND payload->>'record_table' = 'story_images'"
+                    ),
+                    {"s": story},
+                )
+            ).all()
+        assert sorted(markers) == sorted(found.images[n] for n in gone)
         kept = {found.images[n] for n in ("visual", "other")}
         assert await subj.image_ids(engine, story) == kept
         assets = [found.assets[n] for n in (*gone, "visual", "other")]
@@ -702,6 +720,62 @@ async def test_c_24__m8_subjects(
         assert erasure_boundary.IMAGES in stated["in_scope"]
         schema = (await app.client.get("/openapi.json")).json()
         assert "/admin/erasure/boundary" in schema["paths"]["/admin/erasure"]["post"]["description"]
+
+        # A subject a catalog-scope erasure removed (#504: Jenni, at catalog scope) is refused
+        # on a story upload and a consumer prompt that declare her, with nothing written; one
+        # who was not erased is accepted (#799).
+        jenni = {"kind": "character", "id": ids["Jenni"], "story": story}
+        listed = await app.client.post(
+            e.PATH,
+            json={"subject": jenni, "scope": {"catalog": True}, "dry_run": True},
+            headers=e.WRITE,
+        )
+        assert listed.status_code == 200, listed.text
+        catalog_erased = await app.client.post(
+            e.PATH,
+            json={
+                "subject": jenni,
+                "scope": {"catalog": True},
+                "confirm_candidates": [c["candidate_id"] for c in listed.json()["candidates"]],
+            },
+            headers=e.WRITE,
+        )
+        assert catalog_erased.status_code == 200, catalog_erased.text
+        declares_jenni = [{"kind": "character", "id": ids["Jenni"]}]
+        declares_bobby = [{"kind": "character", "id": ids["Bobby"]}]
+        held = await subj.image_ids(engine, story)
+        jobs_before = await sg.counts(engine, story)
+        refused = await si.upload(
+            app.client, story, si.meta(subj.SLOT, bobby, subjects=declares_jenni)
+        )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "erased_subject_referenced"
+        assert refused.json()["error"]["details"]["field"] == "body.metadata.depicted_subjects"
+        prompted = await sg.request(
+            app,
+            story,
+            position=subj.AT,
+            audience_viewpoint=bobby,
+            prompt="A lamp burns low in the parlor.",
+            depicted_subjects=declares_jenni,
+        )
+        assert prompted.status_code == 409, prompted.text
+        assert prompted.json()["error"]["code"] == "erased_subject_referenced"
+        assert await subj.image_ids(engine, story) == held
+        assert await sg.counts(engine, story) == jobs_before
+        accepted = await si.upload(
+            app.client, story, si.meta(subj.SLOT, bobby, subjects=declares_bobby)
+        )
+        assert accepted.status_code == 201, accepted.text
+        queued = await sg.request(
+            app,
+            story,
+            position=subj.AT,
+            audience_viewpoint=bobby,
+            prompt="A lamp burns low in the parlor.",
+            depicted_subjects=declares_bobby,
+        )
+        assert queued.status_code == 202, queued.text
 
         stranger = await sg.stranger_scene(app, engine)
         seen_by = sg.character(stranger.ids["Bobby"])
@@ -746,6 +820,19 @@ async def test_c_24__m8_subjects(
         assert await subj.candidate_ids(engine, list(made.candidates.values())) == set()
         dropped = [candidates[made.candidates[n]].asset_id for n in ("own", "named")]
         assert await subj.asset_ids(engine, [*dropped, kept_asset]) == {kept_asset}
+
+        # The own-image rule's guard: attaching an image as the erased character's own (a
+        # draft write racing the erasure; through the API the draft is gone first) is 409 and
+        # changes nothing, while the kept character's attach passes (#799).
+        with pytest.raises(ErasedSubjectReferenced) as raised:
+            async with engine.begin() as conn:
+                await image_subjects.include_own(conn, made.erased, [kept_asset])
+        assert raised.value.details["field"] == "body.depicted_subjects"
+        assert await subj.depicted(engine, kept_asset) == [
+            {"kind": "catalog_character", "id": made.kept}
+        ]
+        async with engine.begin() as conn:
+            assert await image_subjects.include_own(conn, made.kept, [kept_asset]) == 0
 
 
 # -- cost (#269) ----------------------------------------------------------------------------
@@ -804,6 +891,127 @@ def _totals(body: dict[str, Any]) -> tuple[Any, ...]:
         body["cost_zero_attempts"],
         body["costs"],
     )
+
+
+STORY_ONLY_NAME = "Thaddeus Quorrington"
+"""A story character's name no catalog entry or other erasure test uses (#792)."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-9; FR-ADMIN-6")
+async def test_c_24__m8_story_character_candidates(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """A catalog-scope erasure of a story-only character (#504) reaches the catalog image
+    candidates whose prompt names it by its story's names (#266): the candidate and its asset
+    are deleted, and the erasure counts it.
+
+    Complement asserted: the other entries' candidates (a neutral one, one naming another
+    character, and the other entry's own) are left."""
+    from tests import catalog_image_support as cs
+    from tests import erasure_support as e
+    from tests import image_subject_support as subj
+    from tests.story_support import create, story_body
+
+    async with cs.candidate_app(image_settings, engine) as app:
+        story = await create(app.client, story_body("Ada", STORY_ONLY_NAME))
+        story_id = story["story_id"]
+        [subject_id] = [c["id"] for c in story["characters"] if c["name"] == STORY_ONLY_NAME]
+        made = await subj.catalog_candidates(app)
+        naming = await subj.one(app, made.kept, f"{STORY_ONLY_NAME} on a foggy quay", (777, 555))
+        [row] = await cs.candidate_rows(engine, [naming])
+        body: dict[str, Any] = {
+            "subject": {"kind": "character", "id": subject_id, "story": story_id},
+            "scope": {"catalog": True},
+            "dry_run": True,
+        }
+        listed = await app.client.post(e.PATH, json=body, headers=e.WRITE)
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["records"].get("catalog.image_candidates") == 1
+        body = {
+            **body,
+            "dry_run": False,
+            "confirm_candidates": [c["candidate_id"] for c in listed.json()["candidates"]],
+        }
+        erased = await app.client.post(e.PATH, json=body, headers=e.WRITE)
+        assert erased.status_code == 200, erased.text
+        assert erased.json()["records"].get("catalog.image_candidates") == 1
+        others = [made.candidates[n] for n in ("kept", "named", "own")]
+        assert await subj.candidate_ids(engine, [naming, *others]) == set(others)
+        assert await subj.asset_ids(engine, [row.asset_id]) == set()
+
+
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-9; FR-ADMIN-6")
+async def test_c_24__m8_erased_inactive_images(
+    image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Erasing a character deletes the story images that declare it on every membership
+    (#266): one on a turn variant a regeneration replaced (``dormant``) and one on a truncated
+    turn (``discarded``), each with its asset and one ``erasure_marker``; an untruncate brings
+    neither back.
+
+    Complement asserted: before the erasure the two rows are on those memberships, and an
+    active image that declares another character is left, with its asset."""
+    from tests import erasure_support as e
+    from tests import image_subject_support as subj
+    from tests import story_image_generation_support as sg
+    from tests import story_image_support as si
+    from tests.projection_support import truncate, untruncate
+    from tests.story_support import WRITE
+
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await si.scene(app.client, 2)
+        await app.configure()
+        StubImageChecker(app.stub).answer({MINORS: "pass"})
+        marcus = subj.marcus(ids)
+        jenni = [{"kind": "character", "id": ids["Jenni"]}]
+
+        async def placed(turn: int, subjects: list[dict[str, str]]) -> dict[str, Any]:
+            meta = si.meta({"turn": turn, "beat": 2}, si.OMNISCIENT, subjects=subjects)
+            return await si.placed(app.client, story, meta)
+
+        replaced = await placed(2, marcus)
+        again = await app.client.post(f"/stories/{story}/regenerate", json={}, headers=WRITE)
+        assert again.status_code == 200, again.text
+        kept = await placed(1, jenni)
+        cut = await placed(2, marcus)
+        assert await truncate(app.lib.db, story, 1) is not None
+
+        async def memberships() -> dict[str, str]:
+            async with engine.connect() as conn:
+                found = await conn.execute(
+                    text("SELECT id, membership::text FROM story_images WHERE story_id = :s"),
+                    {"s": story},
+                )
+                return {str(r[0]): str(r[1]) for r in found}
+
+        assert await memberships() == {
+            replaced["image_id"]: "dormant",
+            cut["image_id"]: "discarded",
+            kept["image_id"]: "active",
+        }
+
+        erased = await e.erase(app.client, "character", ids["Marcus"], story, confirm_all=True)
+        assert erased["records"]["story_images"] == 2
+        assert await memberships() == {kept["image_id"]: "active"}
+        async with engine.connect() as conn:
+            markers = (
+                await conn.scalars(
+                    text(
+                        "SELECT payload->>'record_id' FROM events WHERE story_id = :s "
+                        "AND type = 'erasure_marker' AND payload->>'record_table' = 'story_images'"
+                    ),
+                    {"s": story},
+                )
+            ).all()
+        assert sorted(markers) == sorted([replaced["image_id"], cut["image_id"]])
+        assets = [replaced["media_id"], cut["media_id"], kept["media_id"]]
+        assert await subj.asset_ids(engine, assets) == {kept["media_id"]}
+
+        assert await untruncate(app.lib.db, story) is not None
+        shown = si.image_ids(await si.history(app.client, story, si.OMNISCIENT))
+        assert shown == [kept["image_id"]]
 
 
 @pytest.mark.integration

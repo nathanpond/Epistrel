@@ -16,9 +16,12 @@ models through one interface:
 endpoints that support them, as ``provider: {only: [...], allow_fallbacks: false}``. When seed and
 references are supported only by disjoint sets, references win and the seed is dropped. When no
 endpoint supports one, it is dropped. Other parameters never narrow routing: a parameter that no
-chosen endpoint lists is dropped (``n`` is then 1). Size and ratio are not translated. After the
-call, what was applied is judged against the endpoint that served it (the response's ``provider``,
-else the single chosen endpoint), and recorded as the attempt's ``AppliedParameters``.
+chosen endpoint lists is dropped (``n`` is then 1). An ``n`` above the ``n.max`` a chosen
+endpoint lists is clamped to the smallest such max, in one call (clamped to 1, it is dropped). Size
+and ratio are not translated, and nothing carries ``resolution``: a ``size`` on a model that lists
+only ``resolution``/``aspect_ratio`` is dropped (configure a ratio there). After the call, what
+was applied is judged against the endpoint that served it (the response's ``provider``, else the
+single chosen endpoint), and recorded as the attempt's ``AppliedParameters``.
 
 The negative prompt is folded into the prompt as ``\\n\\nAvoid: <negative>``: the API has no field
 for it. Reference images go as ``input_references`` (``{"type": "image_url", "image_url":
@@ -34,11 +37,14 @@ success; entries without ``b64_json`` are skipped; none at all is ``ImageProvide
 (ambiguous); 409/429/5xx → ``ImageProviderUnavailable``; a redirect (never followed), malformed
 JSON or unusable images → ``ImageProviderMalformed``. No message carries the prompt or provider
 text (NFR-SEC-4), and the adapter is single-shot: retries belong to the job (#256). Logs name the
-model, endpoint, status, latency and cost, never the prompt.
+model, endpoint, status, latency, cost and the dropped parameters' names, never the prompt.
 
 **Idempotency.** ``idempotency_keys`` is ``OPENROUTER_DEDUPES_IDEMPOTENCY_KEY``, set from the
 owner's recording run (``tools.record_openrouter_fixtures``); until it is verified it is
-``False``, and the ``Idempotency-Key`` header is not sent.
+``False``, and the ``Idempotency-Key`` header is not sent. The recorder's dedupe check compares
+the generation ids of two answers, and OpenRouter's image answers carry no ``id`` (#801), so
+against OpenRouter it can only answer ``dedupes: false, inconclusive: true``; turning the header
+on needs other evidence of deduplication.
 """
 
 from __future__ import annotations
@@ -92,7 +98,9 @@ NAME = "openrouter"
 DEFAULT_BASE_URL = ADAPTER_DEFAULT_BASE_URLS[NAME]
 OPENROUTER_DEDUPES_IDEMPOTENCY_KEY = False
 """Whether OpenRouter deduplicates two requests with the same ``Idempotency-Key``. Set from
-``tests/fixtures/openrouter/verdict.json`` (the owner's recording run); ``False`` until then."""
+``tests/fixtures/openrouter/verdict.json`` (the owner's recording run); ``False`` until then.
+The recording's check can never find ``true`` on OpenRouter, whose image answers carry no
+generation ``id`` to compare (module docs)."""
 
 GENERATE_PATH = "/api/v1/images"
 MODELS_PATH = "/api/v1/images/models"
@@ -109,10 +117,9 @@ NEGATIVE_PREFIX = "\n\nAvoid: "
 
 SEED = "seed"
 REFERENCES = "input_references"
-CANONICAL_PARAMETERS = frozenset(
-    {SEED, REFERENCES, "n", "size", "aspect_ratio", "quality", "resolution"}
-)
-"""The names matched against an endpoint's ``supported_parameters``."""
+CANONICAL_PARAMETERS = frozenset({SEED, REFERENCES, "n", "size", "aspect_ratio", "quality"})
+"""The names matched against an endpoint's ``supported_parameters``: those an ``ImageRequest``
+carries. ``resolution`` is not one (no request field carries it, #801)."""
 SLUG_FIELDS = ("tag", "provider_slug", "slug", "provider_name", "name")
 """Where an endpoint record names itself, in the order they are tried."""
 
@@ -146,9 +153,19 @@ class Endpoint:
     """Every way the record names itself (lower-cased), to match a response's ``provider``."""
     supports_streaming: bool | None = None
     pricing: Any = None
+    n_max: int | None = None
+    """The ``max`` of its ``n`` entry (``supported_parameters.n.max``), when it lists one."""
 
     def supports(self, parameter: str) -> bool:
         return parameter in self.parameters
+
+
+def _n_max(raw: dict[str, Any] | list[Any] | None) -> int | None:
+    entry = raw.get("n") if isinstance(raw, dict) else None
+    found = entry.get("max") if isinstance(entry, dict) else None
+    if isinstance(found, bool) or not isinstance(found, int) or found < 1:
+        return None
+    return found
 
 
 def _parameters(raw: dict[str, Any] | list[Any] | None) -> frozenset[str]:
@@ -183,6 +200,7 @@ def parse_endpoints(body: Any) -> tuple[Endpoint, ...]:
                 names=frozenset(n.lower() for n in named),
                 supports_streaming=record.supports_streaming,
                 pricing=record.pricing,
+                n_max=_n_max(record.supported_parameters),
             )
         )
     return tuple(endpoints)
@@ -210,6 +228,12 @@ class Route:
     def lists(self, parameter: str) -> bool:
         """Whether some chosen endpoint lists ``parameter``."""
         return any(e.supports(parameter) for e in self.chosen)
+
+    def n_max(self) -> int | None:
+        """The smallest ``n.max`` a chosen endpoint lists (``None``: no max), so ``n`` fits
+        whichever of them serves."""
+        found = [e.n_max for e in self.chosen if e.supports("n") and e.n_max is not None]
+        return min(found) if found else None
 
 
 def route_request(
@@ -285,8 +309,9 @@ def plan_body(model: str, request: ImageRequest, route: Route) -> PlannedBody:
         else:
             dropped.append(SEED)
     if request.n > 1:
-        if route.lists("n"):
-            body["n"] = request.n
+        n = min(request.n, route.n_max() or request.n) if route.lists("n") else 1
+        if n > 1:
+            body["n"] = n
         else:
             dropped.append("n")
     for name, value in (
@@ -585,12 +610,13 @@ class OpenRouterImageGenerator:
         applied = result.applied_parameters
         cost = result.cost
         log.info(
-            "image call model=%s endpoint=%s status=200 latency_ms=%d images=%d cost=%s",
+            "image call model=%s endpoint=%s status=200 latency_ms=%d images=%d cost=%s dropped=%s",
             self.model,
             (applied.endpoint if applied is not None else None) or "unknown",
             latency_ms,
             len(result.outputs or ()),
             cost.amount if isinstance(cost, Cost) else "unknown",
+            ",".join(applied.dropped_parameters if applied is not None else ()) or "none",
         )
         return result
 

@@ -35,10 +35,15 @@ position: a turn whose active variant changed, or a slot whose last completed tu
 **Visibility.** A row is visible when its membership is ``active`` (it follows the operation
 that placed it: truncate, untruncate, regenerate, swap and fork need no image-specific code,
 #130) and it has no deletion, or its deletion's operation is not on the timeline: a deletion
-follows its own operation's membership. ``delete`` records ``story_image_deleted`` in an
-operation of the same kind as an upload's at that position (a slot image's in a new slot);
-the asset stays until the media sweep finds no reference (FR-MEDIA-2), and a deleted row still
-counts as a reference until pruned or erased.
+follows its own operation's membership. ``delete`` records ``story_image_deleted`` in a
+``story_image`` operation anchored at the image's own turn N, the beat image's and the slot
+image's alike (a slot after genesis, ``N = 0``, in a position-less one, as genesis records are;
+#795). So a deletion holds whatever happens to later turns, and it leaves only with turn N
+itself, which takes the image too. A truncate to ``N`` (or to a slot boundary before the
+image's ``N⁺k``) discards the image but keeps its deletion: an untruncate brings the image back
+still deleted, and a fork that copies the image copies its deletion. The asset stays until the
+media sweep finds no reference (FR-MEDIA-2), and a deleted row still counts as a reference until
+pruned or erased.
 
 **Reads.** ``images_for_history`` gives a history page the visible images whose
 ``audience_viewpoint`` equals the read's viewpoint (under either ``player_view``: it widens
@@ -694,7 +699,11 @@ def _not_deleted(chain: Any | None = None) -> Any:
     d = _DELETION.c
     on = active_operation(_DELETION)
     if chain is not None:
-        on = chain.visible(d.membership, d.narrative_turn, d.operation_id)
+        # A position-less deletion (a slot after genesis, #795) is on every chain while active.
+        on = or_(
+            chain.visible(d.membership, d.narrative_turn, d.operation_id),
+            and_(d.narrative_turn.is_(None), active_operation(_DELETION)),
+        )
     return or_(
         story_images.c.deleted_operation_id.is_(None),
         not_(exists().where(d.operation_id == story_images.c.deleted_operation_id, on)),
@@ -1187,12 +1196,16 @@ async def delete(
                 image_id=image_id, operation_id=None, timeline_revision=int(revision or 0)
             )
     slot = int(row.at_slot_k) > 0
-    op = _operation(
+    # #795: anchored at the image's own turn (a slot after genesis: position-less), never in a
+    # new slot after the story's current head, which a later turn's regenerate would retire.
+    op = Operation(
         db,
-        story_id,
-        slot=slot,
-        turn=int(row.at_turn),
+        story_id=story_id,
+        kind=OperationKind.STORY_IMAGE,
         principal=principal,
+        turn=int(row.at_turn) or None,
+        provenance=Provenance.CONSUMER,
+        bumps_revision=True,
         idempotency_key=idempotency_key,
     )
 

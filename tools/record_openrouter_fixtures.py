@@ -13,7 +13,10 @@ resolution, with ``n = 1``. CI never runs it. The calls, in order:
 5. a generation with one reference image (``tests/fixtures/openrouter/ref.png`` as a data URL);
 6. call 3 again, with the same ``Idempotency-Key``. If OpenRouter answers it with the same
    generation id, it deduplicates (``dedupes: true``). Otherwise, or if the repeat fails, the
-   verdict is ``dedupes: false, inconclusive: true``.
+   verdict is ``dedupes: false, inconclusive: true``. OpenRouter's image answers carry no
+   ``id`` (the 2026-11-08 recording), so against OpenRouter this check can never answer
+   ``true`` (#801): it is kept for an API that returns one, and the adapter's constant stays
+   ``False`` until other evidence shows deduplication.
 
 Generations go through the real adapter (``OpenRouterImageGenerator``), with a transport that
 records each exchange. The fixtures are sanitized before they are written:

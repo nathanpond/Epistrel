@@ -33,7 +33,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.errors import GuardrailViolation
+from epistrel.core.images.safety import SafetyRequest, build_safety_context
 from epistrel.core.media.checks import IMAGE_VIEWPOINT_GUARANTEE
+from epistrel.core.propositions import store
 from epistrel.core.tables.images import ImageJobKind
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import jobs as image_jobs
@@ -87,11 +89,14 @@ OPERATIONS = Path(__file__).resolve().parents[2] / "docs" / "OPERATIONS.md"
 
 ADAPTER = "stub_sync"
 CAST = (BOBBY, JENNI, MARCUS, LILY, WREN)
+ALIASES = {BOBBY: "Chips", JENNI: "Songbird", MARCUS: "Skipper", LILY: "Lilibet", WREN: "Sparrow"}
+"""Each character's alias (``metadata.aliases`` of the version it was made from): #801."""
 POLICY_TEXT = "no sexual content involving, or in the presence of, anyone under 18"
 MARCUS_PROMPT = "Marcus, a man in his mid thirties, mends a net by the stove."
 LILY_PROMPT = "Lily, a woman in her twenties, lounges in lingerie on the bed."
 JENNI_PROMPT = "Jenni, a woman in her twenties, lounges in lingerie on the bed."
 ADULTS_TOGETHER = "Jenni and Marcus make love by the stove."
+LILIBET_PROMPT = "Lilibet, a woman in her twenties, lounges in lingerie on the bed."
 GIRL_PROMPT = "A young girl in lingerie on the bed."
 WOMAN_PROMPT = "A middle-aged woman in lingerie on the bed."
 
@@ -174,21 +179,24 @@ async def test_i_24__m8_two_paths(
     1. Marcus is 34: the adapter's request carries the band the prompt uses ("mid thirties")
        and never 34, its type has no age field, and the job's safety context holds 34.
     2. Lily is 17 and looks older: a sexual request involving her is refused by the minors
-       policy, and no job row is created; a consumer prompt naming "Lily" with an empty
-       subject list is resolved to her and refused too. Complement: the same prompt about
-       Jenni (29), with Lily in the barn, passes.
+       policy, and no job row is created; a consumer prompt naming "Lily", or only her alias
+       "Lilibet", with an empty subject list is resolved to her and refused too. Complement:
+       the same prompt about Jenni (29), with Lily in the barn, passes.
     3. "A young girl" in a sexual context is classified minor and refused; "a middle-aged
        woman" in the same context is classified adult and passes.
     4. A sexual request between two adults is refused while Wren (16) is authoritatively in
        the room. Complement: with Wren in the barn and only in the request's own roster, it is
        not refused on presence.
     5. Payloads (FR-IMG-13): the stub ``guardrail_check`` calls carry the prompt, the policy's
-       text and labels with true ages, and no story text and no name of a character absent
-       from the prompt; the refusals say "a minor is involved or present" and name neither Lily
-       nor her age, and each wrote an ``image_prompt_rejected`` audit row."""
+       text and labels with true ages, and no story text and no name or alias of a character
+       absent from the prompt (#801: every character has an alias); the refusals say "a minor
+       is involved or present" and name neither Lily, her alias nor her age, and each wrote an
+       ``image_prompt_rejected`` audit row."""
     stub = StubImageGenerator(script=[Outputs()] * 4)
     guard = lib.models.stub
     story, ids = await whisper_story(engine)
+    for name, alias in ALIASES.items():
+        await sg.snapshot(engine, story, ids[name], {"metadata": {"aliases": [alias]}})
     places = await with_rooms(engine, story, ids)
     with registered(ADAPTER, stub), prompt_checked():
         await configure(lib, image_settings, ADAPTER)
@@ -234,6 +242,11 @@ async def test_i_24__m8_two_paths(
         _redacted(named, LILY, str(LILY_AGE))
         lily_checks = [payload(c) for c in safety_calls(guard) if LILY_PROMPT in payload(c)]
         assert any(f"subject_1: age {LILY_AGE}" in p for p in lily_checks), lily_checks
+        by_alias = await _refused(lib, story, LILIBET_PROMPT, depicted_subjects=[])
+        _redacted(by_alias, LILY, ALIASES[LILY], str(LILY_AGE))
+        alias_checks = [payload(c) for c in safety_calls(guard) if LILIBET_PROMPT in payload(c)]
+        assert any(f"subject_1: age {LILY_AGE}" in p for p in alias_checks), alias_checks
+        assert all(LILY not in p for p in alias_checks), "only the alias the prompt used"
         assert await _enqueue(lib, story, JENNI_PROMPT, depicted_subjects=[])
 
         # 4. Presence: the adults together pass with Wren in the barn, even when the request's
@@ -254,7 +267,7 @@ async def test_i_24__m8_two_paths(
             sent_text = payload(call)
             assert STORY_TEXT not in sent_text
             checked = call.messages[-1].content
-            for name in CAST:
+            for name in (*CAST, *ALIASES.values()):
                 if name in sent_text:
                     assert name in checked, f"{name} reached a call whose texts lack it"
         policy_calls = [payload(c) for c in calls if SUBJECTS_HEADING in payload(c)]
@@ -262,11 +275,12 @@ async def test_i_24__m8_two_paths(
         assert all(POLICY_TEXT in p for p in policy_calls)
         assert all("Prompt: " in p for p in policy_calls)
         rows = await refusals(engine, story)
-        assert len(rows) == 3
+        assert len(rows) == 4
         assert all(r.policy_ids == [MINORS_POLICY_ID] for r in rows)
         assert all(r.principal == PRINCIPAL for r in rows)
         assert all(r.details["target_kind"] == "story" for r in rows)
         assert all(LILY not in json.dumps(r.details) for r in rows)
+        assert all(ALIASES[LILY] not in json.dumps(r.details) for r in rows)
 
     # 3. Figures, in an adults-only story under Lite (everyone present, nobody a minor).
     adults, _ = await whisper_story(engine, minors=False)
@@ -324,6 +338,57 @@ async def test_i_24__m8_figure_classification_fail_closed(
     assert stub.requests == []
 
 
+@pytest.mark.integration
+@pytest.mark.part("M8", "FR-IMG-12")
+async def test_i_24__m8_deferred_entity_is_a_figure(
+    lib: Engine, image_settings: Settings, engine: AsyncEngine, target: TestImageTarget
+) -> None:
+    """A story entity not yet modeled (``modeling_deferred``: a person entity with no
+    character, so no true age) is a figure, not a subject (#257's Safety context AC; #801).
+    Named in a sexual prompt, it resolves to no character and gets no age; the figure
+    classification answers it indeterminate, which counts as a minor, and the request is
+    refused by the minors policy.
+
+    Complement asserted: classified adult, the same request passes, and the job's safety
+    context lists it as ``figure_1`` with no character and no age."""
+    stub = StubImageGenerator(script=[])
+    guard = lib.models.stub
+    story, ids = await whisper_story(engine, minors=False)
+    async with engine.begin() as conn:
+        tom = await store.add_entity(conn, story, "person", "Old Tom")
+    prompt = "Old Tom lounges in lingerie on the bed."
+    async with engine.connect() as conn:
+        context = await build_safety_context(
+            conn, SafetyRequest(kind="story", story_id=story, prompt=prompt), None
+        )
+    assert {s.character_id for s in context.subjects} <= set(ids.values())
+    assert tom not in {s.character_id for s in context.subjects}
+    assert all(s.mentions == () for s in context.subjects), "nobody is named"
+    with registered(ADAPTER, stub), prompt_checked():
+        await configure(lib, image_settings, ADAPTER)
+        guard.reset()
+        recognise_sexual(guard, "lingerie")
+        figures(guard, "Old Tom", ("Old Tom", "indeterminate"))
+        _redacted(await _refused(lib, story, prompt))
+        checks = [p for p in map(payload, safety_calls(guard)) if SUBJECTS_HEADING in p]
+        assert any(
+            "figure_1: indeterminate figure, treated as a minor; Old Tom" in p for p in checks
+        )
+
+        guard.reset()
+        recognise_sexual(guard, "lingerie")
+        figures(guard, "Old Tom", ("Old Tom", "adult"))
+        job = await _enqueue(lib, story, prompt)
+        found = await _safety_context(lib, job)
+        (figure,) = [s for s in found["subjects"] if s["source"] == "figure"]
+        assert figure["label"] == "figure_1"
+        assert figure["character_id"] is None
+        assert figure["true_age"] is None
+        assert figure["classification"] == "adult"
+        assert tom not in json.dumps(found)
+    assert stub.requests == []
+
+
 def _section(guide: str, name: str) -> str:
     return guide.split(f"### `{name}`", 1)[1].split("\n### ", 1)[0].split("\n## ", 1)[0]
 
@@ -333,13 +398,14 @@ def _rows(section: str) -> list[str]:
     return [line.split("|")[1].strip().strip("`") for line in receives.splitlines()[4:] if line]
 
 
-@pytest.mark.part("M8", "FR-IMG-13")
+@pytest.mark.part("M8", "FR-IMG-13; FR-MODEL-13")
 def test_i_24__m8_data_flow_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """The generated guide's rows for ``guardrail_check`` and ``image_check`` list exactly the
     inputs their registry schemas declare (subject labels, true ages and the prompt's visual
     descriptors in both; the image, prompt, caption and alt text in ``image_check``'s) and
-    carry the hosted-provider retention sentence verbatim; the image adapter has a row too,
-    listing the prompt, its parameters and reference images and never the safety context.
+    carry the hosted-provider retention sentence verbatim, and the committed guide is exactly
+    what the registry renders (FR-MODEL-13); the image adapter has a row too, listing the
+    prompt, its parameters and reference images and never the safety context.
 
     Complement, run first: with the sentence removed from the guide's row template, rendering
     fails and ``--check`` exits 1, so the sentence cannot silently drop out."""
@@ -402,7 +468,7 @@ def _checker_input(call: Any) -> tuple[str, tuple[str, ...]]:
 
 
 @pytest.mark.integration
-@pytest.mark.part("M8", "FR-IMG-12,13")
+@pytest.mark.part("M8", "FR-IMG-10,12,13")
 async def test_i_24__m8_checker_true_ages(
     lib: Engine, image_settings: Settings, engine: AsyncEngine, target: TestImageTarget
 ) -> None:
@@ -412,7 +478,7 @@ async def test_i_24__m8_checker_true_ages(
     input carries the image as a ``data:`` URL part, the prompt, the minors policy's text and
     the resolved subjects as labels with their true ages, 34 and 17, and no story text; the
     generator's request carries only the band the prompt uses. The verdict is recorded per
-    policy on the promoted asset.
+    policy on the promoted asset, each policy with its own certification flag (FR-IMG-10).
 
     Complement asserted: the generator's request holds neither age, and the checker's text
     holds no name the prompt lacks (Lily is a label only)."""
@@ -520,9 +586,10 @@ async def test_i_24__m8_viewpoint_inputs(
     restricted-details prompt) is not sent for Bobby, who knows her, and is sent for
     ``omniscient``. The prompt builder for Bobby renders the same input and answers the same
     prompt without generating. A consumer prompt with the whispered words is refused for Bobby
-    (422 ``viewpoint_protected_content``, its field only) and creates no job. An upload for Bobby
-    is filed as given, with no viewpoint check. The API and ``docs/OPERATIONS.md`` state FR-IMG-8's
-    guarantee.
+    (422 ``viewpoint_protected_content``, its field only) and creates no job; so is a caption or
+    an alt text carrying them, and the builder whose model writes them twice (#799). An upload
+    for Bobby is filed as given, with no viewpoint check. The API and ``docs/OPERATIONS.md``
+    state FR-IMG-8's guarantee.
 
     Complement asserted: the ``omniscient`` image's input does hold the affair, the words, the
     tattoo and the world's description of the parlor; Marcus, the whisper's addressee, gets its
@@ -612,6 +679,21 @@ async def test_i_24__m8_viewpoint_inputs(
         )
         assert accepted.status_code == 202, accepted.text
 
+        # A caption or alt text carrying the whispered words is refused for Bobby the same way,
+        # at its own field, before any prompt call (#799).
+        held = await sg.counts(engine, story)
+        calls = len(app.prompt_calls())
+        for field in ("caption", "alt_text"):
+            leaked = await sg.request(
+                app, story, position=at, audience_viewpoint=bobby, **{field: f"She says {sg.WORDS}"}
+            )
+            assert leaked.status_code == 422, leaked.text
+            assert leaked.json()["error"]["code"] == "viewpoint_protected_content"
+            assert leaked.json()["error"]["details"] == {"field": f"body.{field}"}
+            assert "blue mat" not in leaked.text
+        assert await sg.counts(engine, story) == held
+        assert len(app.prompt_calls()) == calls
+
         # An upload for Bobby is filed as given: no viewpoint check, no viewpoint basis.
         StubImageChecker(app.stub).answer({MINORS_POLICY_ID: "pass"})
         placed = await si.placed(
@@ -630,6 +712,21 @@ async def test_i_24__m8_viewpoint_inputs(
         images_tag = next(t for t in document["tags"] if t["name"] == "images")
         assert IMAGE_VIEWPOINT_GUARANTEE in images_tag["description"]
         assert IMAGE_VIEWPOINT_GUARANTEE in OPERATIONS.read_text()
+
+        # The prompt builder for Bobby, with a prompt model that writes the words on its first
+        # answer and on its rewrite: 422 at ``prompt``, no prompt answered, nothing written.
+        app.stub.reset()
+        leak = json.dumps({"prompt": f"Jenni whispers that {sg.WORDS}"})
+        app.stub.when(("## What the viewer perceived",), leak, sg.PURPOSE)
+        held = await sg.counts(engine, story)
+        calls = len(app.prompt_calls())
+        refused = await sg.built(app, story, position=at, audience_viewpoint=bobby)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "viewpoint_protected_content"
+        assert refused.json()["error"]["details"] == {"field": "prompt"}
+        assert "blue mat" not in refused.text
+        assert len(app.prompt_calls()) == calls + 2
+        assert await sg.counts(engine, story) == held
 
 
 @pytest.mark.integration

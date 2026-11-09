@@ -45,6 +45,9 @@ SIZES = {
     "e01_viewpoint": 300,
     # #201's time-estimation set (E-09, NFR-QUAL-9).
     "e09": 200,
+    # #270/#271's image-policy set (E-11, NFR-QUAL-12), checked once committed. Its sizes are per
+    # policy (100 cases a metric, the tag coverage minimums), and a run enforces them.
+    "e11": 1,
 }
 
 

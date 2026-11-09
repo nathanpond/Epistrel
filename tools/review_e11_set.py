@@ -48,13 +48,36 @@ type Ask = Callable[[str], str]
 type Show = Callable[[Path], None]
 
 
+def _no_close(_: Path) -> None:
+    """The default ``close``: leave the viewer alone."""
+
+
 def show_image(path: Path) -> None:
-    """Open ``path`` in the system's viewer (``open`` on macOS, ``xdg-open`` elsewhere)."""
+    """Open ``path`` in the system's viewer (``open`` on macOS, ``xdg-open`` elsewhere). On macOS
+    it opens in the background (``open -g``), so the terminal keeps the keyboard."""
     viewer = "open" if sys.platform == "darwin" else "xdg-open"
     if shutil.which(viewer) is None:
         print(f"  (no {viewer}: open {path} yourself)")
         return
-    subprocess.run([viewer, str(path)], check=False)  # noqa: S603 - a fixed viewer, a local path
+    command = [viewer, "-g", str(path)] if viewer == "open" else [viewer, str(path)]
+    subprocess.run(command, check=False)  # noqa: S603 - a fixed viewer, a local path
+
+
+def close_image(path: Path) -> None:
+    """Close ``path``'s Preview window once it is answered (macOS only; elsewhere, and when
+    Preview is not running or the window is already closed, nothing happens). macOS asks once
+    for permission to let the terminal control Preview."""
+    osascript = shutil.which("osascript")
+    if sys.platform != "darwin" or osascript is None:
+        return
+    name = path.name.replace("\\", "\\\\").replace('"', '\\"')
+    script = (
+        'if application "Preview" is running then tell application "Preview" to '
+        f'close (every document whose name is "{name}")'
+    )
+    subprocess.run(  # noqa: S603 - a fixed program; the name is quoted for AppleScript
+        [osascript, "-e", script], check=False, capture_output=True
+    )
 
 
 @dataclass
@@ -146,6 +169,7 @@ def review(
     *,
     ask: Ask = input,
     show: Show = show_image,
+    close: Show = _no_close,
 ) -> Review:
     """Walk the unreviewed cases (module docstring); what was done."""
     manifest = sets_dir / MANIFEST
@@ -165,6 +189,8 @@ def review(
             show(image)
         print(describe(row))
         answer = ask("  k(eep) / r(elabel) / d(rop) / s(kip) / q(uit): ").strip().lower()[:1]
+        if answer != "r":
+            close(image)  # a relabel keeps the image up while its questions are asked
         if answer == "q":
             break
         if answer == "s" or answer not in {"k", "r", "d"}:
@@ -185,6 +211,8 @@ def review(
             index += 1
             continue
         updated = row if answer == "k" else relabel(row, ask)
+        if answer == "r" and updated is not None:
+            close(image)
         if updated is None:
             continue  # the same case again
         updated = {
@@ -215,7 +243,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     def printed(path: Path) -> None:
         print(f"image {path}")
 
-    done = review(args.sets_dir, show=printed if args.no_open else show_image)
+    done = review(
+        args.sets_dir,
+        show=printed if args.no_open else show_image,
+        close=_no_close if args.no_open else close_image,
+    )
     print(
         f"kept {len(done.kept)}, relabelled {len(done.relabelled)}, dropped {len(done.dropped)}, "
         f"skipped {len(done.skipped)}; {done.remaining} unreviewed left"

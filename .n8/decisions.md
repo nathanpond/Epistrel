@@ -13308,3 +13308,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #761's AC and Test plan are amended to what shipped: `strict: true` with a wire schema (`provider_schema`) on api.anthropic.com only, every other endpoint unchanged. The original lines stay, struck through and marked superseded, and point at the 2026-11-07 ad-hoc entry.
   **Why:** the owner's decision of 2026-11-07 (option 2) on #761. Cost if wrong: none.
   **Issue:** #801, #761
+
+## /n8-exec M8 fix pass 2 — 2026-11-09
+
+- **Decision (method):** the second fix pass covers the agent-actionable items `/n8-verify M8` (re-verify at e12f34f) filed: #803 (sev:high, a missing test) and #804 (low nits). It runs on `milestone/m8-verify-fixes-2` off origin/main e12f34f, in worktree `.claude/worktrees/m8fix2`, so the owner's `m8-e11-evidence` checkout (unpushed #271 work) stays untouched. The issue-named tests, the gate files and every static tool run locally; CI's 12-shard run on the PR is the full-suite gate. #271 stays `needs-owner-action` and is not touched.
+  **Why:** same practice as the first fix pass; a serial local full run is too slow, and the owner's branch must not move.
+  **Issue:** #803, #804, #271
+- **Decision:** #803's complement goes into `test_i_23__m8_story_image_slot_deletion`'s genesis-slot block. A second, never-deleted genesis-slot image is the positive control. After the delete and regenerate, the `variant=1:1` chain read lists only the control; after the swap back, the `variant=1:2` chain read does too. Under the issue's mutant (`and_(literal(False), …)`) the test fails at the `1:1` chain assert; without it, it passes.
+  **Why:** the issue's "Fix needs". The `1:2` read after the swap is added because it is the other chain the position-less deletion must be on. Cost if wrong: none to behaviour; tests only.
+  **Issue:** #803, #795
+- **Decision:** #804's hook-registration item is a new X-07 part, `test_x_07__m8_attempts_hook` (`part("M8", "NFR-REL-5")`, chaos_quick like `test_x_07__turn_queue`), not an assertion in `test_i_26__m8_startup_recovery`. It starts a worker-mode `Engine` and asserts `_RECOVERY_HOOKS["image_attempts"] is _recover_image_attempts`, and that stopping the workers unregisters it. Removing the registration at `engine.py` fails it.
+  **Why:** I-26's start-up test builds its own `space`, not an `Engine`, so it cannot see the registration; X-07 already checks the `turn_queue` hook this way. Same requirement as `test_x_07__m8_horizon`, so traceability is unchanged.
+  **Issue:** #804, #268
+- **Decision:** `RequestInputs.of` joins `BUILDERS` in `tests/gates/test_image_paths_contract.py`, with a docstring saying why the walk, not lint-imports, catches a re-exported `ImageJob`. The issue's repro (a parameter annotated `ImageJob`, imported via `orchestrator.images.attempts`) now fails the gate.
+  **Why:** #804 item 2. Cost if wrong: none; tests only.
+  **Issue:** #804, #797
+- **Decision:** the *[corrected YYYY-MM-DD, #N: …]* marker is documented in `docs/05-adr-log.md`'s header as the form for a factual slip that no later decision changes (a wrong path, a misnamed test). ADR-182's marker is not restated as an amendment.
+  **Why:** #804 item 3 offered either. An amendment is for a later decision changing an earlier one; a wrong test path is not a decision, so restating it as one would misdescribe it. The header edit adds a rule and changes no ADR, which the append-only rule allows. Cost if wrong: one sentence to reword.
+  **Issue:** #804

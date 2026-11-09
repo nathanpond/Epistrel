@@ -2199,6 +2199,91 @@ async def test_i_23__m8_auto_staged_abandoned(
         await ps.drop_outbox_jobs(engine, story)
 
 
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_staged_resumed(
+    image_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A staged turn under ``auto`` whose completion fails in the request (its report step)
+    stays ``outcome_recorded`` with its intent's illustration point stored and no job; the
+    process that completes it later queues the job in the completion's commit, whichever it
+    is: a direct ``resume`` (#213's kick and response recompose), the recovery pass
+    (``resume_stalled``) and the ``outbox_recovery`` job.
+
+    Complement asserted: before each resume the turn has no automatic job, and the job names
+    the resumed turn's operation."""
+    import json as json_
+    from typing import cast
+
+    from epistrel.orchestrator.jobs.handlers import outbox as outbox_jobs
+    from epistrel.orchestrator.jobs.recurring import NoPayload
+    from epistrel.orchestrator.jobs.types import JobContext
+    from epistrel.orchestrator.structured import staged
+    from tests import auto_illustration_support as ai
+    from tests import effect_support as es
+    from tests import multi_support as ms
+    from tests import provider_support as ps
+    from tests import staged_support as sp
+    from tests.structured_turn_support import beat
+
+    class Boom(Exception):
+        pass
+
+    async def boom(*_: Any, **__: Any) -> None:
+        raise Boom("induced")
+
+    async with sg.generation_app(image_settings, engine) as app:
+        await app.configure()
+        registry = app.lib.in_process_providers
+
+        async def direct() -> None:
+            done = await staged.resume(engine, str(op.operation_id), registry=registry)
+            assert done.stage is not None, done
+            assert done.stage.value == "completed", done
+
+        async def recovery_pass() -> None:
+            assert await staged.resume_stalled(engine, registry=registry) >= 1
+
+        async def outbox_recovery() -> None:
+            ctx = JobContext(db=engine, job=cast(Any, None), payload=NoPayload())
+            ran = await outbox_jobs._recover(ctx)
+            assert (ran.result or {}).get("resumed", 0) >= 1, ran.result
+
+        for resume in (direct, recovery_pass, outbox_recovery):
+            story, cal, _, fake = await sp.sync_story(app.client, engine, app.lib)
+            await ai.set_auto(app.client, story)
+            fake.script_writes("gold", "confirmed")
+            app.stub.reset()
+            sp.outcome_step(app.stub, beat("narration", sp.WENT))
+            marked = json_.loads(sp.purchase(cal))
+            marked["illustrate"] = [{"beat_index": 0, "reason": "turning_point"}]
+            ms.renders_for(app.stub, "Mira", json_.dumps(marked))
+            es.narrator(app.stub, es.render(beat("narration", sp.COUNTS)))
+            with monkeypatch.context() as patched:
+                patched.setattr(staged, "write_report", boom)
+                try:
+                    answer = await sp.buy(app.client, story, cal)
+                except Boom:
+                    answer = None
+            assert answer is None or answer.status_code >= 500
+            op = await sp.staged_op(engine, story)
+            assert op.turn_stage == "outcome_recorded", resume.__name__
+            async with engine.connect() as conn:
+                report = await conn.scalar(
+                    text("SELECT turn_report FROM operations WHERE operation_id = :o"),
+                    {"o": str(op.operation_id)},
+                )
+            assert [p["reason"] for p in report["illustration"]["points"]] == ["turning_point"]
+            assert await ai.auto_jobs(engine, story) == []
+
+            await resume()
+            assert (await sp.staged_op(engine, story)).turn_stage == "completed", resume.__name__
+            [job] = await ai.auto_jobs(engine, story)
+            assert job["origin"]["auto"]["operation_id"] == str(op.operation_id)
+            assert job["origin"]["auto"]["reason"] == "turning_point"
+            await ps.drop_outbox_jobs(engine, story)
+
+
 @pytest.mark.usefixtures("drained_embedding_jobs")
 @pytest.mark.part("M8", "FR-IMG-6")
 async def test_i_23__m8_auto_unconfigured(image_settings: Settings, engine: AsyncEngine) -> None:

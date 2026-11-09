@@ -1,10 +1,17 @@
 {#- Image check (FR-IMG-3,13; #254, called by #258): one image against the image-output
     policies. The image itself travels as an image part of the user message, never as text
-    (#258); the subjects are opaque labels with true ages and the prompt's own descriptors. -#}
+    (#258); the subjects are opaque labels with true ages and the prompt's own descriptors.
+    A policy's text is shared with the text check (``guardrail_check``) and may be written for
+    it, with its own answer format: the framing line applies its rule to the image and keeps
+    this template's answer format the only one (#810). -#}
 {% block system %}
 You check one image against content policies. Judge only what the image shows, with its
 prompt, caption and alt text as context. Answer only with a JSON object
 {"verdicts": {"<policy id>": "pass" | "violation" | "uncertain"}}, one entry per listed policy.
+
+Each policy's text says what the policy forbids. Some were written for checking text: apply
+each rule to this image and its subjects instead, and ignore any answer format a policy's text
+asks for. Answer only in the format above.
 
 ## Policies (id: text)
 {% for policy in policies %}

@@ -8560,7 +8560,7 @@
         "type": "object"
       },
       "EffectiveConfig": {
-        "description": "A story's effective configuration (FR-PROF-5,16): the deployment's defaults, the profile\nand the version it runs on, its own overrides, every delivered setting at its effective\nvalue (the defaults, then the profile's version, then the overrides), and the\nconfiguration's fingerprint, the capabilities it enables and its quality status\n(``uncertified`` in M3).",
+        "description": "A story's effective configuration (FR-PROF-5,16): the deployment's defaults, the profile\nand the version it runs on, its own overrides, every delivered setting at its effective\nvalue (the defaults, then the profile's version, then the overrides), and the\nconfiguration's fingerprint, the capabilities it enables, the ones a gap fill accepts\n(``gap_fillable``, #790) and its quality status (``uncertified`` in M3).",
         "properties": {
           "capabilities": {
             "items": {
@@ -10079,6 +10079,14 @@
             "title": "Fingerprint",
             "type": "string"
           },
+          "gap_fillable": {
+            "description": "#790: the capabilities a gap fill (`POST /stories/{id}/backfill` with `capabilities`) accepts for this story, sorted: its data-producing capabilities, by module name with no `:mode` suffix. Any other name is 422 `validation_error` with `details.not_enabled`.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Gap Fillable",
+            "type": "array"
+          },
           "overrides": {
             "$ref": "#/components/schemas/OverridesRef"
           },
@@ -10116,6 +10124,7 @@
           "effective",
           "fingerprint",
           "capabilities",
+          "gap_fillable",
           "quality_status"
         ],
         "title": "EffectiveConfig",
@@ -84613,7 +84622,7 @@
         ]
       },
       "post": {
-        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability the story does not have on is 422 `validation_error`. On a backfill `paused_for_conflicts` (#230) it resumes instead: without `ignore_warnings`, 200 `applied: false` with `conflicts_open` and the open `conflicts` (nothing changes); with it the backfill completes and every open conflict becomes `uncertain` (`conflicts_made_uncertain`): an open thunk where the target configuration runs commitment. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
+        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability outside the story's `gap_fillable` (`GET /stories/{id}/effective-config`, #790) is 422 `validation_error` naming it in `details.not_enabled`. On a backfill `paused_for_conflicts` (#230) it resumes instead: without `ignore_warnings`, 200 `applied: false` with `conflicts_open` and the open `conflicts` (nothing changes); with it the backfill completes and every open conflict becomes `uncertain` (`conflicts_made_uncertain`): an open thunk where the target configuration runs commitment. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
         "operationId": "start_backfill",
         "parameters": [
           {
@@ -88003,7 +88012,7 @@
     },
     "/stories/{story_id}/effective-config": {
       "get": {
-        "description": "The story's effective configuration (FR-PROF-5,16): `deployment_defaults` (every delivered setting at the deployment's default, `profile_defaults` in `/admin/settings`), the engine profile and the version it runs on (the profile's latest, or with `pinned` an earlier one it kept because a data-producing edit could not apply to its history), its `overrides` (the settings it overrides, with their `revision`), `effective`: every delivered setting at its effective value (the defaults, then the profile's version, then the overrides, validated as a whole), the configuration's `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables and its `quality_status` (`uncertified` until a certification matches the fingerprint). A turn captures this configuration when it starts and runs under it to the end.",
+        "description": "The story's effective configuration (FR-PROF-5,16): `deployment_defaults` (every delivered setting at the deployment's default, `profile_defaults` in `/admin/settings`), the engine profile and the version it runs on (the profile's latest, or with `pinned` an earlier one it kept because a data-producing edit could not apply to its history), its `overrides` (the settings it overrides, with their `revision`), `effective`: every delivered setting at its effective value (the defaults, then the profile's version, then the overrides, validated as a whole), the configuration's `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables, `gap_fillable`: the ones a gap fill (`POST /stories/{id}/backfill` with `capabilities`) accepts, sorted, with no `:mode` suffix (#790), and its `quality_status` (`uncertified` until a certification matches the fingerprint). A turn captures this configuration when it starts and runs under it to the end.",
         "operationId": "get_effective_config",
         "parameters": [
           {

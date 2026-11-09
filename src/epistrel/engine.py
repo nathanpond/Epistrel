@@ -7439,7 +7439,8 @@ class Engine:
         profile and the version it runs on (``pinned`` when an unavailable upgrade kept an
         earlier one), its overrides with their revision, every delivered setting at its
         effective value (defaults, then the profile's version, then the overrides), the
-        fingerprint, the capabilities and the quality status. 404 for an unknown story."""
+        fingerprint, the capabilities, the ones a gap fill accepts (``gap_fillable``, #790) and
+        the quality status. 404 for an unknown story."""
         return await effective.read(self.db, story_id, await self._runtime_facts())
 
     @refuses_nul()

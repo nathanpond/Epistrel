@@ -7049,6 +7049,44 @@ class Engine:
         return await certification_run.get_run(self.db, run_id)
 
     @refuses_nul()
+    async def list_certification_runs(
+        self,
+        ctx: RequestContext,
+        *,
+        fingerprint: str | None = None,
+        profile_id: str | None = None,
+        story_id: str | None = None,
+        kind: str | Sequence[str] | None = None,
+        status: str | Sequence[str] | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> certification_run.CertificationRunPage:
+        """Certification runs, newest first (#776): requested ones (``kind`` ``certification``)
+        and canaries (``canary``, each with its ``outcome`` once completed), narrowed by every
+        filter given (ANDed; a repeated ``kind`` or ``status`` matches any of its values), paged
+        as ``list_certifications`` pages. An unknown ``kind`` or ``status`` is 422
+        ``validation_error`` at its field."""
+        for field, values, allowed in (
+            ("kind", kind, typing.get_args(certification_run.RunKind)),
+            ("status", status, typing.get_args(certification_run.RunStatus)),
+        ):
+            unknown = sorted(set(values or ()) - set(allowed))
+            if unknown:
+                raise InvalidRequest(
+                    f"unknown {field}", {"field": f"query.{field}", "allowed": list(allowed)}
+                )
+        return await certification_run.list_runs(
+            self.db,
+            fingerprint=fingerprint,
+            profile_id=profile_id,
+            story_id=story_id,
+            kinds=tuple(kind or ()),
+            statuses=tuple(status or ()),
+            limit=limit,
+            cursor=cursor,
+        )
+
+    @refuses_nul()
     async def list_certifications(
         self,
         ctx: RequestContext,

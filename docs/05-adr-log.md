@@ -39,7 +39,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176 |
 | FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 182 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 182, 183 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
@@ -169,7 +169,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 104 | Image limits count every provider output; catalog results are candidates attached deliberately | Amended | 109, 135, 138 |
 | 105 | Image metadata states its guarantees; an image's audience viewpoint is separate from its camera POV | Amended | 110 |
 | 106 | Creative quality is outside the guarantee; Epistrel guarantees the inputs | Amended | 112 |
-| 107 | Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions | Partly superseded | 141 |
+| 107 | Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions | Partly superseded | 14141, 183 |
 | 108 | The image safety path knows true ages; the image model gets only what the audience perceives | Amended | 114, 129 |
 | 109 | Catalog candidates are durable private assets; image reservations are atomic; unchecked uploads are named as such | Partly superseded | 113, 114, 117, 135 |
 | 110 | Checker certification is reported per policy; image tests and ADR consequences stay inside the guarantee boundary | Current | — |
@@ -245,6 +245,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 180 | A rejected `response_format` probe is recorded as a probe and not counted | Current | — |
 | 181 | Image limits are deployment- and entry-scoped; per-story limits belong to the consumer | Current | — |
 | 182 | Image minors-policy certification uses external evidence; Epistrel holds no violating images | Current | — |
+| 183 | Certification runs are listed, canaries included, each with its outcome | Current | — |
 
 ---
 
@@ -1117,7 +1118,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-107 — Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions
 **Status:** Accepted. Refines ADR-087, ADR-088, ADR-089, and ADR-094.
-**Amended by:** ADR-141 — validation reports also use the outcomes `deferred` and `inactive`
+**Amended by:** ADR-141 — validation reports also use the outcomes `deferred` and `inactive`; ADR-183 — every certification run, a canary's included, is listed with its outcome (`GET /certification-runs`), so a `stale` from a canary failure is observable from the run as well as the certification
 **Context:** A review confirmed several designs but asked for their rules to be stated where future edits cannot erode them.
 **Decision:** (1) A persona's description is player-provided and never objective canon: it yields only perceptions, acquaintances' revisable beliefs, and narration guidance; the name and true age are the only canonical persona fields (FR-CAT-6). (2) Validation, publish, and story creation share one report shape — code, location, exact text, outcome (`ignored`, `dropped`, `kept`) *[superseded by ADR-141: reports also use `deferred` and `inactive`]*, prevailing source, and rule — so authors see which text was ignored and why (FR-SCN-5,7). (3) `uncertified` means no certification ever matched the fingerprint; `stale` means a matching certification was later invalidated by a canary failure or detected drift (FR-PROF-16). (4) Rating suggestions are labeled advisory, are read by no guardrail, publish, creation, or rating-change path, and are author-facing because they quote private content (FR-RATE-8).
 **Consequences:** Each rule is now explicit in the requirements and covered by a test (U-27, C-18, C-19, C-21).
@@ -1926,6 +1927,17 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 - docs/03 NFR-QUAL-12 and NFR-QUAL-8, docs/04 E-11 and §8 (the gate-rule prose and the minors threshold row) are amended, and docs/02 §4.13 is annotated (2026-11-08).
 - A minors certification is only as good as the vendor's evidence. Epistrel records the quoted figure as given and applies no threshold or date limit. Because the record binds to the exact checker fingerprint, a self-hosted or quantized copy needs its own evidence.
 - The E-11 report shows the minors false-negative rate as "not measured" and states "certified only by external attestation; otherwise an uncertified backstop". Tests: `tests/evals/test_e_11.py`, `tests/integration/test_image_check_certifications.py` *[corrected 2026-11-08, #801: that integration file was never created; the certification tests are `tests/evals/test_e_11.py` and `tests/conformance/test_c_24.py`]*.
+
+---
+
+### ADR-183 — Certification runs are listed, canaries included, each with its outcome
+**Status:** Accepted. Amends ADR-107 (clause 3: how a `stale` from a canary failure is observed).
+**Context:** ADR-107 (3) made `stale` mean a matching certification later invalidated by a canary failure or detected drift, and #234 let a deployment schedule the canary (FR-PROF-17). Only the stale side was observable. A canary that held or was inconclusive could not be found at all; a missed one only through the certification it made stale (`invalidated_by_run_id`); and `GET /certification-runs/{run_id}` read one run by an id the client already held, with the canary's outcome inside its `report`. A client could not list requested runs either. The Epistrel Console's certification pages (Console M7) asked for a list (#776).
+**Decision:** Applied by #776 (2026-11-09). `GET /certification-runs` lists certification runs newest first, paged as `GET /certifications` pages (`cursor` from `next_cursor`, null past the last page; `limit` default 50, at most 200), narrowed by `fingerprint`, `profile_id`, `story_id`, and a repeatable `kind` (`certification`, `canary`) and `status` (`queued`, `running`, `completed`, `failed`); different filters AND together. `CertificationRun`, on the list and on the single read, carries a top-level `outcome` (`held`, `inconclusive`, `missed`) set only on a completed canary run, and null on a certification run and on an unfinished or failed one. A missed canary's `id` is the stale certification's `invalidated_by_run_id`. The route is read-only and needs the service credential like the other certification reads; runs are deployment records, so no owner narrows the list (ADR-091).
+**Alternatives considered:** Listing a certification's canaries under `GET /certifications/{id}` reached only the canaries of a certification the client already knew and left requested runs unlisted. Leaving the outcome inside `report` made every list client parse reports.
+**Consequences:**
+- docs/03 FR-PROF-17 and docs/02 §4.11 (the Certification bullet) are amended (2026-11-09). FR-PROF-17 stays in its milestone, and no part moves.
+- `outcome` and `CertificationRunPage` are in the OpenAPI schema. Test: `tests/integration/test_certification_run_list.py`.
 
 ---
 

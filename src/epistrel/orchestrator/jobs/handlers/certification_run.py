@@ -23,9 +23,10 @@ so it records no operation; its result holds ids and counts only (invariant 3).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from sqlalchemy import select, update
@@ -55,6 +56,9 @@ CANARY = "canary"
 DEFAULT_SEEDS = 3
 SAMPLE_MIN = 10
 ACTIVE = ("queued", "running")
+RunKind = Literal["certification", "canary"]
+RunStatus = Literal["queued", "running", "completed", "failed"]
+CanaryOutcome = Literal["held", "inconclusive", "missed"]
 
 
 class CertificationRunRequest(BaseModel):
@@ -116,6 +120,23 @@ class CertificationRun(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     error: str | None
+    outcome: CanaryOutcome | None = Field(
+        description=(
+            "A completed canary run's outcome (#234, #776): `held` (every floor the checked "
+            "certification passed held), `missed` (a floor measured below it: the certification "
+            "is now `stale`, its `invalidated_by_run_id` this run's `id`) or `inconclusive` (no "
+            "measured miss, not enough evidence to hold). Null on a certification run and on a "
+            "run not yet completed (or failed)."
+        )
+    )
+
+
+class CertificationRunPage(BaseModel):
+    """A page of certification runs, newest first; ``next_cursor`` continues it (null past the
+    last page)."""
+
+    items: list[CertificationRun]
+    next_cursor: str | None = None
 
 
 class RunPayload(BaseModel):
@@ -284,6 +305,13 @@ async def request_run(
     )
 
 
+def _shown(row: Any) -> CertificationRun:
+    """A ``certification_runs`` row as served: ``outcome`` only on a completed canary run."""
+    fields = {key: getattr(row, key) for key in CertificationRun.model_fields if key != "outcome"}
+    finished = row.kind == CANARY and row.status == "completed"
+    return CertificationRun.model_validate({**fields, "outcome": row.outcome if finished else None})
+
+
 async def get_run(db: AsyncEngine, run_id: str) -> CertificationRun:
     """The run ``run_id``; 404 ``certification_run_not_found``."""
     t = certification_runs
@@ -291,8 +319,42 @@ async def get_run(db: AsyncEngine, run_id: str) -> CertificationRun:
         row = (await conn.execute(select(t).where(t.c.id == run_id))).one_or_none()
     if row is None:
         raise CertificationRunNotFound("no such certification run", {"run_id": run_id})
-    return CertificationRun.model_validate(
-        {key: getattr(row, key) for key in CertificationRun.model_fields}
+    return _shown(row)
+
+
+async def list_runs(
+    db: AsyncEngine,
+    *,
+    fingerprint: str | None = None,
+    profile_id: str | None = None,
+    story_id: str | None = None,
+    kinds: Sequence[str] = (),
+    statuses: Sequence[str] = (),
+    limit: int = 50,
+    cursor: str | None = None,
+) -> CertificationRunPage:
+    """Certification runs, newest first (#776), narrowed by every filter given (ANDed; a
+    repeated ``kinds`` or ``statuses`` matches any of its values); ``cursor`` is the last id of
+    the previous page, as ``GET /certifications`` pages."""
+    t = certification_runs
+    query = select(t).order_by(t.c.id.desc()).limit(limit + 1)
+    if fingerprint is not None:
+        query = query.where(t.c.fingerprint == fingerprint)
+    if profile_id is not None:
+        query = query.where(t.c.profile_id == profile_id)
+    if story_id is not None:
+        query = query.where(t.c.story_id == story_id)
+    if kinds:
+        query = query.where(t.c.kind.in_(sorted(set(kinds))))
+    if statuses:
+        query = query.where(t.c.status.in_(sorted(set(statuses))))
+    if cursor is not None:
+        query = query.where(t.c.id < cursor)
+    async with db.connect() as conn:
+        rows = list(await conn.execute(query))
+    items = [_shown(r) for r in rows[:limit]]
+    return CertificationRunPage(
+        items=items, next_cursor=items[-1].id if len(rows) > limit and items else None
     )
 
 
@@ -414,11 +476,16 @@ __all__ = [
     "CANARY",
     "CERTIFICATION_RUN",
     "CERTIFICATION_RUN_HANDLER",
+    "CanaryOutcome",
     "CertificationRun",
     "CertificationRunAnswer",
+    "CertificationRunPage",
     "CertificationRunRequest",
+    "RunKind",
     "RunPayload",
+    "RunStatus",
     "get_run",
+    "list_runs",
     "profile_configuration",
     "request_run",
 ]

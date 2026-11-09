@@ -3593,6 +3593,23 @@
             "title": "Kind",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "held",
+                  "inconclusive",
+                  "missed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A completed canary run's outcome (#234, #776): `held` (every floor the checked certification passed held), `missed` (a floor measured below it: the certification is now `stale`, its `invalidated_by_run_id` this run's `id`) or `inconclusive` (no measured miss, not enough evidence to hold). Null on a certification run and on a run not yet completed (or failed).",
+            "title": "Outcome"
+          },
           "profile_id": {
             "title": "Profile Id",
             "type": "string"
@@ -3686,7 +3703,8 @@
           "created_at",
           "started_at",
           "finished_at",
-          "error"
+          "error",
+          "outcome"
         ],
         "title": "CertificationRun",
         "type": "object"
@@ -3753,6 +3771,34 @@
           "suites"
         ],
         "title": "CertificationRunBody",
+        "type": "object"
+      },
+      "CertificationRunPage": {
+        "description": "A page of certification runs, newest first; ``next_cursor`` continues it (null past the\nlast page).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CertificationRun"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CertificationRunPage",
         "type": "object"
       },
       "CertificationRunRequest": {
@@ -74781,6 +74827,223 @@
         "summary": "List a scenario's published versions",
         "tags": [
           "catalog"
+        ]
+      }
+    },
+    "/certification-runs": {
+      "get": {
+        "description": "Certification runs (FR-PROF-17; #776), newest first, each as `GET /certification-runs/{run_id}` serves it: requested runs (`kind: certification`) and the canary evals a deployment schedules (`kind: canary`, #234), with a completed canary's `outcome` (`held`, `inconclusive` or `missed`; null on a certification run and on an unfinished one). A `missed` canary's `id` is the stale certification's `invalidated_by_run_id`. Narrowed by `fingerprint`, `profile_id`, `story_id`, `kind` and `status` when given (ANDed; a repeated `kind` or `status` matches any of its values). `cursor` continues a page from its `next_cursor` (null past the last page). An invalid filter is 422 `validation_error` at its field.",
+        "operationId": "list_certification_runs",
+        "parameters": [
+          {
+            "description": "A configuration fingerprint.",
+            "in": "query",
+            "name": "fingerprint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A configuration fingerprint.",
+              "title": "Fingerprint"
+            }
+          },
+          {
+            "description": "A profile's id.",
+            "in": "query",
+            "name": "profile_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A profile's id.",
+              "title": "Profile Id"
+            }
+          },
+          {
+            "description": "A story's id (a story's run).",
+            "in": "query",
+            "name": "story_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A story's id (a story's run).",
+              "title": "Story Id"
+            }
+          },
+          {
+            "description": "Only runs of this kind (repeatable; any may match).",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "certification",
+                      "canary"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only runs of this kind (repeatable; any may match).",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "Only runs in this status (repeatable; any may match).",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "queued",
+                      "running",
+                      "completed",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only runs in this status (repeatable; any may match).",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "At most this many.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "At most this many.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRunPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List certification runs",
+        "tags": [
+          "profiles"
         ]
       }
     },

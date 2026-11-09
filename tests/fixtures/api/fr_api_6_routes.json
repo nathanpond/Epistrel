@@ -971,6 +971,11 @@
     },
     {
       "method": "GET",
+      "path": "/certification-runs",
+      "why": "#776: the certification runs, requested and canary, newest first (FR-PROF-17)"
+    },
+    {
+      "method": "GET",
       "path": "/certifications",
       "why": "#233: the certification records (FR-PROF-15)"
     },

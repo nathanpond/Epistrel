@@ -827,9 +827,11 @@ def retention_cutoff(settings: ImageJobSettings, *, now: datetime | None = None)
 
 async def retain(db: AsyncEngine, *, now: datetime | None = None) -> dict[str, int]:
     """Delete the accounting of periods before ``retention_cutoff``: first the records that are
-    settled or released, then the counters no record names any more. Each batch is up to
-    ``RETENTION_BATCH`` rows, in its own transaction; then #269's cost rows by their
-    ``period_date`` (``costs.purge``). Counts only."""
+    settled or released and share no counter with a ``held`` record (#262: every record naming
+    a counter is settled or released, so a kept counter always equals its kept records, #796),
+    then the counters no record names any more. Each batch is up to ``RETENTION_BATCH`` rows,
+    in its own transaction; then #269's cost rows by their ``period_date`` (``costs.purge``,
+    no state condition: cost rows are not part of the counters' sums). Counts only."""
     settings = await read_section(db, ImageJobSettings)
     cutoff = retention_cutoff(settings, now=now)
     tz = settings.deployment_time_zone
@@ -838,6 +840,20 @@ async def retain(db: AsyncEngine, *, now: datetime | None = None) -> dict[str, i
         func.cast(image_reservations.c.counter_keys[0]["period"].astext, Date()),
         func.cast(func.timezone(tz, image_reservations.c.created_at), Date()),
     )
+    held = image_reservations.alias("held")
+    key = func.jsonb_array_elements(image_reservations.c.counter_keys).table_valued("value")
+    shares_a_held_counter = (
+        select(held.c.job_id)
+        .select_from(key)
+        .join(
+            held,
+            and_(
+                held.c.state == ReservationState.HELD.value,
+                held.c.counter_keys.contains(func.jsonb_build_array(key.c.value)),
+            ),
+        )
+        .exists()
+    )
     while True:
         async with db.begin() as conn:
             batch = (
@@ -845,6 +861,7 @@ async def retain(db: AsyncEngine, *, now: datetime | None = None) -> dict[str, i
                 .where(
                     image_reservations.c.state != ReservationState.HELD.value,
                     record_period < cutoff,
+                    ~shares_a_held_counter,
                 )
                 .limit(RETENTION_BATCH)
                 .subquery()

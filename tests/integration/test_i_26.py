@@ -296,7 +296,8 @@ async def test_i_26__m8_day_boundary(pg_url: str, tmp_path: Path) -> None:
       nulled and the attempt released, the counter rows stay, and the reconciler agrees;
     - the record's immutable columns refuse an update (``image_reservation_immutable``);
     - retention removes closed-day rows only after ``image_accounting_retention_days`` and only
-      once no record naming them is ``held``;
+      once no record naming them is ``held``: a settled or released record whose counter a
+      ``held`` record also names is kept, so the reconciler stays clean (#796);
     - a story export has no ``image_reservations`` member.
 
     Complement asserted: the same reservation at 00:01 lands on the next day, and the next day
@@ -423,21 +424,34 @@ async def test_i_26__m8_day_boundary(pg_url: str, tmp_path: Path) -> None:
             }
             assert set(await counters(sp.db)) == {nov_8}
             assert {r["job_id"] for r in await all_records(sp.db)} == {nxt, doomed}
-            # 2026-11-08: the released record goes, the held one and its counter stay.
-            assert await limits.retain(sp.db, now=noon(10)) == {
-                "records": 1,
-                "counters": 0,
-                "costs": 0,
-            }
-            assert [r["job_id"] for r in await all_records(sp.db)] == [nxt]
+            # 2026-11-08: a settled sibling of the held record, on the same counter (#796).
+            with at(early.astimezone(UTC)):
+                sibling = await sp.insert(_story())
+                async with sp.db.begin() as conn:
+                    (settling,) = await limits.records(conn, sibling)
+                    await limits.settle(conn, settling, 1)
+            await assert_clean(sp.db)
+            # While `nxt` is held, no record naming its counter goes: neither the released one
+            # nor the settled one, whose `used` the kept counter still carries.
+            removed = await limits.retain(sp.db, now=noon(10))
+            await assert_clean(sp.db)
+            assert removed == {"records": 0, "counters": 0, "costs": 0}
+            assert {r["job_id"] for r in await all_records(sp.db)} == {nxt, doomed, sibling}
             assert set(await counters(sp.db)) == {nov_8}
-            await image_jobs.cancel_job(sp.lib.image_runtime(), nxt)
+            # Complement: once the held record settles, the day's records and counter all go.
+            async with sp.db.begin() as conn:
+                (holding,) = await limits.records(conn, nxt)
+                await limits.settle(conn, holding, 1)
+            await assert_clean(sp.db)
             assert await limits.retain(sp.db, now=noon(10)) == {
-                "records": 1,
+                "records": 3,
                 "counters": 1,
                 "costs": 0,
             }
+            assert await all_records(sp.db) == []
             assert await counters(sp.db) == {}
+            await assert_clean(sp.db)
+            await image_jobs.cancel_job(sp.lib.image_runtime(), nxt)
 
             # A story export carries no deployment accounting.
             await sp.set(image_limit_deployment_day=10, deployment_time_zone="UTC")

@@ -1281,7 +1281,8 @@ async def _tightening(
 
 
 @pytest.mark.integration
-async def test_revalidate_unrelated_amendment(
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_revalidate_unrelated_amendment(
     image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """An amendment (#221) correcting a beat of another turn leaves the image of turn 2 valid:
@@ -1304,7 +1305,8 @@ async def test_revalidate_unrelated_amendment(
 
 
 @pytest.mark.integration
-async def test_pause_max_wait(
+@pytest.mark.part("M8", "FR-IMG-4")
+async def test_i_25__m8_pause_max_wait(
     image_settings: Settings, engine: AsyncEngine, drained_embedding_jobs: None
 ) -> None:
     """A job waiting on its paused story ends ``stale`` with ``paused_too_long`` once it has

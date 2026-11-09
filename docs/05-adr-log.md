@@ -1925,7 +1925,7 @@ Everything else keeps the safe disposition: detector findings, the excluded reso
 **Consequences:**
 - docs/03 NFR-QUAL-12 and NFR-QUAL-8, docs/04 E-11 and §8 (the gate-rule prose and the minors threshold row) are amended, and docs/02 §4.13 is annotated (2026-11-08).
 - A minors certification is only as good as the vendor's evidence. Epistrel records the quoted figure as given and applies no threshold or date limit. Because the record binds to the exact checker fingerprint, a self-hosted or quantized copy needs its own evidence.
-- The E-11 report shows the minors false-negative rate as "not measured" and states "certified only by external attestation; otherwise an uncertified backstop". Tests: `tests/evals/test_e_11.py`, `tests/integration/test_image_check_certifications.py`.
+- The E-11 report shows the minors false-negative rate as "not measured" and states "certified only by external attestation; otherwise an uncertified backstop". Tests: `tests/evals/test_e_11.py`, `tests/integration/test_image_check_certifications.py` *[corrected 2026-11-08, #801: that integration file was never created; the certification tests are `tests/evals/test_e_11.py` and `tests/conformance/test_c_24.py`]*.
 
 ---
 

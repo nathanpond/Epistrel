@@ -766,7 +766,7 @@ async def test_c_22__m8_story_no_checker(image_settings: Settings, engine: Async
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("drained_embedding_jobs")
-@pytest.mark.part("M8", "FR-IMG-3")
+@pytest.mark.part("M8", "FR-IMG-3,6")
 async def test_c_22__m8_auto_no_checker(image_settings: Settings, engine: AsyncEngine) -> None:
     """#265 (FR-IMG-3,6): a Lite story under ``illustration_mode = auto`` with the image adapter
     configured and ``image_check`` unset (the seeded minors policy applies). A reply marking a

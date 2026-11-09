@@ -219,7 +219,9 @@ async def test_i_25__m8_crash_sweeps(
 ) -> None:
     """A worker killed after it staged an output (``images.after_stage``) leaves the staging
     object. The staging sweep skips it while the job is not terminal, however old; once the
-    job has ended it keeps it at ``staging_ttl - 1 s`` and deletes it past ``staging_ttl``. A
+    job has ended it keeps it at ``staging_ttl - 1 s`` and deletes it past ``staging_ttl``. The
+    media sweep never touches it, however old: it removes a stale staged upload beside it and
+    leaves ``tmp/images/<job>/<token>/`` to the staging sweep (#799). A
     worker killed with the promote transaction written and not committed
     (``images.promote.before_commit``) leaves a content-addressed blob no asset names: the media
     sweep's orphan step keeps it for its hour and deletes it after.
@@ -238,6 +240,18 @@ async def test_i_25__m8_crash_sweeps(
     assert kept["removed"] == 0
     assert kept["skipped_running"] >= 1
     assert job_dir.exists()
+    # Only the image staging sweep owns ``tmp/images/``: the media sweep's staging step removes
+    # a stale staged upload beside it and leaves the stale ``<job>/<token>/`` tree alone.
+    outputs = staged(store, staged_job)
+    stale_upload = store.staging_path(new_ulid())
+    stale_upload.write_bytes(b"crashed upload")
+    backdate(stale_upload, ttl + 600)
+    backdate(store.image_staging, ttl + 600)
+    swept = await media_sweep.sweep(lib.db, store)
+    assert swept["staged_removed"] >= 1
+    assert not stale_upload.exists()
+    assert staged(store, staged_job) == outputs
+    assert all(p.parent.parent == job_dir for p in outputs)
     await end_by_recovery(engine, staged_job)
     backdate(job_dir, ttl - 1)
     assert (await image_jobs.sweep_staging(lib.db, store, ttl_s=ttl))["removed"] == 0

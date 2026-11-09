@@ -81,7 +81,7 @@ from tests.image_support import (
     catalog_origin,
     registered,
 )
-from tests.media_support import WRITE, files, metadata, png, upload, uploaded, video
+from tests.media_support import WRITE, files, metadata, png, sha256, upload, uploaded, video
 from tests.model_support import admin_client, put, put_key
 from tests.policy_support import OPERATOR, unique
 
@@ -116,6 +116,27 @@ class CatalogTarget(TestImageTarget):
 
 async def _run(lib: Engine, job_id: str, failures: int = 0) -> dict[str, Any]:
     return await image_jobs.run_image_job(lib.image_runtime(), job_id, failures)
+
+
+async def _resumable(client: Any, data: bytes, caption: str) -> Any:
+    """A one-part resumable upload of ``data`` (#105), opened, sent and completed; the
+    completion's response."""
+    body = {
+        **metadata(caption=caption),
+        "size": len(data),
+        "mime_type": "image/png",
+        "sha256": sha256(data),
+    }
+    opened = await client.post("/media/uploads", json=body, headers=WRITE)
+    assert opened.status_code in (200, 201), opened.text
+    upload_id = opened.json()["upload_id"]
+    sent = await client.put(
+        f"/media/uploads/{upload_id}/parts/1",
+        content=data,
+        headers={**WRITE, "Content-Type": "application/octet-stream"},
+    )
+    assert sent.status_code in (200, 201), sent.text
+    return await client.post(f"/media/uploads/{upload_id}/complete", headers=WRITE)
 
 
 @pytest.mark.integration
@@ -474,6 +495,9 @@ async def test_c_22__m8_output(
       upload is 422 ``guardrail_violation`` (FR-GUARD-10's envelope, "a minor is involved or
       present") and no row or blob is created, while a clean upload is stored ``passed``. A
       video's poster is checked the same way, and a refused poster refuses the whole video.
+    - A checker that errors makes an upload 503 ``image_check_unavailable`` with nothing
+      stored. A resumable upload is checked at its completion: ``unchecked`` with no checker,
+      422 with nothing stored on a violation, ``passed`` when clean (#799).
 
     Complements asserted: with the checker answering ``pass`` the job promotes one asset that is
     ``passed`` with the checker's model and endpoint and the minors policy's result; the
@@ -488,6 +512,9 @@ async def test_c_22__m8_output(
             "unchecked",
             None,
         )
+        resumed = await _resumable(client, png(nonce="r0"), "a quiet harbour, resumed")
+        assert resumed.status_code == 201, resumed.text
+        assert (resumed.json()["check_status"], resumed.json()["check"]) == ("unchecked", None)
         with registered(ADAPTER, stub):
             await configure(lib, image_settings, ADAPTER)
             lib.models.stub.reset()
@@ -548,6 +575,28 @@ async def test_c_22__m8_output(
         assert (clean["source"], clean["check_status"]) == ("uploaded", "passed")
         assert clean["check"]["model"] == "stub-vision"
         assert [p["policy_id"] for p in clean["check"]["policies"]] == [MINORS]
+
+        # The check runs at a resumable upload's completion too.
+        before, stored = await counts(engine), blobs(lib.media)
+        resumed = await _resumable(client, png(nonce="r1"), "QUILLSHOT on the quay")
+        assert resumed.status_code == 422, resumed.text
+        assert resumed.json()["error"]["code"] == "guardrail_violation"
+        assert await counts(engine) == before
+        assert blobs(lib.media) == stored
+        resumed = await _resumable(client, png(nonce="r2"), "the quay at dawn")
+        assert resumed.status_code == 201, resumed.text
+        assert resumed.json()["check_status"] == "passed"
+
+        # A checker that errors refuses the upload: 503, nothing stored.
+        lib.models.stub.reset()
+        lib.models.stub.fault("image_check", "http_500", n=10)
+        before, stored = await counts(engine), blobs(lib.media)
+        unavailable = await upload(client, png(nonce="u1"), metadata(caption="harbour"))
+        assert unavailable.status_code == 503, unavailable.text
+        assert unavailable.json()["error"]["code"] == "image_check_unavailable"
+        assert await counts(engine) == before
+        assert blobs(lib.media) == stored
+        lib.models.stub.reset()
 
         # A video's poster is checked as an image upload is; a refused poster refuses the video.
         lib.models.stub.reset()

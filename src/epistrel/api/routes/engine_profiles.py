@@ -65,6 +65,7 @@ from epistrel.core.profiles.store import (
     VERSION_MAX,
     DeletedProfile,
     EngineProfile,
+    ListedProfile,
     ProfileCopy,
     ProfileCreate,
     ProfilePage,
@@ -146,10 +147,10 @@ class ProfileEditBody(DeploymentMutationResponse):
 
 
 class ProfileListBody(BaseModel):
-    """A page of profiles at their latest version, newest first; ``next_cursor`` fetches the
-    next page (``null`` on the last)."""
+    """A page of profiles at their latest version, newest first, each with its ``quality``
+    (#789); ``next_cursor`` fetches the next page (``null`` on the last)."""
 
-    items: list[EngineProfile]
+    items: list[ListedProfile]
     next_cursor: str | None
 
     @classmethod
@@ -263,7 +264,8 @@ async def create_profile(
         "`cursor` (a page's `next_cursor`) continues. Deleted profiles are listed only with "
         "`include_deleted=true`. `owner` and `relation` (`name:principal`, or `name:` for any "
         "principal; repeatable, all must hold) narrow the list only when a request asks: they "
-        "gate nothing (FR-AUTH-8)."
+        "gate nothing (FR-AUTH-8). Every item carries its `quality` (FR-PROF-16, #789), the "
+        "same `{fingerprint, status, floors_met}` `GET /engine-profiles/{id}` reads for it."
     ),
 )
 async def list_profiles(

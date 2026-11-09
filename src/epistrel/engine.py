@@ -7234,7 +7234,8 @@ class Engine:
         """Profiles at their latest version, newest first, presets included; deleted ones only
         with ``include_deleted``. ``owner`` and ``relation`` (``name:principal``, or ``name:``
         for any principal) narrow the list only when given (FR-AUTH-8); ``preset`` (#227) to
-        the presets (``true``) or the others (``false``)."""
+        the presets (``true``) or the others (``false``). Every item carries its ``quality``
+        under the deployment's models (#789), as ``get_profile`` reads it."""
         return await profiles.list_profiles(
             self.db,
             owner=ownership.owner_filter(owner),
@@ -7243,6 +7244,7 @@ class Engine:
             limit=limit,
             cursor=cursor,
             preset=preset,
+            facts=await self._runtime_facts(),
         )
 
     async def update_profile(

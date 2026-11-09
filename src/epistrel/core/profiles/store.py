@@ -245,6 +245,18 @@ class EngineProfile(BaseModel):
     )
 
 
+class ListedProfile(EngineProfile):
+    """A profile as ``GET /engine-profiles`` lists it (#789): an ``EngineProfile`` whose
+    ``quality`` is always there, the same value ``GET /engine-profiles/{id}`` answers for it."""
+
+    quality: FloorsMet = Field(
+        description="The latest version's quality under the deployment's models and no story "
+        "overrides (FR-PROF-16, #233, #789), as `GET /engine-profiles/{id}` reads it: its "
+        "`fingerprint`, its `status` (`uncertified` without a valid certification) and the "
+        "floors its newest valid certification passed (`floors_met`, empty without one).",
+    )
+
+
 class ProfileVersion(BaseModel):
     """One version of a profile: its number, when it was made and by which principal."""
 
@@ -302,7 +314,7 @@ class ProfilePage:
     """A page of profiles, newest first, and the cursor of the next page (``None``: the
     last)."""
 
-    items: list[EngineProfile]
+    items: list[ListedProfile]
     next_cursor: str | None
 
 
@@ -1183,16 +1195,38 @@ async def get_profile(
         found = await _read(conn, profile_id, version)
         if facts is None:
             return found
-        defaults = await effective.profile_defaults(conn)
-        deployment = await conn.scalar(
-            select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
-        )
+        grounds = await _quality_grounds(conn)
+    return found.model_copy(update={"quality": _quality(found, grounds, facts)})
+
+
+@dataclass(frozen=True, slots=True)
+class _QualityGrounds:
+    """What a profile's quality read needs from the deployment besides ``RuntimeFacts``: its
+    ``profile_defaults`` and its ``settings`` document (``model_tiers.strongest``)."""
+
+    defaults: Mapping[str, Any]
+    deployment: Mapping[str, Any] | None
+
+
+async def _quality_grounds(conn: AsyncConnection) -> _QualityGrounds:
+    """The deployment's defaults and settings, read once in ``conn``'s snapshot (two queries,
+    whatever the number of profiles they serve: #789)."""
+    defaults = await effective.profile_defaults(conn)
+    deployment = await conn.scalar(
+        select(deployment_state.c.settings).where(deployment_state.c.id == DEPLOYMENT_ROW_ID)
+    )
+    return _QualityGrounds(defaults=defaults, deployment=deployment)
+
+
+def _quality(found: EngineProfile, grounds: _QualityGrounds, facts: RuntimeFacts) -> FloorsMet:
+    """``found``'s quality under the deployment's models and no story overrides (#233): the
+    single read and the list (#789) both answer this, so they agree. No query."""
     settings = tiers.resolved(
-        effective.merged_settings(defaults, found.settings), tiers.strongest_of(deployment)
+        effective.merged_settings(grounds.defaults, found.settings),
+        tiers.strongest_of(grounds.deployment),
     )
     stamped = Configuration(found.id, found.version, settings).stamp(facts)
-    quality = certification.floors_met(stamped.fingerprint, stamped.quality_status)
-    return found.model_copy(update={"quality": quality})
+    return certification.floors_met(stamped.fingerprint, stamped.quality_status)
 
 
 async def profile_guarantees(
@@ -1255,10 +1289,13 @@ async def list_profiles(
     limit: int = DEFAULT_PAGE,
     cursor: str | None = None,
     preset: bool | None = None,
+    facts: RuntimeFacts,
 ) -> ProfilePage:
     """A page of profiles at their latest version, newest first, presets included; deleted ones
     only with ``include_deleted``. ``owner`` and ``relations`` narrow the list only when given
-    (FR-AUTH-8); ``preset`` (#227) to the presets or the others."""
+    (FR-AUTH-8); ``preset`` (#227) to the presets or the others. Each item carries its
+    ``quality`` under ``facts`` (#789), as ``get_profile`` reads it: the page's rows and the
+    deployment's defaults and settings are three queries, whatever the page's size."""
     if not 1 <= limit <= MAX_PAGE:
         raise InvalidRequest(f"limit must be 1 to {MAX_PAGE}", {"field": "query.limit"})
     where = ownership.list_filters(
@@ -1294,7 +1331,13 @@ async def list_profiles(
     )
     async with db.connect() as conn:
         rows = (await conn.execute(query)).all()
-    items = [_view(row, int(row.current_version), row.settings) for row in rows[:limit]]
+        grounds = await _quality_grounds(conn)
+    items = [
+        ListedProfile.model_validate(
+            {**listed.model_dump(), "quality": _quality(listed, grounds, facts)}
+        )
+        for listed in (_view(row, int(row.current_version), row.settings) for row in rows[:limit])
+    ]
     following = _encode_cursor(items[-1]) if len(rows) > limit and items else None
     return ProfilePage(items=items, next_cursor=following)
 
@@ -1353,6 +1396,7 @@ __all__ = [
     "WARNINGS_MAX",
     "DeletedProfile",
     "EngineProfile",
+    "ListedProfile",
     "ProfileCopy",
     "ProfileCreate",
     "ProfilePage",

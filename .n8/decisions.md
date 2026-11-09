@@ -13344,3 +13344,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (owner):** the run's result is accepted as it stands. `minors_no_sexual_content` passes FP (0.00%; FN is not measured; certified only by external attestation). `no_nudity` fails its FP floor: FN 0.00%, but FP 9.76% ± 0.77% against 10%, because Haiku flags implied nudity. `no_nudity` stays an uncertified backstop for this checker, and no certification record is earned. The owner judged a slightly conservative checker acceptable. More model and prompt testing comes later, including a policy wording that says whether implied nudity is allowed.
   **Why:** #271's AC asks for the committed report, not a pass. Lowering a floor after seeing the result was ruled out.
   **Issue:** #271
+
+## M8 verify fixes 3 — 2026-11-09
+
+- **Decision:** #814's "outside the listed policy texts" is the rendered system content with each listed `- <id>: <text>` line removed, not the content before `## Policies`. That covers the template text after the list as well (the subjects block). Asserted on it: `{"verdicts"` appears exactly once, `{violation` never appears, and "Answer only in the format above." is present. Both of the issue's mutants fail the test, and the template stays restored.
+  **Why:** #814 suggested either cut. The removal cut is one line and leaves no gap after the list. Cost if wrong: none; tests only.
+  **Issue:** #814, #810

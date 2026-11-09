@@ -13326,3 +13326,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the *[corrected YYYY-MM-DD, #N: …]* marker is documented in `docs/05-adr-log.md`'s header as the form for a factual slip that no later decision changes (a wrong path, a misnamed test). ADR-182's marker is not restated as an amendment.
   **Why:** #804 item 3 offered either. An amendment is for a later decision changing an earlier one; a wrong test path is not a decision, so restating it as one would misdescribe it. The header edit adds a rule and changes no ADR, which the append-only rule allows. Cost if wrong: one sentence to reword.
   **Issue:** #804
+- **Decision (plan deviation):** PR #809's CI wait runs past `/n8-exec`'s 30-minute pending budget, to 60 minutes. At 30 minutes four jobs were `IN_PROGRESS` (integration-i-z, scenario-perf, evals-zero-leak standard/max), not queued. This repo's full CI run takes 40–50 minutes: the three runs on `milestone/m8-images-fixes` (2026-11-09) took 42, 50 and 40 minutes.
+  **Why:** the 30-minute budget is meant to catch a stuck run. A healthy run here takes longer than that, so treating it as a blocker would stop every milestone for nothing. Cost if wrong: about 30 more minutes spent waiting on a run that was actually stuck.
+  **Issue:** #803, #804

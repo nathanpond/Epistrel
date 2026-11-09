@@ -84,7 +84,8 @@ def test_image_check_frames_policy_texts_written_for_text() -> None:
     rule to the image and keeps the template's ``verdicts`` format the only answer.
 
     Complement asserted: the policy's own format is still in the text it lists (the framing does
-    not rewrite policy texts), and it comes after the framing."""
+    not rewrite policy texts), and it comes after the framing; outside that listed text the
+    template states one answer format, ``verdicts``, and no other (#814)."""
     from epistrel.orchestrator.policies.age import policy_prompt
     from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID, PROMPT
 
@@ -103,6 +104,10 @@ def test_image_check_frames_policy_texts_written_for_text() -> None:
     assert system.content.index('{"verdicts": {"<policy id>"') < framing < policies < listed
     assert "apply\neach rule to this image" in system.content
     assert "Answer JSON {violation, confidence in [0,1]}" in text
+    own = system.content.replace(f"- {MINORS_POLICY_ID}: {text}", "")
+    assert own.count('{"verdicts"') == 1
+    assert "{violation" not in own
+    assert "Answer only in the format above." in own
 
 
 def test_data_url_keeps_small_images_and_downscales_large_ones() -> None:

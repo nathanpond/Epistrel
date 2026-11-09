@@ -1437,11 +1437,13 @@ async def test_i_23__m8_story_image_slot_deletion(
     after a truncate to the boundary ``1⁺3`` (it keeps their slots and drops turn 2), after its
     untruncate, and after a truncate to genesis and its untruncate. A fork through ``1⁺3`` and an
     export→import round trip do not bring them back either. The same holds for a slot after
-    genesis (``slot_after_turn: 0``) once turn 1 is regenerated, and after a swap back.
+    genesis (``slot_after_turn: 0``) once turn 1 is regenerated, and after a swap back, on the
+    timeline and on a variant-chain read of either variant (#803).
 
     Complement asserted: before its delete, each image is in place in the omniscient read; the
     truncate to genesis takes the slots away; and the third image, never deleted, comes through
-    the same regenerate, swap, truncates, fork and import."""
+    the same regenerate, swap, truncates, fork and import; a second genesis-slot image, never
+    deleted, is in every read of the genesis slot."""
     from tests import story_image_support as si
     from tests.image_job_support import MINORS
     from tests.image_support import StubImageChecker
@@ -1505,18 +1507,26 @@ async def test_i_23__m8_story_image_slot_deletion(
         new_story = await si.imported(client, engine, data)
         assert len(await omniscient(new_story)) == 1
 
-        # A slot after genesis: its deletion holds through regenerating turn 1.
+        # A slot after genesis: its deletion holds through regenerating turn 1, on the current
+        # timeline and on a read of turn 1's first variant chain (#803).
         story, ids = await si.scene(client, turns=0)
         opening = (await si.placed(client, story, si.meta({"slot_after_turn": 0}, si.OMNISCIENT)))[
             "image_id"
         ]
+        still = (await si.placed(client, story, si.meta({"slot_after_turn": 0}, si.OMNISCIENT)))[
+            "image_id"
+        ]
         await si.turn(client, story, ids)
-        assert await omniscient(story) == [opening]
+        assert await omniscient(story) == [opening, still]
         assert (await si.delete(client, story, opening)).status_code == 204
         await post(f"/stories/{story}/regenerate", {})
-        assert await omniscient(story) == []
+        assert await omniscient(story) == [still]
+        chain = await si.history(client, story, si.OMNISCIENT, variant="1:1")
+        assert si.image_ids(chain) == [still]
         await post(f"/stories/{story}/swap", {"to_variant_chain": {"turn": 1, "variant": 1}})
-        assert await omniscient(story) == []
+        assert await omniscient(story) == [still]
+        chain = await si.history(client, story, si.OMNISCIENT, variant="1:2")
+        assert si.image_ids(chain) == [still]
 
 
 # -- #263: generated story images (FR-IMG-2, FR-IMG-5, FR-IMG-8) ---------------------------------

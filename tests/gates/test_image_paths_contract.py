@@ -56,7 +56,10 @@ FORBIDDEN = [
     "epistrel.orchestrator.images.jobs",
 ]
 SRC = REPO_ROOT / "src" / "epistrel"
-BUILDERS: list[Callable[..., Any]] = [build_image_request, resend_request]
+BUILDERS: list[Callable[..., Any]] = [build_image_request, resend_request, RequestInputs.of]
+"""The request path's entry points. ``RequestInputs.of`` is the only one a job's values reach;
+the contract checks direct imports only, so a type it names through a re-exporting module (an
+``ImageJob`` via ``orchestrator.images.attempts``) is caught here, not by lint-imports (#804)."""
 AGE_WORDS = {"safety", "age", "ages"}
 """A field or parameter one of whose ``_``-separated words is one of these is a handle to true
 ages (``safety_context``, ``true_age``; not ``reference_images``)."""
@@ -249,7 +252,8 @@ def _age_handles(builder: Callable[..., Any]) -> list[str]:
 
 def test_the_request_builder_has_no_handle_to_ages() -> None:
     """#797: ``build_image_request`` and ``resend_request`` take only ``RequestInputs``, the
-    configured params and a snapshot; nothing they accept or return names the safety context,
+    configured params and a snapshot, and ``RequestInputs.of`` only a job's prompts and params
+    (#804); nothing they accept or return names the safety context,
     an age or a type of a forbidden module (``ImageJob``, ``SafetyContext``)."""
     assert {f.name for f in dataclasses.fields(RequestInputs)} == {
         "prompt",

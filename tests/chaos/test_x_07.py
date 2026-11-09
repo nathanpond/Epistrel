@@ -1837,6 +1837,29 @@ async def test_x_07__m8_candidate_ttl(quiet: Probe, pg_url: str, engine: AsyncEn
 # -- image attempt horizons (M8, #267) ----------------------------------------------------------
 
 
+@pytest.mark.chaos
+@pytest.mark.chaos_quick
+@pytest.mark.part("M8", "NFR-REL-5")
+async def test_x_07__m8_attempts_hook(
+    engine: AsyncEngine, settings: Settings, quiet: Probe
+) -> None:
+    """#268, #804: a worker-mode process registers the ``image_attempts`` recovery hook, so its
+    start-up pass runs ``attempts.recover_attempts``, and stopping the workers unregisters it.
+
+    Complement asserted: before the start and after the stop, no ``image_attempts`` hook is
+    registered."""
+    from epistrel.engine import IMAGE_ATTEMPTS_HOOK, _recover_image_attempts
+
+    assert IMAGE_ATTEMPTS_HOOK not in _RECOVERY_HOOKS
+    lib = Engine(replace_mode(settings, "worker"), db=engine)
+    await lib.start_workers()
+    try:
+        assert _RECOVERY_HOOKS.get(IMAGE_ATTEMPTS_HOOK) is _recover_image_attempts
+    finally:
+        await lib.stop_workers()
+    assert IMAGE_ATTEMPTS_HOOK not in _RECOVERY_HOOKS
+
+
 @pytest.mark.integration
 @pytest.mark.part("M8", "NFR-REL-5")
 async def test_x_07__m8_horizon(pg_url: str, tmp_path: Path) -> None:

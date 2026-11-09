@@ -1600,6 +1600,37 @@ async def _presumed_then_actual(sp: Space) -> None:
         await image_jobs.cancel_job(sp.lib.image_runtime(), job_id)
         await assert_clean(sp.db)
 
+        # -- cancelled, or its target lost, while ambiguous and before its horizon: the record
+        # stays held until the horizon and is presumed there, never released (#799) --
+        for ending in (ImageJobStatus.CANCELLED, ImageJobStatus.TARGET_GONE):
+            gate = asyncio.Event()
+            stub.script.append(Stall(gate, Outputs(1)))
+            job_id = await sp.insert(_catalog(new_ulid(), 2))
+            task, old = await _stalled_start(sp, stub, job_id)
+            record = await _attempt_row(sp, job_id, old)
+            assert (record.send_state, record.state) == ("ambiguous", "held")
+            runtime = sp.lib.image_runtime()
+            if ending is ImageJobStatus.CANCELLED:
+                await image_jobs.cancel_job(runtime, job_id)
+            else:
+                assert await image_jobs.end_job(runtime, job_id, ending)
+            assert (await sp.lib.get_image_job(CTX, job_id)).status == ending.value
+            record = await _attempt_row(sp, job_id, old)
+            assert (record.send_state, record.state) == ("ambiguous", "held"), ending
+            await assert_clean(sp.db)
+            await _past_horizon(sp, job_id, old)
+            assert await attempts.horizon_reached(sp.db, f"{job_id}:{old}") == "presumed"
+            record = await _attempt_row(sp, job_id, old)
+            assert (record.state, record.basis, record.used, record.send_state) == (
+                "settled",
+                "presumed",
+                2,
+                "ambiguous",
+            ), ending
+            gate.set()
+            assert (await asyncio.wait_for(task, 30))["late"] == "late_after_presumed"
+            await assert_clean(sp.db)
+
         # -- after retention purged its records: late_unaccounted, no counter changes --
         gate = asyncio.Event()
         stub.script.append(Stall(gate, Outputs(1)))
@@ -1712,7 +1743,9 @@ async def test_i_26__m8_ambiguous(pg_url: str, tmp_path: Path, group: str) -> No
       ``late_after_presumed``), nothing promoted and the retry undisturbed; again →
       ``late_duplicate``; 3 for 2 → ``used = 3``, ``overage = extra_outputs = 1``; a job the
       presumption ended ``cap_reached`` stays ended; a delivery before the horizon is
-      ``late_discarded`` and never presumed; after retention → ``late_unaccounted``.
+      ``late_discarded`` and never presumed; a job cancelled or ended ``target_gone`` while its
+      attempt is ambiguous keeps the record ``held`` until the horizon, where it is presumed,
+      not released (#799); after retention → ``late_unaccounted``.
     - ``submission_modes``: an async stall in ``collect`` is ``accepted`` (a known request):
       held to its horizon and released when the stub does not confirm, adopted through
       ``status`` when it does; never ambiguous.

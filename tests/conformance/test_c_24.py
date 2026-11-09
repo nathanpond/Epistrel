@@ -30,8 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.api.app import create_app
 from epistrel.api.openapi import ERROR_STATUS
 from epistrel.config import Settings
-from epistrel.core.errors import ImageLimitReached
+from epistrel.core.errors import ErasedSubjectReferenced, ImageLimitReached
 from epistrel.core.ids import new_ulid
+from epistrel.core.images import subjects as image_subjects
 from epistrel.core.media.checks import PASSED_STATEMENT, UNCHECKED_STATEMENT
 from epistrel.core.profiles import certification
 from epistrel.core.profiles.certification import ImageCheckCertificationRequest
@@ -610,8 +611,14 @@ async def test_c_24__m8_subjects(
     - **Viewpoint.** A Bobby-viewpoint read of an image depicting the masked stranger carries no
       ``depicted_subjects``.
 
+    - **Erased subjects refused (#799).** After a catalog-scope erasure of Jenni, a story upload
+      or a consumer prompt declaring her is 409 ``erased_subject_referenced`` with nothing
+      written, and attaching an image as an erased catalog character's own is refused too.
+
     Complements asserted: Jenni's upload, her queued job and the other character's unnamed
-    candidate survive; the media read of the masked-stranger image lists Marcus."""
+    candidate survive; the media read of the masked-stranger image lists Marcus; an upload and
+    a consumer prompt declaring Bobby are accepted (201, 202), and the kept character's own
+    attach passes."""
     from epistrel.core.erasure import boundary as erasure_boundary
     from tests import catalog_image_support as cs
     from tests import erasure_support as e
@@ -703,6 +710,62 @@ async def test_c_24__m8_subjects(
         schema = (await app.client.get("/openapi.json")).json()
         assert "/admin/erasure/boundary" in schema["paths"]["/admin/erasure"]["post"]["description"]
 
+        # A subject a catalog-scope erasure removed (#504: Jenni, at catalog scope) is refused
+        # on a story upload and a consumer prompt that declare her, with nothing written; one
+        # who was not erased is accepted (#799).
+        jenni = {"kind": "character", "id": ids["Jenni"], "story": story}
+        listed = await app.client.post(
+            e.PATH,
+            json={"subject": jenni, "scope": {"catalog": True}, "dry_run": True},
+            headers=e.WRITE,
+        )
+        assert listed.status_code == 200, listed.text
+        catalog_erased = await app.client.post(
+            e.PATH,
+            json={
+                "subject": jenni,
+                "scope": {"catalog": True},
+                "confirm_candidates": [c["candidate_id"] for c in listed.json()["candidates"]],
+            },
+            headers=e.WRITE,
+        )
+        assert catalog_erased.status_code == 200, catalog_erased.text
+        declares_jenni = [{"kind": "character", "id": ids["Jenni"]}]
+        declares_bobby = [{"kind": "character", "id": ids["Bobby"]}]
+        held = await subj.image_ids(engine, story)
+        jobs_before = await sg.counts(engine, story)
+        refused = await si.upload(
+            app.client, story, si.meta(subj.SLOT, bobby, subjects=declares_jenni)
+        )
+        assert refused.status_code == 409, refused.text
+        assert refused.json()["error"]["code"] == "erased_subject_referenced"
+        assert refused.json()["error"]["details"]["field"] == "body.metadata.depicted_subjects"
+        prompted = await sg.request(
+            app,
+            story,
+            position=subj.AT,
+            audience_viewpoint=bobby,
+            prompt="A lamp burns low in the parlor.",
+            depicted_subjects=declares_jenni,
+        )
+        assert prompted.status_code == 409, prompted.text
+        assert prompted.json()["error"]["code"] == "erased_subject_referenced"
+        assert await subj.image_ids(engine, story) == held
+        assert await sg.counts(engine, story) == jobs_before
+        accepted = await si.upload(
+            app.client, story, si.meta(subj.SLOT, bobby, subjects=declares_bobby)
+        )
+        assert accepted.status_code == 201, accepted.text
+        queued = await sg.request(
+            app,
+            story,
+            position=subj.AT,
+            audience_viewpoint=bobby,
+            prompt="A lamp burns low in the parlor.",
+            depicted_subjects=declares_bobby,
+        )
+        assert queued.status_code == 202, queued.text
+
         stranger = await sg.stranger_scene(app, engine)
         seen_by = sg.character(stranger.ids["Bobby"])
         await sg.generated(
@@ -746,6 +809,19 @@ async def test_c_24__m8_subjects(
         assert await subj.candidate_ids(engine, list(made.candidates.values())) == set()
         dropped = [candidates[made.candidates[n]].asset_id for n in ("own", "named")]
         assert await subj.asset_ids(engine, [*dropped, kept_asset]) == {kept_asset}
+
+        # The own-image rule's guard: attaching an image as the erased character's own (a
+        # draft write racing the erasure; through the API the draft is gone first) is 409 and
+        # changes nothing, while the kept character's attach passes (#799).
+        with pytest.raises(ErasedSubjectReferenced) as raised:
+            async with engine.begin() as conn:
+                await image_subjects.include_own(conn, made.erased, [kept_asset])
+        assert raised.value.details["field"] == "body.depicted_subjects"
+        assert await subj.depicted(engine, kept_asset) == [
+            {"kind": "catalog_character", "id": made.kept}
+        ]
+        async with engine.begin() as conn:
+            assert await image_subjects.include_own(conn, made.kept, [kept_asset]) == 0
 
 
 # -- cost (#269) ----------------------------------------------------------------------------

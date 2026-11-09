@@ -8,7 +8,8 @@
 - ``POST /stories/{id}/reconciliation/{outbox_id}/compensate``: the author issues a
   compensating external effect (a refund) for it through the outbox (#218).
 - ``POST /stories/{id}/reconciliation/{listing}/resolve``: the author resolves a listed
-  consumer-applied effect, which nothing dispatches (#661).
+  consumer-applied effect, which nothing dispatches (#661), or (#251) a parked
+  ``imported_unsettled`` outbox row by its outbox id.
 
 Every handler makes one ``Engine`` call (``orchestrator.jobs.settlement`` holds the rules).
 """
@@ -242,8 +243,9 @@ ListingId = Annotated[
     Path(
         pattern=ULID_PATTERN,
         description=(
-            "The listed consumer-applied effect's request id (its `requested_effect`'s "
-            "`effect_id`, the listing's `request_id`; a ULID)."
+            "The listing to resolve (a ULID): a listed consumer-applied effect's request id "
+            "(its `requested_effect`'s `effect_id`, the listing's `request_id`), or the "
+            "`outbox_id` of an outbox row parked `imported_unsettled` (#251)."
         ),
         examples=["01J9Z8Q4N5V6W7X8Y9Z0A1B2F8"],
     ),
@@ -251,9 +253,9 @@ ListingId = Annotated[
 
 
 class ResolvedBody(MutationResponse):
-    """A resolve: the listed request, how it was resolved, the reasons it was listed under,
-    and the inter-turn slot (`position`, `N⁺k`; `slot` the full position) and operation that
-    recorded it."""
+    """A resolve: the listed request (or parked outbox row, #251), how it was resolved, the
+    reasons it was listed under, and the inter-turn slot (`position`, `N⁺k`; `slot` the full
+    position) and operation that recorded it."""
 
     request_id: str
     resolution: str
@@ -279,15 +281,17 @@ class ResolvedBody(MutationResponse):
     "/{story_id}/reconciliation/{listing}/resolve",
     response_model=ResolvedBody,
     operation_id="resolve_listing",
-    summary="Resolve a listed consumer-applied effect",
+    summary="Resolve a listed consumer-applied effect or parked imported row",
     description=(
-        "Resolve a listed consumer-applied effect (FR-EXT-22; #661): one a read-only "
-        "provider's consumer applies, listed by its `request_id`. `resolution` is "
-        "`applied_elsewhere` (the consumer applied it) or `abandoned` (it never will be). "
-        "Nothing is dispatched and no outcome is recorded: the listing is closed and a "
-        "`reconciliation_resolved` audit event is written, at the next inter-turn slot. 404 "
-        "`not_found` (`reason: no_listing`) for anything but a listed consumer-applied effect "
-        "(an outbox row takes settle-now or compensate); 409 `module_off` while the story's "
+        "Resolve a listing that nothing dispatches (FR-EXT-22): a listed consumer-applied "
+        "effect (#661), one a read-only provider's consumer applies, by its `request_id`; or "
+        "(#251) an imported outbox row parked `imported_unsettled`, by its `outbox_id`. "
+        "`resolution` is `applied_elsewhere` (it was applied outside Epistrel) or `abandoned` "
+        "(it never will be). Nothing is dispatched and no outcome is recorded: the listing is "
+        "closed and a `reconciliation_resolved` audit event is written, at the next inter-turn "
+        "slot. A parked row keeps its `imported_unsettled` status. 404 `not_found` (`reason: "
+        "no_listing`) for any other outbox row (it takes settle-now or compensate), an "
+        "unknown id, or a listing already resolved; 409 `module_off` while the story's "
         "configuration has States off."
     ),
 )

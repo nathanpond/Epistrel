@@ -955,7 +955,8 @@ class CompensateRequest(BaseModel):
 
 class ResolveRequest(BaseModel):
     """#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed
-    consumer-applied effect is resolved (``applied_elsewhere`` or ``abandoned``)."""
+    consumer-applied effect, or (#251) an outbox row parked ``imported_unsettled``, is resolved
+    (``applied_elsewhere`` or ``abandoned``)."""
 
     model_config = ConfigDict(
         extra="forbid", json_schema_extra={"examples": [{"resolution": "applied_elsewhere"}]}

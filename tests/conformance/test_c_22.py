@@ -891,3 +891,55 @@ async def test_c_22__m8_rating(pg_url: str, tmp_path: Path) -> None:
             )
             == "unchecked"
         )
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-RATE-7")
+async def test_c_22__m8_rating_recorded_results(pg_url: str, tmp_path: Path) -> None:
+    """#272: a story image's recorded ``policy_results`` (its upload's check, #258) count as
+    stored passes in a real tightening, read from the database (``load_cache``): the image was
+    uploaded with a checker configured and passed the seeded minors policy, so the tightening
+    asks the checker about the new rating's policy only, applies, and stores only that verdict
+    as the story's.
+
+    Complement asserted: an image uploaded before any checker was configured (no recorded
+    results) is checked against both policies, and both verdicts are stored."""
+    from tests import image_rating_support as ir
+    from tests import story_image_support as si
+    from tests.rating_change_support import change_rating, check, rating_db, run_jobs
+
+    async with rating_db(pg_url, media_root=tmp_path / "media") as s:
+        target, policy = await ir.image_rating(s)
+
+        async def pictured() -> tuple[str, str]:
+            story, _ = await si.scene(s.client, turns=1)
+            meta = si.meta({"turn": 1, "beat": 2}, si.OMNISCIENT)
+            return story, (await si.placed(s.client, story, meta))["image_id"]
+
+        async def tighten(story_id: str) -> dict[str, Any]:
+            started = await change_rating(s.client, story_id, target)
+            assert started.status_code == 202, started.text
+            await run_jobs(s.db)
+            return await check(s.client, story_id, started.json()["job_id"])
+
+        bare_story, bare = await pictured()
+        await ir.configure_checker(s)
+        upload = ir.answer(s, {ir.MINORS: "pass"})
+        story, image = await pictured()
+        assert len(upload.calls) == 1
+
+        vision = ir.answer(s, {ir.MINORS: "pass", policy.id: "pass"})
+        applied = await tighten(story)
+        assert applied["status"] == "applied", applied
+        assert [(ir.MINORS in x, policy.id in x) for x in vision.inputs] == [(False, True)]
+        assert await ir.output_verdicts(s, story) == {(image, policy.id): "pass"}
+
+        vision = ir.answer(s, {ir.MINORS: "pass", policy.id: "pass"})
+        again = await tighten(bare_story)
+        assert again["status"] == "applied", again
+        assert [(ir.MINORS in x, policy.id in x) for x in vision.inputs] == [(True, True)]
+        assert await ir.output_verdicts(s, bare_story) == {
+            (bare, ir.MINORS): "pass",
+            (bare, policy.id): "pass",
+        }

@@ -39,7 +39,7 @@ from epistrel.api import errors as api_errors
 from epistrel.api.deps import ImageAdapterDep
 from epistrel.config import Settings
 from epistrel.core import clock
-from epistrel.core.errors import InvalidRequest
+from epistrel.core.errors import ErasurePending, InvalidRequest
 from epistrel.core.tables.images import ImageJobKind, ImageJobStatus
 from epistrel.engine import Engine
 from epistrel.orchestrator.images import errors as image_errors
@@ -942,7 +942,9 @@ class _CandidateTarget(TestImageTarget):
 
 @pytest.mark.integration
 @pytest.mark.part("M8", "FR-IMG-2; FR-CAT-4; FR-RATE-4")
-async def test_i_23__m8_catalog_prompt(image_settings: Settings, engine: AsyncEngine) -> None:
+async def test_i_23__m8_catalog_prompt(
+    image_settings: Settings, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A 34-year-old character draft with a visual identity (a ``perceivable`` and a
     ``restricted`` reference image, a restricted-details prompt, an add-on of each audience)
     and a companion visual style. ``POST /image-prompts`` for its primary image answers the
@@ -956,7 +958,10 @@ async def test_i_23__m8_catalog_prompt(image_settings: Settings, engine: AsyncEn
     Complement: the restricted reference, the restricted-details prompt, the restricted add-on
     and the true age reach neither the captured rendered input nor the answer. The same
     prompt and parameters, sent through an image job, reach the stub image adapter with the
-    identity's seed and the perceivable reference only."""
+    identity's seed and the perceivable reference only. A prompt model that answers no valid
+    prompt makes the route 503 ``image_prompt_unavailable`` (reason ``invalid_output``) with no
+    job, reservation or media row; a pending catalog-scope erasure reaching the entry makes it
+    503 ``erasure_pending`` before any model call (#799)."""
     async with prompt_app(image_settings, engine) as (client, lib):
         stub = lib.models.stub
         seen, hidden = await ip.references(client)
@@ -1043,6 +1048,42 @@ async def test_i_23__m8_catalog_prompt(image_settings: Settings, engine: AsyncEn
         assert received.request.reference_images == (seen,)
         assert received.request.prompt == found["prompt"]
         assert ip.NEVER.search(received.request.model_dump_json(exclude={"seed"})) is None
+
+        # No valid prompt from the model: 503, nothing written.
+        before = await ip.image_rows(engine)
+        stub.script(ip.PURPOSE, ["not json"] * 10)
+        invalid = await ip.build(client, "character", character_id, "primary", draft=True)
+        assert invalid.status_code == 503, invalid.text
+        assert invalid.json()["error"]["code"] == "image_prompt_unavailable"
+        assert invalid.json()["error"]["details"] == {
+            "purpose": "image_prompt",
+            "reason": "invalid_output",
+        }
+        assert await ip.image_rows(engine) == before
+        stub.script(ip.PURPOSE, [])
+
+        # A pending catalog-scope erasure reaching the entry: 503 before any model call.
+        class Reaching:
+            def check_entry(self, kind: str, entry_id: str) -> None:
+                if entry_id == character_id:
+                    raise ErasurePending(
+                        "an erasure reaching this entry is pending",
+                        {"story_id": None, "erasure_id": "e-1", "pending_count": 1},
+                    )
+
+            def check_records(self, *_: Any) -> None:
+                return None
+
+        async def reaching() -> Reaching:
+            return Reaching()
+
+        monkeypatch.setattr(lib, "_catalog_block", reaching)
+        calls = len(ip.prompt_calls(stub))
+        pending = await ip.build(client, "character", character_id, "primary", draft=True)
+        assert pending.status_code == 503, pending.text
+        assert pending.json()["error"]["code"] == "erasure_pending"
+        assert len(ip.prompt_calls(stub)) == calls
+        assert await ip.image_rows(engine) == before
 
 
 @pytest.mark.integration
@@ -1179,10 +1220,11 @@ async def test_i_23__m8_story_images(
     reaches only ``omniscient`` reads (and an omniscient read gets no Bobby image). Truncating
     turn 2 takes Bobby's image away and untruncating brings it back; a regenerate makes it
     dormant and a swap back reactivates it; a fork carries it by reference (a new image id, the
-    same asset). An inter-turn slot upload is in place after its turn. A deleted image leaves
-    every read (and a repeat delete is 204). Export then import shows the image in place in the
-    new story; a prune of a truncated tail removes its image rows (complement: the active image
-    remains); an as-recorded read at an earlier checkpoint omits a later image.
+    same asset). An inter-turn slot upload is in place after its turn. A read or delete of the
+    image through another story's path is 404 and leaves it in place (#799). A deleted image
+    leaves every read (and a repeat delete is 204). Export then import shows the image in place
+    in the new story; a prune of a truncated tail removes its image rows (complement: the active
+    image remains); an as-recorded read at an earlier checkpoint omits a later image.
 
     #272: the uploads pass a configured image checker, so their recorded results cover the
     minors policy and the untruncate and swap need no reactivation check, and the import's
@@ -1283,6 +1325,16 @@ async def test_i_23__m8_story_images(
             if i.get("kind") == "image"
         )
         assert copied[0]["media_id"] == source_media
+
+        # Another story's path never reaches an image: 404 for its read and its delete, and
+        # the image stays where it is (#799).
+        cross_get = await si.get(client, fork_id, whole, si.OMNISCIENT)
+        assert cross_get.status_code == 404, cross_get.text
+        cross_delete = await si.delete(client, fork_id, whole)
+        assert cross_delete.status_code == 404, cross_delete.text
+        assert cross_delete.json()["error"]["code"] == "not_found"
+        assert si.image_ids(await si.history(client, story, si.OMNISCIENT)) == [whole, slot]
+        assert (await si.get(client, story, whole, si.OMNISCIENT)).status_code == 200
 
         # Delete: gone from every read, a repeat is 204, the asset stays live.
         assert (await si.delete(client, story, for_bobby)).status_code == 204
@@ -2083,6 +2135,98 @@ async def test_i_23__m8_auto_staged(image_settings: Settings, engine: AsyncEngin
         ]
         [intent] = [e for e in op.stage_log if e.get("stage") == "intent"]
         assert job["created_at"] > datetime.fromisoformat(str(intent["at"]))
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs", "states_delivered")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_staged_abandoned(
+    image_settings: Settings, engine: AsyncEngine
+) -> None:
+    """A staged turn under ``auto`` whose intent stored an accepted illustration point, then
+    abandoned by a truncation while its provider holds the answer: it never completes, so it
+    queues no job, and its late answer is 409 ``timeline_changed`` (#799).
+
+    Complement asserted: the intent did store the point (``turn_report.illustration``), so
+    the empty queue is the abandonment's doing."""
+    import asyncio
+    import json as json_
+
+    from tests import auto_illustration_support as ai
+    from tests import effect_support as es
+    from tests import multi_support as ms
+    from tests import provider_support as ps
+    from tests import staged_support as sp
+    from tests.structured_turn_support import beat
+
+    async with sg.generation_app(image_settings, engine) as app:
+        await app.configure()
+        story, cal, _, fake = await sp.sync_story(app.client, engine, app.lib)
+        await ai.set_auto(app.client, story)
+        app.stub.reset()
+        sp.outcome_step(app.stub, beat("narration", sp.WENT))
+        marked = json_.loads(sp.purchase(cal))
+        marked["illustrate"] = [{"beat_index": 0, "reason": "turning_point"}]
+        ms.renders_for(app.stub, "Mira", json_.dumps(marked))
+        es.narrator(app.stub, es.render(beat("narration", sp.COUNTS)))
+        released = asyncio.Event()
+        fake.script_writes("gold", ps.Hang(released))
+        playing = asyncio.create_task(sp.buy(app.client, story, cal))
+        try:
+            await asyncio.wait_for(fake.hanging.wait(), 60)
+            op = await sp.staged_op(engine, story)
+            async with engine.connect() as conn:
+                report = await conn.scalar(
+                    text("SELECT turn_report FROM operations WHERE operation_id = :o"),
+                    {"o": str(op.operation_id)},
+                )
+            assert [p["reason"] for p in report["illustration"]["points"]] == ["turning_point"]
+            assert await ai.auto_jobs(engine, story) == []
+
+            cut = await app.client.post(
+                f"/stories/{story}/truncate",
+                json={"to_turn": op.narrative_turn - 1},
+                headers=WRITE,
+            )
+            assert cut.status_code == 200, cut.text
+            assert (await sp.staged_op(engine, story)).turn_stage == "abandoned"
+        finally:
+            released.set()
+            answer = await asyncio.wait_for(playing, 60)
+        assert answer.status_code == 409, answer.text
+        assert answer.json()["error"]["code"] == "timeline_changed"
+        assert (await sp.staged_op(engine, story)).turn_stage == "abandoned"
+        assert await ai.auto_jobs(engine, story) == []
+        await ps.drop_outbox_jobs(engine, story)
+
+
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M8", "FR-IMG-6")
+async def test_i_23__m8_auto_unconfigured(image_settings: Settings, engine: AsyncEngine) -> None:
+    """An ``auto`` story while no image adapter is configured: a Lite turn whose reply is
+    tagged commits, its prompt asks for no tag, it queues no job and its response lists
+    ``pending_images: []`` (#799).
+
+    Complement asserted: once the adapter is configured, the same story's next tagged turn
+    queues one job."""
+    from epistrel.orchestrator.images.auto import LITE_ILLUSTRATE_INSTRUCTION
+    from tests import auto_illustration_support as ai
+    from tests import story_image_support as si
+
+    async with sg.generation_app(image_settings, engine) as app:
+        story, ids = await si.scene(app.client, 0)
+        await ai.set_auto(app.client, story)
+        unconfigured = await ai.lite_turn(app, story, ids[si.BOBBY])
+        assert unconfigured.status_code == 200, unconfigured.text
+        assert unconfigured.json()["message"]["text"] == ai.REPLY
+        assert unconfigured.json()["pending_images"] == []
+        assert LITE_ILLUSTRATE_INSTRUCTION not in ai.generation_prompts(app)[-1]
+        assert await ai.auto_jobs(engine, story) == []
+
+        await app.configure()
+        configured = await ai.lite_turn(app, story, ids[si.BOBBY])
+        assert configured.status_code == 200, configured.text
+        assert len(configured.json()["pending_images"]) == 1
+        assert len(await ai.auto_jobs(engine, story)) == 1
 
 
 @pytest.mark.integration

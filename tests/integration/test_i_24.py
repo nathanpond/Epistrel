@@ -521,9 +521,10 @@ async def test_i_24__m8_viewpoint_inputs(
     restricted-details prompt) is not sent for Bobby, who knows her, and is sent for
     ``omniscient``. The prompt builder for Bobby renders the same input and answers the same
     prompt without generating. A consumer prompt with the whispered words is refused for Bobby
-    (422 ``viewpoint_protected_content``, its field only) and creates no job. An upload for Bobby
-    is filed as given, with no viewpoint check. The API and ``docs/OPERATIONS.md`` state FR-IMG-8's
-    guarantee.
+    (422 ``viewpoint_protected_content``, its field only) and creates no job; so is a caption or
+    an alt text carrying them, and the builder whose model writes them twice (#799). An upload
+    for Bobby is filed as given, with no viewpoint check. The API and ``docs/OPERATIONS.md``
+    state FR-IMG-8's guarantee.
 
     Complement asserted: the ``omniscient`` image's input does hold the affair, the words, the
     tattoo and the world's description of the parlor; Marcus, the whisper's addressee, gets its
@@ -613,6 +614,21 @@ async def test_i_24__m8_viewpoint_inputs(
         )
         assert accepted.status_code == 202, accepted.text
 
+        # A caption or alt text carrying the whispered words is refused for Bobby the same way,
+        # at its own field, before any prompt call (#799).
+        held = await sg.counts(engine, story)
+        calls = len(app.prompt_calls())
+        for field in ("caption", "alt_text"):
+            leaked = await sg.request(
+                app, story, position=at, audience_viewpoint=bobby, **{field: f"She says {sg.WORDS}"}
+            )
+            assert leaked.status_code == 422, leaked.text
+            assert leaked.json()["error"]["code"] == "viewpoint_protected_content"
+            assert leaked.json()["error"]["details"] == {"field": f"body.{field}"}
+            assert "blue mat" not in leaked.text
+        assert await sg.counts(engine, story) == held
+        assert len(app.prompt_calls()) == calls
+
         # An upload for Bobby is filed as given: no viewpoint check, no viewpoint basis.
         StubImageChecker(app.stub).answer({MINORS_POLICY_ID: "pass"})
         placed = await si.placed(
@@ -631,6 +647,21 @@ async def test_i_24__m8_viewpoint_inputs(
         images_tag = next(t for t in document["tags"] if t["name"] == "images")
         assert IMAGE_VIEWPOINT_GUARANTEE in images_tag["description"]
         assert IMAGE_VIEWPOINT_GUARANTEE in OPERATIONS.read_text()
+
+        # The prompt builder for Bobby, with a prompt model that writes the words on its first
+        # answer and on its rewrite: 422 at ``prompt``, no prompt answered, nothing written.
+        app.stub.reset()
+        leak = json.dumps({"prompt": f"Jenni whispers that {sg.WORDS}"})
+        app.stub.when(("## What the viewer perceived",), leak, sg.PURPOSE)
+        held = await sg.counts(engine, story)
+        calls = len(app.prompt_calls())
+        refused = await sg.built(app, story, position=at, audience_viewpoint=bobby)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["error"]["code"] == "viewpoint_protected_content"
+        assert refused.json()["error"]["details"] == {"field": "prompt"}
+        assert "blue mat" not in refused.text
+        assert len(app.prompt_calls()) == calls + 2
+        assert await sg.counts(engine, story) == held
 
 
 @pytest.mark.integration

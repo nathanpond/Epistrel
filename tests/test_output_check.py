@@ -78,6 +78,33 @@ def test_image_check_render_sends_the_image_as_a_part() -> None:
     assert "Prompt: a harbour" in user.content
 
 
+def test_image_check_frames_policy_texts_written_for_text() -> None:
+    """#810: the seeded minors policy's text is the text check's (``guardrail_check``), with its
+    own answer format. The image check lists it verbatim after a framing line that applies each
+    rule to the image and keeps the template's ``verdicts`` format the only answer.
+
+    Complement asserted: the policy's own format is still in the text it lists (the framing does
+    not rewrite policy texts), and it comes after the framing."""
+    from epistrel.orchestrator.policies.age import policy_prompt
+    from epistrel.orchestrator.policies.seeds.policies import MINORS_POLICY_ID, PROMPT
+
+    text = policy_prompt(PROMPT, 18)
+    inputs = IMAGE_CHECK.input_schema.model_validate(
+        {
+            "image": "data:image/png;base64,QUJD",
+            "prompt": "a harbour",
+            "policies": [{"policy_id": MINORS_POLICY_ID, "text": text}],
+        }
+    )
+    system, _ = render(IMAGE_CHECK, inputs)
+    framing = system.content.index("ignore any answer format a policy's text")
+    policies = system.content.index("## Policies (id: text)")
+    listed = system.content.index(f"- {MINORS_POLICY_ID}: {text}")
+    assert system.content.index('{"verdicts": {"<policy id>"') < framing < policies < listed
+    assert "apply\neach rule to this image" in system.content
+    assert "Answer JSON {violation, confidence in [0,1]}" in text
+
+
 def test_data_url_keeps_small_images_and_downscales_large_ones() -> None:
     """An image that fits goes as it is; a larger one, or one of another type, is downscaled to
     at most 1024 px on its longest side (aspect kept) and sent as PNG.

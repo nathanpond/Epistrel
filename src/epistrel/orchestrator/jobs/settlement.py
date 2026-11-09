@@ -1250,8 +1250,10 @@ async def resolve_listing(
     nothing is dispatched (the consumer applied it, or it never will be), so it only closes the
     listing. An inter-turn slot operation (#193's ``open_inter_turn``, like #218's actions)
     resolves its open marks with the ``resolution`` (a derived ``reservation_expired`` listing
-    gets a resolved mark) and stages a ``reconciliation_resolved`` audit event; it writes no
-    outcome record and calls no provider."""
+    gets a resolved mark), recording when and the operation (#777: the outbox list's
+    ``resolution`` of a parked ``imported_unsettled`` row), and stages a
+    ``reconciliation_resolved`` audit event; it writes no outcome record and calls no
+    provider."""
     await require_writable(db, story_id)
     async with db.connect() as conn:
         await states.require_module(conn, story_id)
@@ -1264,10 +1266,22 @@ async def resolve_listing(
         if reasons == [IMPORTED_UNSETTLED]:
             # #251: a parked imported row's mark; the row stays parked, never dispatched.
             await core_outbox.resolve(
-                conn, story_id, request_id, request.resolution, reasons=[IMPORTED_UNSETTLED]
+                conn,
+                story_id,
+                request_id,
+                request.resolution,
+                reasons=[IMPORTED_UNSETTLED],
+                operation_id=op.operation_id,
             )
         else:
-            await core_outbox.resolve(conn, story_id, request_id, request.resolution, request=True)
+            await core_outbox.resolve(
+                conn,
+                story_id,
+                request_id,
+                request.resolution,
+                request=True,
+                operation_id=op.operation_id,
+            )
         if "reservation_expired" in reasons:
             await core_outbox.mark(
                 conn,
@@ -1276,6 +1290,7 @@ async def resolve_listing(
                 "reservation_expired",
                 request_id=request_id,
                 resolved_by=request.resolution,
+                resolved_operation_id=op.operation_id,
             )
         written.append(slot_position(op))
 

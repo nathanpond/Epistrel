@@ -31,7 +31,7 @@ A story's snapshot is its export, and its restore is an import: always a **new**
 - **The import's gates**, in order, before the story is served:
   1. this deployment's erasure ledger is applied to it (story-scope entries of the bundle's source story or the story it was forked from, and catalog-scope entries whose subject it references), and every imported text is checked against it;
   2. its whole active history is checked against the chosen rating's guardrails, the global policies and the minors policy among them; any violation refuses the import, with every violation listed (`rating_check_failed`), and inactive turns stay unchecked until a swap, an untruncate or a fork would reactivate them;
-  3. every incomplete staged turn is closed, and every outbox row with no terminal outcome is parked (`imported_unsettled`): never dispatched, listed by `GET /stories/{id}/reconciliation`, and resolved only by the author's `POST /stories/{id}/reconciliation/{outbox_id}/resolve`;
+  3. every incomplete staged turn is closed, and every outbox row with no terminal outcome is parked (`imported_unsettled`): never dispatched, listed by `GET /stories/{id}/reconciliation`, and resolved only by the author's `POST /stories/{id}/reconciliation/{outbox_id}/resolve` (the row stays `imported_unsettled`, and `GET /stories/{id}/outbox` shows its `resolution`: kind, time and operation, #777);
   4. the profile is attached; a data-producing capability it adds over the bundle's starts a backfill as the story leaves `importing` (the story is then `paused`), unless `upgrade_mode` is `forward_only`.
 
   A refusal at any stage deletes the story and everything it wrote; the import's record stays, `refused`, with its error.

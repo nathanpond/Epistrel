@@ -24556,9 +24556,39 @@
         "title": "OutboxPosition",
         "type": "object"
       },
+      "OutboxResolution": {
+        "additionalProperties": false,
+        "description": "#777: how the author resolved a parked ``imported_unsettled`` row through\n``POST /stories/{id}/reconciliation/{outbox_id}/resolve``: the request's ``resolution``\n(``kind``), when (``resolved_at``) and the inter-turn slot operation that recorded it.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "applied_elsewhere",
+              "abandoned"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "resolved_at",
+          "operation_id"
+        ],
+        "title": "OutboxResolution",
+        "type": "object"
+      },
       "OutboxRow": {
         "additionalProperties": false,
-        "description": "#679: one outbox row as the story's outbox list shows it (any status): its id (the\nprovider idempotency key), provider and value, status (``compensated`` once a compensating\nrow answers it), the effect, where it was declared and on which timeline membership,\nwhether a story-owned change waits on it (``contingent``), the row it compensates, the\nsend attempts and times, and the latest recorded outcome. A row an erasure redacted\ncarries its ids, provider, status and position only.",
+        "description": "#679: one outbox row as the story's outbox list shows it (any status): its id (the\nprovider idempotency key), provider and value, status (``compensated`` once a compensating\nrow answers it), the effect, where it was declared and on which timeline membership,\nwhether a story-owned change waits on it (``contingent``), the row it compensates, the\nsend attempts and times, and the latest recorded outcome. A row an erasure redacted\ncarries its ids, provider, status, position and resolution only. #777: ``resolution`` is\nset once the author resolved a parked ``imported_unsettled`` row (its status stays\n``imported_unsettled``), ``None`` on every other row.",
         "properties": {
           "attempts": {
             "default": 0,
@@ -24651,6 +24681,16 @@
             "title": "Redacted",
             "type": "boolean"
           },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutboxResolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "sent_at": {
             "anyOf": [
               {
@@ -24685,7 +24725,8 @@
           "status",
           "position",
           "membership",
-          "created_at"
+          "created_at",
+          "resolution"
         ],
         "title": "OutboxRow",
         "type": "object"
@@ -50920,7 +50961,21 @@
               "null"
             ]
           },
+          "resolved_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "resolved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
             "type": [
               "string",
               "null"
@@ -92781,7 +92836,7 @@
     },
     "/stories/{story_id}/outbox": {
       "get": {
-        "description": "Every write-capable external effect the story committed, whatever its status (#679): `intended`, `claimed`, `confirmed`, `failed`, `unknown`, `cancelled`, or `compensated` once a compensating effect answers it (`compensated_by`). Each row has its outbox id (the provider idempotency key), provider and value, the effect, where it was declared (`position`) and its timeline `membership`, whether a story-owned change waits on it (`contingent`), the row it `compensates`, its send `attempts` and times, and the latest recorded `outcome`. A row an erasure redacted carries ids, provider, status and position only (`redacted`). A page by id (`after_id`; `limit` at most 200), filtered by `status` and `provider`. An omniscient read: 422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character. 404 for an unknown story.",
+        "description": "Every write-capable external effect the story committed, whatever its status (#679): `intended`, `claimed`, `confirmed`, `failed`, `unknown`, `cancelled`, or `compensated` once a compensating effect answers it (`compensated_by`). Each row has its outbox id (the provider idempotency key), provider and value, the effect, where it was declared (`position`) and its timeline `membership`, whether a story-owned change waits on it (`contingent`), the row it `compensates`, its send `attempts` and times, and the latest recorded `outcome`. An imported row parked `imported_unsettled` that the author resolved (`POST /stories/{id}/reconciliation/{outbox_id}/resolve`) keeps that status and carries `resolution` (#777): `kind` (the request's `resolution`, `applied_elsewhere` or `abandoned`), `resolved_at` and the `operation_id` of the slot operation that recorded it; every other row has `resolution: null`. Like the closed listing, it stays set when a truncation or swap takes the resolving slot out of the active timeline. A row an erasure redacted carries ids, provider, status, position and `resolution` only (`redacted`). A page by id (`after_id`; `limit` at most 200), filtered by `status` and `provider`. An omniscient read: 422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character. 404 for an unknown story.",
         "operationId": "list_outbox",
         "parameters": [
           {

@@ -489,12 +489,14 @@ async def mark(
     detail: Mapping[str, Any] | None = None,
     request_id: str | None = None,
     resolved_by: str | None = None,
+    resolved_operation_id: str | None = None,
 ) -> bool:
     """List row ``outbox_id`` (#661: or consumer-applied effect ``request_id``) with ``reason``
     until an explicit action resolves it (#218): a ``reconciliation_marks`` row, unless one is
     open for that row and reason already. ``detail``: codes only (#218: a late success's
     re-verification); ``resolved_by``: written already resolved (#661: the resolve action on a
-    derived listing). Answers whether it wrote one."""
+    derived listing; #777: ``resolved_operation_id`` the operation that resolved it). Answers
+    whether it wrote one."""
     if reason not in REASONS:
         raise ValueError(f"{reason!r} is not a reconciliation reason")
     if (outbox_id is None) == (request_id is None):
@@ -512,12 +514,17 @@ async def mark(
         reason=reason,
         detail=None if detail is None else dict(detail),
         resolved_by=resolved_by,
+        resolved_at=None if resolved_by is None else func.transaction_timestamp(),
+        resolved_operation_id=None if resolved_by is None else resolved_operation_id,
     )
     if resolved_by is None:
         insert_ = insert_.on_conflict_do_nothing(index_elements=[key, m.reason], index_where=where)
     written = await conn.scalar(insert_.returning(m.id))
     return written is not None
 
+
+RESOLUTIONS: tuple[str, ...] = ("applied_elsewhere", "abandoned")
+"""#661: a mark's ``resolved_by`` from the author's resolve action (``ResolveRequest``)."""
 
 RESOLVED_SETTLE_NOW = "settle_now"
 RESOLVED_COMPENSATED = "compensated"
@@ -550,10 +557,13 @@ async def resolve(
     *,
     reasons: Sequence[str] | None = None,
     request: bool = False,
+    operation_id: str | None = None,
 ) -> int:
     """#218: resolve row ``outbox_id``'s open marks (of ``reasons``; ``None``: all; #661:
     ``request``: the consumer-applied effect's) with the explicit action ``by``; answers how
-    many it resolved. The row leaves the listing unless its status lists it."""
+    many it resolved. The row leaves the listing unless its status lists it. #777: the marks
+    record when (``resolved_at``, this transaction's time) and ``operation_id``, the operation
+    that resolved them, when the action has one."""
     m = reconciliation_marks.c
     key = m.request_id if request else m.outbox_id
     query = update(reconciliation_marks).where(
@@ -561,7 +571,12 @@ async def resolve(
     )
     if reasons is not None:
         query = query.where(m.reason.in_(list(reasons)))
-    return int((await conn.execute(query.values(resolved_by=by))).rowcount)
+    values = {
+        "resolved_by": by,
+        "resolved_at": func.transaction_timestamp(),
+        "resolved_operation_id": operation_id,
+    }
+    return int((await conn.execute(query.values(**values))).rowcount)
 
 
 async def erased_since(conn: AsyncConnection, story_id: str, at: datetime | None) -> bool:
@@ -1194,13 +1209,27 @@ class OutboxPosition(BaseModel):
     step: int
 
 
+class OutboxResolution(BaseModel):
+    """#777: how the author resolved a parked ``imported_unsettled`` row through
+    ``POST /stories/{id}/reconciliation/{outbox_id}/resolve``: the request's ``resolution``
+    (``kind``), when (``resolved_at``) and the inter-turn slot operation that recorded it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["applied_elsewhere", "abandoned"]
+    resolved_at: datetime
+    operation_id: str
+
+
 class OutboxRow(BaseModel):
     """#679: one outbox row as the story's outbox list shows it (any status): its id (the
     provider idempotency key), provider and value, status (``compensated`` once a compensating
     row answers it), the effect, where it was declared and on which timeline membership,
     whether a story-owned change waits on it (``contingent``), the row it compensates, the
     send attempts and times, and the latest recorded outcome. A row an erasure redacted
-    carries its ids, provider, status and position only."""
+    carries its ids, provider, status, position and resolution only. #777: ``resolution`` is
+    set once the author resolved a parked ``imported_unsettled`` row (its status stays
+    ``imported_unsettled``), ``None`` on every other row."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1220,6 +1249,7 @@ class OutboxRow(BaseModel):
     sent_at: datetime | None = None
     outcome: OutcomeView | None = Field(default=None, exclude_if=lambda v: v is None)
     redacted: bool = False
+    resolution: OutboxResolution | None
 
 
 class OutboxPage(BaseModel):
@@ -1233,6 +1263,41 @@ class OutboxPage(BaseModel):
 
 OUTBOX_LIMIT_MAX = 200
 OUTBOX_LIMIT_DEFAULT = 50
+
+
+async def _resolutions(
+    conn: AsyncConnection, story_id: str, ids: Sequence[str]
+) -> dict[str, OutboxResolution]:
+    """#777: the resolution of each of the rows ``ids`` the author's resolve action closed: a
+    parked ``imported_unsettled`` row (it keeps that status) whose ``imported_unsettled`` mark
+    the action resolved (``applied_elsewhere`` or ``abandoned``), with when and its operation.
+    The mark, not the audit event (which retention deletes), so it holds as long as the listing
+    stays closed: a rewind past the resolving slot does not reopen either."""
+    if not ids:
+        return {}
+    o, m = external_effect_outbox.c, reconciliation_marks.c
+    found = await conn.execute(
+        select(m.outbox_id, m.resolved_by, m.resolved_at, m.resolved_operation_id)
+        .join(external_effect_outbox, o.id == m.outbox_id)
+        .where(
+            m.story_id == story_id,
+            m.outbox_id.in_(list(ids)),
+            m.reason == IMPORTED_UNSETTLED,
+            m.resolved_by.in_(RESOLUTIONS),
+            m.resolved_at.is_not(None),
+            m.resolved_operation_id.is_not(None),
+            o.status == IMPORTED_UNSETTLED,
+        )
+        .order_by(m.resolved_at, m.id)
+    )
+    return {
+        str(r.outbox_id): OutboxResolution(
+            kind=r.resolved_by,
+            resolved_at=r.resolved_at,
+            operation_id=str(r.resolved_operation_id),
+        )
+        for r in found
+    }
 
 
 async def outbox_page(
@@ -1289,6 +1354,7 @@ async def outbox_page(
                 )
             ):
                 contingent.add(str(waiting))
+        resolutions = await _resolutions(conn, story_id, ids)
     found: list[OutboxRow] = []
     for row in rows:
         key = str(row.id)
@@ -1311,6 +1377,7 @@ async def outbox_page(
                     membership=str(getattr(row.membership, "value", row.membership)),
                     created_at=row.created_at,
                     redacted=True,
+                    resolution=resolutions.get(key),
                 )
             )
             continue
@@ -1338,6 +1405,7 @@ async def outbox_page(
                     received_via=str(heard.received_via),
                     received_at=heard.received_at,
                 ),
+                resolution=resolutions.get(key),
             )
         )
     return OutboxPage(rows=found, next_after=found[-1].outbox_id if more and found else None)
@@ -1531,6 +1599,7 @@ __all__ = [
     "REASONS",
     "REQUESTED",
     "REQUEST_PENDING",
+    "RESOLUTIONS",
     "RESOLVED_COMPENSATED",
     "RESOLVED_SETTLE_NOW",
     "TERMINAL",
@@ -1540,6 +1609,7 @@ __all__ = [
     "Listing",
     "OutboxPage",
     "OutboxPosition",
+    "OutboxResolution",
     "OutboxRow",
     "OutcomeRecord",
     "OutcomeView",

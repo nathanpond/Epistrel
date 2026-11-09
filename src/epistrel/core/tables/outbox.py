@@ -37,9 +37,11 @@ migration 0095; #211, migration 0098).
   ``since`` is when it was marked and ``resolved_by`` the explicit action that resolved it
   (#218; null while open). One open mark per row and reason (a partial unique index).
   ``detail`` (#218, migration 0103) carries a ``late_success_after_expiry`` mark's
-  re-verification (``{reverification, reasons}``, codes only). Ids and reason codes only,
-  no story content; a fork does not copy it (the fork's outbox copies are records, never
-  listed).
+  re-verification (``{reverification, reasons}``, codes only). ``resolved_at`` and
+  ``resolved_operation_id`` (#777, migration 0144) say when and by which operation the action
+  resolved it (null while open; the operation only for #661's resolve action). Ids, reason
+  codes and times only, no story content; a fork does not copy it (the fork's outbox copies
+  are records, never listed).
 
 ``external_effect_outbox.compensates`` (#218, migration 0103) names the row a compensating effect
 (a refund the author chose, FR-EXT-22) answers; null on every other row.
@@ -220,6 +222,9 @@ reconciliation_marks = Table(
     ),
     Column("resolved_by", Text, nullable=True),
     Column("detail", JSONB, nullable=True),
+    # #777 (migration 0144): when, and by which operation, an explicit action resolved it.
+    Column("resolved_at", TIMESTAMP(timezone=True), nullable=True),
+    Column("resolved_operation_id", ulid_type(), nullable=True),
     CheckConstraint(_in("reason", REASONS), name="reason"),
     CheckConstraint("(outbox_id IS NULL) <> (request_id IS NULL)", name="one_effect"),
 )

@@ -153,6 +153,10 @@ class ContentCategory(StrEnum):
     REFERENCE_IMAGE = "reference_image"
     """A reference image the image adapter is given: one the audience has perceived (FR-IMG-5),
     as a media asset id the adapter resolves to a signed or data URL (#255)."""
+    CONSUMER_INPUT = "consumer_input"
+    """A consumer purpose's call inputs (FR-MODEL-14, #824): the JSON object the consumer sends
+    as ``inputs``, rendered by the purpose's own template. The consumer's data, never story
+    content Epistrel adds (a story-bound call's viewpoint context is #826's)."""
 
 
 class StructuredOutput(StrEnum):

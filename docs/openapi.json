@@ -34353,6 +34353,459 @@
         "title": "PublishRequest",
         "type": "object"
       },
+      "PurposeBody": {
+        "description": "A consumer purpose at one version: its templates, output schema and description, which\nversion it is and the latest one, and when it was registered, written and archived.",
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "latest_version": {
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Template"
+          },
+          "template": {
+            "title": "Template",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "version_created_at": {
+            "format": "date-time",
+            "title": "Version Created At",
+            "type": "string"
+          },
+          "version_created_by": {
+            "title": "Version Created By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "latest_version",
+          "description",
+          "template",
+          "system_template",
+          "output_schema",
+          "created_at",
+          "version_created_at",
+          "version_created_by",
+          "archived_at"
+        ],
+        "title": "PurposeBody",
+        "type": "object"
+      },
+      "PurposeCreate": {
+        "additionalProperties": false,
+        "description": "``POST /admin/purposes``: a new consumer purpose at version 1.",
+        "examples": [
+          {
+            "description": "A contestant's in-character reason for a vote.",
+            "name": "vote_reason",
+            "output_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "maxLength": 500,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            },
+            "template": "Explain why {{ inputs.voter }} voted for {{ inputs.target }}."
+          }
+        ],
+        "properties": {
+          "description": {
+            "description": "What the purpose does, for operators (at most 1000 characters).",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "description": "The purpose's name: 3 to 48 characters, a lowercase letter then lowercase letters, digits and `_`. Immutable; never a built-in purpose's name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "description": "The JSON Schema of the reply, in the subset the strict structured path sends as it is: an object root; `type` among string, number, integer, boolean, array and object; `properties`, `required` (every property) and `additionalProperties: false` on every object; `items` on every array; `enum`, `const`, `description`, `title`, `minLength`/`maxLength`, `pattern`, `minItems`/`maxItems`, `minimum`/`maximum`; depth at most 6; at most 16 KB.",
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An optional template rendered after Epistrel's fixed system preamble (the rating guidance and the instruction to answer only with JSON matching the schema); the same rules as `template`.",
+            "title": "System Template"
+          },
+          "template": {
+            "description": "The Jinja2 template of the user message (sandboxed, `StrictUndefined`, built-in filters only; variables `inputs`, `viewpoint` and `story`; at most 32 KB).",
+            "title": "Template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "template",
+          "output_schema",
+          "name"
+        ],
+        "title": "PurposeCreate",
+        "type": "object"
+      },
+      "PurposeListBody": {
+        "description": "One page of consumer purposes by name (archived ones included, with ``archived_at``),\nthe deployment's ``config_revision`` and the cursor of the next page.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PurposeSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "config_revision",
+          "items",
+          "next_cursor"
+        ],
+        "title": "PurposeListBody",
+        "type": "object"
+      },
+      "PurposeMutation": {
+        "description": "The purpose at its latest version after a write, with the ``config_revision`` the write\nproduced (unchanged when it changed nothing) and whether it ``changed`` anything.",
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "latest_version": {
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Template"
+          },
+          "template": {
+            "title": "Template",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "version_created_at": {
+            "format": "date-time",
+            "title": "Version Created At",
+            "type": "string"
+          },
+          "version_created_by": {
+            "title": "Version Created By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "name",
+          "version",
+          "latest_version",
+          "description",
+          "template",
+          "system_template",
+          "output_schema",
+          "created_at",
+          "version_created_at",
+          "version_created_by",
+          "archived_at",
+          "changed"
+        ],
+        "title": "PurposeMutation",
+        "type": "object"
+      },
+      "PurposeReplace": {
+        "additionalProperties": false,
+        "description": "``PUT /admin/purposes/{name}``: the next version, replacing every per-version field.",
+        "examples": [
+          {
+            "description": "A contestant's in-character reason for a vote.",
+            "expected_version": 1,
+            "output_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "maxLength": 500,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            },
+            "template": "In {{ inputs.voter }}'s voice, explain the vote for {{ inputs.target }}."
+          }
+        ],
+        "properties": {
+          "description": {
+            "description": "What the purpose does, for operators (at most 1000 characters).",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "expected_version": {
+            "description": "The latest version the edit was based on (409 `version_stale` otherwise).",
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "description": "The JSON Schema of the reply, in the subset the strict structured path sends as it is: an object root; `type` among string, number, integer, boolean, array and object; `properties`, `required` (every property) and `additionalProperties: false` on every object; `items` on every array; `enum`, `const`, `description`, `title`, `minLength`/`maxLength`, `pattern`, `minItems`/`maxItems`, `minimum`/`maximum`; depth at most 6; at most 16 KB.",
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An optional template rendered after Epistrel's fixed system preamble (the rating guidance and the instruction to answer only with JSON matching the schema); the same rules as `template`.",
+            "title": "System Template"
+          },
+          "template": {
+            "description": "The Jinja2 template of the user message (sandboxed, `StrictUndefined`, built-in filters only; variables `inputs`, `viewpoint` and `story`; at most 32 KB).",
+            "title": "Template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "template",
+          "output_schema",
+          "expected_version"
+        ],
+        "title": "PurposeReplace",
+        "type": "object"
+      },
+      "PurposeSummary": {
+        "description": "A consumer purpose as the list shows it (its latest version's description).",
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "latest_version": {
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "latest_version",
+          "description",
+          "created_at",
+          "updated_at",
+          "archived_at"
+        ],
+        "title": "PurposeSummary",
+        "type": "object"
+      },
+      "PurposeVersionInfo": {
+        "description": "One version of a consumer purpose, as the versions list shows it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "description",
+          "created_at",
+          "created_by"
+        ],
+        "title": "PurposeVersionInfo",
+        "type": "object"
+      },
+      "PurposeVersionsBody": {
+        "description": "Every version of a consumer purpose, oldest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PurposeVersionInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PurposeVersionsBody",
+        "type": "object"
+      },
       "Quality": {
         "description": "FR-PROF-16: whether a setting is part of a configuration's fingerprint.",
         "enum": [
@@ -63303,6 +63756,799 @@
           }
         ],
         "summary": "Replace a policy",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes": {
+      "get": {
+        "operationId": "list_purposes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the consumer purposes",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Register a model purpose of the consumer's own (FR-MODEL-14) at version 1: a name (`^[a-z][a-z0-9_]{2,47}$`, never a built-in purpose's), a Jinja2 `template` of the user message, an optional `system_template`, and the `output_schema` the reply must match. Everything is checked now, never at call time: 422 `validation_error` with `details.reason` `name_invalid`, `name_taken`, `template_invalid`, `schema_invalid` or `purpose_limit`, the first fault only. It has no quality floor and no certification: its output quality is the consumer's concern (ADR-185).",
+        "operationId": "register_purpose",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Register a consumer purpose",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes/{name}": {
+      "get": {
+        "description": "The purpose at its latest version; `version` reads another (404 `version_not_found`). An archived purpose still reads, with its `archived_at`.",
+        "operationId": "get_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A version's number (default: the latest).",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A version's number (default: the latest).",
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `version_not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a consumer purpose",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Write version n+1, replacing the description, templates and output schema; `expected_version` must be the latest (409 `version_stale`). An archived purpose is 410 `purpose_archived`. A replacement identical to the latest version writes nothing (`changed: false`). Calls that do not pin a version use the new one from their next call.",
+        "operationId": "replace_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeReplace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `version_stale`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `purpose_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace a consumer purpose (a new version)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes/{name}/archive": {
+      "post": {
+        "description": "Archive the purpose: its calls are refused with 410 `purpose_archived`, its versions stay readable, its name stays taken and its model configuration is hidden. Archiving it again changes nothing. There is no unarchive.",
+        "operationId": "archive_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Archive a consumer purpose",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes/{name}/versions": {
+      "get": {
+        "operationId": "list_purpose_versions",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeVersionsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a consumer purpose's versions",
         "tags": [
           "admin"
         ]

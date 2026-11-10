@@ -29,7 +29,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 129, 136, 144, 150, 170 |
+| FR-MODEL | §13 | 129, 136, 144, 150, 170, 185 |
 | FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
 | FR-STATE | §15.1 | 055, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
@@ -49,7 +49,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
 | NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
@@ -247,6 +247,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 182 | Image minors-policy certification uses external evidence; Epistrel holds no violating images | Current | — |
 | 183 | Certification runs are listed, canaries included, each with its outcome | Current | — |
 | 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Current | — |
+| 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 
 ---
 
@@ -1961,6 +1962,21 @@ Tuning and its exit certification come after every milestone that may change a p
 - Invariant 7 holds: each requirement is still assigned to exactly one milestone, and each test part gates from exactly one. `check-assignment`, `check-parts`, `check-lexicon` and `check-traceability` pass. The lexicon gains no row, because M9, M10 and M12 introduce no terms yet. `tests/gates/test_lexicon.py`'s non-milestone fixture now names M99, because M12 is a §22 milestone.
 - History is not renumbered. Committed certification records (`src/epistrel/core/seeds/certifications/`), eval reports (`docs/evals/`) and the decision log keep the milestone numbers they were written with, so "M9" in anything dated before 2026-11-09 means performance tuning. ADR titles keep their wording; the inline markers give the current milestone.
 - The GitHub milestones and their issues follow this numbering at `/n8-replan`: the tuning stories filed under the old M9 (#818, #819 and the floor work they gate) belong to M11, and M9 and M10 are planned when their turn comes.
+
+### ADR-185 — The purpose registry is opened to consumer purposes, stored in the database, with no quality floor
+**Status:** Accepted.
+**Context:** FR-MODEL-13 declares every model purpose in one registry in code, with its typed inputs, capability floor and a generated model-guide row, and purposes join it only as Epistrel's own capabilities are delivered. The Survivor consumer app (#805) needs model calls that are not story turns, with its own prompt and structured output and sometimes no story at all, and its invariant is that every model call goes through Epistrel so that model configuration, guardrails, content ratings and the minors policy apply in one place. A closed registry in code cannot hold a consumer's purposes: they change at the consumer's pace, not Epistrel's release cadence. The owner decided at `/n8-plan M9` round one (2026-11-09) that purposes are registered through an operator API, stored and versioned, and that there are no quality floors.
+**Decision:** FR-MODEL-13's registry is opened to **consumer purposes** (FR-MODEL-14). A consumer purpose is registered through `/admin/purposes` and stored in the database (`consumer_purposes`, `consumer_purpose_versions`; migration 0145), not declared in code: a name, a sandboxed Jinja2 template (and an optional system template), an output schema in the JSON Schema subset the strict structured path sends as it is (#761), and versions that a call may pin. Everything is validated at save, never at call time. The Model Access Layer resolves a name the registry does not declare through the store, cached per configuration revision. Each consumer purpose:
+- has its own `model_config` row and otherwise inherits `generation`'s configuration; its capability floor is structured output;
+- takes one input category of its own (`consumer_input`) and never receives any other (#826 adds the viewpoint context of a story-bound call);
+- has **no quality floor and no certification**: Epistrel guarantees the call's routing, validation and safety path, not the quality of what the consumer's prompt produces, which is the consumer's concern (the stance of NFR-QUAL-13);
+- is **never a turn's model purpose**: engine profiles and story settings refuse it in their purpose routing, so it cannot change how a turn renders or what a preset's fingerprint measures.
+**Alternatives considered:** Declaring consumer purposes in code (a plugin package the deployment installs) keeps the registry closed and the guide complete, but couples a consumer's prompt changes to an Epistrel build and lets third-party code run in the engine process. Letting the consumer call a model directly breaks its own invariant and bypasses the guardrails. Giving consumer purposes quality floors would need labeled sets and certification runs for prompts Epistrel neither writes nor can judge.
+**Consequences:**
+- 03: FR-MODEL-13 gains an *[amended by ADR-185]* marker, and FR-MODEL-14 is assigned to M9 in §22. The model guide keeps listing only the registry's purposes, with a description of the `consumer_input` category; a consumer purpose has no guide row.
+- `/admin/model-config` lists every live consumer purpose after the built-in ones; an archived one's row is kept but hidden (404). A consumer purpose name can never be a built-in one's, a port's or `default`, and an archived name stays taken.
+- Calls (#825, story-less; #826, story-bound) go through the same safety path as a turn's output: the applicable rating and the minors policy. Their inputs and outputs, like the templates, never reach operational logs, metrics or traces (invariant 3).
+- Nothing in a preset, a certification or a quality floor depends on a consumer purpose, so registering, replacing or archiving one moves no fingerprint.
 
 ---
 

@@ -1608,6 +1608,36 @@
     },
     {
       "method": "GET",
+      "path": "/admin/purposes",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/purposes",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/purposes/{name}",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/purposes/{name}",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/purposes/{name}/versions",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/purposes/{name}/archive",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "GET",
       "path": "/stories/{story_id}/providers",
       "requirement": "FR-EXT-1"
     },

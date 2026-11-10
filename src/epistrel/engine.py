@@ -151,6 +151,7 @@ from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
 from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.purposes import store as purpose_store
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
@@ -248,6 +249,7 @@ from epistrel.orchestrator.lite.schemas import (
 )
 from epistrel.orchestrator.models import ModelAccessLayer, ModelError, ModelParams
 from epistrel.orchestrator.models import config as model_config
+from epistrel.orchestrator.models import consumer as consumer_purposes
 from epistrel.orchestrator.models import facts as model_facts
 from epistrel.orchestrator.models import held as held_models
 from epistrel.orchestrator.models import metrics as model_metrics
@@ -481,6 +483,12 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "delete_external_provider": ResultCodec.of(
         provider_registry.ProviderWrite, status=204, revision_field=_CONFIG
     ),
+    # Consumer purposes (#824): deployment-scoped registrations, each write a new revision.
+    "register_purpose": ResultCodec.of(
+        purpose_store.PurposeWrite, status=201, revision_field=_CONFIG
+    ),
+    "replace_purpose": ResultCodec.of(purpose_store.PurposeWrite, revision_field=_CONFIG),
+    "archive_purpose": ResultCodec.of(purpose_store.PurposeWrite, revision_field=_CONFIG),
     "bind_provider": ResultCodec.of(provider_binding.BindingWrite),
     # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
     "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
@@ -4578,7 +4586,8 @@ class Engine:
         purpose's own schema first (the ``image_generation`` port's image fields, #254), so a
         refused body claims no key."""
         principal = self.require_principal(ctx)
-        model_config.check_purpose(purpose)
+        async with self.db.connect() as conn:
+            await model_config.require_configurable(conn, purpose)
         params = body.params_for(purpose)
         probe = await self._probe_embedding_change(purpose, body)
         with reembed_job.changing(self.models.embeddings, probe):
@@ -4767,6 +4776,88 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+
+    # -- consumer purposes (FR-MODEL-14; #824) -----------------------------------------------
+    # Deployment-scoped like the model configuration: each write takes the deployment lock,
+    # moves ``config_revision`` and records a prospective ``config_changes`` row; the next call
+    # resolves the new version (``ModelAccessLayer.consumer_purpose``).
+
+    async def register_purpose(
+        self, ctx: RequestContext, request: purpose_store.PurposeCreate
+    ) -> purpose_store.PurposeWrite:
+        """Register a consumer purpose at version 1 (REST 201). Refused with 422
+        ``validation_error`` and ``details.reason``: ``name_invalid``, ``name_taken`` (a
+        built-in purpose's name, or one already registered), ``template_invalid``,
+        ``schema_invalid`` or ``purpose_limit``, checked in that order."""
+        principal = self.require_principal(ctx)
+        reserved = consumer_purposes.builtin_names()
+        return await self._keyed(
+            ctx,
+            "register_purpose",
+            lambda _: purpose_store.register(
+                self.db, request, reserved=reserved, principal=principal
+            ),
+            material={"body": _body(request)},
+        )
+
+    async def replace_purpose(
+        self, ctx: RequestContext, name: str, request: purpose_store.PurposeReplace
+    ) -> purpose_store.PurposeWrite:
+        """Write the next version of a consumer purpose. 404 for an unknown name, 410
+        ``purpose_archived``, 409 ``version_stale`` when ``expected_version`` is not the
+        latest, then the template and schema checks; a replacement identical to the latest
+        version writes nothing."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "replace_purpose",
+            lambda _: purpose_store.replace(self.db, name, request, principal=principal),
+            material={"name": name, "body": _body(request)},
+        )
+
+    async def archive_purpose(self, ctx: RequestContext, name: str) -> purpose_store.PurposeWrite:
+        """Archive a consumer purpose: its calls are refused with 410 ``purpose_archived``,
+        its versions stay readable, its name stays taken and its model configuration is
+        hidden. Archiving it again changes nothing (200)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "archive_purpose",
+            lambda _: purpose_store.archive(self.db, name, principal=principal),
+            material={"name": name},
+        )
+
+    @refuses_nul()
+    async def list_purposes(
+        self,
+        ctx: RequestContext,
+        *,
+        limit: int = purpose_store.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> tuple[int, purpose_store.PurposePage]:
+        """``config_revision`` and one page of consumer purposes by name, archived ones
+        included, each at its latest version."""
+        del ctx
+        return await purpose_store.revision_and_listing(self.db, limit=limit, cursor=cursor)
+
+    @refuses_nul()
+    async def get_purpose(
+        self, ctx: RequestContext, name: str, *, version: int | None = None
+    ) -> purpose_store.ConsumerPurpose:
+        """A consumer purpose at its latest version, or ``version`` (404 ``version_not_found``
+        when it has none); an archived one still reads, with its ``archived_at``."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await purpose_store.read(conn, name, version)
+
+    @refuses_nul()
+    async def list_purpose_versions(
+        self, ctx: RequestContext, name: str
+    ) -> list[purpose_store.PurposeVersionInfo]:
+        """Every version of a consumer purpose, oldest first."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await purpose_store.versions(conn, name)
 
     # -- external-data providers (FR-EXT-1,6; #204) -------------------------------------------
     # Deployment-scoped registrations (each write an interpretive configuration change, read

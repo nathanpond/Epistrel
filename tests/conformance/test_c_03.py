@@ -63,6 +63,12 @@ from epistrel.api.routes.admin.providers import (
     ProviderList,
     ProviderMutation,
 )
+from epistrel.api.routes.admin.purposes import (
+    PurposeBody,
+    PurposeListBody,
+    PurposeMutation,
+    PurposeVersionsBody,
+)
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import (
@@ -245,6 +251,7 @@ from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
 from epistrel.core.providers import BindingRequest
 from epistrel.core.prune import PruneRequest
+from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -3417,6 +3424,41 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
             lambda e, ids: _model_remove(e, "image_check"),
         ),
+        # -- consumer purposes (#824): registered, versioned, listed and archived
+        Step(
+            "register_purpose",
+            lambda ids: Rest("POST", "/admin/purposes", PURPOSE),
+            lambda e, ids: _purpose_written(
+                e.register_purpose(CTX, PurposeCreate.model_validate(PURPOSE))
+            ),
+        ),
+        Step(
+            "replace_purpose",
+            lambda ids: Rest("PUT", PURPOSE_PATH, PURPOSE_EDIT),
+            lambda e, ids: _purpose_written(
+                e.replace_purpose(CTX, PURPOSE_NAME, PurposeReplace.model_validate(PURPOSE_EDIT))
+            ),
+        ),
+        Step(
+            "get_purpose",
+            lambda ids: Rest("GET", PURPOSE_PATH),
+            lambda e, ids: _purpose(e),
+        ),
+        Step(
+            "list_purpose_versions",
+            lambda ids: Rest("GET", f"{PURPOSE_PATH}/versions"),
+            lambda e, ids: _purpose_versions(e),
+        ),
+        Step(
+            "list_purposes",
+            lambda ids: Rest("GET", "/admin/purposes"),
+            lambda e, ids: _purposes(e),
+        ),
+        Step(
+            "archive_purpose",
+            lambda ids: Rest("POST", f"{PURPOSE_PATH}/archive"),
+            lambda e, ids: _purpose_written(e.archive_purpose(CTX, PURPOSE_NAME)),
+        ),
         # -- external-data providers (#204): registration and a story's binding
         Step(
             "register_external_provider",
@@ -4666,6 +4708,45 @@ PROVIDER_EDIT: dict[str, Any] = {
     "unavailability": "unknown",
 }
 BINDING: dict[str, Any] = {"external_ids": {"player": "p-1"}}
+
+
+PURPOSE_NAME = "parity_vote_reason"
+PURPOSE_PATH = f"/admin/purposes/{PURPOSE_NAME}"
+PURPOSE: dict[str, Any] = {
+    "name": PURPOSE_NAME,
+    "description": "A juror's reason for a vote.",
+    "template": "Why did {{ inputs.voter }} vote?",
+    "output_schema": {
+        "type": "object",
+        "properties": {"reason": {"type": "string"}},
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+}
+PURPOSE_EDIT: dict[str, Any] = {
+    **{k: v for k, v in PURPOSE.items() if k != "name"},
+    "description": "A juror's in-character reason for a vote.",
+    "expected_version": 1,
+}
+
+
+async def _purpose_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PurposeMutation.written(await call))
+
+
+async def _purpose(engine: Engine) -> dict[str, Any]:
+    return dump(PurposeBody.of(await engine.get_purpose(CTX, PURPOSE_NAME)))
+
+
+async def _purpose_versions(engine: Engine) -> dict[str, Any]:
+    return dump(PurposeVersionsBody(items=await engine.list_purpose_versions(CTX, PURPOSE_NAME)))
+
+
+async def _purposes(engine: Engine) -> dict[str, Any]:
+    revision, page = await engine.list_purposes(CTX)
+    return dump(
+        PurposeListBody(config_revision=revision, items=page.items, next_cursor=page.next_cursor)
+    )
 
 
 async def _provider_written(call: Awaitable[Any]) -> dict[str, Any]:

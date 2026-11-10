@@ -144,7 +144,7 @@ Checks one text against one model-assisted policy (FR-GUARD-9).
 | `image_subjects.visual_descriptors` | `visual_descriptor` |
 | `image_subjects.mentioned_as` | `checked_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 **Never receives (docs/02 §6):** other story text; beliefs; names an image prompt lacks
 
@@ -173,7 +173,7 @@ Compresses one window of episodic memories (and the canon in it) into standing f
 | `level` | `scope_meta` |
 | `covers` | `scope_meta` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `lite_summary`
 
@@ -233,7 +233,7 @@ Reviews one catalog entry against one rating's content policy: its description, 
 | `elements.location` | `catalog_text` |
 | `elements.text` | `catalog_text` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `quality_judge`
 
@@ -255,7 +255,7 @@ Pairwise prose comparisons and single-message scores for the eval harness (NFR-Q
 | `reference` | `eval_text` |
 | `criteria` | `eval_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `importance_scoring`
 
@@ -274,7 +274,7 @@ Scores one memory's importance, 0 (trivia) to 1 (pivotal) (FR-MEM-7).
 | `text` | `memory_text` |
 | `kind` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `entailment`
 
@@ -295,7 +295,7 @@ Judges the fuzzy residual of verify: one claim the deterministic check left unce
 | `records.holder` | `canon_record` |
 | `records.valid_time` | `canon_record` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `belief_adjudication`
 
@@ -325,7 +325,7 @@ Decides what one salient witness makes of a say it heard: accept, reject, suspen
 | `utterance.claims` | `utterance_text` |
 | `perceived_intent` | `utterance_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_state`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_state`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `salience_detection`
 
@@ -348,7 +348,7 @@ Tells content placed to be noticed from background texture in one render's beats
 | `scene_context.present_entities` | `scene` |
 | `scene_context.last_beats` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `extraction_backstop`
 
@@ -372,7 +372,7 @@ The model layer of claim detection: lists every factual claim one render's beats
 | `scene_context.last_beats` | `scene` |
 | `external_data` | `external_data` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `regeneration`
 
@@ -479,7 +479,7 @@ Proposes a best-guess duration, with its reason and a confidence, for a narrated
 | `established_times` | `scene` |
 | `clock` | `scene` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `rewrite_parse`
 
@@ -509,7 +509,7 @@ Parses an author's history-rewrite instruction into structured proposition, reco
 | `states.owner` | `author_instruction` |
 | `clock` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `rewrite_record`
 
@@ -531,7 +531,7 @@ Repairs one record a history rewrite contradicts: the least change that makes it
 | `new_canon` | `author_instruction` |
 | `guidance` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `directive_parse`
 
@@ -561,7 +561,7 @@ Classifies an author's directive as guidance for the next turn or a change to th
 | `states.owner` | `author_instruction` |
 | `clock` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `lite_rewrite_reach`
 
@@ -582,7 +582,7 @@ Finds the lines of a Lite story's transcript a correction to its past contradict
 | `lines.speaker` | `recent_message` |
 | `lines.text` | `recent_message` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `lite_rewrite_parse`
 
@@ -605,7 +605,7 @@ Reads a Lite story's history-rewrite instruction as one change statement, says w
 | `recent.text` | `recent_message` |
 | `author_facts` | `author_instruction` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `image_prompt`
 
@@ -634,7 +634,7 @@ Writes an image prompt from what the image's audience has perceived: the subject
 | `camera` | `constraint` |
 | `instruction` | `constraint` |
 
-**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `working_memory`, `retrieved_memories`, `canon_facts`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `working_memory`, `retrieved_memories`, `canon_facts`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 **Never receives (docs/02 §6):** true ages; restricted references; anything the image's audience has not perceived
 
@@ -664,7 +664,7 @@ Checks one image against the image-output policies, with its prompt, caption, al
 | `policies.policy_id` | `policy_text` |
 | `policies.text` | `policy_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `reference_image`, `consumer_input`
 
 **Never receives (docs/02 §6):** story text; beliefs; names the prompt lacks
 
@@ -690,7 +690,7 @@ Embeds memory texts and retrieval queries over the OpenAI-compatible `/embedding
 |---|---|
 | `text` | `memory_text` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `image_prompt`, `caption_alt_text`, `reference_image`, `consumer_input`
 
 ### `image_generation`
 
@@ -716,7 +716,7 @@ The image adapter (FR-IMG-1): generates images through the `ImageGenerator` port
 | `n` | `image_prompt` |
 | `reference_images` | `reference_image` |
 
-**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `caption_alt_text`
+**Never receives:** `rating_guidance`, `custom_instructions`, `character_definition`, `pinned_memory`, `rolling_summary`, `recent_message`, `player_input`, `policy_text`, `subject_true_age`, `checked_text`, `catalog_text`, `rating_description`, `scenario_text`, `director_notes`, `eval_text`, `memory_text`, `record_meta`, `scope_meta`, `claim_text`, `canon_record`, `render_text`, `scene`, `working_memory`, `retrieved_memories`, `canon_facts`, `constraint`, `verified_beat`, `belief_record`, `belief_state`, `utterance_text`, `author_instruction`, `tracked_values`, `external_data`, `image`, `subject_label`, `visual_descriptor`, `caption_alt_text`, `consumer_input`
 
 **Never receives (docs/02 §6):** true ages; the safety context
 
@@ -770,6 +770,7 @@ None: every purpose and port FR-MODEL-2 names is delivered.
 | `image_prompt` | A built image prompt and its negative prompt (#254): what the image adapter generates from (with its seed, size or aspect ratio, quality and count) and what `guardrail_check` and `image_check` judge. |
 | `caption_alt_text` | An image's caption and alt text, judged with the image. |
 | `reference_image` | A reference image the image adapter is given: one the image's audience has perceived (FR-IMG-5), sent as a signed URL or a data URL (#255). |
+| `consumer_input` | A consumer purpose's call inputs (FR-MODEL-14): the JSON object the consumer sends, rendered by the purpose's own template. Consumer purposes are registered in the database, not in this registry, so they have no rows here (ADR-185). |
 
 ## Hosted providers and retention
 

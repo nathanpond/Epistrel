@@ -22,6 +22,7 @@ from epistrel.api.routes.admin import (
     offboarding,
     policies,
     providers,
+    purposes,
     ratings,
     reembed,
     settings,
@@ -41,6 +42,7 @@ router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
 router.include_router(providers.router)
+router.include_router(purposes.router)  # #824: consumer purposes
 router.include_router(reembed.router)
 router.include_router(offboarding.router)
 router.include_router(erasure.router)
@@ -69,6 +71,7 @@ _OPERATOR_SEGMENTS = (
     r"record[_-]utterance",
     r"ingest[_-]turn",
     r"offboard(?:ing)?",  # principal offboarding
+    r"purposes",  # #824: consumer purposes (model purposes a consumer registers)
 )
 
 OPERATOR_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (

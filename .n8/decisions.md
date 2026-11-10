@@ -13460,3 +13460,45 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 1):** I-10's `test_create_refuses_bad_requests` "cast size" case now sends 201 characters (over `STORY_CAST_LIMIT_MAX`, refused at `body` with `cast_max`), not 21. This was a fourth CI fix push for #828, one past the brief's three. Each push fixed a different failure, every one caused by #828 (capability map, traceability row count, C-16, I-10). This one was a one-line test expectation, verified locally (I-10: 36 passed), so I pushed it rather than leave the branch red for the next story.
   **Why:** run 42830741913's integration-i-z shard failed. The M2 test still expected the old 20-character cap.
   **Issue:** #828
+- **Decision:** #824's store and validation live in Core (`core/purposes/`: `validation.py`, `output.py`, `store.py`; tables `consumer_purposes` and `consumer_purpose_versions`, migration `0145`), and resolution in the Orchestrator (`orchestrator/models/consumer.py`). The built-in names a consumer purpose may not take (every delivered and reserved purpose, every port, `default`) come from `consumer.builtin_names()`, which the Engine passes to `store.register` as `reserved`.
+  **Why:** the architecture rule keeps Core from importing the Orchestrator, where the registry lives. The `Purposes` value the Engine passes to profile validation is the same pattern.
+  **Issue:** #824
+- **Decision:** the 100-live-purpose limit is checked inside `lock_deployment`'s transaction, not under a separate advisory lock as the planner line put it.
+  **Why:** every consumer-purpose write already takes the deployment row `FOR UPDATE` (the configuration-write rule, #48), which serialises concurrent creations just as an advisory lock would. A second lock would add nothing.
+  **Issue:** #824
+- **Decision:** a consumer purpose's capability floor is `StructuredOutput.PARSE_VALIDATE_RETRY` ("structured output": constrained decoding, or output reliable enough to parse, validate and retry), the floor `guardrail_check` declares.
+  **Why:** the AC says "the capability floor is structured output". `JSON_SCHEMA` would demand constrained decoding, which `structured_call` does not need, because it falls back to parse-validate-retry.
+  **Issue:** #824
+- **Decision:** in `/admin/model-config`, every field and param a consumer purpose does not set reads `source: inherited`, whatever `generation`'s own source is. `rating_suggestion` instead reads `default` when `guardrail_check` has no row. The `Sources` response model is unchanged; no `inherits_from` key was added.
+  **Why:** the planner line says "`sources` shows `inherited: generation`". A consumer purpose uses `generation`'s effective value, so "inherited" is accurate even when `generation` takes it from `default`. Adding a key would change the response schema of every entry.
+  **Issue:** #824
+- **Decision:** `PUT`, `GET` and `DELETE /admin/model-config/{name}` answer 404 `not_found` (`details.reason: archived`) for an archived consumer purpose. An unknown name keeps its existing 422 `validation_error` (`reason: unknown`). The check runs under the deployment lock in `_store`, through `config.require_configurable`.
+  **Why:** the planner line says "unknown or archived consumer name is 404", but an unknown name cannot be told apart from a mistyped built-in one, and the 422 for it is an existing M2 contract. Only the archived case is new, and it is 404 as planned.
+  **Issue:** #824
+- **Decision:** a `PUT /admin/purposes/{name}` identical to the latest version writes nothing and answers `changed: false` at the same version and `config_revision`. A repeat archive is 200 with `changed: false`.
+  **Why:** "a write that changes nothing writes nothing" is the rule for model config, providers and profiles. The AC's "writes version n+1" holds for every replacement that changes something.
+  **Issue:** #824
+- **Decision:** each consumer-purpose write records one prospective `config_changes` row, `consumer_purpose:<name>`, whose values are `{version, sha256}` (and `{archived}` for an archive). It never records the template or schema text.
+  **Why:** invariant 3's spirit. Consumer templates may carry consumer content, and the change log is listed over REST. The digest still shows that a version changed.
+  **Issue:** #824
+- **Decision:** the compiled output model names its fields `p0`, `p1`, … and gives each the schema's property name as its alias. `core.purposes.output.output_of(instance)` dumps a reply by alias. The schema subset also restricts property names to `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` (`schema_invalid` otherwise).
+  **Why:** aliases let any allowed property name work, including names that shadow `BaseModel` attributes (`json`, `model_config`). The planner was silent on property names; a bounded pattern keeps prompts and wire schemas sane.
+  **Issue:** #824
+- **Decision:** the AC's "a stub call (#825) goes to the overridden model" is proved at the Model Access Layer. `ModelAccessLayer.send(name, …)` under the stub records `call.model == "consumer-model"` after `PUT /admin/model-config/{name}`, and `generation`'s model again once the override is dropped (`test_i_29__m9_routing`). `send` now accepts a live consumer purpose (`ModelAccessLayer.check_purpose`) and refuses an archived one (410). #825 extends the same test with its REST call.
+  **Why:** #825's call route does not exist yet. `send` is the seam that route will use, so the test exercises the routing #825 relies on.
+  **Issue:** #824
+- **Decision:** `ContentCategory.CONSUMER_INPUT` is the consumer purpose's only input category, and `never_receives` is every other one. The viewpoint category is left to #826. `docs/models.md` is regenerated: it gains the category's description and no purpose rows.
+  **Why:** the planner line names "consumer input and viewpoint". The viewpoint context's shape is #826's to define, and a category with nothing tagged by it would be dead.
+  **Issue:** #824
+- **Decision:** engine profiles and story overrides already refuse a consumer purpose name in `models.purposes` with 422 ("is not a model purpose" at `body.settings.models.purposes.<name>`), because `Engine.purposes` lists only registry purposes. No code changed; `test_i_29__m9_never_a_turn_purpose` proves it.
+  **Why:** the AC is met by the existing check. A consumer-specific message would need a database read inside a synchronous validator.
+  **Issue:** #824
+- **Decision (Rule 3):** `api/openapi.py`'s `STATUS_TEXT` gains `410: "Gone; nothing was written"`.
+  **Why:** `replace_purpose` is the first operation to declare a 410 (`purpose_archived`). `export_expired`'s 410 was never declared on an operation, so `openapi --write` raised `KeyError: 410`.
+  **Issue:** #824
+- **Decision:** I-29 is a new docs/04 integration test ID, "Consumer purposes". Its M9 parts are in `tests/integration/test_i_29_m9.py`, and C-02 gains an M9 part (`test_c_02__m9_purposes`). FR-MODEL-14's §15 row names both. `tests/gates/test_traceability.py` now expects 442 §15 rows, and docs/04's per-milestone count line reads `M9 2`. ADR-185 is the next free number.
+  **Why:** the conventions require it: one file per test ID and milestone, and the counts #828's notes say to bump.
+  **Issue:** #824
+- **Decision (Rule 3):** C-03's parity steps gain the six consumer-purpose operations: register, replace, get, versions, list, archive. They are placed before the provider steps, so `delete_external_provider` stays the last step, which `test_c_03_bites_on_a_method_without_a_route_or_step` relies on. `PurposeReplace` gains an OpenAPI example (C-01's raw-body example check).
+  **Why:** C-15's surface and replay checks and C-01's example check failed locally without them. They require every Engine operation to have a REST and library parity step and every body to have an example.
+  **Issue:** #824

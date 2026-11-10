@@ -15,6 +15,12 @@ model all follow it. A Lite turn routes from the configuration it captured at it
 ``lite_summary`` job from the story's; calls outside a story (rating suggestions, catalog checks,
 probes) use the deployment's configuration.
 
+**Consumer purposes** (FR-MODEL-14, #824): a name the registry does not declare resolves through
+the consumer purpose store (``consumer_purpose``, cached per ``config_revision``; see
+``consumer.py``). ``send`` accepts a live one and refuses an archived one (410
+``purpose_archived``); its configuration is its own ``model_config`` row over ``generation``'s
+(``config.parent_of``), and no story route applies to it.
+
 Every call goes through ``send``, which is where provider failures stop (FR-MODEL-6, NFR-REL-3):
 the call is bounded by its timeout (the purpose's ``params.timeout``, default 60 s) and by the
 turn's deadline when a ``TurnBudget`` is passed, whichever is sooner (``TurnBudget.clamp``), and
@@ -78,6 +84,7 @@ from epistrel.orchestrator.models.config import (
     Route,
     routed,
 )
+from epistrel.orchestrator.models.consumer import ConsumerPurposes, ResolvedPurpose
 from epistrel.orchestrator.models.errors import (
     BudgetExhausted,
     EmptyCompletion,
@@ -268,6 +275,7 @@ class ModelAccessLayer:
         self.settings = settings
         self.keybox = KeyBox(settings.config_key)
         self.cache = ConfigCache()
+        self.consumer = ConsumerPurposes()
         self.response_format = ResponseFormatMemo()
         self._db: AsyncEngine | None = None
         self.adapter: ModelAdapter = adapter or self._make_adapter(settings)
@@ -299,6 +307,7 @@ class ModelAccessLayer:
     def bind(self, db: AsyncEngine | None) -> None:
         self._db = db
         self.cache.clear()
+        self.consumer.clear()
         self.response_format.clear()
         self.embeddings.bind(db)
 
@@ -314,6 +323,22 @@ class ModelAccessLayer:
         if not isinstance(self.adapter, StubAdapter):
             raise RuntimeError("the model adapter is not the stub")
         return self.adapter
+
+    async def consumer_purpose(self, name: str, version: int | None = None) -> ResolvedPurpose:
+        """The consumer purpose ``name`` at ``version`` (default: its latest), resolved through
+        the store and cached per ``config_revision`` (``consumer.ConsumerPurposes``): its
+        compiled templates and its output model. 422 for an unknown name, 410
+        ``purpose_archived``, 404 ``version_not_found`` (FR-MODEL-14, #824)."""
+        return await self.consumer.resolve(self.db, name, version)
+
+    async def check_purpose(self, purpose: str) -> None:
+        """Pass for a delivered purpose or a live consumer purpose (#824); refuse anything
+        else as ``get_delivered`` and ``consumer_purpose`` do."""
+        if purpose in DELIVERED:
+            return
+        if purpose in PORTS or purpose in RESERVED or self._db is None:
+            get_delivered(purpose)
+        await self.consumer_purpose(purpose)
 
     async def resolve(self, purpose: str) -> EffectiveConfig:
         """``purpose``'s effective configuration as of the current ``config_revision``, under
@@ -367,8 +392,9 @@ class ModelAccessLayer:
         is recorded as ``invalid_output`` and still returned for the caller to handle.
         ``format_probe``: the caller refunds this call's budget slot if the endpoint rejects its
         ``response_format`` (``structured_call``, #759), so that rejection is recorded with
-        ``probe`` set (ADR-180, #764)."""
-        get_delivered(purpose)
+        ``probe`` set (ADR-180, #764). ``purpose`` is a delivered purpose or a live consumer
+        purpose (#824: routed by its own ``model_config`` row, else ``generation``'s)."""
+        await self.check_purpose(purpose)
         messages, params = _in_scope(messages, params or ModelParams())
         first = attempt == 1
         if budget is not None:

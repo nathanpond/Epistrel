@@ -2108,3 +2108,36 @@ class StoryImageNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+class PurposeNotFound(EpistrelError):
+    """No consumer purpose is registered under the name a call gives (FR-MODEL-14; #824); for
+    ``PUT /admin/model-config/{name}``, also an archived one. ``details``: ``purpose``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PurposeVersionNotFound(EpistrelError):
+    """The consumer purpose has no such version (FR-MODEL-14; #824). ``details``: ``purpose``
+    and ``version``."""
+
+    code = "version_not_found"
+    http_status = 404
+
+
+class PurposeVersionStale(EpistrelError):
+    """A replacement's ``expected_version`` is not the purpose's latest version (FR-MODEL-14;
+    #824): another write made a newer one. Nothing is written; re-read and retry.
+    ``details``: ``purpose``, ``expected_version`` and ``current_version``."""
+
+    code = "version_stale"
+    http_status = 409
+
+
+class PurposeArchived(EpistrelError):
+    """The consumer purpose is archived (FR-MODEL-14; #824): its calls and replacements are
+    refused, and its versions stay readable. There is no unarchive. ``details``: ``purpose``."""
+
+    code = "purpose_archived"
+    http_status = 410

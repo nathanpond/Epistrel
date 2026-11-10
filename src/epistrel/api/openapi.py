@@ -302,6 +302,10 @@ ERROR_STATUS: dict[str, int] = {
     "fact_inactive": 409,
     "gate_not_promotable": 409,
     "provider_exists": 409,
+    # Consumer purposes (#824).
+    "version_stale": 409,
+    "version_not_found": 404,
+    "purpose_archived": 410,
     "provider_in_use": 409,
     "length_required": 411,
     "draft_too_large": 413,
@@ -437,6 +441,7 @@ STATUS_TEXT = {
     403: "Forbidden",
     404: "Not found",
     409: "Conflict; nothing was written",
+    410: "Gone; nothing was written",
     411: "The body's length is required; nothing was written",
     413: "Too large; nothing was written",
     415: "Unsupported media type; nothing was written",
@@ -522,6 +527,11 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "register_external_provider": (*_ADMIN_CONFIG, "invalid_manifest", "provider_exists"),
     "replace_external_provider": (*_ADMIN_CONFIG, "invalid_manifest"),
     "delete_external_provider": (*_ADMIN_CONFIG, "provider_in_use"),
+    # Consumer purposes (#824): a name, template, schema or limit refusal is the 422
+    # ``validation_error`` every route declares (``details.reason``).
+    "list_purposes": ("cursor_invalid",),
+    "get_purpose": ("version_not_found",),
+    "replace_purpose": ("version_stale", "purpose_archived"),
     "bind_provider": ("binding_incomplete", "story_archived"),
     "list_media": ("ledger_unavailable",),
     # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.

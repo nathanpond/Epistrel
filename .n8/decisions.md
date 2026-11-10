@@ -13399,3 +13399,34 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Milestone descriptions:** M11's phases line; M10's goal (M0–M9) and its triage list; M12 Audit's emphases gain a provisional M9 line (custom-purpose templates as an injection surface, story-less calls and images keeping the minors path, benched characters never perceiving or leaking).
 - **Unchanged:** dependency edges; nothing created or closed. The epic, the template upgrade and the #474 split stay with `/n8-plan M11`.
 - **Issues touched:** #474, #528, #529, #530, #540, #602, #603, #685, #735, #747, #748, #749, #750, #754, #785, #812, #818, #819 (a body section and a comment each).
+
+## /n8-plan M9 — 2026-11-10
+
+- **Planned:** M9 "Consumer requests" (#14), from Survivor's asks #805–#808, which were promoted to epics with Goal, epic AC and the owner's decisions in Notes. The original request text is kept on each.
+- **Stories:**
+  - consumer purposes (#805): #824 register, version and route; #825 story-less call; #826 story-bound call with a viewpoint; #827 store the result as the viewpoint's memory;
+  - larger casts (#806): #828 the `max_story_cast` setting (default 50, max 200); #829 measure and document large-cast cost;
+  - subject images (#807): #830;
+  - benching (#808): #831 bench and reactivate, sequestered; #832 present mode.
+- **Edges:** #824 → #825 → #826 → #827; #828 → #829; #828 and #827 → #831 → #832. Precondition for every story: PR #822 (ADR-184) merged.
+- **Console:** nathanpond/Epistrel-Console#372 (purposes), #373 (cast limit), #374 (subject images), #375 (benching).
+- **Owner decisions, round one:** "recs good on all, Console issues yes":
+  - purposes are operator-registered and versioned; viewpoint context and store-as-memory are opt-in; a purpose never writes transcript messages; synchronous calls with an idempotency key; no quality floors;
+  - the cast limit is default 50, ceiling 200, with benched characters not counting;
+  - subject images are kept until deleted, owned by the caller, exempt from the sweep, and reusable;
+  - benching has two modes (sequestered and present), and a request naming a benched character is 409 `character_benched`.
+- **Owner decisions, round two (2026-11-10):**
+  - Only full (`major`) characters count toward the cast limit. A person mentioned in passing (`minor`) never counts, whoever created it. The litmus is expected future involvement. Automatic promotion of a recurring character was filed for triage as #823.
+  - Benching is allowed on Lite as cast exclusion only ("we can make this more sophisticated in future versions").
+  - Purpose calls may use a benched viewpoint and store its memory, and operator writes reach a sequestered character.
+  - A present benched character is visible to the others and its actions may be narrated, but it never speaks.
+  - #805–#808 were promoted to the epics.
+- **Planner calls stated at the gate**, which stand unless the owner says otherwise:
+  - promotion to `major` at the limit is refused;
+  - all-benched turns still run;
+  - a sequestered character is absent from the scene line;
+  - catalog promotion of a benched character is allowed;
+  - present characters' actions may be narrated, never voiced;
+  - `present` is accepted on Lite.
+- **Executor simulation:** 220 guesses in pass one, then 71 in pass two (#828, #831, #832). **Coverage check:** 15 of 15 items covered, with no scope question. The gaps found on the first run were closed before filing.
+- **Milestone descriptions:** M9 (#14) got outcomes, the map, phases, the coverage check and the executor simulation. The M9 emphases line in M12 Audit (#11) was refined (still provisional, after M11).

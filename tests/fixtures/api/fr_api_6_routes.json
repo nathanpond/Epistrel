@@ -1647,6 +1647,11 @@
       "requirement": "FR-MODEL-16"
     },
     {
+      "method": "POST",
+      "path": "/subject-images",
+      "requirement": "FR-IMG-14"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/providers",
       "requirement": "FR-EXT-1"

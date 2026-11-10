@@ -136,7 +136,7 @@ from epistrel.core.tables.images import (
     SettlementBasis,
     image_jobs,
 )
-from epistrel.core.tables.media import CheckStatus, MediaSource, MediaState
+from epistrel.core.tables.media import CheckStatus, MediaOrigin, MediaSource, MediaState
 from epistrel.observability.metrics import count_revalidation
 from epistrel.orchestrator.images import attempts
 from epistrel.orchestrator.images import errors as adapter_errors
@@ -445,7 +445,8 @@ class PromptCheck:
 
 @runtime_checkable
 class ImageTarget(Protocol):
-    """Where a job's images go (registered by kind: ``catalog`` #260, ``story`` #263/#264)."""
+    """Where a job's images go (registered by kind: ``catalog`` #260, ``story`` #263/#264,
+    ``subject`` #830)."""
 
     @property
     def success_status(self) -> ImageJobStatus: ...
@@ -571,7 +572,7 @@ here."""
 
 def register_target(kind: ImageJobKind, target: ImageTarget) -> None:
     """``target`` handles jobs of ``kind`` from now on (tests swap ``story`` for a test target;
-    the ``kind`` CHECK stays ``catalog|story``)."""
+    the ``kind`` CHECK stays ``catalog|story|subject``)."""
     _TARGETS[kind] = target
 
 
@@ -2380,6 +2381,7 @@ async def insert_output_asset(
     depicted_subjects: Sequence[Mapping[str, Any]] = (),
     source: MediaSource = MediaSource.GENERATED,
     viewpoint_basis: str | None = None,
+    origin: MediaOrigin | None = None,
 ) -> str:
     """A target's promote: the output's ``media_assets`` row, its ``generation_metadata``
     holding adapter, model, endpoint, prompt, negative prompt, requested and applied parameters,
@@ -2389,7 +2391,8 @@ async def insert_output_asset(
     ``generated_from_consumer_prompt`` for a consumer's (the target knows which, #263), and a
     story image's ``viewpoint_basis`` (``filtered_inputs`` or ``protected_term_match``). The row
     names the output (#268: the job, the attempt token it is promoted under and its index in the
-    provider's return order), whose unique index refuses a second promotion of it."""
+    provider's return order), whose unique index refuses a second promotion of it. A subject
+    image's ``origin`` is ``subject`` (#830)."""
     verdict = output.verdict
     passed = verdict.check_status == "passed"
     return await store.insert_generated_asset(
@@ -2416,6 +2419,7 @@ async def insert_output_asset(
         source_job_id=job.id,
         source_attempt_token=job.attempt_token,
         output_index=output.index,
+        origin=None if origin is None else origin.value,
     )
 
 
@@ -2453,10 +2457,10 @@ class AttemptView:
 
 @dataclass(frozen=True, slots=True)
 class ImageJobView:
-    """``GET /image-jobs/{id}``: the job's state. A story job answers ``asset_ids``, a catalog
-    job ``candidate_ids`` (``result_field``), always ``[]`` until it succeeds; ``policy_ids``
-    when it failed on a policy. ``attempts`` lists every provider attempt by ``started_at``
-    (#267)."""
+    """``GET /image-jobs/{id}``: the job's state. A story or subject job answers
+    ``asset_ids``, a catalog job ``candidate_ids`` (``result_field``), always ``[]`` until it
+    succeeds; ``policy_ids`` when it failed on a policy. ``attempts`` lists every provider
+    attempt by ``started_at`` (#267)."""
 
     job_id: str
     kind: str
@@ -2483,6 +2487,9 @@ class ImageJobView:
     usage: costs.JobUsage | None = None
     """#269: the job's ``outputs_used``, ``overage``, ``extra_outputs``, ``ambiguous_sends`` and
     its cost totals (per currency, with the ``unknown`` and ``zero`` attempts), on read."""
+    failures: tuple[Mapping[str, Any], ...] | None = None
+    """#830: a completed subject job's outputs that were not stored, ``{index, reason}``
+    (codes only); ``None`` for every other job."""
 
 
 async def attempt_views(conn: AsyncConnection, job_id: str) -> tuple[AttemptView, ...]:
@@ -2533,7 +2540,7 @@ async def read_view(conn: AsyncConnection, job_id: str) -> ImageJobView:
     field_name, ids = (
         await handler.result_ids(conn, job) if handler is not None else _default_result(job)
     )
-    if job.status not in (ImageJobStatus.PROMOTED, ImageJobStatus.CANDIDATES_READY):
+    if job.status not in SUCCESSES:
         ids = []
     policy_ids = job.policy_ids if job.status is ImageJobStatus.FAILED else []
     detail = job.status_detail if job.status in DETAILED_ENDINGS else None
@@ -2561,9 +2568,26 @@ async def read_view(conn: AsyncConnection, job_id: str) -> ImageJobView:
         confirm_deadline_at=job.confirm_deadline_at,
         confirm_fallback=job.confirm_fallback,
         usage=await costs.job_usage(conn, job.id),
+        failures=_failures(job),
     )
 
 
+def _failures(job: ImageJob) -> tuple[Mapping[str, Any], ...] | None:
+    if job.kind is not ImageJobKind.SUBJECT or job.status is not ImageJobStatus.COMPLETED:
+        return None
+    found = (job.result or {}).get("failures") or ()
+    return tuple(
+        {"index": int(f["index"]), "reason": str(f["reason"])}
+        for f in found
+        if isinstance(f, Mapping)
+    )
+
+
+SUCCESSES: frozenset[ImageJobStatus] = frozenset(
+    {ImageJobStatus.PROMOTED, ImageJobStatus.CANDIDATES_READY, ImageJobStatus.COMPLETED}
+)
+"""The endings whose result ids a read answers: a story job's ``promoted``, a catalog job's
+``candidates_ready`` and a subject job's ``completed`` (#830)."""
 DETAILED_ENDINGS: frozenset[ImageJobStatus] = frozenset(
     {ImageJobStatus.CAP_REACHED, ImageJobStatus.STALE}
 )
@@ -2767,6 +2791,7 @@ __all__ = [
     "MAX_WAITERS",
     "PRE_COMMIT_HOOKS",
     "REQUEUE_IN",
+    "SUCCESSES",
     "WAITING_ON_PAUSE",
     "AttemptView",
     "DepictedSubject",

@@ -25,6 +25,11 @@ of:
   turn N (the start of turn N+1). With perception ``none`` (Lite, or the module off) every
   character is present, and so is an unplaced one, as ``placed_elsewhere`` rules.
 
+A **subject image** (#830; FR-IMG-14) has no story or catalog universe: its one subject is the
+request's inline declaration (``InlineSubject``: a per-request id, the consumer's label and the
+true age it declared), always ``declared``, its mentions found by its label, and its texts include
+the consumer's own description and style (``consumer_texts``) beside the built prompt.
+
 Each subject carries its **current** true age (FR-CAT-12) at the image's position
 (``core.catalog.ages``; a catalog image uses the version's age as written) and its
 classification against the live ``minor_age_threshold`` (strict less-than). A depicted person
@@ -75,6 +80,7 @@ MINOR_CLASSES: frozenset[str] = frozenset({"minor", "indeterminate"})
 SOURCE_RANK: Mapping[str, int] = {"declared": 0, "depicted": 0, "named": 1, "present": 2}
 """A subject found several ways keeps the first (a declaration, then a name, then presence)."""
 TEXT_FIELDS = ("prompt", "negative_prompt", "caption", "alt_text")
+type RequestKind = Literal["story", "catalog", "subject"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,11 +96,21 @@ class DeclaredSubject:
 
 
 @dataclass(frozen=True, slots=True)
+class InlineSubject:
+    """A subject image's declared subject (#830): a per-request id, the consumer's label (who
+    the image depicts; consumer content, never logged) and the true age it declared."""
+
+    subject_id: str
+    label: str
+    true_age: int
+
+
+@dataclass(frozen=True, slots=True)
 class SafetyRequest:
     """What an image request gives the safety path: its kind and target, its texts and its
     declared subjects."""
 
-    kind: Literal["story", "catalog"]
+    kind: RequestKind
     prompt: str
     negative_prompt: str | None = None
     caption: str | None = None
@@ -107,10 +123,21 @@ class SafetyRequest:
     entry_version: int | None = None
     """A catalog image built from a published version (#259): its document gives the ages and
     the rating; ``None`` reads the draft."""
+    inline: InlineSubject | None = None
+    """A subject image's declared subject (#830)."""
+    rating_id: str | None = None
+    """A subject image's content rating (#830): its policies join the global ones."""
+    consumer_texts: tuple[tuple[str, str], ...] = ()
+    """A subject image's consumer texts as ``(heading, text)`` (#830: its description and
+    style), checked with the built prompt."""
 
     def texts(self) -> tuple[str, ...]:
-        """The texts names are looked for in, the prompt first (empty ones as ``""``)."""
-        return tuple(getattr(self, name) or "" for name in TEXT_FIELDS)
+        """The texts names are looked for in, the prompt first (empty ones as ``""``), then the
+        consumer texts."""
+        return (
+            *(getattr(self, name) or "" for name in TEXT_FIELDS),
+            *(text for _heading, text in self.consumer_texts),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +198,7 @@ class SafetyContext:
     subjects: tuple[ResolvedSubject, ...] = ()
     threshold: int = 18
     rating_id: str | None = None
-    kind: Literal["story", "catalog"] = "story"
+    kind: RequestKind = "story"
 
     @property
     def characters(self) -> tuple[ResolvedSubject, ...]:
@@ -501,6 +528,22 @@ async def build_safety_context(
     """The request's safety context without figures (see the module docstring)."""
     threshold = (await read_settings(conn)).minor_age_threshold
     texts = request.texts()
+    if request.kind == "subject":
+        if request.inline is None:
+            raise InvalidRequest("a subject image declares its subject", {"field": "body.subject"})
+        declared = request.inline
+        inline = _Candidate(
+            character_id=declared.subject_id,
+            ordinal=0,
+            true_age=declared.true_age,
+            names=(declared.label,),
+            parts=tuple(index.name_parts(declared.label)),
+        )
+        inline.found("declared")
+        _scan([inline], texts)
+        return SafetyContext(
+            _resolved([inline], threshold), threshold, request.rating_id, kind="subject"
+        )
     if request.kind == "catalog":
         candidates, rating_id, own = await _catalog_candidates(
             conn, request.entry_kind, request.entry_id, request.entry_version
@@ -638,6 +681,8 @@ __all__ = [
     "Classification",
     "DeclaredSubject",
     "Figure",
+    "InlineSubject",
+    "RequestKind",
     "ResolvedSubject",
     "SafetyContext",
     "SafetyRequest",

@@ -41,9 +41,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
 | FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 182, 183 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
-| FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152 |
+| FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
@@ -175,7 +175,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 110 | Checker certification is reported per policy; image tests and ADR consequences stay inside the guarantee boundary | Current | — |
 | 111 | Players can rate messages; feedback is a flag, never an input | Current | — |
 | 112 | The engine must not degrade prose; voice, plot, repetition, and length are reported, not gated | Amended | 114, 115 |
-| 113 | The general media sweep spares drafts and candidates; the images introduction separates the three sources | Current | — |
+| 113 | The general media sweep spares drafts and candidates; the images introduction separates the three sources | Amended | 186 |
 | 114 | Precise wording for age checks and the prose floor; image attempts are fenced | Partly superseded | 116, 117, 125, 115 |
 | 115 | The prose floor needs enough evidence per intervention type | Current | — |
 | 116 | Fenced image attempts settle their own reservation through a dedicated path | Partly superseded | 117, 119, 121, 124 |
@@ -248,6 +248,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 183 | Certification runs are listed, canaries included, each with its outcome | Current | — |
 | 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Current | — |
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
+| 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
 
 ---
 
@@ -1168,6 +1169,7 @@ Launch conservative (high continuity, more escalation), then **tighten data-driv
 
 ### ADR-113 — The general media sweep spares drafts and candidates; the images introduction separates the three sources
 **Status:** Accepted. Refines ADR-083 and ADR-109.
+**Amended by:** ADR-186 — a live subject image (FR-IMG-14) is exempt from the general sweep's purge.
 **Context:** The general media sweep purged any asset that no catalog version or story referenced. That would delete catalog candidates, and images attached only to an unpublished draft, long before their intended lifetime. And the introduction to the images requirements still said Epistrel builds and checks the prompts for every image, uploads included.
 **Decision:** Catalog drafts and live candidate records count as references; the general sweep skips assets in state `candidate`, which only the candidate-expiry sweep removes; content-addressed bytes are deleted only when no asset row of any state still uses them (FR-MEDIA-2). The images introduction now distinguishes Epistrel-prompted generation, consumer-prompted generation, and uploads, and what Epistrel does and does not vouch for in each (§18.7).
 **Consequences:** No live image is swept early, and the introduction matches FR-IMG-3, FR-IMG-8, and FR-IMG-10. Test I-25.
@@ -1977,6 +1979,18 @@ Tuning and its exit certification come after every milestone that may change a p
 - `/admin/model-config` lists every live consumer purpose after the built-in ones; an archived one's row is kept but hidden (404). A consumer purpose name can never be a built-in one's, a port's or `default`, and an archived name stays taken.
 - Calls (#825, story-less; #826, story-bound) go through the same safety path as a turn's output: the applicable rating and the minors policy. Their inputs and outputs, like the templates, never reach operational logs, metrics or traces (invariant 3).
 - Nothing in a preset, a certification or a quality floor depends on a consumer purpose, so registering, replacing or archiving one moves no fingerprint.
+
+---
+
+### ADR-186 — A subject image is kept while it is live: the media sweep never purges it
+**Status:** Accepted. Amends ADR-113 (the general sweep's purge rule) and FR-MEDIA-2.
+**Context:** FR-MEDIA-2 purges any live or retired asset that nothing references once it is a day old (ADR-113 spares drafts and candidates). The Survivor consumer app (#807) keeps its own contestant catalog and needs a safety-checked portrait for each contestant before that contestant exists in Epistrel: FR-IMG-14's subject images, generated for a subject in no story or catalog. Nothing in Epistrel references such an image until the consumer names it on a story character, possibly weeks later, so the general sweep would purge it the day after it was made. The owner decided at `/n8-plan M9` round one (2026-11-09) that the image is kept until the consumer deletes it, owned by the requesting principal, exempt from the purge, and usable later as a story character's image.
+**Decision:** The owner's decision, applied by #830. A `media_assets` row gains `origin` (migration 0149): `subject` for an image FR-IMG-14 generated, null for every other asset; `source` keeps its FR-IMG-10 value. The general media sweep never purges a **live** asset whose origin is `subject`. Such an image is removed only through the paths every asset has: deleting it (`DELETE /media/{id}`) retires it, and the owner's offboarding applies the operator's `media` action to it (`delete` retires it, `transfer` moves it, `keep` leaves it). Once retired, it is purged as any retired asset is, when nothing references it; one still named by a story keeps serving that story until it is not. Erasure still reaches it through its texts (FR-ADMIN-2). The image is generated straight into a live asset, not a candidate: there is no entry to attach a candidate to.
+**Alternatives considered:** Keeping subject images as candidates with a long `candidate_ttl` still expires them on a timer the consumer does not control. Counting a principal's ownership as a reference would exempt every upload too and change FR-MEDIA-2 for all media. A per-asset `pinned` flag consumers could set on any upload widens the exemption beyond what was asked.
+**Consequences:**
+- docs/03 FR-MEDIA-2 gains an *[amended by ADR-186]* marker and the exemption; FR-IMG-14 is assigned to M9 in §22. docs/04 I-30 tests the exemption beside a purged upload in the same sweep.
+- A deployment's storage now grows with subject images until consumers delete them or their owners are offboarded; nothing expires them. Operators see them in `GET /media` and in a principal's owned media.
+- `MediaAsset` reads carry `origin`, and `depicted_subjects` admits the `{kind: subject, id, label, true_age}` declaration only on a subject image; the declaration is not a subject an erasure can name, so it is not indexed.
 
 ---
 

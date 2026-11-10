@@ -28,12 +28,16 @@ router = APIRouter(prefix="/image-jobs", tags=["images"])
 
 STATUS_TEXT = (
     "`status` is `queued`, `generating`, `checking`, `promoted` (a story job), "
-    "`candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or "
-    "`cancelled`. `status_reason` is a bare code (`guardrail_violation`, "
+    "`candidates_ready` (a catalog job), `completed` (a subject job, FR-IMG-14), `failed`, "
+    "`stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code "
+    "(`guardrail_violation`, "
     "`image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, "
     "`provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and "
-    "null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` "
-    "and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists "
+    "null for `promoted`, `candidates_ready`, `completed` and `cancelled`. A story or subject "
+    "job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it "
+    "succeeds; a completed subject job also answers `failures`, each output that was not "
+    "stored (`{index, reason}`), and ends `target_gone` when its owner is offboarded first. "
+    "`attempts` lists "
     "its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it "
     "`requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, "
     "`cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, "
@@ -57,6 +61,13 @@ STATUS_TEXT = (
     "image has passed every check it has no media asset, URL or history entry: nothing a "
     "consumer can reach."
 )
+
+
+_KINDS: dict[str, Literal["catalog", "story", "subject"]] = {
+    "catalog": "catalog",
+    "story": "story",
+    "subject": "subject",
+}
 
 
 class AttemptBody(BaseModel):
@@ -140,15 +151,29 @@ class JobUsageBody(BaseModel):
     ambiguous_sends: int
 
 
+class OutputFailure(BaseModel):
+    """One output of a subject job that was not stored (FR-IMG-14): its index and a code."""
+
+    index: int
+    reason: str
+
+
 class ImageJobBody(BaseModel):
     """An image job's state."""
 
     job_id: str
-    kind: Literal["catalog", "story"]
+    kind: Literal["catalog", "story", "subject"]
     status: str
     status_reason: str | None
     asset_ids: list[str] | None = Field(default=None, exclude_if=lambda v: v is None)
     candidate_ids: list[str] | None = Field(default=None, exclude_if=lambda v: v is None)
+    failures: list[OutputFailure] | None = Field(
+        default=None,
+        exclude_if=lambda v: v is None,
+        description="A completed subject job's outputs that were not stored, by index in the "
+        "provider's return order: `guardrail_violation` (an output check failed) or "
+        "`provider_empty_result` (no usable image came back for it). Absent otherwise.",
+    )
     attempts: list[AttemptBody]
     created_at: datetime
     updated_at: datetime
@@ -204,11 +229,16 @@ class ImageJobBody(BaseModel):
         usage = view.usage or costs.JobUsage(0, 0, 0, 0, costs.CostTotals())
         return cls(
             job_id=view.job_id,
-            kind="catalog" if view.kind == "catalog" else "story",
+            kind=_KINDS.get(view.kind, "story"),
             status=view.status,
             status_reason=view.status_reason,
             asset_ids=ids if view.result_field == "asset_ids" else None,
             candidate_ids=ids if view.result_field == "candidate_ids" else None,
+            failures=(
+                None
+                if view.failures is None
+                else [OutputFailure(index=f["index"], reason=f["reason"]) for f in view.failures]
+            ),
             attempts=[
                 AttemptBody(
                     attempt_token=a.attempt_token,

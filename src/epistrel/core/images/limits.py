@@ -4,11 +4,12 @@ limits (FR-IMG-11 as amended by #262; docs/02 §4.13).
 **Unit and scopes.** The unit is the output image: every image a provider returns counts once.
 There are two scopes, in lock order. ``deployment`` (key ``deployment``) charges every job.
 ``entry`` (key ``<entry_kind>:<entry_id>``) charges a catalog job. A story job charges the
-deployment only and records its ``story_id`` for attribution: per-story and per-turn admission is
-the consumer's to manage. Each period is the local date in ``deployment_time_zone`` at the
-record's ``created_at``, from the injectable clock (``core.clock``). The limits are
-``image_limit_deployment_day`` and ``image_limit_entry_day``: 0 disables the scope, and there is
-no unlimited value.
+deployment only and records its ``story_id`` for attribution, and a subject job (#830) the
+deployment only, attributed to ``entry_kind = subject`` and its subject's id: per-story and
+per-turn admission is the consumer's to manage. Each period is the local date in
+``deployment_time_zone`` at the record's ``created_at``, from the injectable clock
+(``core.clock``). The limits are ``image_limit_deployment_day`` and ``image_limit_entry_day``: 0
+disables the scope, and there is no unlimited value.
 
 **Records and counters.** One ``image_reservations`` row per provider attempt carries an
 immutable snapshot of the counters it charges (``counter_keys``, in lock order) and the outputs
@@ -133,6 +134,10 @@ def resets_at(period: date, tz: ZoneInfo) -> datetime:
     return midnight.astimezone(UTC).astimezone(tz)
 
 
+SUBJECT_ENTRY_KIND = "subject"
+"""A subject job's records' ``entry_kind`` (#830): attribution only, never a limit scope."""
+
+
 def entry_key(entry_kind: str, entry_id: str) -> str:
     return f"{entry_kind}:{entry_id}"
 
@@ -143,6 +148,10 @@ def attribution(job: ImageJob) -> tuple[str | None, str | None, str | None]:
         kind = job.origin.get("entry_kind") or job.target.get("entry_kind")
         entry = job.origin.get("entry_id") or job.target.get("entry_id")
         return None, None if kind is None else str(kind), None if entry is None else str(entry)
+    if job.kind is ImageJobKind.SUBJECT:
+        # #830: a subject job charges the deployment only, attributed to its subject.
+        subject = job.target.get("subject_id") or job.origin.get("subject_id")
+        return None, SUBJECT_ENTRY_KIND, None if subject is None else str(subject)
     return job.story_id, None, None
 
 
@@ -928,6 +937,7 @@ __all__ = [
     "LOCK_ORDER",
     "RETENTION_BATCH",
     "STUCK_HELD",
+    "SUBJECT_ENTRY_KIND",
     "CounterDrift",
     "CounterKey",
     "Deltas",

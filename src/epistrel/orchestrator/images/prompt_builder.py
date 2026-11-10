@@ -86,8 +86,14 @@ PURPOSE_TEXT: Final[Mapping[str, str]] = {
     "gallery": "a catalog character's gallery image",
     "cover": "a scenario's cover image",
     "story": "a story image of a moment, as its viewer perceived it",
+    "subject": "a portrait of a subject described by the consumer",
 }
-PURPOSE_RATIOS: Final[Mapping[str, str]] = {"primary": "1:1", "gallery": "1:1", "cover": "16:9"}
+PURPOSE_RATIOS: Final[Mapping[str, str]] = {
+    "primary": "1:1",
+    "gallery": "1:1",
+    "cover": "16:9",
+    "subject": "1:1",
+}
 """The aspect ratio when neither the identity nor the deployment sets a size or ratio."""
 STORY_PURPOSE: Final = "story"
 STORY_BEATS_CHARS: Final = 6_000

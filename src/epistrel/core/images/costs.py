@@ -294,6 +294,9 @@ async def record_late_unaccounted(
                 None if kind is None else str(kind),
                 None if entry_id is None else str(entry_id),
             )
+        elif job.kind == "subject":
+            subject = dict(job.target or {}).get("subject_id")
+            attribution = (None, "subject", None if subject is None else str(subject))
         else:
             attribution = (None if job.story_id is None else str(job.story_id), None, None)
     return await _write(

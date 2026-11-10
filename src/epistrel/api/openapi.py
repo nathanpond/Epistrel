@@ -1086,6 +1086,18 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         )
         for kind in ("character", "scenario")
     },
+    # A subject's images (#830; FR-IMG-14): refused before any job like a catalog request,
+    # with no entry to look up.
+    "request_subject_images": (
+        "not_configured",
+        "image_check_unconfigured",
+        "image_limit_reached",
+        "images_disabled",
+        "guardrail_violation",
+        "image_prompt_unavailable",
+        "model_unavailable",
+        "erasure_pending",
+    ),
     **{
         f"list_image_candidates_{kind}": ("not_found", "erasure_pending")
         for kind in ("character", "scenario")

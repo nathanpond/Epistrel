@@ -13,7 +13,8 @@ id}]``) and, for a video, ``poster_media_id``: the image asset that is its poste
 the blob is keyed by checksum, never by asset. ``state`` is ``live``; ``retired`` once deleted
 (the row and its bytes stay while anything references them, and the media sweep purges it once
 nothing does); or ``candidate`` (M8's unattached catalog images, which the general sweep never
-touches).
+touches). ``origin`` is ``subject`` for a subject image (#830, FR-IMG-14), which the sweep never
+purges while it is ``live`` (ADR-186), and null otherwise.
 
 ``media_upload_sessions`` holds the resumable uploads (FR-MEDIA-3; #107): the asset's metadata,
 declared size, MIME type and SHA-256, the part size and the parts received so far, its ``state``
@@ -94,6 +95,15 @@ class MediaState(StrEnum):
     CANDIDATE = "candidate"
 
 
+class MediaOrigin(StrEnum):
+    """Why an asset exists beyond its ``source`` (#830): ``subject``, an image generated for a
+    consumer-described subject in no story or catalog (FR-IMG-14). Such an asset lives until it
+    is deleted or its owner is offboarded: the media sweep never purges a **live** one
+    (ADR-186). Every other asset's origin is null."""
+
+    SUBJECT = "subject"
+
+
 class UploadState(StrEnum):
     """A resumable upload session's state (#107): ``open`` (parts may arrive), ``completed``
     (its asset exists) or ``aborted`` (by ``DELETE`` or by the sweep once it expired)."""
@@ -140,6 +150,7 @@ CHECKED_BY_CHECK = (
 )
 """A ``passed`` image names its checker's model and endpoint host (#258)."""
 STATE_CHECK = _in("state", MediaState)
+ORIGIN_CHECK = "origin IS NULL OR " + _in("origin", MediaOrigin)
 CHECKSUM_CHECK = "checksum ~ '^[0-9a-f]{64}$'"
 VIEWPOINT_BASES = ("filtered_inputs", "protected_term_match", "none")
 """``media_assets.viewpoint_basis`` (#261; ``core.tables.story_images.ViewpointBasis``)."""
@@ -203,6 +214,9 @@ media_assets = Table(
     Column("source_job_id", ulid_type(), nullable=True),
     Column("source_attempt_token", UUID(as_uuid=False), nullable=True),
     Column("output_index", Integer, nullable=True),
+    # FR-IMG-14 (#830): ``subject`` for a subject image, which the media sweep keeps while it is
+    # live (ADR-186); null for every other asset. ``source`` keeps its FR-IMG-10 value.
+    Column("origin", Text, nullable=True),
     CheckConstraint(KIND_CHECK, name="kind"),
     CheckConstraint(SOURCE_CHECK, name="source"),
     CheckConstraint(CHECK_STATUS_CHECK, name="check_status"),
@@ -211,6 +225,7 @@ media_assets = Table(
     CheckConstraint(CHECKSUM_CHECK, name="checksum"),
     CheckConstraint("size >= 0", name="size"),
     CheckConstraint(VIEWPOINT_BASIS_CHECK, name="viewpoint_basis"),
+    CheckConstraint(ORIGIN_CHECK, name="origin"),
 )
 
 # The blob's other users (the sweep's "no row of any state has this checksum"), listing by owner
@@ -333,6 +348,7 @@ __all__ = [
     "UPLOAD_STATE_CHECK",
     "CheckStatus",
     "MediaKind",
+    "MediaOrigin",
     "MediaSource",
     "MediaState",
     "ReferenceKind",

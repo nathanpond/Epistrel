@@ -38,11 +38,12 @@ OWN_FIELD = "depicted_subjects"
 
 
 def _sorted(subjects: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """``subjects`` de-duplicated by ``(kind, id)`` and sorted by it."""
+    """``subjects`` de-duplicated by ``(kind, id)`` and sorted by it, each kept whole (a subject
+    image's declaration carries its label and true age, #830)."""
     found: dict[tuple[str, str], dict[str, Any]] = {}
     for subject in subjects:
         key = (str(subject.get("kind")), str(subject.get("id")))
-        found.setdefault(key, {"kind": key[0], "id": key[1]})
+        found.setdefault(key, {**subject, "kind": key[0], "id": key[1]})
     return [found[key] for key in sorted(found)]
 
 

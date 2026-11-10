@@ -50,6 +50,7 @@ from epistrel.api.routes import (
     story_profile,
     story_rating,
     story_texts,
+    subject_images,
     timeline,
 )
 from epistrel.api.routes.admin import providers as admin_providers
@@ -76,6 +77,7 @@ router.include_router(catalog_characters.router)
 router.include_router(catalog_scenarios.router)
 router.include_router(catalog_images.characters)
 router.include_router(catalog_images.scenarios)
+router.include_router(subject_images.router)
 router.include_router(media.router)
 router.include_router(image_jobs.router)
 router.include_router(image_prompts.router)

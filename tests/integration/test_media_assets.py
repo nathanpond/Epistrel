@@ -1141,6 +1141,8 @@ MEDIA_COLUMNS = {
     "source_job_id": ("bpchar", "YES"),
     "source_attempt_token": ("uuid", "YES"),
     "output_index": ("int4", "YES"),
+    # #830 (0149): a subject image's ``origin``.
+    "origin": ("text", "YES"),
 }
 REFERENCE_COLUMNS = {
     "id": ("bpchar", "NO"),

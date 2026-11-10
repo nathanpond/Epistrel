@@ -2877,6 +2877,13 @@ def _steps() -> list[Step]:
             lambda e, ids: _catalog_images(e, ids["scenario"], kind="scenario"),
             status=lambda body: 202,
         ),
+        # #830: images of a subject in no story or catalog (the adapter and checker above).
+        Step(
+            "request_subject_images",
+            lambda ids: Rest("POST", "/subject-images", SUBJECT_REQUEST),
+            lambda e, ids: _subject_images(e),
+            status=lambda body: 202,
+        ),
         # #263: a story image generated for the omniscient audience after turn 1's player beat
         # (the JSON body of the upload's route; the adapter and checker above), and one
         # declaring subjects without a prompt (422 on both).
@@ -3913,6 +3920,10 @@ async def _story_image(engine: Engine, story_id: str, image_id: str) -> dict[str
 
 
 CANDIDATE_REQUEST = {"slot": "primary", "n": 1}
+SUBJECT_REQUEST = {
+    "subject": {"description": "A tall lighthouse keeper.", "true_age": 40, "label": "Keeper"},
+    "n": 1,
+}
 COVER_REQUEST = {"slot": "cover", "n": 1}
 PARITY_IMAGE_ADAPTER = "parity_png"
 
@@ -4009,6 +4020,14 @@ async def _catalog_images(
         request = CatalogImageRequest.model_validate(COVER_REQUEST)
         queued = await engine.request_catalog_images(CTX, request, scenario_id=entry_id)
     return dump(CatalogImagesAccepted.of(queued))
+
+
+async def _subject_images(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.subject_images import SubjectImagesAccepted
+    from epistrel.orchestrator.images.targets.subject import SubjectImageRequest
+
+    request = SubjectImageRequest.model_validate(SUBJECT_REQUEST)
+    return dump(SubjectImagesAccepted.of(await engine.request_subject_images(CTX, request)))
 
 
 async def _candidates(engine: Engine, character_id: str) -> dict[str, Any]:

@@ -17034,6 +17034,21 @@
             "title": "Created At",
             "type": "string"
           },
+          "failures": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OutputFailure"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A completed subject job's outputs that were not stored, by index in the provider's return order: `guardrail_violation` (an output check failed) or `provider_empty_result` (no usable image came back for it). Absent otherwise.",
+            "title": "Failures"
+          },
           "job_id": {
             "title": "Job Id",
             "type": "string"
@@ -17041,7 +17056,8 @@
           "kind": {
             "enum": [
               "catalog",
-              "story"
+              "story",
+              "subject"
             ],
             "title": "Kind",
             "type": "string"
@@ -21524,7 +21540,14 @@
           },
           "depicted_subjects": {
             "items": {
-              "$ref": "#/components/schemas/DepictedSubject"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                {
+                  "$ref": "#/components/schemas/SubjectDeclaration"
+                }
+              ]
             },
             "title": "Depicted Subjects",
             "type": "array"
@@ -21573,6 +21596,19 @@
           "mime_type": {
             "title": "Mime Type",
             "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "const": "subject",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`subject` for an image generated for a consumer-described subject in no story or catalog (`POST /subject-images`, FR-IMG-14): it is kept while live until it is deleted or its owner is offboarded, and the media sweep never purges it; `null` for any other asset.",
+            "title": "Origin"
           },
           "owner_principal": {
             "title": "Owner Principal",
@@ -21900,7 +21936,14 @@
           },
           "depicted_subjects": {
             "items": {
-              "$ref": "#/components/schemas/DepictedSubject"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                {
+                  "$ref": "#/components/schemas/SubjectDeclaration"
+                }
+              ]
             },
             "title": "Depicted Subjects",
             "type": "array"
@@ -21960,6 +22003,19 @@
           "mime_type": {
             "title": "Mime Type",
             "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "const": "subject",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`subject` for an image generated for a consumer-described subject in no story or catalog (`POST /subject-images`, FR-IMG-14): it is kept while live until it is deleted or its owner is offboarded, and the media sweep never purges it; `null` for any other asset.",
+            "title": "Origin"
           },
           "owner_principal": {
             "title": "Owner Principal",
@@ -24915,6 +24971,25 @@
           "received_at"
         ],
         "title": "OutcomeView",
+        "type": "object"
+      },
+      "OutputFailure": {
+        "description": "One output of a subject job that was not stored (FR-IMG-14): its index and a code.",
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "reason"
+        ],
+        "title": "OutputFailure",
         "type": "object"
       },
       "OverridesRef": {
@@ -55530,6 +55605,131 @@
         "title": "StorySummaryBody",
         "type": "object"
       },
+      "SubjectDeclaration": {
+        "additionalProperties": false,
+        "description": "A subject image's declared subject (#830; FR-IMG-14): a consumer-described subject in no\nstory or catalog, by a per-request id, with the consumer's ``label`` and the ``true_age`` it\ndeclared. Only a subject image carries one: no upload or other request declares it.",
+        "properties": {
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "subject",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "true_age": {
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "true_age"
+        ],
+        "title": "SubjectDeclaration",
+        "type": "object"
+      },
+      "SubjectImageRequest": {
+        "additionalProperties": false,
+        "description": "``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,\nat most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the\ndeployment default when omitted) and ``n`` (1 to 4, default 1). No seed or size.",
+        "examples": [
+          {
+            "n": 2,
+            "style": "oil painting, warm light",
+            "subject": {
+              "description": "Weathered fisherman, grey beard, yellow oilskin coat.",
+              "label": "Contestant 7",
+              "true_age": 52
+            }
+          }
+        ],
+        "properties": {
+          "content_rating": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Rating"
+          },
+          "n": {
+            "default": 1,
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "N",
+            "type": "integer"
+          },
+          "style": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Style"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectSpec"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "SubjectImageRequest",
+        "type": "object"
+      },
+      "SubjectImagesAccepted": {
+        "description": "A subject image request's answer (202): the job to follow at ``Location``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "job_id",
+          "status"
+        ],
+        "title": "SubjectImagesAccepted",
+        "type": "object"
+      },
       "SubjectKind": {
         "description": "Who a subject is (#123): a story character, a catalog character, or a persona.",
         "enum": [
@@ -55572,6 +55772,37 @@
           "id"
         ],
         "title": "SubjectRef",
+        "type": "object"
+      },
+      "SubjectSpec": {
+        "additionalProperties": false,
+        "description": "The subject an image depicts: its appearance (``description``, at most 4,000\ncharacters), the ``true_age`` the consumer declares (0 to 150; the safety path judges by\nit, the image model never sees it) and a ``label`` naming who it is (at most 120 printable\ncharacters, not unique). ``label`` and ``true_age`` are the depicted-subject declaration.",
+        "properties": {
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "true_age": {
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "description",
+          "true_age",
+          "label"
+        ],
+        "title": "SubjectSpec",
         "type": "object"
       },
       "SuggestionRequest": {
@@ -80027,7 +80258,7 @@
     },
     "/image-jobs/{job_id}": {
       "delete": {
-        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `completed` (a subject job, FR-IMG-14), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready`, `completed` and `cancelled`. A story or subject job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds; a completed subject job also answers `failures`, each output that was not stored (`{index, reason}`), and ends `target_gone` when its owner is offboarded first. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
         "operationId": "cancel_image_job",
         "parameters": [
           {
@@ -80146,7 +80377,7 @@
         "x-epistrel-mutating": false
       },
       "get": {
-        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `completed` (a subject job, FR-IMG-14), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready`, `completed` and `cancelled`. A story or subject job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds; a completed subject job also answers `failures`, each output that was not stored (`{index, reason}`), and ends `target_gone` when its owner is offboarded first. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
         "operationId": "get_image_job",
         "parameters": [
           {
@@ -104380,6 +104611,147 @@
         "summary": "List the story's variant chains",
         "tags": [
           "timeline"
+        ]
+      }
+    },
+    "/subject-images": {
+      "post": {
+        "description": "Generates `n` images (1 to 4, default 1) of a **subject that is in no story or catalog** (FR-IMG-14): `subject.description` is its appearance (at most 4,000 characters), `subject.true_age` the age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable characters, not unique); the label and true age are the depicted-subject declaration. `style` (at most 1,000 characters) and `content_rating` (default: the deployment's default rating, read now) are optional; no seed or size is taken. The prompt is written by the `image_prompt` purpose from the description, the true age's apparent age band, the style and the rating's image guidance (the image model never receives the true age), then checked **before any generation**, together with the description and style, against the global and the rating's image-prompt policies, the seeded minors policy included, judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for figures and passes the image-output check in private staging; one that fails is never stored. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: the job ends `completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored image is a **live** media asset owned by the caller with `origin: subject`, `source: generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), and it can be named in a story character's `images`.\n\nRefused before any job, reservation or provider call: 422 `validation_error` for a body outside these bounds or an unknown or retired `content_rating`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 503 `image_prompt_unavailable`; 422 `guardrail_violation` when the prompt, description or style violates an image-prompt policy (its audit row names the subject's id, never its label), 503 `model_unavailable` when the check cannot reach its model; 409 `image_limit_reached` or 422 `images_disabled` from the deployment's daily image limit. Idempotent under `Idempotency-Key` (deployment-scoped). The description, label and style never reach an operational log, metric or trace.",
+        "operationId": "request_subject_images",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubjectImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubjectImagesAccepted"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `image_limit_reached`, `not_configured`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `guardrail_violation`, `images_disabled`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Generate images of a subject outside any story or catalog",
+        "tags": [
+          "images"
         ]
       }
     }

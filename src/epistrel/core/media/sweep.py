@@ -9,10 +9,13 @@ The ``media_sweep`` recurring job (``orchestrator.jobs.handlers.media_sweep``, e
    and live candidate records register theirs when they exist). References are found by
    querying those records, never by counting. A ``live`` asset younger than 24 hours is kept, so
    an upload is not purged before its uploader references it, and ``candidate`` rows are never
-   touched here (only M8's candidate-expiry sweep removes them). Each purge is one transaction:
-   the row is locked (skipped if a writer holds it), its references are checked again, its
-   relations go with a ``deleted`` ownership event by ``system`` (``core.ownership``), its
-   subject references go (``core.erasure.index``), then the row.
+   touched here (only M8's candidate-expiry sweep removes them). A ``live`` subject image
+   (``origin = subject``; #830, FR-IMG-14, ADR-186) is never purged: it is kept until its owner
+   deletes it (or offboarding retires it), and only then, once nothing references it, purged.
+   Each purge is one transaction: the row is locked (skipped if a writer holds it), its
+   references are checked again, its relations go with a ``deleted`` ownership event by
+   ``system`` (``core.ownership``), its subject references go (``core.erasure.index``), then
+   the row.
 2. **Bytes.** A blob is deleted only when no asset row of any state still has its checksum,
    checked under the checksum's advisory lock (the one an upload holds from its insert to its
    commit): at once for a purged row's checksum, and after an hour for any other blob nothing
@@ -56,7 +59,7 @@ from datetime import datetime, timedelta
 from itertools import islice
 from typing import Any
 
-from sqlalchemy import and_, delete, select, tuple_, update
+from sqlalchemy import and_, delete, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import clock, ownership
@@ -66,7 +69,7 @@ from epistrel.core.media.assets import RECORD_TABLE, lock_checksum, referenced, 
 from epistrel.core.media.store import BlobStore
 from epistrel.core.media.uploads import sweep_sessions
 from epistrel.core.tables.feedback import feedback_export_log
-from epistrel.core.tables.media import MediaState, media_assets
+from epistrel.core.tables.media import MediaOrigin, MediaState, media_assets
 from epistrel.core.tables.ownership import EntityType
 from epistrel.testing import pauses
 
@@ -84,11 +87,18 @@ EXPORT_TTL = timedelta(days=7)
 
 
 def _eligible(now: datetime) -> Any:
-    """The rows step 1 may purge: retired ones, and live ones past the grace period."""
+    """The rows step 1 may purge: retired ones, and live ones past the grace period that are no
+    subject image (#830; ADR-186: a live subject image is kept until it is deleted)."""
     return and_(
         media_assets.c.state.in_(_SWEPT),
         (media_assets.c.state == MediaState.RETIRED.value)
-        | (media_assets.c.created_at <= now - LIVE_GRACE),
+        | and_(
+            media_assets.c.created_at <= now - LIVE_GRACE,
+            or_(
+                media_assets.c.origin.is_(None),
+                media_assets.c.origin != MediaOrigin.SUBJECT.value,
+            ),
+        ),
     )
 
 

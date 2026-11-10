@@ -208,6 +208,7 @@ from epistrel.orchestrator.images.port import MAX_REFERENCE_IMAGES
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.images.targets import catalog as catalog_images
 from epistrel.orchestrator.images.targets import story as story_image_target
+from epistrel.orchestrator.images.targets import subject as subject_images
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
@@ -618,6 +619,10 @@ CODECS.update(
         )
         for kind in catalog_images.ENTRY_KINDS
     }
+)
+# A subject's images (#830; FR-IMG-14), deployment-scoped.
+CODECS["request_subject_images"] = ResultCodec.of(
+    subject_images.SubjectImagesQueued, status=202, revision_field=_CONFIG
 )
 # A catalog entry's listing status (#110): one method, one codec per catalog kind (the key is the
 # route's ``operation_id``, ``set_listing_status_character``), deployment-scoped.
@@ -6218,6 +6223,65 @@ class Engine:
                 "entry_id": entry_id,
                 "body": request.model_dump(mode="json", exclude_unset=True),
             },
+        )
+
+    async def request_subject_images(
+        self, ctx: RequestContext, request: subject_images.SubjectImageRequest
+    ) -> subject_images.SubjectImagesQueued:
+        """Generate ``request.n`` (1 to 4) images of a consumer-described subject that is in no
+        story or catalog (FR-IMG-14; #830): 202 ``{job_id, status: queued}``; follow it at
+        ``GET /image-jobs/{id}``, which ends ``completed`` with the ``asset_ids`` and the
+        ``failures`` (``{index, reason}`` per output not stored), or ``failed`` when none
+        passed. The prompt is built by ``image_prompt`` from the description and style (the true
+        age only as its apparent age band) and checked before any generation against the
+        global and the rating's image-prompt policies with the declared true age, together
+        with the description and style (FR-IMG-3, FR-GUARD-11); figure classification and the
+        output check run on every image, and a failing one is never stored. Each passing image
+        is a live media asset owned by the caller (``origin: subject``), kept until it is
+        deleted or its owner is offboarded (ADR-186) and usable as a story character's image.
+        Refused before any job, reservation or provider call: 409 ``not_configured`` without
+        an image adapter, 409 ``image_check_unconfigured`` while an image-output policy applies
+        and ``image_check`` is unset, 422 for an unknown or retired ``content_rating`` (the
+        deployment default is read now), 503 ``image_prompt_unavailable``, 422
+        ``guardrail_violation`` (its audit row names the subject's id, never its label) or 503
+        ``model_unavailable`` from the prompt check, and 409 ``image_limit_reached`` or 422
+        ``images_disabled`` from the deployment's daily image limit. Idempotent under its key
+        (deployment-scoped)."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> subject_images.SubjectImagesQueued:
+            await image_jobs.require_generation(self.models, self.db)
+            async with self.db.connect() as conn:
+                rating = await subject_images.subject_rating(conn, request.content_rating)
+            deployment = await self._image_deployment()
+            view = subject_images.subject_view(request, rating.guidance, deployment)
+            built = await prompt_builder.write_image_prompt(self.models, view)
+            subject_id = new_ulid()
+            job_request = image_jobs.ImageJobRequest(
+                prompt=built.prompt,
+                negative_prompt=built.negative_prompt,
+                n=request.n,
+                size=built.size,
+                aspect_ratio=None if built.size is not None else built.aspect_ratio,
+            )
+            prepared = await image_jobs.prepare_image_job(
+                self.image_runtime(),
+                ImageJobKind.SUBJECT,
+                subject_images.job_target(subject_id, rating.rating_id, rating.version_id),
+                subject_images.job_origin(subject_id, request),
+                job_request,
+                principal,
+            )
+            async with self.db.begin() as conn:
+                queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)
+                revision = await catalog_service.config_revision(conn)
+            return subject_images.SubjectImagesQueued(queued.job_id, revision)
+
+        return await self._keyed(
+            ctx,
+            "request_subject_images",
+            run,
+            material={"body": request.model_dump(mode="json", exclude_unset=True)},
         )
 
     @refuses_nul()

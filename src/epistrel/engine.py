@@ -1914,8 +1914,9 @@ class Engine:
         A blank story's every character ``definition`` (and ``deflection_style``, #115) goes
         through the input gate first (FR-GUARD-10), against the global policies and the chosen
         rating's, with the cast's true ages: a violation is 422 ``guardrail_violation`` and no
-        story exists. A story from a scenario is refused with nothing written (one 422 with the
-        creation report in ``details.report``), held back by #109's two stages
+        story exists. Either kind's cast larger than the deployment's ``max_story_cast`` is 422
+        ``cast_max`` (FR-MULTI-12). A story from a scenario is refused with nothing written (one
+        422 with the creation report in ``details.report``), held back by #109's two stages
         (``CreationHeld``, the key released), or created in one transaction."""
         principal = self.require_principal(ctx)
         if isinstance(spec, StoryFromScenario):
@@ -3564,10 +3565,11 @@ class Engine:
     ) -> stories.StoryCharacterAdded:
         """Add a character to a running story (FR-CAT-7): story-scoped, never a catalog entry,
         never a player, with its required true age (FR-CAT-12). 404 for an unknown story; 422
-        for a full cast (``CAST_MAX``), a name the story has, or an image that is not a live
-        image asset; 409 ``story_archived``; 409 ``revision_conflict`` for a stale expected
-        revision; 423 ``story_busy`` while a turn is in flight; then the definition passes the
-        input gate, checked with the new character's age in the cast (422
+        ``cast_max`` for a full cast (the story already holds the deployment's
+        ``max_story_cast`` full characters, FR-MULTI-12), a name the story has, or an image that
+        is not a live image asset; 409 ``story_archived``; 409 ``revision_conflict`` for a stale
+        expected revision; 423 ``story_busy`` while a turn is in flight; then the definition
+        passes the input gate, checked with the new character's age in the cast (422
         ``guardrail_violation``). The addition bumps the revision (FR-CONC-1), as a
         story-text edit does: the cast is part of every Lite prompt."""
         principal = self.require_principal(ctx)
@@ -4224,8 +4226,9 @@ class Engine:
         prospective, a control operation that bumps the revision. 404 for an unknown story or a
         character not in it; 422 ``is_player`` for the player's character; 409
         ``story_archived``; 409 ``revision_conflict`` for a stale expected revision; 423
-        ``story_busy`` while a turn is in flight. Answers the character as an omniscient read
-        lists it."""
+        ``story_busy`` while a turn is in flight; 422 ``cast_max`` for a ``minor`` made
+        ``major`` when the story already holds the deployment's ``max_story_cast`` full
+        characters (FR-MULTI-12). Answers the character as an omniscient read lists it."""
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> stories.CharacterWeighted:

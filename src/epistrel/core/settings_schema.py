@@ -188,6 +188,28 @@ class StoryTextCaps(BaseModel):
     )
 
 
+# -- the story cast limit (FR-MULTI-12; #828) ----------------------------------------------------
+
+DEFAULT_MAX_STORY_CAST = 50
+STORY_CAST_LIMIT_MAX = 200
+"""The highest ``max_story_cast`` an operator may set (and ``StorySpec.characters``'s published
+``maxItems``)."""
+
+
+class StoryCastSettings(BaseModel):
+    """The most full characters (weight ``major``, FR-EPI-10) a story's cast may hold, stored
+    under ``deployment_state.settings`` (FR-MULTI-12; #828). A ``minor`` character never
+    counts. Prospective: creating a story, adding a character and promoting one to ``major`` are
+    checked against the value in force at the time; a lowered limit never removes characters,
+    and a story already above it keeps every operation except growing its cast."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    max_story_cast: Annotated[StrictInt, PROSPECTIVE] = Field(
+        default=DEFAULT_MAX_STORY_CAST, ge=1, le=STORY_CAST_LIMIT_MAX
+    )
+
+
 # -- the idempotency result window (FR-CONC-6; #61) ----------------------------------------------
 
 DEFAULT_IDEMPOTENCY_RESULT_WINDOW_HOURS = 24
@@ -1611,6 +1633,7 @@ def _profile_settings_schema(schema: dict[str, Any]) -> None:
 class DeploymentSettings(
     LiteDefaults,
     StoryTextCaps,
+    StoryCastSettings,
     IdempotencySettings,
     TurnQueueDefaults,
     StructuredSettings,

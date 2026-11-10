@@ -31,6 +31,10 @@ its version is the one named (any published version; an unknown one is 422 at
   scenario model (422 at the key).
 - **The starting-cast limit** (FR-SCN-4): the filled roles, player roles included, against
   ``effective_cast_limit(scenario's, request's, deployment's)`` (``cast_limit_exceeded``).
+- **The story cast limit** (FR-MULTI-12; #828): every filled member, the player included,
+  against the deployment's ``max_story_cast``: 422 ``validation_error`` ``{cap: "cast_max",
+  limit, actual}``, raised by ``plan`` (so a preview and the impact report see it) and checked
+  again by ``genesis`` in its transaction (a held creation applied later included).
 - **Names**: the cast's names (a role's ``name_overrides.canonical`` over the catalog name)
   must be distinct ignoring case: 422 ``validation_error`` at the later slot.
 - **The rating** (FR-RATE-3): the request's ``content_rating_id``, else the scenario's, else
@@ -243,10 +247,12 @@ from epistrel.core.stories import (
     CharacterRef,
     CreatedStory,
     RatingRef,
+    cast_max,
     rating_ref,
     resolve_story_rating,
     split_settings,
     stored_tie_break,
+    story_cast_limit,
 )
 from epistrel.core.tables import (
     character_catalog,
@@ -1087,6 +1093,10 @@ async def plan(db: AsyncEngine, request: StoryFromScenario, *, ports: Ports | No
                         f"story's start (FR-SCN-4); this creation fills {filled_slots}",
                     )
                 )
+            # FR-MULTI-12 (#828): the whole cast against the deployment's story cast limit.
+            cast_limit = deployment.max_story_cast
+            if len(members) > cast_limit:
+                raise cast_max(cast_limit, len(members))
             if not any(e.error for e in entries):
                 _unique_names(members)
             scenario_rating = original.metadata.content_rating_id
@@ -1749,6 +1759,11 @@ async def genesis(
     try:
         async with db.begin() as conn:
             await _locked_catalog(conn, found)
+            # FR-MULTI-12 (#828): the limit in force now, which may have been lowered since
+            # the plan (a held creation is applied later).
+            cast_limit = await story_cast_limit(conn)
+            if len(found.members) > cast_limit:
+                raise cast_max(cast_limit, len(found.members))
             rating = await rating_ref(conn, await resolve_story_rating(conn, found.rating_id))
             await profiles.require_assignable(conn, profile[0], field="body.engine_profile_id")
             await conn.execute(

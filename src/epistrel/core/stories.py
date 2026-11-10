@@ -33,7 +33,8 @@ running story, from #50's free-text shape (name, definition, a required true age
 fallback line and deflection style) plus optional ``images`` (media asset ids, by reference), never
 as a player. It is story-scoped: a ``characters`` row with no ``source_catalog_id``, never a
 catalog entry (it becomes one only by promotion, ``core.catalog.promote``). The order of checks:
-the story (404) → the cast cap (``CAST_MAX``), a name the story already has (ignoring case) and the
+the story (404) → the cast limit (``max_story_cast``, FR-MULTI-12: the story's full
+characters, weight ``major``), a name the story already has (ignoring case) and the
 images (each a live image asset) → 409 ``story_archived`` → the expected revision → 423
 ``story_busy`` while a turn is in flight → the input gate over the definition (and the deflection
 style), with the new character's age in the cast → one ``control`` operation that bumps the
@@ -75,7 +76,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, ownership, pause, providers
 from epistrel.core.concurrency import check_expected_revision
-from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
+from epistrel.core.enums import (
+    CharacterWeight,
+    OperationKind,
+    OperationStatus,
+    Provenance,
+    StoryStatus,
+)
 from epistrel.core.epistemic import modeling
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.index import drop_many, reindex_story
@@ -115,6 +122,7 @@ from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
     COLUMN_SETTINGS,
+    STORY_CAST_LIMIT_MAX,
     SUPERSEDED_STORY_SETTINGS,
     StorySettings,
     superseded,
@@ -217,7 +225,6 @@ from epistrel.core.trimmed import trim_as_sent
 Database = AsyncEngine | AsyncConnection
 
 CAST_MIN = 1
-CAST_MAX = 20
 CHARACTER_NAME_MAX = 80
 DEFINITION_MAX = 20_000
 STORY_NAME_MAX = 200
@@ -572,7 +579,13 @@ class StorySpec(BaseModel):
     )
 
     name: str | None = Field(default=None, max_length=STORY_NAME_MAX)
-    characters: list[CharacterSpec] = Field(min_length=CAST_MIN, max_length=CAST_MAX)
+    characters: list[CharacterSpec] = Field(
+        min_length=CAST_MIN,
+        description="The cast, the player's character included: at most the deployment's "
+        "`max_story_cast` (FR-MULTI-12; default 50, at most 200), or 422 `validation_error` "
+        '`{cap: "cast_max", limit, actual}`.',
+        json_schema_extra={"maxItems": STORY_CAST_LIMIT_MAX},
+    )
     content_rating_id: str | None = None
     settings: CreationSettings = Field(default_factory=CreationSettings)
     owner: Owner | None = Field(
@@ -761,13 +774,19 @@ async def create_story_from(
     db: Database, spec: StorySpec, *, principal: str, story_id: str | None = None
 ) -> CreatedStory:
     """Create a story from ``spec`` atomically: the story row, its cast and its genesis
-    operation (``story_created``) exist together or not at all."""
+    operation (``story_created``) exist together or not at all. A cast larger than the
+    deployment's ``max_story_cast`` is 422 ``cast_max`` (FR-MULTI-12)."""
     _check_unique_names(spec.characters)
     story_id = story_id or new_ulid()
     cast = [(new_ulid(), character) for character in spec.characters]
     settings = _stored_settings(spec, cast)
     document, columns = split_settings(settings)
     async with _transaction(db) as conn:
+        # FR-MULTI-12 (#828): the cast against the deployment's limit in force now, after the
+        # duplicate names and before the rating and the bindings.
+        limit = await story_cast_limit(conn)
+        if len(spec.characters) > limit:
+            raise cast_max(limit, len(spec.characters))
         rating = await _rating_ref(conn, await resolve_story_rating(conn, spec.content_rating_id))
         await conn.execute(
             insert(stories).values(
@@ -998,19 +1017,47 @@ CharacterGate = Callable[[Sequence[tuple[str, str]]], Awaitable[None]]
 raises 422 ``guardrail_violation``."""
 
 
-async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
-    """422 ``validation_error`` when the story's cast already holds ``CAST_MAX`` characters."""
-    count = int(
+def cast_max(limit: int, actual: int, *, field: str = "body") -> InvalidRequest:
+    """FR-MULTI-12's refusal: 422 ``validation_error`` ``{cap: "cast_max", limit, actual}``,
+    ``actual`` being the full characters the request would leave the story with."""
+    return InvalidRequest(
+        f"the story's cast holds at most {limit} full characters",
+        {"field": field, "cap": "cast_max", "limit": limit, "actual": actual},
+    )
+
+
+async def story_cast_limit(conn: AsyncConnection) -> int:
+    """The deployment's ``max_story_cast`` (FR-MULTI-12), read in ``conn``'s transaction."""
+    from epistrel.core.config_changes import read_story_cast_limit
+
+    return await read_story_cast_limit(conn)
+
+
+async def _active_cast_count(conn: AsyncConnection, story_id: str) -> int:
+    """The story's full characters, the ones FR-MULTI-12's limit counts: weight ``major``
+    (FR-EPI-10), the player's character included. A ``minor`` character (introduced by a turn
+    or modeled lazily) never counts. #831 leaves benched characters out here."""
+    return int(
         await conn.scalar(
-            select(func.count()).select_from(characters).where(characters.c.story_id == story_id)
+            select(func.count())
+            .select_from(characters)
+            .where(
+                characters.c.story_id == story_id,
+                characters.c.weight == CharacterWeight.MAJOR.value,
+            )
         )
         or 0
     )
-    if count >= CAST_MAX:
-        raise InvalidRequest(
-            f"the story's cast holds at most {CAST_MAX} characters",
-            {"field": "body", "cap": "cast_max", "limit": CAST_MAX, "actual": count + 1},
-        )
+
+
+async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
+    """422 ``validation_error`` (``cast_max``) when the story already holds as many full
+    characters as the deployment's ``max_story_cast`` allows (FR-MULTI-12): one more would
+    pass it. A story above a lowered limit is refused the same way."""
+    limit = await story_cast_limit(conn)
+    count = await _active_cast_count(conn, story_id)
+    if count >= limit:
+        raise cast_max(limit, count + 1)
 
 
 async def _name_taken(conn: AsyncConnection, story_id: str, name: str) -> None:
@@ -1240,7 +1287,9 @@ async def set_character_weight(
     nothing promotes automatically). 404 for an unknown story or character; 422 ``is_player``
     for the player's character (always ``major``, FR-EPI-12); 409 ``story_archived``; 409
     ``revision_conflict`` for a stale expected revision; 423 ``story_busy`` while a turn is in
-    flight. Setting the weight it has records nothing new but still answers it."""
+    flight; 422 ``cast_max`` for a ``minor`` made ``major`` when the story already holds the
+    deployment's ``max_story_cast`` full characters (FR-MULTI-12). Setting the weight it has
+    records nothing new but still answers it."""
     async with db.connect() as conn, conn.begin():
         await _story_exists(conn, story_id)
         view = await _character_view(conn, story_id, character_id)
@@ -1265,6 +1314,16 @@ async def set_character_weight(
 
     async def set_weight(conn: AsyncConnection) -> None:
         await _refuse_busy(conn, story_id, turns_only=True, own=op.operation_id)
+        if request.weight == CharacterWeight.MAJOR.value:
+            # FR-MULTI-12 (#828): making a minor character full takes a place in the cast,
+            # under the story lock; a major one staying major is never refused.
+            current = await conn.scalar(
+                select(characters.c.weight).where(
+                    characters.c.story_id == story_id, characters.c.id == character_id
+                )
+            )
+            if current != CharacterWeight.MAJOR.value:
+                await _cast_full(conn, story_id)
         await conn.execute(
             update(characters)
             .where(characters.c.story_id == story_id, characters.c.id == character_id)
@@ -1304,7 +1363,8 @@ async def model_entity(
     ``already_modeled`` for an entity that is a character, ``not_a_person`` for a place, item,
     organization or event; 422 ``allow_new_arrivals`` when the story refuses new arrivals; 409
     ``story_archived``; 409 ``revision_conflict``; 423 ``story_busy`` while a turn is in flight.
-    Minors are exempt from the cast cap."""
+    A ``minor`` character never counts against the story cast limit (``max_story_cast``,
+    FR-MULTI-12), so this is never refused by it."""
     # Imported here: ``core.turns.beats`` reaches this module through the turn package.
     from epistrel.core.turns.beats import write_character_facts
 

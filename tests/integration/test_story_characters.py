@@ -22,7 +22,6 @@ from epistrel.config import Settings
 from epistrel.core.ids import new_ulid
 from epistrel.core.media.assets import referenced
 from epistrel.core.seeds.ratings import EVERYONE_ID
-from epistrel.core.stories import CAST_MAX
 from tests.auth_support import auth_settings, bearer
 from tests.character_support import complete
 from tests.event_support import rows, scalar
@@ -122,7 +121,8 @@ async def test_refusals_come_in_order_and_write_nothing(
     story has, ignoring case (``reason: duplicate``), an image no live asset has
     (``media_retired``), and a video (``reason: not_an_image``); 409 ``story_archived``; 409
     ``revision_conflict`` for a stale expected revision; 423 ``story_busy`` while a turn is in
-    flight. A full cast (20 characters) is 422 naming the cap."""
+    flight. A full cast (the deployment's ``max_story_cast``) is 422 naming the cap: I-28's
+    ``test_i_28__m9_setting`` in ``tests/integration/test_i_28_m9.py`` (FR-MULTI-12)."""
     async with respond_client(stub_settings, engine) as (client, _):
         missing = await add(client, new_ulid(), DRIVER)
         assert error_of(missing)[:2] == (404, "not_found")
@@ -184,23 +184,6 @@ async def test_refusals_come_in_order_and_write_nothing(
         # The archive and unarchive wrote their own operations and events; nothing else did.
         assert after_archive[0] == before[0]
         assert after_archive[3] == before[3]
-
-        full = await create(
-            client,
-            {"characters": [character(f"C{n}", 30, is_player=n == 0) for n in range(CAST_MAX)]},
-        )
-        capped = await add(client, full["story_id"], DRIVER)
-        assert error_of(capped) == (
-            422,
-            "validation_error",
-            {
-                "field": "body",
-                "cap": "cast_max",
-                "limit": CAST_MAX,
-                "actual": CAST_MAX + 1,
-                "errors": error_of(capped)[2]["errors"],
-            },
-        )
 
 
 async def test_an_addition_bumps_the_revision_and_joins_the_cast(

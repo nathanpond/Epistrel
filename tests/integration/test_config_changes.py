@@ -122,6 +122,7 @@ async def test_admin_settings_cover_every_setting(
 STORED: dict[str, Any] = {
     "lite_summary_chunk": 12,
     "max_pinned_memories": 51,
+    "max_story_cast": 51,
     "idempotency_result_window": 25,
     "structured_retry_budget": 3,
     "rating_check_model_calls_per_record": 3,

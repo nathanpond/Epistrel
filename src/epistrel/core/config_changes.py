@@ -58,6 +58,7 @@ from epistrel.core.settings_schema import (
     DeploymentSettings,
     GuardrailSettings,
     LiteDefaults,
+    StoryCastSettings,
     StoryTextCaps,
 )
 from epistrel.core.tables import config_changes, deployment_state, events
@@ -452,6 +453,15 @@ async def read_story_text_caps(db: AsyncEngine | AsyncConnection) -> StoryTextCa
         return story_text_caps(await db.scalar(query))
     async with db.connect() as conn:
         return story_text_caps(await conn.scalar(query))
+
+
+# -- the story cast limit (FR-MULTI-12; #828) ---------------------------------------------------
+
+
+async def read_story_cast_limit(conn: AsyncConnection) -> int:
+    """The deployment's ``max_story_cast``, read in the caller's transaction (the creating,
+    adding or promoting one), so the check uses the value in force when it runs."""
+    return (await read_section(conn, StoryCastSettings)).max_story_cast
 
 
 # -- the listings (#64) ------------------------------------------------------------------------

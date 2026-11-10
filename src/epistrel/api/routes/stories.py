@@ -838,7 +838,9 @@ CREATE_DESCRIPTION = (
     "\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its "
     "content rating (default: the deployment's) and its settings. Every character "
     "`definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) "
-    "passes the input gate first: a violation is 422 `guardrail_violation` and no story exists."
+    "passes the input gate first: a violation is 422 `guardrail_violation` and no story exists. "
+    "A cast larger than the deployment's `max_story_cast` (FR-MULTI-12; default 50, at most 200) "
+    'is 422 `validation_error` with `{cap: "cast_max", limit, actual}`.'
     "\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): "
     "the scenario (and a published version; default the latest), who fills each NPC role "
     "(`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and "
@@ -858,7 +860,10 @@ CREATE_DESCRIPTION = (
     "rules, places and entities are materialized in the same transaction (#149): the report "
     "lists each item's outcome under `materialized` and the merge conflicts it dropped. A scenario "
     "rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked "
-    "(FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, "
+    "(FR-AUTH-8). A cast, every filled role and the player included, larger than the "
+    "deployment's `max_story_cast` (FR-MULTI-12) is 422 `validation_error` with "
+    '`{cap: "cast_max", limit, actual}` on its own, without a report. When the engine profile '
+    "leaves a capability the scenario recommends unmet, "
     "the answer is 200 with `applied: false` and the reports, unless the request sets "
     "`ignore_warnings` (FR-PROF-7)."
 )
@@ -1120,7 +1125,10 @@ async def update_story_settings(
         "`safe_fallback_text`, its `deflection_style` (FR-GUARD-7) and `images` (media asset ids "
         "it shows, each a live image, by reference). It is story-scoped and never a catalog entry "
         "or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog "
-        "draft from it. A full cast (20 characters), a name the story has (ignoring case) or an "
+        "draft from it. A full cast is 422 `validation_error` with "
+        '`{cap: "cast_max", limit, actual}`: the story already holds the deployment\'s '
+        "`max_story_cast` full characters (FR-MULTI-12; weight `major`, default 50, at most 200; "
+        "a `minor` character never counts). A name the story has (ignoring case) or an "
         "image that is not a live image asset is 422. The definition and the deflection style pass "
         "the input gate, with the new character's age in the cast: a violation is 422 "
         "`guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while "
@@ -1194,7 +1202,11 @@ async def promote_character(
         "interactions it takes part in, a smaller consolidation window and hot budget, never "
         "rendered unless a request names it) or `major`. Prospective: what the character "
         "already holds stays as it is, and nothing promotes automatically. The player's "
-        "character is always `major` (422 `is_player`). A control operation: it bumps the "
+        "character is always `major` (422 `is_player`). Making a `minor` character `major` "
+        "takes a place in the story's cast: when the story already holds the deployment's "
+        "`max_story_cast` full characters (FR-MULTI-12) it is 422 `validation_error` with "
+        '`{cap: "cast_max", limit, actual}`; a `major` one set `major` again never is. '
+        "A control operation: it bumps the "
         "story's revision and records `character_weight_set`; 409 `story_archived`, 423 "
         "`story_busy` while a turn is in flight. Answers the character as an omniscient read "
         "lists it."

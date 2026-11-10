@@ -278,7 +278,8 @@ CAPABILITY_MAP: tuple[CapabilityEntry, ...] = (
     _entry(
         "per_character_renders",
         "Per-character renders",
-        "FR-MULTI",
+        # FR-MULTI-12 (the story cast limit, #828) holds under every profile: the floor.
+        "FR-MULTI-1..11",
         Needs("multi_character", "per_character"),
         notes="Player authority is a story setting (`player_authority`, FR-RESP-11): its "
         "structured effects run under the `structured` pipeline, and under `lite` it is a "

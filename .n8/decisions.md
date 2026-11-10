@@ -13448,3 +13448,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the existing full-cast case in `tests/integration/test_story_characters.py` was taken out of `test_refusals_come_in_order_and_write_nothing` and rebuilt as I-28's `test_i_28__m9_setting` (a setting of 5) in the new `tests/integration/test_i_28_m9.py`. I-28 is a new docs/04 §4 integration test ID, "Story cast limit".
   **Why:** the old test is an unmarked detailed test that gates from no milestone; moving its case to an M9 part marker means taking it out. I-27 was the highest integration ID, so the next one is I-28.
   **Issue:** #828
+- **Decision (Rule 3):** the capability map's `per_character_renders` entry is narrowed from `FR-MULTI` to `FR-MULTI-1..11`, so FR-MULTI-12 falls to the floor; `docs/capability-map.md` is regenerated.
+  **Why:** CI's `capability-map` step failed on the first push. The entry took every FR-MULTI id by prefix, which would have said the story cast limit holds only under per-character renders. The limit applies under every profile, Lite included. The eval and fingerprint checks (`evals --check`, `evals index --check`) stay green.
+  **Issue:** #828

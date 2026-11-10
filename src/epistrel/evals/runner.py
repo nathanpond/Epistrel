@@ -68,7 +68,7 @@ reports it there, and the case observes nothing else: an error is not a disclosu
 control or a repair, and the suite's floors are judged on its completed cases (the observed-zero
 rule's 300 cases are completed ones: a seed short of them because of model errors is
 ``insufficient_evidence``, ``gate.judge``'s ``lost``). The row is report-only (the owner's
-decision of 2026-10-24: model-robustness floors belong to M9, ADR-164). Every other suite (M4's)
+decision of 2026-10-24: model-robustness floors belong to M11, ADR-164). Every other suite (M4's)
 observes the error as bad on every metric (#134). Either way the failure record's ``detail``
 carries the error's code and its content-free details (``ERROR_DETAILS``: the purpose, the
 reason, the attempts and the structural error codes). A ``GuardrailViolation`` is the model's

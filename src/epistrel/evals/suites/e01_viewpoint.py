@@ -1,4 +1,4 @@
-"""E-01: entailment accuracy, M5's part (docs/04 §8; FR-VERIFY-2,5; NFR-QUAL-2 gates from M9,
+"""E-01: entailment accuracy, M5's part (docs/04 §8; FR-VERIFY-2,5; NFR-QUAL-2 gates from M11,
 ADR-164; #179, completing #166's AC5).
 
 Each case is a character's first-person ``say`` claim checked by #142's ``Verifier`` as a
@@ -21,7 +21,7 @@ repaired: a false contradiction here would "correct" an intentional lie or a fal
 
 The canon side of every case is settled deterministically (no residual), so the suite makes no
 model call: its stub run and a real model's agree, and CI gates on it. NFR-QUAL-2's floors gate
-from M9 on the reference model (ADR-164); the viewpoint rows are reported until then.
+from M11 on the reference model (ADR-164); the viewpoint rows are reported until then.
 """
 
 from __future__ import annotations
@@ -264,7 +264,7 @@ class E01ViewpointSuite(Suite):
         "E-01 (M5) checks a character's own claim twice, against canon and against its belief "
         "partition, with the declared intent. Every case stands as said (a lie, a sincere "
         "error or a true belief): a repair is a false contradiction. NFR-QUAL-2's floors gate "
-        "these rows from M9 (ADR-164); the canon side is deterministic, so no model call is "
+        "these rows from M11 (ADR-164); the canon side is deterministic, so no model call is "
         "made.",
     )
 

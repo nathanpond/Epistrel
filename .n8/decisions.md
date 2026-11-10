@@ -13454,3 +13454,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 3):** `tests/gates/test_traceability.py`'s real-docs check now expects 441 §15 rows (was 440), and docs/04's "M requirements first gated per milestone" line gains `M9 1`.
   **Why:** CI's `test (rest)` shard failed on run 42827024578. The new FR-MULTI-12 row is the 441st, and the line is what `check-traceability --write` generates. Later M9 stories that add FR rows must bump both again.
   **Issue:** #828
+- **Decision:** FR-PROF-13's capability-map clause in docs/03 now reads "Per-character renders: FR-MULTI-1..11 (the story cast limit, FR-MULTI-12, is floor)", and `tests/profile_support.FLOOR_POINTERS` gains FR-MULTI-12. This goes with the narrowed `per_character_renders` entry above.
+  **Why:** C-16 (`test_c_16__capabilities`, run 42827024578's integration-a-h shard) holds the capability map to FR-PROF-13's text exactly. Its bare "FR-MULTI" family would have claimed the new cast limit for per-character renders, but the limit holds under every profile. This is a wording consequence of adding FR-MULTI-12, not a change to any capability.
+  **Issue:** #828

@@ -13379,12 +13379,23 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the owner's earlier rule ("#530 lands before any M9 floor verdict") now lives in edges. Journalled observations are scored at play time.
 - **Issues touched:** #474, #502, #528, #529, #530, #540, #602, #735, #737, #747, #748, #749, #750, #754, #785, #793 and #812 (a body section and a comment on each); the M9 milestone description. Ledger entries reconciled: the 2026-11-07 #760 entry, the 2026-11-07 #761 entry, and the 2026-11-09 Console requests entry (recorded IN-BY-REQUEST in M9's description).
 
-## Ad-hoc — 2026-11-09 (milestone resequence; ADR-184)
+## Ad-hoc — 2026-11-09 (milestone resequence; ADR-184) — reconciled by /n8-replan 2026-11-09
 
 - **Change:** the milestones after M8 are resequenced (ADR-184). **M9 — Consumer requests** (Survivor #805–#808: benching a character that keeps its memories, safety-checked entity images outside a story, a higher cast cap than 20, plugins/custom model purposes) is new and unplanned. **M10 — Bug fixes & testing** keeps its number. **M11 — Performance tuning** is everything the old M9 was; NFR-QUAL-2..4, 7 and 14 gate from M11 (docs/03 §22, docs/04 parts and §15, the `part("M11", …)` markers). **M12 — Audit** is last.
   **Why:** the owner's decision of 2026-11-09. Tuning ends in an exit certification at the presets' final fingerprints (ADR-179, #819), and any later change that moves a fingerprint or a prompt un-certifies them again, as #760 did to M7's certification. Several consumer requests change what tuning measures, so tuning and certification go last, before the audit.
   **Affects:**
-  - GitHub milestones: "M9: Performance tuning" (#12) and its issues (#818, #819, #474, #502, #528, #529, #530, #540, #588, #602, #603, #685, #735, #737, #747–#750, #754, #785, #812 and the rest) become M11; a new M9 "Consumer requests" takes #805–#808; M10 keeps its issues; the Audit milestone becomes M12. The M9 description written by `/n8-replan M9` (2026-11-09) now describes M11.
+  - GitHub milestones (applied during `/n8-plan M9`, 2026-11-09): "M9: Performance tuning" (#12) was retitled "M11: Performance tuning" and keeps its issues (#818, #819, #474, #528, #529, #530, #540, #588, #602, #603, #685, #735, #737, #747–#750, #754, #785, #812 and the rest); a new "M9: Consumer requests" (#14) takes #805–#808; M10 keeps its issues and gained #783, #816, #784, #794, #788, #786, #778, #780 and #782 at triage; the Audit milestone was retitled "M12: Audit". The M9 description written by `/n8-replan M9` (2026-11-09) now describes M11.
   - #819's DoD ("the final M9 fingerprints") now means the final fingerprints after M9 and M10. #818's ADR-179 amendment, when it lands, amends M11's exit evidence.
   - #502 and #793, sent to M10 on 2026-11-09, now land before tuning rather than after it.
   - Any plan or memory that says "M9" for tuning or "M11" for the audit.
+
+## /n8-replan M11 — 2026-11-09
+
+- **Cause:** the milestone resequence (Ad-hoc 2026-11-09, ADR-184) and the owner's `/n8-plan` round-one answers of 2026-11-09, given while this milestone was being planned as M9 and recorded in its description.
+- **Stale what (AC):** #819 (retitled to "final M11 fingerprints"; its DoD and `/n8-verify` references now read M11; new AC: the exit run waits for M9 and M10 to merge), #818 (guard part `("M11", "NFR-QUAL-11")`, the floor rule, the §22 row), #603 (M11 decides; option (c), measure first via #588).
+- **Owner decisions written into AC:** #735 option (c), both: `max_tokens` headroom plus `thinking: {type: disabled}` on Anthropic. #540 option (c), context-grounded disclosure, with a new AC for an ADR amending NFR-QUAL-1's measurement. #474: all 7 intervention types must reach 300 non-tied pairs, and a failing type is prompt-tuned and re-measured. #529 floor ≤ 2%. #528 target ≤ 1%. #749 option (a): grow the smoke set to about 200 cases.
+- **Paid-run rule (owner):** `/n8-exec` may run targeted live reruns itself, at most five per exec run; beyond that it asks. Recorded on #735, #540, #474, #529, #528, #749, #747, #748 and #750. #818 and #819 stay owner hand runs.
+- **History notes only** ("'M9' above means M11"): #530, #602, #685, #747, #754, #812, #785 (#785 also notes that M10's possible code warm-up now lands before the re-certification).
+- **Milestone descriptions:** M11's phases line; M10's goal (M0–M9) and its triage list; M12 Audit's emphases gain a provisional M9 line (custom-purpose templates as an injection surface, story-less calls and images keeping the minors path, benched characters never perceiving or leaking).
+- **Unchanged:** dependency edges; nothing created or closed. The epic, the template upgrade and the #474 split stay with `/n8-plan M11`.
+- **Issues touched:** #474, #528, #529, #530, #540, #602, #603, #685, #735, #747, #748, #749, #750, #754, #785, #812, #818, #819 (a body section and a comment each).

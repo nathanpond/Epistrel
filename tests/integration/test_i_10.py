@@ -21,7 +21,7 @@ from epistrel.core.events import Operation
 from epistrel.core.stories import STORY_TABLES, StorySpec
 from tests.conftest import REPO_ROOT
 from tests.event_support import STORY_SETUP_KIND, play_turn, rows
-from tests.story_support import READ, WRITE, count, create, rest, story_body
+from tests.story_support import READ, WRITE, character, count, create, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
 
@@ -208,8 +208,11 @@ async def test_create_refuses_bad_requests(engine: AsyncEngine, settings: Settin
         assert error["details"]["field"] == "body.characters[0].true_age"
 
         cases: list[tuple[dict[str, object], str, str | None]] = []
-        too_many = story_body(*(f"C{i}" for i in range(21)))
-        cases.append((too_many, "validation_error", "body.characters"))
+        # #828: the cast limit is the deployment's ``max_story_cast`` (FR-MULTI-12, at most 200;
+        # I-28 has its cases), refused at ``body`` with ``cap: cast_max``.
+        too_many = story_body("C0")
+        too_many["characters"] += [character(f"C{i}", 30) for i in range(1, 201)]
+        cases.append((too_many, "validation_error", "body"))
         cases.append((story_body(), "validation_error", None))
         cases[-1][0]["characters"] = []
         dup = story_body("Ada", "ADA")

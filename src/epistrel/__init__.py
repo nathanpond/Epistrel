@@ -240,6 +240,7 @@ if TYPE_CHECKING:
     from epistrel.core.profiles.store import (
         DeletedProfile,
         EngineProfile,
+        ListedProfile,
         ProfileCopy,
         ProfileCreate,
         ProfilePage,
@@ -427,6 +428,7 @@ _EXPORTS: dict[str, str] = {
     "EngineProfile": "epistrel.core.profiles.store",
     "ProfileWrite": "epistrel.core.profiles.store",
     "DeletedProfile": "epistrel.core.profiles.store",
+    "ListedProfile": "epistrel.core.profiles.store",
     "ProfilePage": "epistrel.core.profiles.store",
     "ProfileVersion": "epistrel.core.profiles.store",
     "ProfileWarning": "epistrel.core.profiles.store",
@@ -646,6 +648,7 @@ __all__ = [
     "InvalidProfile",
     "InvalidRequest",
     "LengthRequired",
+    "ListedProfile",
     "ListingStatusChange",
     "ListingStatusInUse",
     "ListingStatusRequest",

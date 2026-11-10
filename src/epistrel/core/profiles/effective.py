@@ -864,8 +864,8 @@ class EffectiveConfig(BaseModel):
     """A story's effective configuration (FR-PROF-5,16): the deployment's defaults, the profile
     and the version it runs on, its own overrides, every delivered setting at its effective
     value (the defaults, then the profile's version, then the overrides), and the
-    configuration's fingerprint, the capabilities it enables and its quality status
-    (``uncertified`` in M3)."""
+    configuration's fingerprint, the capabilities it enables, the ones a gap fill accepts
+    (``gap_fillable``, #790) and its quality status (``uncertified`` in M3)."""
 
     story_id: str
     deployment_defaults: SettingsDocument
@@ -874,6 +874,12 @@ class EffectiveConfig(BaseModel):
     effective: SettingsDocument
     fingerprint: str
     capabilities: list[str]
+    gap_fillable: list[str] = Field(
+        description="#790: the capabilities a gap fill (`POST /stories/{id}/backfill` with "
+        "`capabilities`) accepts for this story, sorted: its data-producing capabilities, by "
+        "module name with no `:mode` suffix. Any other name is 422 `validation_error` with "
+        "`details.not_enabled`."
+    )
     quality_status: QualityStatus
     pending_backfill: dict[str, str] | None = Field(
         default=None,
@@ -885,6 +891,8 @@ class EffectiveConfig(BaseModel):
 
 def view(found: StoryProfile, facts: RuntimeFacts) -> EffectiveConfig:
     """``found`` as the read answers it."""
+    from epistrel.core.backfill import coverage  # the backfill package imports us
+
     stamped = found.configuration().stamp(facts)
     return EffectiveConfig(
         story_id=found.story_id,
@@ -898,6 +906,7 @@ def view(found: StoryProfile, facts: RuntimeFacts) -> EffectiveConfig:
         effective=schema.delivered_values(found.settings),
         fingerprint=stamped.fingerprint,
         capabilities=list(stamped.capabilities),
+        gap_fillable=sorted(coverage.capabilities_of(found.settings)),
         quality_status=stamped.quality_status,
     )
 

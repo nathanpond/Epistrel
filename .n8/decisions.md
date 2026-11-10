@@ -13350,3 +13350,19 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #814's "outside the listed policy texts" is the rendered system content with each listed `- <id>: <text>` line removed, not the content before `## Policies`. That covers the template text after the list as well (the subjects block). Asserted on it: `{"verdicts"` appears exactly once, `{violation` never appears, and "Answer only in the format above." is present. Both of the issue's mutants fail the test, and the template stays restored.
   **Why:** #814 suggested either cut. The removal cut is one line and leaves no gap after the list. Cost if wrong: none; tests only.
   **Issue:** #814, #810
+
+## Ad-hoc — 2026-11-09
+
+- **Change:** four Console-requested API additions were pulled into M9 ahead of its tuning work and built on `milestone/m9-console-requests`, plus #787's docs fix:
+  - `quality` on every `GET /engine-profiles` item (#789);
+  - `gap_fillable` on `GET /stories/{id}/effective-config`, with the reworded 422 message (#790);
+  - `resolution` on `OutboxRow`, through migration **0144** (`reconciliation_marks.resolved_at`, `resolved_operation_id`) (#777);
+  - a new `GET /certification-runs` route with a top-level canary `outcome` (#776). Its spec changes are FR-PROF-17 (amended 2026-11-09) and **ADR-183**; ADR-107 gains only an Amended-by line.
+  **Why:** the owner's triage on 2026-11-09 ("any reason we can't do the console requests right away?"). They unblock Console #339, #340, #325 and the M7 certification pages. Each issue's AC was written into the issue before it was built.
+  - #777 derives the resolution from the reconciliation mark, not from the `reconciliation_resolved` audit event, because retention expiry deletes that event after 90 days.
+  - A rewind leaves both the listing and the resolution closed.
+  **Affects:**
+  - M9: four new issues, and the migration head is now 0144, so any M9 migration chains onto it.
+  - M9/M10 plans that assume the old `OutboxRow`, `EffectiveConfig`, profile-list or `CertificationRun` shapes.
+  - The Console's recorded fixtures (`docs/openapi.json` changed).
+  - Next release notes.

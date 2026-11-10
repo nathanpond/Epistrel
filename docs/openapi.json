@@ -3593,6 +3593,23 @@
             "title": "Kind",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "held",
+                  "inconclusive",
+                  "missed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A completed canary run's outcome (#234, #776): `held` (every floor the checked certification passed held), `missed` (a floor measured below it: the certification is now `stale`, its `invalidated_by_run_id` this run's `id`) or `inconclusive` (no measured miss, not enough evidence to hold). Null on a certification run and on a run not yet completed (or failed).",
+            "title": "Outcome"
+          },
           "profile_id": {
             "title": "Profile Id",
             "type": "string"
@@ -3686,7 +3703,8 @@
           "created_at",
           "started_at",
           "finished_at",
-          "error"
+          "error",
+          "outcome"
         ],
         "title": "CertificationRun",
         "type": "object"
@@ -3753,6 +3771,34 @@
           "suites"
         ],
         "title": "CertificationRunBody",
+        "type": "object"
+      },
+      "CertificationRunPage": {
+        "description": "A page of certification runs, newest first; ``next_cursor`` continues it (null past the\nlast page).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CertificationRun"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CertificationRunPage",
         "type": "object"
       },
       "CertificationRunRequest": {
@@ -8560,7 +8606,7 @@
         "type": "object"
       },
       "EffectiveConfig": {
-        "description": "A story's effective configuration (FR-PROF-5,16): the deployment's defaults, the profile\nand the version it runs on, its own overrides, every delivered setting at its effective\nvalue (the defaults, then the profile's version, then the overrides), and the\nconfiguration's fingerprint, the capabilities it enables and its quality status\n(``uncertified`` in M3).",
+        "description": "A story's effective configuration (FR-PROF-5,16): the deployment's defaults, the profile\nand the version it runs on, its own overrides, every delivered setting at its effective\nvalue (the defaults, then the profile's version, then the overrides), and the\nconfiguration's fingerprint, the capabilities it enables, the ones a gap fill accepts\n(``gap_fillable``, #790) and its quality status (``uncertified`` in M3).",
         "properties": {
           "capabilities": {
             "items": {
@@ -10079,6 +10125,14 @@
             "title": "Fingerprint",
             "type": "string"
           },
+          "gap_fillable": {
+            "description": "#790: the capabilities a gap fill (`POST /stories/{id}/backfill` with `capabilities`) accepts for this story, sorted: its data-producing capabilities, by module name with no `:mode` suffix. Any other name is 422 `validation_error` with `details.not_enabled`.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Gap Fillable",
+            "type": "array"
+          },
           "overrides": {
             "$ref": "#/components/schemas/OverridesRef"
           },
@@ -10116,6 +10170,7 @@
           "effective",
           "fingerprint",
           "capabilities",
+          "gap_fillable",
           "quality_status"
         ],
         "title": "EffectiveConfig",
@@ -20186,6 +20241,829 @@
         "title": "ListedMemory",
         "type": "object"
       },
+      "ListedProfile": {
+        "description": "A profile as ``GET /engine-profiles`` lists it (#789): an ``EngineProfile`` whose\n``quality`` is always there, the same value ``GET /engine-profiles/{id}`` answers for it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_principal": {
+            "title": "Owner Principal",
+            "type": "string"
+          },
+          "preset": {
+            "title": "Preset",
+            "type": "boolean"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/FloorsMet",
+            "description": "The latest version's quality under the deployment's models and no story overrides (FR-PROF-16, #233, #789), as `GET /engine-profiles/{id}` reads it: its `fingerprint`, its `status` (`uncertified` without a valid certification) and the floors its newest valid certification passed (`floors_met`, empty without one)."
+          },
+          "settings": {
+            "additionalProperties": false,
+            "description": "An engine profile's settings, by capability module (FR-PROF-2).",
+            "properties": {
+              "budgets": {
+                "additionalProperties": false,
+                "description": "The per-turn model-call budget and deadline (NFR-PERF-6).",
+                "properties": {
+                  "deadline_ms": {
+                    "default": 45000,
+                    "description": "A turn's wall-clock deadline, in milliseconds (M2's ``turn_deadline``, in seconds, which\n#113 moved here); the turn slot's lease and a queued request's wait follow it.",
+                    "maximum": 600000.0,
+                    "minimum": 1.0,
+                    "title": "Deadline Ms",
+                    "type": "integer"
+                  },
+                  "model_calls": {
+                    "anyOf": [
+                      {
+                        "maximum": 50.0,
+                        "minimum": 1.0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "description": "The most model calls one turn may make, the reserved guardrail calls included (M2's\n``max_model_calls_per_turn``, which #113 moved here): a cap below one generation plus those\ncalls refuses every turn. ``null``: NFR-PERF-6's formula (9 + the guardrail calls in M3).",
+                    "title": "Model Calls"
+                  }
+                },
+                "title": "Budgets",
+                "type": "object"
+              },
+              "character_knowledge": {
+                "additionalProperties": false,
+                "description": "Shared context, or per-character partitions with their dials (FR-PROF-2).",
+                "properties": {
+                  "lazy_resolution": {
+                    "default": false,
+                    "title": "Lazy Resolution",
+                    "type": "boolean"
+                  },
+                  "max_adjudications_per_turn": {
+                    "default": 2,
+                    "description": "The most ``belief_adjudication`` calls one turn makes (#162): the testimony and\nsimultaneous-conflict adjudications beyond it follow the deterministic default.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Adjudications Per Turn",
+                    "type": "integer"
+                  },
+                  "max_lazy_resolutions_per_turn": {
+                    "default": 20,
+                    "description": "The most pending exposures one turn resolves when a need reaches them (#164): the rest\nwait for a later need.",
+                    "maximum": 200.0,
+                    "minimum": 0.0,
+                    "title": "Max Lazy Resolutions Per Turn",
+                    "type": "integer"
+                  },
+                  "nested_beliefs": {
+                    "additionalProperties": false,
+                    "description": "Nested beliefs (FR-EPI-2, FR-BELIEF-15): off, or a depth of at least 2.",
+                    "properties": {
+                      "depth": {
+                        "default": 2,
+                        "maximum": 5.0,
+                        "minimum": 2.0,
+                        "title": "Depth",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      }
+                    },
+                    "title": "NestedBeliefs",
+                    "type": "object"
+                  },
+                  "partitions": {
+                    "default": false,
+                    "title": "Partitions",
+                    "type": "boolean"
+                  },
+                  "testimony": {
+                    "default": "off",
+                    "description": "Testimony adjudication (FR-BELIEF-3): ``model`` or ``defaulted``.",
+                    "enum": [
+                      "off",
+                      "model",
+                      "defaulted"
+                    ],
+                    "title": "Testimony",
+                    "type": "string"
+                  }
+                },
+                "title": "CharacterKnowledge",
+                "type": "object"
+              },
+              "clock": {
+                "additionalProperties": false,
+                "description": "The world clock (FR-CLOCK): off, its prompt-only Lite form (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "scheduled_stops": {
+                    "default": false,
+                    "description": "Stop the clock at scheduled events.",
+                    "title": "Scheduled Stops",
+                    "type": "boolean"
+                  },
+                  "time_claims": {
+                    "default": false,
+                    "description": "Verify time claims against the clock.",
+                    "title": "Time Claims",
+                    "type": "boolean"
+                  }
+                },
+                "title": "Clock",
+                "type": "object"
+              },
+              "commitment": {
+                "additionalProperties": false,
+                "description": "Commitment (FR-COMMIT) and its salience detection.",
+                "properties": {
+                  "enabled": {
+                    "default": false,
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "salience": {
+                    "default": "rules",
+                    "enum": [
+                      "rules",
+                      "rules_and_model"
+                    ],
+                    "title": "Salience",
+                    "type": "string"
+                  },
+                  "salience_bias": {
+                    "default": "balanced",
+                    "description": "How an uncertain ``salience_detection`` answer counts (#227): ``balanced`` treats an\nanswer whose ``confidence`` is below the deployment's ``uncertain_below`` (FR-MODEL-7) as no\nanswer (every beat texture); ``recall`` counts its spans as salient (a texture span with the\nspan's text as its proposition). Inert under ``salience = rules``.",
+                    "enum": [
+                      "balanced",
+                      "recall"
+                    ],
+                    "title": "Salience Bias",
+                    "type": "string"
+                  }
+                },
+                "title": "Commitment",
+                "type": "object"
+              },
+              "memory": {
+                "additionalProperties": false,
+                "description": "The memory modules (FR-PROF-2).",
+                "properties": {
+                  "consolidation": {
+                    "additionalProperties": false,
+                    "description": "Consolidation and reflections (FR-MEM-3,6).",
+                    "properties": {
+                      "cadence_turns": {
+                        "default": 20,
+                        "description": "Turns between consolidation runs: a commit this many turns past the last consolidated\nturn starts one.",
+                        "maximum": 1000.0,
+                        "minimum": 1.0,
+                        "title": "Cadence Turns",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "window_memories": {
+                        "default": 50,
+                        "description": "Uncovered episodic memories that start a consolidation run (whichever of this and\n``cadence_turns`` is reached first), and the most one window compresses.",
+                        "maximum": 10000.0,
+                        "minimum": 1.0,
+                        "title": "Window Memories",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Consolidation",
+                    "type": "object"
+                  },
+                  "episodic": {
+                    "additionalProperties": false,
+                    "description": "Episodic retrieval (FR-MEM-1, FR-RET).",
+                    "properties": {
+                      "enabled": {
+                        "default": false,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "hybrid_search": {
+                        "default": true,
+                        "description": "Run the lexical and exact-alias arms beside the vector arm (FR-RET-4).",
+                        "title": "Hybrid Search",
+                        "type": "boolean"
+                      },
+                      "k": {
+                        "default": 8,
+                        "description": "How many memories one retrieval returns.",
+                        "maximum": 100.0,
+                        "minimum": 1.0,
+                        "title": "K",
+                        "type": "integer"
+                      },
+                      "recency_half_life_turns": {
+                        "default": 100,
+                        "description": "The turns over which a memory's recency halves.",
+                        "maximum": 1000000.0,
+                        "minimum": 1.0,
+                        "title": "Recency Half Life Turns",
+                        "type": "integer"
+                      },
+                      "reranking": {
+                        "default": false,
+                        "description": "Not delivered: ``true`` is refused (``UNDELIVERED_VALUES``).",
+                        "title": "Reranking",
+                        "type": "boolean"
+                      },
+                      "retrieval_token_budget": {
+                        "default": 3000,
+                        "description": "The tokens (``len // 4``) one retrieval's assembled context may hold (FR-RET-7).",
+                        "maximum": 200000.0,
+                        "minimum": 100.0,
+                        "title": "Retrieval Token Budget",
+                        "type": "integer"
+                      },
+                      "weight_importance": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on decayed importance (FR-MEM-7).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Importance",
+                        "type": "number"
+                      },
+                      "weight_recency": {
+                        "default": 0.2,
+                        "description": "The ranking's weight on recency (decay over turns before the query's position).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Recency",
+                        "type": "number"
+                      },
+                      "weight_similarity": {
+                        "default": 0.6,
+                        "description": "The ranking's weight on the fused similarity of the search arms (FR-RET-5).",
+                        "maximum": 10.0,
+                        "minimum": 0.0,
+                        "title": "Weight Similarity",
+                        "type": "number"
+                      }
+                    },
+                    "title": "Episodic",
+                    "type": "object"
+                  },
+                  "hot_set": {
+                    "additionalProperties": false,
+                    "description": "The hot set of the structured pipeline's memories (FR-MEM-8, NFR-SCALE-2; #147): the\nunpinned budgets, how retirement ranks and how long an overflow may last, and which vectors\nare kept off the hot set.",
+                    "properties": {
+                      "importance_floor": {
+                        "default": 0.2,
+                        "description": "A memory whose decayed importance is below it is retired first, with those already\ncovered by consolidation.",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "title": "Importance Floor",
+                        "type": "number"
+                      },
+                      "memories_per_character": {
+                        "default": 2000,
+                        "description": "A character's unpinned hot memories (``hot_memory_budget_per_character``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Memories Per Character",
+                        "type": "integer"
+                      },
+                      "retain_dormant_vectors": {
+                        "default": false,
+                        "description": "Keep the vectors of a dormant or discarded continuation's memories, so a swap or an\nundo that reactivates it restores byte-identical vectors (FR-STORE-30); off, they are\ndropped and re-embedded with the story's pinned embedding model on reactivation.",
+                        "title": "Retain Dormant Vectors",
+                        "type": "boolean"
+                      },
+                      "retain_retired_vectors": {
+                        "default": false,
+                        "description": "Keep a retired memory's vector (and store the one its rehydration computes) instead of\ndropping it; off, a retired memory is re-embedded each time it is rehydrated.",
+                        "title": "Retain Retired Vectors",
+                        "type": "boolean"
+                      },
+                      "retirement_max_lag": {
+                        "default": 50,
+                        "description": "The committed turns an overflow episode may last: at its deadline the lowest-ranked\nuncovered memories are retired anyway (``retired_uncovered``).",
+                        "maximum": 100000.0,
+                        "minimum": 1.0,
+                        "title": "Retirement Max Lag",
+                        "type": "integer"
+                      },
+                      "vectors_per_story": {
+                        "default": 50000,
+                        "description": "The story's unpinned hot vectors (``hot_vector_budget_per_story``).",
+                        "maximum": 10000000.0,
+                        "minimum": 1.0,
+                        "title": "Vectors Per Story",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "HotSet",
+                    "type": "object"
+                  },
+                  "rolling_summary": {
+                    "additionalProperties": false,
+                    "description": "The rolling auto-summary (FR-LITE-2).",
+                    "properties": {
+                      "compress_threshold_tokens": {
+                        "default": 6000,
+                        "description": "The summary's size, in tokens, above which its segments are compressed further.",
+                        "maximum": 100000.0,
+                        "minimum": 100.0,
+                        "title": "Compress Threshold Tokens",
+                        "type": "integer"
+                      },
+                      "enabled": {
+                        "default": true,
+                        "description": "Fold messages older than the window into summary segments, and show the summary in the\nprompt.",
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "window_messages": {
+                        "default": 30,
+                        "description": "How many of the latest messages the prompt keeps verbatim.",
+                        "maximum": 500.0,
+                        "minimum": 1.0,
+                        "title": "Window Messages",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "RollingSummary",
+                    "type": "object"
+                  }
+                },
+                "title": "Memory",
+                "type": "object"
+              },
+              "models": {
+                "additionalProperties": false,
+                "description": "Per-purpose model routing (FR-MODEL) and the generation defaults.",
+                "properties": {
+                  "generation": {
+                    "additionalProperties": false,
+                    "description": "The generation defaults (FR-LITE-4): temperature, top_p and response length.",
+                    "properties": {
+                      "response_length": {
+                        "anyOf": [
+                          {
+                            "enum": [
+                              "short",
+                              "medium",
+                              "long"
+                            ],
+                            "type": "string"
+                          },
+                          {
+                            "maximum": 4000.0,
+                            "minimum": 1.0,
+                            "type": "integer"
+                          }
+                        ],
+                        "default": "medium",
+                        "description": "``short``, ``medium``, ``long``, or a token cap.",
+                        "title": "Response Length"
+                      },
+                      "temperature": {
+                        "anyOf": [
+                          {
+                            "maximum": 2.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.8,
+                        "title": "Temperature"
+                      },
+                      "top_p": {
+                        "anyOf": [
+                          {
+                            "maximum": 1.0,
+                            "minimum": 0.0,
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "default": 0.95,
+                        "title": "Top P"
+                      }
+                    },
+                    "title": "Generation",
+                    "type": "object"
+                  },
+                  "purposes": {
+                    "additionalProperties": false,
+                    "description": "Routing by purpose; a purpose left out inherits the deployment's configuration.",
+                    "maxProperties": 50,
+                    "patternProperties": {
+                      "^[a-z][a-z0-9_]{0,63}$": {
+                        "additionalProperties": false,
+                        "description": "One model purpose's routing: its model and parameters; ``null`` inherits from the\ndeployment's model configuration (``/admin/model-config``). Endpoints and keys are never\npart of a profile.",
+                        "properties": {
+                          "model": {
+                            "anyOf": [
+                              {
+                                "maxLength": 200,
+                                "minLength": 1,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Model"
+                          },
+                          "params": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "description": "Generation parameters for one purpose's calls; ``null`` inherits.",
+                                "properties": {
+                                  "max_tokens": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 4000.0,
+                                        "minimum": 1.0,
+                                        "type": "integer"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Max Tokens"
+                                  },
+                                  "temperature": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 2.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Temperature"
+                                  },
+                                  "top_p": {
+                                    "anyOf": [
+                                      {
+                                        "maximum": 1.0,
+                                        "minimum": 0.0,
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "title": "Top P"
+                                  }
+                                },
+                                "title": "RouteParams",
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "title": "PurposeRoute",
+                        "type": "object"
+                      }
+                    },
+                    "title": "Purposes",
+                    "type": "object"
+                  }
+                },
+                "title": "Models",
+                "type": "object"
+              },
+              "multi_character": {
+                "additionalProperties": false,
+                "description": "One combined render, or per-character renders (FR-MULTI).",
+                "properties": {
+                  "interjection_max_words": {
+                    "default": 6,
+                    "description": "The most words a reactive character's brief interjection may have, where the story's\n``reactive_interjections`` allows one (FR-MULTI-9; #176).",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Interjection Max Words",
+                    "type": "integer"
+                  },
+                  "renders": {
+                    "default": "combined",
+                    "enum": [
+                      "combined",
+                      "per_character"
+                    ],
+                    "title": "Renders",
+                    "type": "string"
+                  }
+                },
+                "title": "MultiCharacter",
+                "type": "object"
+              },
+              "perception": {
+                "additionalProperties": false,
+                "description": "Perception routing (FR-TURN-2,9,10,13).",
+                "properties": {
+                  "level": {
+                    "default": "none",
+                    "enum": [
+                      "none",
+                      "co_location",
+                      "full"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "Perception",
+                "type": "object"
+              },
+              "pins": {
+                "additionalProperties": false,
+                "description": "Pinned memories (FR-LITE-3): the story's author-pinned texts, always in the prompt.",
+                "properties": {
+                  "enabled": {
+                    "default": true,
+                    "description": "Include the story's pinned memories in the prompt.",
+                    "title": "Enabled",
+                    "type": "boolean"
+                  },
+                  "max_pinned": {
+                    "default": 50,
+                    "description": "The most pinned memories a story may hold.",
+                    "maximum": 500.0,
+                    "minimum": 1.0,
+                    "title": "Max Pinned",
+                    "type": "integer"
+                  }
+                },
+                "title": "Pins",
+                "type": "object"
+              },
+              "pipeline": {
+                "default": "lite",
+                "description": "The pipeline every turn runs: ``lite`` (FR-LITE) or ``structured`` (the Engine Core\npath).",
+                "enum": [
+                  "lite",
+                  "structured"
+                ],
+                "title": "Pipeline",
+                "type": "string"
+              },
+              "render": {
+                "additionalProperties": false,
+                "description": "The structured pipeline's renders (FR-TURN-1; #150): how many beats one render may\nreturn, how much working memory and how large a prompt it is given.",
+                "properties": {
+                  "max_beats": {
+                    "default": 6,
+                    "description": "The most beats one render may return (the beat schema's ``max_items``; more is invalid\nstructure, which the model retries). #156's budget planning reuses it.",
+                    "maximum": 20.0,
+                    "minimum": 1.0,
+                    "title": "Max Beats",
+                    "type": "integer"
+                  },
+                  "prompt_token_budget": {
+                    "default": 6000,
+                    "description": "The structured prompt's cap in tokens (``len // 4``): retrieved context is trimmed first,\nthen working memory.",
+                    "maximum": 200000.0,
+                    "minimum": 500.0,
+                    "title": "Prompt Token Budget",
+                    "type": "integer"
+                  },
+                  "working_memory_beats": {
+                    "default": 20,
+                    "description": "How many of the latest beats the rendering character's working memory holds (FR-MEM-5).",
+                    "maximum": 200.0,
+                    "minimum": 1.0,
+                    "title": "Working Memory Beats",
+                    "type": "integer"
+                  }
+                },
+                "title": "Render",
+                "type": "object"
+              },
+              "repair": {
+                "additionalProperties": false,
+                "description": "Repair and polish (FR-PROF-2).",
+                "properties": {
+                  "implication_threshold": {
+                    "default": 2,
+                    "description": "How many rejected renders within one story may implicate a memory before it is\nquarantined automatically (FR-GUARD-5; #145). ``0`` turns auto-quarantine off. Structured\nstories only: a Lite reply's context holds no memory records.",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Implication Threshold",
+                    "type": "integer"
+                  },
+                  "max_attempts": {
+                    "default": 0,
+                    "description": "Repair attempts of the structured pipeline's repair ladder (FR-REPAIR).",
+                    "maximum": 10.0,
+                    "minimum": 0.0,
+                    "title": "Max Attempts",
+                    "type": "integer"
+                  },
+                  "polish": {
+                    "additionalProperties": false,
+                    "description": "The polish pass. Under ``lite`` it is the bounded regeneration of a reply that broke an\noutput policy, before the safe fallback is used (FR-GUARD-6; M2's story setting\n``guardrail_retry_budget``, which #113 moved here). Off, a reply that breaks a policy is\nreplaced by the fallback at once. Under ``structured`` it also gates the composition's\npolish call (#152): off, a structured turn's message is the deterministic assembly of its\nchecked beats.",
+                    "properties": {
+                      "enabled": {
+                        "default": true,
+                        "title": "Enabled",
+                        "type": "boolean"
+                      },
+                      "max_regenerations": {
+                        "default": 2,
+                        "description": "How many times such a reply is generated again.",
+                        "maximum": 5.0,
+                        "minimum": 0.0,
+                        "title": "Max Regenerations",
+                        "type": "integer"
+                      }
+                    },
+                    "title": "Polish",
+                    "type": "object"
+                  }
+                },
+                "title": "Repair",
+                "type": "object"
+              },
+              "states": {
+                "additionalProperties": false,
+                "description": "States and external data (FR-STATE, FR-EXT): off, prompt-only (FR-LITE-5), or on.",
+                "properties": {
+                  "level": {
+                    "default": "off",
+                    "enum": [
+                      "off",
+                      "prompt_only",
+                      "on"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  }
+                },
+                "title": "States",
+                "type": "object"
+              },
+              "verification": {
+                "additionalProperties": false,
+                "description": "Claim verification, a ladder: off, declared claims only, plus claim extraction, plus\nentailment escalation (FR-VERIFY); and contradiction checking (FR-PROP-10).",
+                "properties": {
+                  "contradiction_checking": {
+                    "default": false,
+                    "title": "Contradiction Checking",
+                    "type": "boolean"
+                  },
+                  "entailment_gate": {
+                    "default": 1.0,
+                    "description": "The predicate-resolution confidence below which an ``uncertain`` verdict escalates to\nthe entailment model (FR-VERIFY-3). The default, 1.0, escalates every one: the gate launches\nconservatively and is tightened per predicate shape (#155).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Gate",
+                    "type": "number"
+                  },
+                  "entailment_min_confidence": {
+                    "default": 0.6,
+                    "description": "The least confidence an entailment verdict needs to count; below it the claim takes the\nsafe disposition (FR-VERIFY-8).",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "title": "Entailment Min Confidence",
+                    "type": "number"
+                  },
+                  "extraction_mode": {
+                    "default": "gated",
+                    "enum": [
+                      "gated",
+                      "always"
+                    ],
+                    "title": "Extraction Mode",
+                    "type": "string"
+                  },
+                  "implication_max_depth": {
+                    "default": 3,
+                    "description": "How deep the bounded implication closure goes (FR-PROP-11): ``core.verify.rules`` stops\nthere and flags the stop in the verdict's evidence.",
+                    "maximum": 10.0,
+                    "minimum": 1.0,
+                    "title": "Implication Max Depth",
+                    "type": "integer"
+                  },
+                  "level": {
+                    "default": "off",
+                    "description": "Raising it to ``extraction`` writes the claims extraction finds, so the ladder is\ndata-producing.",
+                    "enum": [
+                      "off",
+                      "declared",
+                      "extraction",
+                      "entailment"
+                    ],
+                    "title": "Level",
+                    "type": "string"
+                  },
+                  "safe_disposition": {
+                    "default": "repair",
+                    "description": "What a claim the engine cannot decide becomes (FR-VERIFY-8): ``repair`` rewrites the\nsentence so it no longer asserts it, and records why; ``surface`` lets the beat stand and\nlists the claim in the turn report's ``uncertain_claims`` for the author.",
+                    "enum": [
+                      "repair",
+                      "surface"
+                    ],
+                    "title": "Safe Disposition",
+                    "type": "string"
+                  },
+                  "shape_tightening": {
+                    "default": "on",
+                    "description": "Whether the per-shape thresholds an operator tightened (#155's live ``gate_thresholds``)\napply: ``off`` ignores them, so the effective threshold is ``entailment_gate`` itself (at\n1.0 every ``uncertain`` verdict escalates; the Max preset, #227). Shadow recording goes on\neither way. Inert without the entailment step.",
+                    "enum": [
+                      "on",
+                      "off"
+                    ],
+                    "title": "Shape Tightening",
+                    "type": "string"
+                  }
+                },
+                "title": "Verification",
+                "type": "object"
+              }
+            },
+            "title": "ProfileSettings",
+            "type": "object"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "owner_principal",
+          "preset",
+          "version",
+          "current_version",
+          "settings",
+          "created_at",
+          "updated_at",
+          "deleted_at",
+          "quality"
+        ],
+        "title": "ListedProfile",
+        "type": "object"
+      },
       "Listing": {
         "additionalProperties": false,
         "description": "One effect the consumer must reconcile: the outbox row (its id is the provider\nidempotency key), the provider and value, its status, why it is listed, since when, the\neffect, and the latest outcome recorded for it, if any. A row an erasure redacted (#211)\nis listed as ``{outbox_id, provider, status}`` with its reason and since only. #218: a\n``late_success_after_expiry`` carries its re-verification; a compensated row's status is\n``compensated`` and ``compensated_by`` names the compensating row. #661: a consumer-applied\neffect (no outbox row) is listed by its ``request_id``, its status the latest answer's kind\n(``requested`` before any).",
@@ -23724,9 +24602,39 @@
         "title": "OutboxPosition",
         "type": "object"
       },
+      "OutboxResolution": {
+        "additionalProperties": false,
+        "description": "#777: how the author resolved a parked ``imported_unsettled`` row through\n``POST /stories/{id}/reconciliation/{outbox_id}/resolve``: the request's ``resolution``\n(``kind``), when (``resolved_at``) and the inter-turn slot operation that recorded it.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "applied_elsewhere",
+              "abandoned"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "resolved_at",
+          "operation_id"
+        ],
+        "title": "OutboxResolution",
+        "type": "object"
+      },
       "OutboxRow": {
         "additionalProperties": false,
-        "description": "#679: one outbox row as the story's outbox list shows it (any status): its id (the\nprovider idempotency key), provider and value, status (``compensated`` once a compensating\nrow answers it), the effect, where it was declared and on which timeline membership,\nwhether a story-owned change waits on it (``contingent``), the row it compensates, the\nsend attempts and times, and the latest recorded outcome. A row an erasure redacted\ncarries its ids, provider, status and position only.",
+        "description": "#679: one outbox row as the story's outbox list shows it (any status): its id (the\nprovider idempotency key), provider and value, status (``compensated`` once a compensating\nrow answers it), the effect, where it was declared and on which timeline membership,\nwhether a story-owned change waits on it (``contingent``), the row it compensates, the\nsend attempts and times, and the latest recorded outcome. A row an erasure redacted\ncarries its ids, provider, status, position and resolution only. #777: ``resolution`` is\nset once the author resolved a parked ``imported_unsettled`` row (its status stays\n``imported_unsettled``), ``None`` on every other row.",
         "properties": {
           "attempts": {
             "default": 0,
@@ -23819,6 +24727,16 @@
             "title": "Redacted",
             "type": "boolean"
           },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OutboxResolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "sent_at": {
             "anyOf": [
               {
@@ -23853,7 +24771,8 @@
           "status",
           "position",
           "membership",
-          "created_at"
+          "created_at",
+          "resolution"
         ],
         "title": "OutboxRow",
         "type": "object"
@@ -28602,11 +29521,11 @@
         "type": "object"
       },
       "ProfileListBody": {
-        "description": "A page of profiles at their latest version, newest first; ``next_cursor`` fetches the\nnext page (``null`` on the last).",
+        "description": "A page of profiles at their latest version, newest first, each with its ``quality``\n(#789); ``next_cursor`` fetches the next page (``null`` on the last).",
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/EngineProfile"
+              "$ref": "#/components/schemas/ListedProfile"
             },
             "title": "Items",
             "type": "array"
@@ -50088,7 +51007,21 @@
               "null"
             ]
           },
+          "resolved_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "resolved_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resolved_operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
             "type": [
               "string",
               "null"
@@ -56127,7 +57060,7 @@
         "type": "object"
       },
       "epistrel__api__routes__reconciliation__ResolvedBody": {
-        "description": "A resolve: the listed request, how it was resolved, the reasons it was listed under,\nand the inter-turn slot (`position`, `N⁺k`; `slot` the full position) and operation that\nrecorded it.",
+        "description": "A resolve: the listed request (or parked outbox row, #251), how it was resolved, the\nreasons it was listed under, and the inter-turn slot (`position`, `N⁺k`; `slot` the full\nposition) and operation that recorded it.",
         "properties": {
           "idempotency_key": {
             "anyOf": [
@@ -56422,7 +57355,7 @@
       },
       "epistrel__core__outbox__ResolveRequest": {
         "additionalProperties": false,
-        "description": "#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed\nconsumer-applied effect is resolved (``applied_elsewhere`` or ``abandoned``).",
+        "description": "#661: ``POST /stories/{id}/reconciliation/{listing}/resolve``: how a listed\nconsumer-applied effect, or (#251) an outbox row parked ``imported_unsettled``, is resolved\n(``applied_elsewhere`` or ``abandoned``).",
         "examples": [
           {
             "resolution": "applied_elsewhere"
@@ -73897,6 +74830,223 @@
         ]
       }
     },
+    "/certification-runs": {
+      "get": {
+        "description": "Certification runs (FR-PROF-17; #776), newest first, each as `GET /certification-runs/{run_id}` serves it: requested runs (`kind: certification`) and the canary evals a deployment schedules (`kind: canary`, #234), with a completed canary's `outcome` (`held`, `inconclusive` or `missed`; null on a certification run and on an unfinished one). A `missed` canary's `id` is the stale certification's `invalidated_by_run_id`. Narrowed by `fingerprint`, `profile_id`, `story_id`, `kind` and `status` when given (ANDed; a repeated `kind` or `status` matches any of its values). `cursor` continues a page from its `next_cursor` (null past the last page). An invalid filter is 422 `validation_error` at its field.",
+        "operationId": "list_certification_runs",
+        "parameters": [
+          {
+            "description": "A configuration fingerprint.",
+            "in": "query",
+            "name": "fingerprint",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^sha256:[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A configuration fingerprint.",
+              "title": "Fingerprint"
+            }
+          },
+          {
+            "description": "A profile's id.",
+            "in": "query",
+            "name": "profile_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A profile's id.",
+              "title": "Profile Id"
+            }
+          },
+          {
+            "description": "A story's id (a story's run).",
+            "in": "query",
+            "name": "story_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A story's id (a story's run).",
+              "title": "Story Id"
+            }
+          },
+          {
+            "description": "Only runs of this kind (repeatable; any may match).",
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "certification",
+                      "canary"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only runs of this kind (repeatable; any may match).",
+              "title": "Kind"
+            }
+          },
+          {
+            "description": "Only runs in this status (repeatable; any may match).",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "enum": [
+                      "queued",
+                      "running",
+                      "completed",
+                      "failed"
+                    ],
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Only runs in this status (repeatable; any may match).",
+              "title": "Status"
+            }
+          },
+          {
+            "description": "At most this many.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "At most this many.",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's next_cursor.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CertificationRunPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List certification runs",
+        "tags": [
+          "profiles"
+        ]
+      }
+    },
     "/certification-runs/{run_id}": {
       "get": {
         "description": "A certification run: what it certifies (fingerprint, profile version, story) and runs, its `status` (`queued`, `running`, `completed`, `failed`), its estimate, its `report` summary (per suite and per floor: passed, failed, insufficient) once it ran, and the `certification_id` it recorded (null when no floor passed or the run failed). 404 `certification_run_not_found`.",
@@ -74308,7 +75458,7 @@
     },
     "/engine-profiles": {
       "get": {
-        "description": "Profiles at their latest version, newest first, presets included, `limit` at a time; `cursor` (a page's `next_cursor`) continues. Deleted profiles are listed only with `include_deleted=true`. `owner` and `relation` (`name:principal`, or `name:` for any principal; repeatable, all must hold) narrow the list only when a request asks: they gate nothing (FR-AUTH-8).",
+        "description": "Profiles at their latest version, newest first, presets included, `limit` at a time; `cursor` (a page's `next_cursor`) continues. Deleted profiles are listed only with `include_deleted=true`. `owner` and `relation` (`name:principal`, or `name:` for any principal; repeatable, all must hold) narrow the list only when a request asks: they gate nothing (FR-AUTH-8). Every item carries its `quality` (FR-PROF-16, #789), the same `{fingerprint, status, floors_met}` `GET /engine-profiles/{id}` reads for it.",
         "operationId": "list_profiles",
         "parameters": [
           {
@@ -83790,7 +84940,7 @@
         ]
       },
       "post": {
-        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability the story does not have on is 422 `validation_error`. On a backfill `paused_for_conflicts` (#230) it resumes instead: without `ignore_warnings`, 200 `applied: false` with `conflicts_open` and the open `conflicts` (nothing changes); with it the backfill completes and every open conflict becomes `uncertain` (`conflicts_made_uncertain`): an open thunk where the target configuration runs commitment. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
+        "description": "A gap fill (FR-PROF-9): re-derive, from the stored transcript and never regenerating anything, the data of the capabilities the story's configuration has on (or `capabilities`, a subset of them) over the turns they do not cover. Without `ignore_warnings` the answer is the preview (`backfill: {needed, estimate, range, capabilities}`) and nothing changes; with it the backfill is queued: 202 with `started`. 409 `nothing_to_backfill` when every capability covers the story's turns, 409 `backfill_in_progress` while one runs; a capability outside the story's `gap_fillable` (`GET /stories/{id}/effective-config`, #790) is 422 `validation_error` naming it in `details.not_enabled`. On a backfill `paused_for_conflicts` (#230) it resumes instead: without `ignore_warnings`, 200 `applied: false` with `conflicts_open` and the open `conflicts` (nothing changes); with it the backfill completes and every open conflict becomes `uncertain` (`conflicts_made_uncertain`): an open thunk where the target configuration runs commitment. While a backfill runs the story is paused: every truth-changing call is 409 `story_paused` with `cause: backfill` and its progress, and reads are served. Its rows are visible only once it completes, all at once.",
         "operationId": "start_backfill",
         "parameters": [
           {
@@ -87180,7 +88330,7 @@
     },
     "/stories/{story_id}/effective-config": {
       "get": {
-        "description": "The story's effective configuration (FR-PROF-5,16): `deployment_defaults` (every delivered setting at the deployment's default, `profile_defaults` in `/admin/settings`), the engine profile and the version it runs on (the profile's latest, or with `pinned` an earlier one it kept because a data-producing edit could not apply to its history), its `overrides` (the settings it overrides, with their `revision`), `effective`: every delivered setting at its effective value (the defaults, then the profile's version, then the overrides, validated as a whole), the configuration's `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables and its `quality_status` (`uncertified` until a certification matches the fingerprint). A turn captures this configuration when it starts and runs under it to the end.",
+        "description": "The story's effective configuration (FR-PROF-5,16): `deployment_defaults` (every delivered setting at the deployment's default, `profile_defaults` in `/admin/settings`), the engine profile and the version it runs on (the profile's latest, or with `pinned` an earlier one it kept because a data-producing edit could not apply to its history), its `overrides` (the settings it overrides, with their `revision`), `effective`: every delivered setting at its effective value (the defaults, then the profile's version, then the overrides, validated as a whole), the configuration's `fingerprint` (`sha256:` over the profile version, each purpose's model and every quality-relevant setting, prompt templates included), the `capabilities` it enables, `gap_fillable`: the ones a gap fill (`POST /stories/{id}/backfill` with `capabilities`) accepts, sorted, with no `:mode` suffix (#790), and its `quality_status` (`uncertified` until a certification matches the fingerprint). A turn captures this configuration when it starts and runs under it to the end.",
         "operationId": "get_effective_config",
         "parameters": [
           {
@@ -91949,7 +93099,7 @@
     },
     "/stories/{story_id}/outbox": {
       "get": {
-        "description": "Every write-capable external effect the story committed, whatever its status (#679): `intended`, `claimed`, `confirmed`, `failed`, `unknown`, `cancelled`, or `compensated` once a compensating effect answers it (`compensated_by`). Each row has its outbox id (the provider idempotency key), provider and value, the effect, where it was declared (`position`) and its timeline `membership`, whether a story-owned change waits on it (`contingent`), the row it `compensates`, its send `attempts` and times, and the latest recorded `outcome`. A row an erasure redacted carries ids, provider, status and position only (`redacted`). A page by id (`after_id`; `limit` at most 200), filtered by `status` and `provider`. An omniscient read: 422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character. 404 for an unknown story.",
+        "description": "Every write-capable external effect the story committed, whatever its status (#679): `intended`, `claimed`, `confirmed`, `failed`, `unknown`, `cancelled`, or `compensated` once a compensating effect answers it (`compensated_by`). Each row has its outbox id (the provider idempotency key), provider and value, the effect, where it was declared (`position`) and its timeline `membership`, whether a story-owned change waits on it (`contingent`), the row it `compensates`, its send `attempts` and times, and the latest recorded `outcome`. An imported row parked `imported_unsettled` that the author resolved (`POST /stories/{id}/reconciliation/{outbox_id}/resolve`) keeps that status and carries `resolution` (#777): `kind` (the request's `resolution`, `applied_elsewhere` or `abandoned`), `resolved_at` and the `operation_id` of the slot operation that recorded it; every other row has `resolution: null`. Like the closed listing, it stays set when a truncation or swap takes the resolving slot out of the active timeline. A row an erasure redacted carries ids, provider, status, position and `resolution` only (`redacted`). A page by id (`after_id`; `limit` at most 200), filtered by `status` and `provider`. An omniscient read: 422 `viewpoint_unresolved` when no viewpoint is named, 403 `omniscient_required` for a character. 404 for an unknown story.",
         "operationId": "list_outbox",
         "parameters": [
           {
@@ -94240,7 +95390,7 @@
     },
     "/stories/{story_id}/reconciliation/{listing}/resolve": {
       "post": {
-        "description": "Resolve a listed consumer-applied effect (FR-EXT-22; #661): one a read-only provider's consumer applies, listed by its `request_id`. `resolution` is `applied_elsewhere` (the consumer applied it) or `abandoned` (it never will be). Nothing is dispatched and no outcome is recorded: the listing is closed and a `reconciliation_resolved` audit event is written, at the next inter-turn slot. 404 `not_found` (`reason: no_listing`) for anything but a listed consumer-applied effect (an outbox row takes settle-now or compensate); 409 `module_off` while the story's configuration has States off.",
+        "description": "Resolve a listing that nothing dispatches (FR-EXT-22): a listed consumer-applied effect (#661), one a read-only provider's consumer applies, by its `request_id`; or (#251) an imported outbox row parked `imported_unsettled`, by its `outbox_id`. `resolution` is `applied_elsewhere` (it was applied outside Epistrel) or `abandoned` (it never will be). Nothing is dispatched and no outcome is recorded: the listing is closed and a `reconciliation_resolved` audit event is written, at the next inter-turn slot. A parked row keeps its `imported_unsettled` status. 404 `not_found` (`reason: no_listing`) for any other outbox row (it takes settle-now or compensate), an unknown id, or a listing already resolved; 409 `module_off` while the story's configuration has States off.",
         "operationId": "resolve_listing",
         "parameters": [
           {
@@ -94259,12 +95409,12 @@
             }
           },
           {
-            "description": "The listed consumer-applied effect's request id (its `requested_effect`'s `effect_id`, the listing's `request_id`; a ULID).",
+            "description": "The listing to resolve (a ULID): a listed consumer-applied effect's request id (its `requested_effect`'s `effect_id`, the listing's `request_id`), or the `outbox_id` of an outbox row parked `imported_unsettled` (#251).",
             "in": "path",
             "name": "listing",
             "required": true,
             "schema": {
-              "description": "The listed consumer-applied effect's request id (its `requested_effect`'s `effect_id`, the listing's `request_id`; a ULID).",
+              "description": "The listing to resolve (a ULID): a listed consumer-applied effect's request id (its `requested_effect`'s `effect_id`, the listing's `request_id`), or the `outbox_id` of an outbox row parked `imported_unsettled` (#251).",
               "examples": [
                 "01J9Z8Q4N5V6W7X8Y9Z0A1B2F8"
               ],
@@ -94441,7 +95591,7 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "Resolve a listed consumer-applied effect",
+        "summary": "Resolve a listed consumer-applied effect or parked imported row",
         "tags": [
           "stories"
         ]

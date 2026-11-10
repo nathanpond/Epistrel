@@ -3225,6 +3225,16 @@ def _steps() -> list[Step]:
             lambda ids: Rest("GET", f"/certification-runs/{MISSING_RUN}"),
             lambda e, ids: _dumped(e.get_certification_run(CTX, MISSING_RUN)),
         ),
+        # #776: the runs list (none recorded here: an empty page on both surfaces).
+        Step(
+            "list_certification_runs",
+            lambda ids: Rest(
+                "GET", "/certification-runs", params={"kind": "canary", "status": "completed"}
+            ),
+            lambda e, ids: _dumped(
+                e.list_certification_runs(CTX, kind=["canary"], status=["completed"])
+            ),
+        ),
         # -- a story's configuration (#109): a preview that writes nothing, and the read
         Step(
             "impact_preview",

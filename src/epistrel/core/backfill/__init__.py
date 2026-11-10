@@ -461,7 +461,7 @@ async def gap_fill(
             unknown = sorted(set(request.capabilities) - set(enabled))
             if unknown:
                 raise InvalidRequest(
-                    "a gap fill names capabilities the story's configuration has on",
+                    "a gap fill names capabilities it can't fill",
                     {"field": "body.capabilities", "not_enabled": unknown},
                 )
             wanted = {c: enabled[c] for c in request.capabilities}

@@ -6,7 +6,8 @@
   (``mutating=False``: no ``Idempotency-Key``, no expected revision).
 - ``GET /stories/{id}/effective-config``: the deployment's defaults, the profile and version the
   story runs on, its overrides, every delivered setting at its effective value, and the
-  configuration's fingerprint, capabilities and quality status.
+  configuration's fingerprint, capabilities, gap-fillable capabilities (#790) and quality
+  status.
 - ``GET /stories/{id}/guarantees`` (#132): the guarantee table of the story's effective
   configuration (FR-VERIFY-15, FR-PROF-12).
 - ``PUT /stories/{id}/engine-profile`` (#113): run the story under another profile.
@@ -66,8 +67,10 @@ EFFECTIVE_DESCRIPTION = (
     "its effective value (the defaults, then the profile's version, then the overrides, "
     "validated as a whole), the configuration's `fingerprint` (`sha256:` over the profile "
     "version, each purpose's model and every quality-relevant setting, prompt templates "
-    "included), the `capabilities` it enables and its `quality_status` (`uncertified` until a "
-    "certification matches the fingerprint). A turn captures this configuration when it starts "
+    "included), the `capabilities` it enables, `gap_fillable`: the ones a gap fill "
+    "(`POST /stories/{id}/backfill` with `capabilities`) accepts, sorted, with no `:mode` suffix "
+    "(#790), and its `quality_status` (`uncertified` until a certification matches the "
+    "fingerprint). A turn captures this configuration when it starts "
     "and runs under it to the end."
 )
 GUARANTEES_DESCRIPTION = (

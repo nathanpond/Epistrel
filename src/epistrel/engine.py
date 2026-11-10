@@ -7049,6 +7049,44 @@ class Engine:
         return await certification_run.get_run(self.db, run_id)
 
     @refuses_nul()
+    async def list_certification_runs(
+        self,
+        ctx: RequestContext,
+        *,
+        fingerprint: str | None = None,
+        profile_id: str | None = None,
+        story_id: str | None = None,
+        kind: str | Sequence[str] | None = None,
+        status: str | Sequence[str] | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> certification_run.CertificationRunPage:
+        """Certification runs, newest first (#776): requested ones (``kind`` ``certification``)
+        and canaries (``canary``, each with its ``outcome`` once completed), narrowed by every
+        filter given (ANDed; a repeated ``kind`` or ``status`` matches any of its values), paged
+        as ``list_certifications`` pages. An unknown ``kind`` or ``status`` is 422
+        ``validation_error`` at its field."""
+        for field, values, allowed in (
+            ("kind", kind, typing.get_args(certification_run.RunKind)),
+            ("status", status, typing.get_args(certification_run.RunStatus)),
+        ):
+            unknown = sorted(set(values or ()) - set(allowed))
+            if unknown:
+                raise InvalidRequest(
+                    f"unknown {field}", {"field": f"query.{field}", "allowed": list(allowed)}
+                )
+        return await certification_run.list_runs(
+            self.db,
+            fingerprint=fingerprint,
+            profile_id=profile_id,
+            story_id=story_id,
+            kinds=tuple(kind or ()),
+            statuses=tuple(status or ()),
+            limit=limit,
+            cursor=cursor,
+        )
+
+    @refuses_nul()
     async def list_certifications(
         self,
         ctx: RequestContext,
@@ -7234,7 +7272,8 @@ class Engine:
         """Profiles at their latest version, newest first, presets included; deleted ones only
         with ``include_deleted``. ``owner`` and ``relation`` (``name:principal``, or ``name:``
         for any principal) narrow the list only when given (FR-AUTH-8); ``preset`` (#227) to
-        the presets (``true``) or the others (``false``)."""
+        the presets (``true``) or the others (``false``). Every item carries its ``quality``
+        under the deployment's models (#789), as ``get_profile`` reads it."""
         return await profiles.list_profiles(
             self.db,
             owner=ownership.owner_filter(owner),
@@ -7243,6 +7282,7 @@ class Engine:
             limit=limit,
             cursor=cursor,
             preset=preset,
+            facts=await self._runtime_facts(),
         )
 
     async def update_profile(
@@ -7437,7 +7477,8 @@ class Engine:
         profile and the version it runs on (``pinned`` when an unavailable upgrade kept an
         earlier one), its overrides with their revision, every delivered setting at its
         effective value (defaults, then the profile's version, then the overrides), the
-        fingerprint, the capabilities and the quality status. 404 for an unknown story."""
+        fingerprint, the capabilities, the ones a gap fill accepts (``gap_fillable``, #790) and
+        the quality status. 404 for an unknown story."""
         return await effective.read(self.db, story_id, await self._runtime_facts())
 
     @refuses_nul()

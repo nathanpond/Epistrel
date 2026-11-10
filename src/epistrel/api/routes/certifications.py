@@ -4,6 +4,7 @@
   estimate a certification run of a profile version or a story's effective configuration, or
   with ``confirm`` queue it (202 ``{run_id, job_id}``).
 - ``GET /certification-runs/{id}``: a run's status, estimate and report summary.
+- ``GET /certification-runs``: the runs, requested and canary, newest first (#776).
 - ``GET /certifications`` and ``GET /certifications/{id}``: the certification records.
 - ``POST /admin/certifications/import``: import a hand run's record (``admin_router``).
 - ``POST /admin/certifications/{id}/invalidate``: declare a certification stale (#234).
@@ -48,7 +49,10 @@ from epistrel.core.profiles.fingerprint import FINGERPRINT_PATTERN
 from epistrel.orchestrator.jobs.handlers.certification_run import (
     CertificationRun,
     CertificationRunAnswer,
+    CertificationRunPage,
     CertificationRunRequest,
+    RunKind,
+    RunStatus,
 )
 
 router = APIRouter(tags=[PROFILES_TAG])
@@ -210,6 +214,60 @@ async def get_certification_run(
     run_id: RunId, ctx: ContextDep, engine: EngineDep
 ) -> CertificationRun:
     return await engine.get_certification_run(ctx, run_id)
+
+
+@router.get(
+    "/certification-runs",
+    response_model=CertificationRunPage,
+    operation_id="list_certification_runs",
+    summary="List certification runs",
+    description=(
+        "Certification runs (FR-PROF-17; #776), newest first, each as `GET "
+        "/certification-runs/{run_id}` serves it: requested runs (`kind: certification`) and "
+        "the canary evals a deployment schedules (`kind: canary`, #234), with a completed "
+        "canary's `outcome` (`held`, `inconclusive` or `missed`; null on a certification run "
+        "and on an unfinished one). A `missed` canary's `id` is the stale certification's "
+        "`invalidated_by_run_id`. Narrowed by `fingerprint`, `profile_id`, `story_id`, `kind` "
+        "and `status` when given (ANDed; a repeated `kind` or `status` matches any of its "
+        "values). `cursor` continues a page from its `next_cursor` (null past the last page). "
+        "An invalid filter is 422 `validation_error` at its field."
+    ),
+)
+async def list_certification_runs(
+    ctx: ContextDep,
+    engine: EngineDep,
+    fingerprint: Annotated[
+        str | None, Query(pattern=FINGERPRINT_PATTERN, description="A configuration fingerprint.")
+    ] = None,
+    profile_id: Annotated[
+        str | None, Query(pattern=ULID_PATTERN, description="A profile's id.")
+    ] = None,
+    story_id: Annotated[
+        str | None, Query(pattern=ULID_PATTERN, description="A story's id (a story's run).")
+    ] = None,
+    kind: Annotated[
+        list[RunKind] | None,
+        Query(description="Only runs of this kind (repeatable; any may match)."),
+    ] = None,
+    status: Annotated[
+        list[RunStatus] | None,
+        Query(description="Only runs in this status (repeatable; any may match)."),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=200, description="At most this many.")] = 50,
+    cursor: Annotated[
+        str | None, Query(pattern=ULID_PATTERN, description="The previous page's next_cursor.")
+    ] = None,
+) -> CertificationRunPage:
+    return await engine.list_certification_runs(
+        ctx,
+        fingerprint=fingerprint,
+        profile_id=profile_id,
+        story_id=story_id,
+        kind=kind,
+        status=status,
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @router.get(

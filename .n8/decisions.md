@@ -13230,13 +13230,13 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** the problem predates #272 (`core/profiles/impact.py`) and lies outside its AC. CI was green on 7c6e955, so it does not block M8.
   **Issue:** #272, #794
 
-## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint)
+## Ad-hoc — 2026-11-07 (#760 moves every preset fingerprint) — reconciled by /n8-replan 2026-11-09 (M9)
 
 - **Change:** #760 edits five story-scoped prompt templates (`guardrail_check`, `directive_parse`, `rewrite_parse`, `age_repair`, `director_order`). `TEMPLATE_HASHES` therefore moves the Lite, Standard, Full and Max fingerprints. Standard, Full and Max on `claude-haiku-5-5` are **uncertified on main** from the M8 merge until M9 re-certifies them, and INDEX.md says so. The committed certification records stay as historical evidence.
   **Why:** the minors policy's subject list rendered on one line (#760). Per the owner's 2026-11-06 triage, this lands before M9's re-certification.
   **Affects:** M9 (re-certification, floor work #735 and #747–#750), #257 (its template edit moves the fingerprints again; it follows #760), and #271 (if hosted on Anthropic, it depends on #761, which is blocked on the owner's `strict` decision).
 
-## Ad-hoc — 2026-11-07 (#761: Anthropic structured calls go strict)
+## Ad-hoc — 2026-11-07 (#761: Anthropic structured calls go strict) — reconciled by /n8-replan 2026-11-09 (M9)
 
 - **Change:** #761 shipped the owner's option 2 instead of the planned `strict: false`. Structured calls to api.anthropic.com now send `json_schema.strict: true` with a wire schema that has its bounds stripped (`provider_schema`). They get constrained decoding where they used to probe once and then fall back to parse-validate-retry. `DirectiveParseResult` (free-form `qualifiers` dict) stays on parse-validate-retry there. Every other endpoint's request is unchanged. The request shape is not a fingerprint input.
   **Why:** api.anthropic.com refuses a `json_schema` unless it is `strict: true`, and under strict it refuses bounds keywords. Found live 2026-11-07, decided by the owner on #761.
@@ -13351,7 +13351,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Why:** #814 suggested either cut. The removal cut is one line and leaves no gap after the list. Cost if wrong: none; tests only.
   **Issue:** #814, #810
 
-## Ad-hoc — 2026-11-09
+## Ad-hoc — 2026-11-09 — reconciled by /n8-replan 2026-11-09 (M9)
 
 - **Change:** four Console-requested API additions were pulled into M9 ahead of its tuning work and built on `milestone/m9-console-requests`, plus #787's docs fix:
   - `quality` on every `GET /engine-profiles` item (#789);
@@ -13366,3 +13366,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - M9/M10 plans that assume the old `OutboxRow`, `EffectiveConfig`, profile-list or `CertificationRun` shapes.
   - The Console's recorded fixtures (`docs/openapi.json` changed).
   - Next release notes.
+
+## /n8-replan M9 — 2026-11-09
+
+- **Decision:** two new M9 stories. #818 is the re-certification baseline: Standard/Full/Max on `claude-haiku-5-5` at the current fingerprints, `--recalibrate`, owner hand run. #819 is the exit certification: Lite/Standard/Full/Max at the final M9 fingerprints, which is M9's DoD evidence.
+  **Why:** #760 left the presets uncertified on main, and #761 changed the structured-call path. So every floor bug's evidence (#735, #540, #528, #529, #747–#750, #474) comes from configurations that no longer ship. Cost if wrong: tuning against stale figures.
+  **Issue:** #818, #819
+- **Decision (owner):** ADR-179 is to be amended so that a certified model is one with records **at the presets' current fingerprints**, with a guard test. Both are delivered by #818. Today stale records alone satisfy both the ADR and `test_committed_certifications`.
+  **Issue:** #818
+- **Decision (owner):** Lite is in the exit run (#819), because Lite's NFR-QUAL-7 floor gates from M9 (ADR-166). #502 → M10, blocked by #471. #812 → M9, non-blocking, sev:low. Agent triage, applied with the owner's approval: #793 → M10 (an engine-only retrieval budget) and #785 → M9 (measure, then config mitigation).
+- **Decision:** the edges are #530 → #818 ← #737, then #818 → {#735, #540, #528, #529, #747–#750, #474}, then all of those plus #754 → #819. #530 → {#474, #540, #747–#749}, and #737 → {#735, #750}.
+  **Why:** the owner's earlier rule ("#530 lands before any M9 floor verdict") now lives in edges. Journalled observations are scored at play time.
+- **Issues touched:** #474, #502, #528, #529, #530, #540, #602, #735, #737, #747, #748, #749, #750, #754, #785, #793 and #812 (a body section and a comment on each); the M9 milestone description. Ledger entries reconciled: the 2026-11-07 #760 entry, the 2026-11-07 #761 entry, and the 2026-11-09 Console requests entry (recorded IN-BY-REQUEST in M9's description).

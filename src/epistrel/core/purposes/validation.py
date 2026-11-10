@@ -24,7 +24,7 @@ and ``const`` on scalars; ``description`` and ``title``; ``minLength``/``maxLeng
 ``$ref``/``$defs``, ``anyOf``/``oneOf``/``allOf``/``not``, type lists, ``nullable`` and every
 other keyword are refused. The root object is depth 1, and each nested object or ``items``
 level adds 1, up to ``SCHEMA_MAX_DEPTH``. The schema is at most ``SCHEMA_MAX_BYTES`` as
-canonical JSON (sorted keys, compact) and must compile to a pydantic model
+canonical JSON (sorted keys, no whitespace) and must compile to a pydantic model
 (``core.purposes.output.output_model``).
 
 Every refusal is 422 ``validation_error`` whose ``details`` report the first fault as
@@ -192,7 +192,7 @@ def check_template(source: str, field: str) -> Template:
 
 
 def canonical_json(value: Any) -> str:
-    """``value`` as canonical JSON: sorted keys, compact separators, UTF-8 text."""
+    """``value`` as canonical JSON: sorted keys, no whitespace between tokens, UTF-8 text."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 

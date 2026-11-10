@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -170,7 +170,7 @@ class PurposeReplace(_VersionFields):
         },
     )
 
-    expected_version: int = Field(
+    expected_version: StrictInt = Field(
         ge=1,
         le=VERSION_MAX,
         description="The latest version the edit was based on (409 `version_stale` otherwise).",

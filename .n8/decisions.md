@@ -13502,3 +13502,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 3):** C-03's parity steps gain the six consumer-purpose operations: register, replace, get, versions, list, archive. They are placed before the provider steps, so `delete_external_provider` stays the last step, which `test_c_03_bites_on_a_method_without_a_route_or_step` relies on. `PurposeReplace` gains an OpenAPI example (C-01's raw-body example check).
   **Why:** C-15's surface and replay checks and C-01's example check failed locally without them. They require every Engine operation to have a REST and library parity step and every body to have an example.
   **Issue:** #824
+- **Decision (Rule 3):** `PurposeReplace.expected_version` is typed `StrictInt`, and two docstrings in `core/purposes/validation.py` say "no whitespace" where they said "compact".
+  **Why:** CI run 42862656994's `test (rest)` shard failed two checks. `test_library_strict_inputs` requires every library input integer to be strict (#427), and `test_no_compaction_term` bans the word (ADR-175).
+  **Issue:** #824

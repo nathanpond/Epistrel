@@ -157,7 +157,7 @@ STRUCTURED_MODEL_CALLS = 4 + 5 * STRUCTURED_RENDERS + STRUCTURED_GUARDRAIL_CALLS
 """NFR-PERF-6's ``4 + 5 per primary + G`` (#156's structured default) at B = 2 and G = 2: a
 total cap that includes the reserved guardrail calls, as every explicit cap is (#113)."""
 STRUCTURED_DEADLINE_MS = 60_000
-"""A two-render turn's deadline: 45 s (M4's) raised to 60 s (#454 leaves model speed to M9)."""
+"""A two-render turn's deadline: 45 s (M4's) raised to 60 s (#454 leaves model speed to M11)."""
 
 STRUCTURED_M5_SETTINGS: MappingProxyType[str, Any] = MappingProxyType(
     {

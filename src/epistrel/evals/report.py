@@ -531,7 +531,7 @@ HOW_TO_READ = """\
   model-error row (NFR-QUAL-1's zero-leak suites) it is counted and reported on that row, which
   is report-only, and it is not scored as a disclosure: the suite's floors are judged on its
   completed cases, and a zero-tolerance metric with fewer than 300 completed cases on a seed is
-  *insufficient evidence*, never a pass. Model-robustness floors belong to M9 (ADR-164). In
+  *insufficient evidence*, never a pass. Model-robustness floors belong to M11 (ADR-164). In
   every other suite a model error counts as a bad observation on each of its metrics. Timings
   are informational: the model may share its machine with other work.
 - A floor applies to the configuration this fingerprint names (NFR-QUAL-11); any other

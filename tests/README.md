@@ -16,9 +16,9 @@ def test_i_10__event_log() -> None: ...
 
 - `part(milestone, requirements, *, interim_until=None)` — all three are **string literals**
   (the checker reads tests by AST and never imports them).
-- `milestone` is a §22 row (`M0`–`M9`) and says which milestone the part gates from. It does
+- `milestone` is a §22 row (`M0`–`M12`) and says which milestone the part gates from. It does
   not decide whether the test runs: every collected test runs in CI whatever its parts'
-  milestones, so a stub eval whose floor gates from M9 (ADR-164) still fails the build when it
+  milestones, so a stub eval whose floor gates from M11 (ADR-164) still fails the build when it
   breaks.
 - `requirements` lists what the part covers: IDs, `..` ranges and `,` lists, groups separated by `;`.
   Every ID must be defined in docs/03 and assigned to this milestone **or an earlier one**; naming a

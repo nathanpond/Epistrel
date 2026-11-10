@@ -1,5 +1,5 @@
-"""E-01: entailment accuracy, its M4, M5 and M9 parts (docs/04 §8; FR-VERIFY-1,2,3,5,
-NFR-QUAL-2; #157, #179; NFR-QUAL-2 gates from M9 per ADR-164, and these stub tests run in CI
+"""E-01: entailment accuracy, its M4, M5 and M11 parts (docs/04 §8; FR-VERIFY-1,2,3,5,
+NFR-QUAL-2; #157, #179; NFR-QUAL-2 gates from M11 per ADR-164, and these stub tests run in CI
 either way). The ``e01`` suite runs its labeled set (``evals/sets/entailment``) through #142's
 ``Verifier`` on the stub, scripted per case: both NFR-QUAL-2 rates are clear of their floors and
 the verdict accuracy is reported, the escalated residual apart. ``test_e_01__viewpoint`` (M5)
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.part("M4", "FR-VERIFY-1,3")
-@pytest.mark.part("M9", "NFR-QUAL-2")
+@pytest.mark.part("M11", "NFR-QUAL-2")
 async def test_e_01(pg_url: str, engine: AsyncEngine) -> None:
     """At least 400 labeled claims, about 30 % of them the fuzzy residual: on the stub, the
     false-contradiction rate (over the claims not labeled contradicted) and the false-support
@@ -71,7 +71,7 @@ async def test_e_01(pg_url: str, engine: AsyncEngine) -> None:
 
 
 @pytest.mark.part("M5", "FR-VERIFY-2,5")
-@pytest.mark.part("M9", "NFR-QUAL-2")
+@pytest.mark.part("M11", "NFR-QUAL-2")
 async def test_e_01__viewpoint(pg_url: str, engine: AsyncEngine) -> None:
     """At least 300 labeled (claim, canon, viewpoint) cases, one third each lies, false beliefs
     and belief-consistent claims (#166's AC5): on the stub, two seeds, no claim is repaired (the

@@ -1,4 +1,4 @@
-"""E-05: salience detection (docs/04 §8; FR-COMMIT-3, NFR-QUAL-4; #157; NFR-QUAL-4 gates from M9
+"""E-05: salience detection (docs/04 §8; FR-COMMIT-3, NFR-QUAL-4; #157; NFR-QUAL-4 gates from M11
 per ADR-164, and this stub test runs in CI either way). The ``e05`` suite runs
 its labeled renders (``evals/sets/salience``) through #146's ``detect_salience`` on the stub,
 scripted per case: recall and precision clear their floors, with F-beta (false negatives x3)
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.part("M4", "FR-COMMIT-3")
-@pytest.mark.part("M9", "NFR-QUAL-4")
+@pytest.mark.part("M11", "NFR-QUAL-4")
 async def test_e_05(pg_url: str, engine: AsyncEngine) -> None:
     """300 labeled renders, 180 with a salient span: on the stub every labeled span is found
     and every predicted span is a labeled one (recall and precision 100 % on both seeds; both

@@ -13378,3 +13378,13 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the edges are #530 → #818 ← #737, then #818 → {#735, #540, #528, #529, #747–#750, #474}, then all of those plus #754 → #819. #530 → {#474, #540, #747–#749}, and #737 → {#735, #750}.
   **Why:** the owner's earlier rule ("#530 lands before any M9 floor verdict") now lives in edges. Journalled observations are scored at play time.
 - **Issues touched:** #474, #502, #528, #529, #530, #540, #602, #735, #737, #747, #748, #749, #750, #754, #785, #793 and #812 (a body section and a comment on each); the M9 milestone description. Ledger entries reconciled: the 2026-11-07 #760 entry, the 2026-11-07 #761 entry, and the 2026-11-09 Console requests entry (recorded IN-BY-REQUEST in M9's description).
+
+## Ad-hoc — 2026-11-09 (milestone resequence; ADR-184)
+
+- **Change:** the milestones after M8 are resequenced (ADR-184). **M9 — Consumer requests** (Survivor #805–#808: benching a character that keeps its memories, safety-checked entity images outside a story, a higher cast cap than 20, plugins/custom model purposes) is new and unplanned. **M10 — Bug fixes & testing** keeps its number. **M11 — Performance tuning** is everything the old M9 was; NFR-QUAL-2..4, 7 and 14 gate from M11 (docs/03 §22, docs/04 parts and §15, the `part("M11", …)` markers). **M12 — Audit** is last.
+  **Why:** the owner's decision of 2026-11-09. Tuning ends in an exit certification at the presets' final fingerprints (ADR-179, #819), and any later change that moves a fingerprint or a prompt un-certifies them again, as #760 did to M7's certification. Several consumer requests change what tuning measures, so tuning and certification go last, before the audit.
+  **Affects:**
+  - GitHub milestones: "M9: Performance tuning" (#12) and its issues (#818, #819, #474, #502, #528, #529, #530, #540, #588, #602, #603, #685, #735, #737, #747–#750, #754, #785, #812 and the rest) become M11; a new M9 "Consumer requests" takes #805–#808; M10 keeps its issues; the Audit milestone becomes M12. The M9 description written by `/n8-replan M9` (2026-11-09) now describes M11.
+  - #819's DoD ("the final M9 fingerprints") now means the final fingerprints after M9 and M10. #818's ADR-179 amendment, when it lands, amends M11's exit evidence.
+  - #502 and #793, sent to M10 on 2026-11-09, now land before tuning rather than after it.
+  - Any plan or memory that says "M9" for tuning or "M11" for the audit.

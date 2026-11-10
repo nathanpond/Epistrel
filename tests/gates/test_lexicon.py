@@ -122,7 +122,7 @@ def test_table_validation() -> None:
     with pytest.raises(LexiconError, match="two milestones"):
         parse_lexicon(table, ROWS)
     with pytest.raises(LexiconError, match="not a §22 milestone"):
-        parse_lexicon(table.replace("| M4 | scenario |", "| M12 | other |"), ROWS)
+        parse_lexicon(table.replace("| M4 | scenario |", "| M99 | other |"), ROWS)
 
 
 def test_cli_fails_on_violation_and_passes_today(tmp_path: Path) -> None:

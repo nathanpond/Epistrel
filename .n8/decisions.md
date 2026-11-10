@@ -13430,3 +13430,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   - `present` is accepted on Lite.
 - **Executor simulation:** 220 guesses in pass one, then 71 in pass two (#828, #831, #832). **Coverage check:** 15 of 15 items covered, with no scope question. The gaps found on the first run were closed before filing.
 - **Milestone descriptions:** M9 (#14) got outcomes, the map, phases, the coverage check and the executor simulation. The M9 emphases line in M12 Audit (#11) was refined (still provisional, after M11).
+
+## /n8-exec M9 — 2026-11-10
+
+- **Decision:** PR #822 (ADR-184, the resequence) was squash-merged by the orchestrator as 377bef9, with 25 of 25 checks green, before any M9 story started.
+  **Why:** every M9 story names #822 as its precondition: its §22 `M9` row is where the stories' new FR ids go. The owner chose "you merge it when green" at the start of the run (2026-11-10). The worktree `.claude/worktrees/agent-ad9c315aeca3761d6` and the branch `docs/milestone-resequence` were removed after the merge.
+  **Issue:** M9 (#14)
+- **Decision:** the full-suite gate per story is CI's sharded run on the draft milestone PR, not a local serial run. Each story runs its own tests, the tests of the modules it touched, ruff, mypy, lint-imports and the `tools.gates` checks locally before it pushes. The CI wait budget is 60 minutes, not the skill's 30, because this repo's CI takes 40–50 minutes. Stories run one at a time, each in its own background agent, in the worktree `.claude/worktrees/m9`, in the order #828, #824, #825, #826, #827, #830, #831, #832, #829.
+  **Why:** this is the pattern M8 used and it worked. A serial local suite takes more than an hour, and the 12-shard CI run is the same gate. #829 goes last so its large-cast guidance can describe benched characters (#831 and #832), which its planner line anticipates.
+  **Issue:** M9 (#14)

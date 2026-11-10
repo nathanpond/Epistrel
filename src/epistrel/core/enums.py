@@ -112,7 +112,8 @@ class RecordProvenance(StrEnum):
     """Where a structured record came from (#133; shared by ``facts`` and #135's memories):
     the author or the scenario's seed, the engine's consolidation, an in-world source, a
     render, the director or the player, an external authority (with its timestamp in the
-    record's reference), a resolution, or a backfill. Postgres enum ``record_provenance``."""
+    record's reference), a resolution, a backfill, or a consumer purpose's result stored as a
+    character's memory (#827). Postgres enum ``record_provenance``."""
 
     AUTHOR = "author"
     SEED = "seed"
@@ -124,6 +125,9 @@ class RecordProvenance(StrEnum):
     EXTERNAL = "external"
     RESOLUTION = "resolution"
     BACKFILL = "backfill"
+    CONSUMER_PURPOSE = "consumer_purpose"
+    """#827 (FR-MODEL-17): a consumer purpose's result, stored as its viewpoint character's
+    memory; trust tier ``in_world``."""
 
 
 class FactAuthority(StrEnum):

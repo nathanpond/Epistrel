@@ -4893,6 +4893,7 @@ class Engine:
         version: int | None = None,
         viewpoint_character_id: str | None = None,
         deadline_ms: int = purpose_call.DEFAULT_DEADLINE_MS,
+        store_as_memory: purpose_story.StoreAsMemory | Mapping[str, Any] | None = None,
     ) -> purpose_call.PurposeResult:
         """Call consumer purpose ``name`` inside story ``story_id`` (FR-MODEL-16; REST ``POST
         /stories/{id}/purposes/{name}/calls``), optionally with one character's viewpoint
@@ -4905,8 +4906,23 @@ class Engine:
         ``module_off`` for a viewpoint on a Lite story; 409 ``erased_subject_referenced`` for an
         input naming an erased subject; then #825's refusals (``Engine.call_purpose``). The
         ``Idempotency-Key`` (``ctx``) answers a repeat from the first result, with no model
-        call."""
+        call.
+
+        ``store_as_memory`` (``{text_field}``, FR-MODEL-17) also stores the named output
+        field's text as the viewpoint character's memory: an inter-turn slot write after the
+        unlocked model call, which bumps the revision and answers the ``memory_id``. 422
+        without a viewpoint (``viewpoint_required``) or for a ``text_field`` that is no
+        top-level string field (``text_field_invalid``); 409 ``module_off`` without partitions
+        or episodic memory, ``story_paused`` or ``revision_conflict``; 423 ``story_busy``
+        while a turn is in flight; 422 ``memory_text_empty`` or ``memory_text_too_long``, and
+        409 ``erased_subject_referenced`` for a text naming an erased subject, each with
+        nothing stored and no output returned."""
         principal = self.require_principal(ctx)
+        store = (
+            store_as_memory.model_dump()
+            if isinstance(store_as_memory, purpose_story.StoreAsMemory)
+            else store_as_memory
+        )
         try:
             request = purpose_story.StoryPurposeCall.model_validate(
                 {
@@ -4914,15 +4930,17 @@ class Engine:
                     "version": version,
                     "viewpoint_character_id": viewpoint_character_id,
                     "deadline_ms": deadline_ms,
+                    "store_as_memory": store,
                 }
             )
         except ValidationError as exc:
             raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
         purpose_call.check_inputs(request.inputs)
-        return await self._keyed(
-            ctx,
-            f"story_purpose_call:{name}",
-            lambda _: purpose_story.call_story_purpose(
+
+        async def run(ctx: RequestContext) -> purpose_call.PurposeResult:
+            if request.store_as_memory is not None:
+                await self.check_expected_revision(ctx, story_id)
+            return await purpose_story.call_story_purpose(
                 self.db,
                 self.models,
                 story_id,
@@ -4930,7 +4948,13 @@ class Engine:
                 request,
                 principal=principal,
                 lexical=lexical_backend(self.settings.lexical_backend),
-            ),
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            f"story_purpose_call:{name}",
+            run,
             story_id=story_id,
             material={"story_id": story_id, "name": name, "body": _body(request)},
             codec_name="call_story_purpose",

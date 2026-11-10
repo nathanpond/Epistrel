@@ -2163,6 +2163,26 @@ class OutputPolicyViolation(EpistrelError):
     http_status = 422
 
 
+class MemoryTextEmpty(EpistrelError):
+    """A story-bound consumer purpose call asked to store its result as a memory
+    (``store_as_memory``, FR-MODEL-17; #827), and the output field it names is empty or only
+    whitespace: nothing is stored and no output is returned. ``details``: ``purpose``,
+    ``field`` (the output field)."""
+
+    code = "memory_text_empty"
+    http_status = 422
+
+
+class MemoryTextTooLong(EpistrelError):
+    """A story-bound consumer purpose call asked to store its result as a memory
+    (``store_as_memory``, FR-MODEL-17; #827), and the output field it names is longer than a
+    memory holds: nothing is stored and no output is returned. ``details``: ``purpose``,
+    ``field``, ``limit`` and ``actual`` (characters); never the text."""
+
+    code = "memory_text_too_long"
+    http_status = 422
+
+
 class ModelOutputInvalid(EpistrelError):
     """A consumer purpose's model gave no answer that validates against the purpose's output
     schema within its retries (FR-MODEL-15; #825). ``details``: ``purpose`` and ``reason``

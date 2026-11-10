@@ -262,6 +262,10 @@ class PurposeResult:
     timeline_revision: int | None = None
     """#826: a story-bound call's story revision, as it read the story (a call never moves
     it); ``None`` with no story."""
+    memory_id: str | None = None
+    """#827: the memory a story-bound call's ``store_as_memory`` wrote (FR-MODEL-17), its
+    ``timeline_revision`` then the revision its write left; ``None`` when nothing was
+    stored."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (FR-RESP-6)."""
 

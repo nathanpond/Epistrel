@@ -36330,7 +36330,7 @@
         "type": "object"
       },
       "RecordProvenance": {
-        "description": "Where a structured record came from (#133; shared by ``facts`` and #135's memories):\nthe author or the scenario's seed, the engine's consolidation, an in-world source, a\nrender, the director or the player, an external authority (with its timestamp in the\nrecord's reference), a resolution, or a backfill. Postgres enum ``record_provenance``.",
+        "description": "Where a structured record came from (#133; shared by ``facts`` and #135's memories):\nthe author or the scenario's seed, the engine's consolidation, an in-world source, a\nrender, the director or the player, an external authority (with its timestamp in the\nrecord's reference), a resolution, a backfill, or a consumer purpose's result stored as a\ncharacter's memory (#827). Postgres enum ``record_provenance``.",
         "enum": [
           "author",
           "seed",
@@ -36341,7 +36341,8 @@
           "player",
           "external",
           "resolution",
-          "backfill"
+          "backfill",
+          "consumer_purpose"
         ],
         "title": "RecordProvenance",
         "type": "string"
@@ -48070,6 +48071,29 @@
         "title": "StatusBody",
         "type": "object"
       },
+      "StoreAsMemory": {
+        "additionalProperties": false,
+        "description": "``store_as_memory``: store the call's result as its viewpoint character's memory\n(FR-MODEL-17).",
+        "examples": [
+          {
+            "text_field": "reason"
+          }
+        ],
+        "properties": {
+          "text_field": {
+            "description": "The output field whose text becomes the memory: a top-level `string` property of the called version's output schema.",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Text Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text_field"
+        ],
+        "title": "StoreAsMemory",
+        "type": "object"
+      },
       "StoredResultBody": {
         "description": "The stored response of the operation's ``Idempotency-Key``: its status and body.",
         "properties": {
@@ -50391,6 +50415,7 @@
             "enum": [
               "author",
               "backfill",
+              "consumer_purpose",
               "director",
               "external",
               "in_world",
@@ -50796,6 +50821,7 @@
             "enum": [
               "author",
               "backfill",
+              "consumer_purpose",
               "director",
               "external",
               "in_world",
@@ -54415,6 +54441,17 @@
             "title": "Inputs",
             "type": "object"
           },
+          "store_as_memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoreAsMemory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Store the result as the viewpoint character's memory (FR-MODEL-17): the named output field's text becomes one episodic memory of that character alone, at the story's head, and the call bumps the story's revision. Needs `viewpoint_character_id`, and a story that keeps per-character partitions and episodic memory."
+          },
           "version": {
             "anyOf": [
               {
@@ -54451,7 +54488,7 @@
         "type": "object"
       },
       "StoryPurposeCallBody": {
-        "description": "A story-bound consumer purpose call's answer: #825's ``{purpose, version, output, model,\nusage}``, the story's ``timeline_revision`` as the call read it (a call never moves it) and\nthe deployment ``config_revision`` it was routed by.",
+        "description": "A story-bound consumer purpose call's answer: #825's ``{purpose, version, output, model,\nusage}``, the story's ``timeline_revision`` (as the call read it, or the revision its\n``store_as_memory`` write left), the deployment ``config_revision`` it was routed by and the\nstored memory's id (#827).",
         "properties": {
           "config_revision": {
             "title": "Config Revision",
@@ -54467,6 +54504,18 @@
               }
             ],
             "title": "Idempotency Key"
+          },
+          "memory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The memory `store_as_memory` wrote (FR-MODEL-17); null when the call stored nothing.",
+            "title": "Memory Id"
           },
           "model": {
             "$ref": "#/components/schemas/CallModel"
@@ -54499,7 +54548,8 @@
           "version",
           "output",
           "model",
-          "usage"
+          "usage",
+          "memory_id"
         ],
         "title": "StoryPurposeCallBody",
         "type": "object"
@@ -97066,7 +97116,7 @@
     },
     "/stories/{story_id}/purposes/{name}/calls": {
       "post": {
-        "description": "Call the purpose as `POST /purposes/{name}/calls` does, inside the story (FR-MODEL-16): the story's content rating (its prompt guidance first in the system message), its effective policies and its cast's true ages gate the inputs and the output, the cast present at the latest scene counting for the minors policy. With `viewpoint_character_id`, the template's `viewpoint` is that character's viewpoint (`viewpoint.name`, and `viewpoint.text`: what it knows, believes and has seen, as its own render would show it; never what it does not know), and `story` holds `id`, `title`, `location`, `present` and `scene`; without one, `story` holds `id` and `title`. The call reads the story and never changes it: no lock, no revision, no event, so it runs while a turn is in flight. Routed by the deployment's model configuration, never the story's. 404 for an unknown story, purpose, version or character; 409 `story_archived`; 422 `validation_error` with `details.reason: player_has_no_context` for the player's character; 409 `module_off` for a viewpoint on a Lite story; 409 `erased_subject_referenced` for an input naming an erased subject; then the refusals of `POST /purposes/{name}/calls`.",
+        "description": "Call the purpose as `POST /purposes/{name}/calls` does, inside the story (FR-MODEL-16): the story's content rating (its prompt guidance first in the system message), its effective policies and its cast's true ages gate the inputs and the output, the cast present at the latest scene counting for the minors policy. With `viewpoint_character_id`, the template's `viewpoint` is that character's viewpoint (`viewpoint.name`, and `viewpoint.text`: what it knows, believes and has seen, as its own render would show it; never what it does not know), and `story` holds `id`, `title`, `location`, `present` and `scene`; without one, `story` holds `id` and `title`. Without `store_as_memory` the call reads the story and never changes it: no lock, no revision, no event, so it runs while a turn is in flight. With `store_as_memory: {text_field}` (FR-MODEL-17; it needs `viewpoint_character_id`, 422 `viewpoint_required` otherwise) the named output field's text is also stored as the viewpoint character's memory, its alone: after the unlocked model call, an inter-turn slot write at the story's head that takes the story's turn slot (423 `story_busy` while a turn is in flight), records a `purpose_memory_stored` event, bumps the revision and answers `memory_id`; 409 `module_off` without per-character partitions or episodic memory, 422 `text_field_invalid` (`details.reason`) for a field that is no top-level string, 422 `memory_text_empty` or `memory_text_too_long`, and 409 `erased_subject_referenced` for a text naming an erased subject, each storing nothing and returning no output. Routed by the deployment's model configuration, never the story's. 404 for an unknown story, purpose, version or character; 409 `story_archived`; 422 `validation_error` with `details.reason: player_has_no_context` for the player's character; 409 `module_off` for a viewpoint on a Lite story; 409 `erased_subject_referenced` for an input naming an erased subject; then the refusals of `POST /purposes/{name}/calls`.",
         "operationId": "call_story_purpose",
         "parameters": [
           {
@@ -97213,7 +97263,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`."
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "410": {
             "content": {
@@ -97233,7 +97283,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `output_policy_violation`, `template_render_error`, `validation_error`."
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `memory_text_empty`, `memory_text_too_long`, `output_policy_violation`, `template_render_error`, `validation_error`."
           },
           "423": {
             "content": {

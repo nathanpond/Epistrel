@@ -58,7 +58,7 @@ from tests.model_support import restored_model_config
 from tests.policy_support import rated_policy_rating, words
 from tests.profile_support import nest
 from tests.respond_support import new_story, respond_client
-from tests.story_support import WRITE, character, create
+from tests.story_support import WRITE, character, create, override
 
 OPERATOR = {**bearer(), "X-Epistrel-Principal": "p-operator"}
 LIBRARY = RequestContext(principal="p-operator")
@@ -1476,3 +1476,421 @@ async def test_i_29__m9_story_erased(pg_url: str, engine: AsyncEngine) -> None:
         finally:
             archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
             assert archived.status_code == 200, archived.text
+
+
+# -- a purpose result stored as the viewpoint character's memory (FR-MODEL-17; #827) ---------
+
+MEMORY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "memory": {"type": "string", "description": "What the character remembers."},
+        "score": {"type": "integer", "minimum": 0, "maximum": 10},
+        "detail": {
+            "type": "object",
+            "properties": {"note": {"type": "string"}},
+            "required": ["note"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["memory", "score", "detail"],
+    "additionalProperties": False,
+}
+"""An output whose ``memory`` field is a top-level string (``score`` and ``detail.note`` are
+not one)."""
+MEMORY_TEMPLATE = "Why did {{ viewpoint.name }} vote for {{ inputs.target }}?"
+REMEMBERED = "PELICAN-827"
+"""A unique word the stored memory carries; it must never reach a log line."""
+STORE = {"text_field": "memory"}
+
+
+def remembered(text: str = f"I voted for Briar because of the {REMEMBERED} pact.") -> str:
+    """A reply valid against ``MEMORY_SCHEMA``, as the model's JSON."""
+    return json.dumps({"memory": text, "score": 4, "detail": {"note": "n"}})
+
+
+def store_body(character_id: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "inputs": {"target": "Briar"},
+        "viewpoint_character_id": character_id,
+        "store_as_memory": STORE,
+        **fields,
+    }
+
+
+async def partitioned_story(
+    client: httpx.AsyncClient, *names: str, **fields: Any
+) -> tuple[str, dict[str, str]]:
+    """A story (the first name the player) under ``Structured (M4)`` with per-character
+    partitions (``seeded_partitions_support.partitioned_profile``)."""
+    story, ids = await new_story(client, *(names or ("Ash", "Briar", "Cato")), **fields)
+    profile = await sp.partitioned_profile(client, f"Partitions {new_ulid()[-6:]}")
+    assigned = await client.put(
+        f"/stories/{story}/engine-profile",
+        json={"profile_id": profile, "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert assigned.status_code == 200, assigned.text
+    return story, ids
+
+
+async def memories_of(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's consumer purpose memories, active or not."""
+    return await engine_rows(
+        engine,
+        "SELECT id, text, holder_character_id, character_id, visibility, provenance, "
+        "trust_tier, kind, fidelity, channel, membership, importance, proposition_ids, "
+        "participants, event_type, operation_id, source_event_ids FROM memories "
+        "WHERE story_id = :s AND provenance = 'consumer_purpose' ORDER BY id",
+        s=story_id,
+    )
+
+
+async def revision_of(engine: AsyncEngine, story_id: str) -> int:
+    return (await unchanged(engine, story_id))[0]
+
+
+@pytest.fixture
+async def memory_purpose(registered: tuple[Register, list[str]]) -> str:
+    """A live purpose whose output has a top-level string ``memory``."""
+    register, _ = registered
+    name = unique("remember")
+    made = await register(purpose_body(name, template=MEMORY_TEMPLATE, output_schema=MEMORY_SCHEMA))
+    assert made.status_code == 201, made.text
+    return name
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_isolation(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``store_as_memory`` writes the named output field as one episodic memory of the
+    viewpoint character alone: holder and visibility ``characters: [Briar]``, fidelity
+    ``content``, channel ``self``, provenance ``consumer_purpose`` (trust tier ``in_world``), the
+    text as given, no propositions, no event type, participants ``[Briar]`` and no importance
+    yet. It is written by an ``inter_turn`` slot operation at ``N⁺1`` that records one
+    ``purpose_memory_stored`` event holding identifiers only, and the call answers the memory's
+    id and the revision the write left (one more). Only that character remembers: Briar's
+    context (built by ``build_context``, through a viewpoint call) holds the memory, Cato's does
+    not. The memory's text never reaches a log.
+
+    Complement asserted: the same call without ``store_as_memory`` stores nothing, answers
+    ``memory_id: null`` and leaves the revision where it was."""
+    client, lib = served
+    name = memory_purpose
+    caplog.set_level(logging.DEBUG)
+    story, ids = await partitioned_story(client)
+    briar, cato = ids["Briar"], ids["Cato"]
+    before = await revision_of(engine, story)
+
+    lib.models.stub.script(name, [remembered()])
+    plain = await story_call(client, story, name, {**store_body(briar), "store_as_memory": None})
+    assert plain.status_code == 200, plain.text
+    assert (plain.json()["memory_id"], plain.json()["timeline_revision"]) == (None, before)
+    assert await memories_of(engine, story) == []
+
+    lib.models.stub.script(name, [remembered()])
+    stored = await story_call(client, story, name, store_body(briar))
+    assert stored.status_code == 200, stored.text
+    body = stored.json()
+    assert body["timeline_revision"] == before + 1 == await revision_of(engine, story)
+    assert body["output"]["memory"].endswith(f"{REMEMBERED} pact.")
+    (row,) = await memories_of(engine, story)
+    assert row.id == body["memory_id"]
+    assert row.text == f"I voted for Briar because of the {REMEMBERED} pact."
+    assert (row.holder_character_id, row.character_id) == (briar, briar)
+    assert row.visibility == {"scope": "characters", "characters": [briar]}
+    assert (row.provenance, row.trust_tier, row.kind) == (
+        "consumer_purpose",
+        "in_world",
+        "episodic",
+    )
+    assert (row.fidelity, row.channel, row.membership) == ("content", "self", "active")
+    assert (row.importance, row.proposition_ids, row.event_type) == (None, [], None)
+    assert row.participants == [briar]
+    (op,) = await engine_rows(
+        engine,
+        "SELECT kind, narrative_turn, slot_k, membership FROM operations WHERE operation_id = :o",
+        o=row.operation_id,
+    )
+    assert (op.kind, op.narrative_turn, op.slot_k, op.membership) == ("inter_turn", 0, 1, "active")
+    (event,) = await engine_rows(
+        engine,
+        "SELECT id, type, category, payload FROM events WHERE operation_id = :o",
+        o=row.operation_id,
+    )
+    assert (event.type, event.category) == ("purpose_memory_stored", "derived")
+    assert event.payload == {
+        "purpose": name,
+        "version": 1,
+        "memory_id": row.id,
+        "character_id": briar,
+    }
+    assert row.source_event_ids == [event.id]
+
+    question = {"inputs": {"target": f"the {REMEMBERED} pact"}}
+    lib.models.stub.script(name, [remembered("Again."), remembered("Again.")])
+    own = await story_call(client, story, name, {**question, "viewpoint_character_id": briar})
+    assert own.status_code == 200, own.text
+    assert REMEMBERED in prompt_of(lib, name)
+    other = await story_call(client, story, name, {**question, "viewpoint_character_id": cato})
+    assert other.status_code == 200, other.text
+    assert f"{REMEMBERED} pact." not in prompt_of(lib, name)
+    assert "voted for Briar" not in prompt_of(lib, name, everything=True)
+    assert REMEMBERED not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_timeline(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """The memory follows its slot like any record. Truncating the story to before the call
+    (the boundary ``0``, without its slot) discards it; untruncating brings it back. A fork
+    through the slot (``at_turn`` 0, ``slot`` 1) copies it, the copy the fork's own (its new
+    character's, under new ids); a fork through ``0`` alone does not.
+
+    Complement asserted: before the truncation the memory is active, so the discard is the
+    truncation's."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client)
+    lib.models.stub.script(name, [remembered()])
+    stored = await story_call(client, story, name, store_body(ids["Briar"]))
+    assert stored.status_code == 200, stored.text
+    assert [r.membership for r in await memories_of(engine, story)] == ["active"]
+
+    through = await client.post(
+        f"/stories/{story}/fork", json={"at_turn": 0, "slot": 1}, headers=WRITE
+    )
+    assert through.status_code in (200, 201), through.text
+    forked = through.json()["story_id"]
+    (copy,) = await memories_of(engine, forked)
+    assert copy.text.endswith(f"{REMEMBERED} pact.")
+    assert copy.membership == "active"
+    assert copy.holder_character_id not in (ids["Briar"], None)
+    (holder,) = await engine_rows(
+        engine,
+        "SELECT name FROM characters WHERE story_id = :s AND id = :c",
+        s=forked,
+        c=copy.holder_character_id,
+    )
+    assert holder.name == "Briar"
+    before = await client.post(f"/stories/{story}/fork", json={"at_turn": 0}, headers=WRITE)
+    assert before.status_code in (200, 201), before.text
+    assert await memories_of(engine, before.json()["story_id"]) == []
+
+    cut = await client.post(f"/stories/{story}/truncate", json={"to_turn": 0}, headers=WRITE)
+    assert cut.status_code == 200, cut.text
+    assert [r.membership for r in await memories_of(engine, story)] == ["discarded"]
+    back = await client.post(f"/stories/{story}/untruncate", json={}, headers=WRITE)
+    assert back.status_code == 200, back.text
+    assert [r.membership for r in await memories_of(engine, story)] == ["active"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_erasure(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Erasure reaches the memory like any memory (the erasure index): after Quillon is erased
+    from the story, no memory names Quillon. Then a result whose text names Quillon is refused
+    with 409 ``erased_subject_referenced``: nothing is stored, no output is returned and the
+    revision stays.
+
+    Complement asserted: before the erasure the stored memory names Quillon."""
+    from tests import erasure_support as es
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, lib):
+        name = unique("erased_memory")
+        body = purpose_body(name, template=MEMORY_TEMPLATE, output_schema=MEMORY_SCHEMA)
+        made = await client.post("/admin/purposes", json=body, headers=OPERATOR)
+        assert made.status_code == 201, made.text
+        try:
+            story, ids = await partitioned_story(client, "Ash", "Briar", "Quillon")
+            lib.models.stub.script(name, [remembered("Quillon cried at the vote.")])
+            stored = await story_call(client, story, name, store_body(ids["Briar"]))
+            assert stored.status_code == 200, stored.text
+            assert [r.text for r in await memories_of(engine, story)] == [
+                "Quillon cried at the vote."
+            ]
+            await es.erase(client, "character", ids["Quillon"], story, confirm_all=True)
+            assert (await es.residue(engine, story, ["Quillon"]))["memories"] == 0
+
+            before = await revision_of(engine, story)
+            count = len(await memories_of(engine, story))
+            lib.models.stub.script(name, [remembered("Quillon was right.")])
+            refused = await story_call(client, story, name, store_body(ids["Briar"]))
+            assert reason_of(refused)[:2] == (409, "erased_subject_referenced")
+            assert "Quillon" not in refused.text
+            assert await revision_of(engine, story) == before
+            assert len(await memories_of(engine, story)) == count
+        finally:
+            archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+            assert archived.status_code == 200, archived.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_idempotent(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """A repeat under the same ``Idempotency-Key`` answers the first result (the same
+    ``memory_id`` and revision) and writes nothing new: one memory, one model call, the
+    revision moved once. The same key with a different ``store_as_memory`` is 409
+    ``idempotency_conflict``.
+
+    Complement asserted: a new key stores a second memory."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client)
+    key = {"Idempotency-Key": new_ulid()}
+    lib.models.stub.script(name, [remembered()])
+    first = await story_call(client, story, name, store_body(ids["Briar"]), **key)
+    assert first.status_code == 200, first.text
+    calls = own_calls(lib, name)
+    again = await story_call(client, story, name, store_body(ids["Briar"]), **key)
+    assert again.status_code == 200, again.text
+    assert again.json()["memory_id"] == first.json()["memory_id"]
+    assert again.json()["timeline_revision"] == first.json()["timeline_revision"]
+    assert own_calls(lib, name) == calls
+    assert len(await memories_of(engine, story)) == 1
+    assert await revision_of(engine, story) == first.json()["timeline_revision"]
+    changed = store_body(ids["Briar"], store_as_memory={"text_field": "other"})
+    conflict = await story_call(client, story, name, changed, **key)
+    assert reason_of(conflict)[:2] == (409, "idempotency_conflict")
+
+    lib.models.stub.script(name, [remembered()])
+    fresh = await story_call(client, story, name, store_body(ids["Briar"]))
+    assert fresh.status_code == 200, fresh.text
+    assert len(await memories_of(engine, story)) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_refusals(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """Each refusal stores nothing, returns no output and leaves the revision:
+    ``store_as_memory`` without a viewpoint is 422 (``viewpoint_required``), before a Lite
+    story's 409 ``module_off`` for its viewpoint; a structured story with shared knowledge is
+    409 ``module_off`` (``partitions``), and with episodic memory off 409 ``module_off``
+    (``episodic``); a ``text_field`` that is missing, nested or not a string is 422
+    ``text_field_invalid`` with no model call; an empty or whitespace text is 422
+    ``memory_text_empty`` and one over 2 000 characters 422 ``memory_text_too_long``; while a
+    turn holds the story's turn slot, the write is 423 ``story_busy``.
+
+    Complement asserted: once the turn gives the slot back, the same call stores the memory."""
+    from epistrel.core import turn_gate
+
+    client, lib = served
+    name = memory_purpose
+    lite, lite_ids = await new_story(client, "Ash", "Briar")
+    no_viewpoint = {"inputs": {"target": "Briar"}, "store_as_memory": STORE}
+    status, code, details = reason_of(await story_call(client, lite, name, no_viewpoint))
+    assert (status, code, details["reason"]) == (422, "validation_error", "viewpoint_required")
+    assert details["field"] == "body.viewpoint_character_id"
+    on_lite = await story_call(client, lite, name, store_body(lite_ids["Briar"]))
+    assert reason_of(on_lite)[:2] == (409, "module_off")
+
+    shared, shared_ids = await new_story(client, "Ash", "Briar")
+    assigned = await client.put(
+        f"/stories/{shared}/engine-profile",
+        json={"profile_id": structured_m4(), "version": 1, "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert assigned.status_code == 200, assigned.text
+    status, code, details = reason_of(
+        await story_call(client, shared, name, store_body(shared_ids["Briar"]))
+    )
+    assert (status, code, details.get("module")) == (409, "module_off", "partitions"), details
+
+    story, ids = await partitioned_story(client)
+    briar = ids["Briar"]
+    before = await revision_of(engine, story)
+    calls = own_calls(lib, name)
+    for field in ("absent", "score", "detail", "note"):
+        status, code, details = reason_of(
+            await story_call(
+                client, story, name, store_body(briar, store_as_memory={"text_field": field})
+            )
+        )
+        assert (status, code, details["reason"]) == (422, "validation_error", "text_field_invalid")
+    assert own_calls(lib, name) == calls
+
+    for text_, refusal in (
+        ("", "memory_text_empty"),
+        ("   ", "memory_text_empty"),
+        ("x" * 2_001, "memory_text_too_long"),
+    ):
+        lib.models.stub.script(name, [remembered(text_)])
+        refused = await story_call(client, story, name, store_body(briar))
+        assert reason_of(refused)[:2] == (422, refusal)
+        assert "output" not in refused.json()
+
+    holder = new_ulid()
+    assert await turn_gate.acquire(engine, story, holder, lease_s=60) is None
+    try:
+        lib.models.stub.script(name, [remembered()])
+        busy = await story_call(client, story, name, store_body(briar))
+        assert reason_of(busy)[:2] == (423, "story_busy")
+    finally:
+        await turn_gate.release_now(engine, story, holder)
+    assert await revision_of(engine, story) == before
+    assert await memories_of(engine, story) == []
+
+    lib.models.stub.script(name, [remembered()])
+    stored = await story_call(client, story, name, store_body(briar))
+    assert stored.status_code == 200, stored.text
+    assert len(await memories_of(engine, story)) == 1
+
+    off = {"memory": {"episodic": {"enabled": False}, "consolidation": {"enabled": False}}}
+    await override(client, story, off)
+    status, code, details = reason_of(await story_call(client, story, name, store_body(briar)))
+    assert (status, code, details["module"]) == (409, "module_off", "episodic")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_library(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """``Engine.call_story_purpose(..., store_as_memory=...)`` stores as REST does and
+    answers the memory's id.
+
+    Complement asserted: without a viewpoint it is refused at ``viewpoint_character_id``."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client)
+    lib.models.stub.script(name, [remembered()])
+    result = await lib.call_story_purpose(
+        LIBRARY,
+        story,
+        name,
+        {"target": "Briar"},
+        viewpoint_character_id=ids["Briar"],
+        store_as_memory={"text_field": "memory"},
+    )
+    assert result.memory_id is not None
+    assert [r.id for r in await memories_of(engine, story)] == [result.memory_id]
+    with pytest.raises(InvalidRequest) as missing:
+        await lib.call_story_purpose(
+            LIBRARY, story, name, {"target": "Briar"}, store_as_memory=STORE
+        )
+    assert missing.value.details["reason"] == "viewpoint_required"

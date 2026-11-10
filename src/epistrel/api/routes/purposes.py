@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Response
+from pydantic import Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
@@ -101,8 +102,9 @@ async def call_purpose(
 
 class StoryPurposeCallBody(MutationResponse):
     """A story-bound consumer purpose call's answer: #825's ``{purpose, version, output, model,
-    usage}``, the story's ``timeline_revision`` as the call read it (a call never moves it) and
-    the deployment ``config_revision`` it was routed by."""
+    usage}``, the story's ``timeline_revision`` (as the call read it, or the revision its
+    ``store_as_memory`` write left), the deployment ``config_revision`` it was routed by and the
+    stored memory's id (#827)."""
 
     config_revision: int
     purpose: str
@@ -110,6 +112,10 @@ class StoryPurposeCallBody(MutationResponse):
     output: dict[str, Any]
     model: CallModel
     usage: CallUsage
+    memory_id: str | None = Field(
+        description="The memory `store_as_memory` wrote (FR-MODEL-17); null when the call "
+        "stored nothing."
+    )
 
     @classmethod
     def of(cls, result: PurposeResult) -> StoryPurposeCallBody:
@@ -121,6 +127,7 @@ class StoryPurposeCallBody(MutationResponse):
             output=result.output,
             model=result.model,
             usage=result.usage,
+            memory_id=result.memory_id,
         )
 
 
@@ -138,8 +145,19 @@ class StoryPurposeCallBody(MutationResponse):
         "(`viewpoint.name`, and `viewpoint.text`: what it knows, believes and has seen, as "
         "its own render would show it; never what it does not know), and `story` holds `id`, "
         "`title`, `location`, `present` and `scene`; without one, `story` holds `id` and "
-        "`title`. The call reads the story and never changes it: no lock, no revision, no "
-        "event, so it runs while a turn is in flight. Routed by the deployment's model "
+        "`title`. Without `store_as_memory` the call reads the story and never changes it: "
+        "no lock, no revision, no event, so it runs while a turn is in flight. With "
+        "`store_as_memory: {text_field}` (FR-MODEL-17; it needs `viewpoint_character_id`, 422 "
+        "`viewpoint_required` otherwise) the named output field's text is also stored as the "
+        "viewpoint character's memory, its alone: after the unlocked model call, an "
+        "inter-turn slot write at the story's head that takes the story's turn slot (423 "
+        "`story_busy` while a turn is in flight), records a `purpose_memory_stored` event, "
+        "bumps the revision and answers `memory_id`; 409 `module_off` without per-character "
+        "partitions or episodic memory, 422 `text_field_invalid` (`details.reason`) for a "
+        "field that is no top-level string, 422 `memory_text_empty` or "
+        "`memory_text_too_long`, and 409 `erased_subject_referenced` for a text naming an "
+        "erased subject, each storing nothing and returning no output. Routed by the "
+        "deployment's model "
         "configuration, never the story's. 404 for an unknown story, purpose, version or "
         "character; 409 `story_archived`; 422 `validation_error` with `details.reason: "
         "player_has_no_context` for the player's character; 409 `module_off` for a "
@@ -163,6 +181,7 @@ async def call_story_purpose(
         version=body.version,
         viewpoint_character_id=body.viewpoint_character_id,
         deadline_ms=body.deadline_ms,
+        store_as_memory=body.store_as_memory,
     )
     return answered(StoryPurposeCallBody.of(result), ctx, response, replayed=result.replayed)
 

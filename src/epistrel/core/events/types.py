@@ -909,6 +909,20 @@ class MemoryUnpinned(EventPayload):
     memory_id: str
 
 
+@register("purpose_memory_stored", category=EventCategory.DERIVED)
+class PurposeMemoryStored(EventPayload):
+    """A story-bound consumer purpose call stored its result as its viewpoint character's
+    memory (FR-MODEL-17; #827): the purpose's name and version, the memory and the character.
+    Recorded by an inter-turn slot operation (``N⁺k`` after the head turn), so a truncation to
+    N discards it with its memory and a fork through the slot copies both. Identifiers only:
+    the text is the memory's, never the event's."""
+
+    purpose: str
+    version: int = Field(ge=1)
+    memory_id: str
+    character_id: str
+
+
 @register("sanitized", category=EventCategory.NARRATIVE_STATE)
 class Sanitized(EventPayload):
     """A memory's text had every occurrence of a span replaced by ``surrogate`` (FR-GUARD-4;

@@ -655,6 +655,7 @@ async def test_the_trust_tier_is_derived_from_the_provenance() -> None:
         "external": "external",
         "resolution": "engine",
         "backfill": "backfill",
+        "consumer_purpose": "in_world",
     }
 
 

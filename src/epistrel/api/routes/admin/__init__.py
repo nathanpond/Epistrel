@@ -71,7 +71,6 @@ _OPERATOR_SEGMENTS = (
     r"record[_-]utterance",
     r"ingest[_-]turn",
     r"offboard(?:ing)?",  # principal offboarding
-    r"purposes",  # #824: consumer purposes (model purposes a consumer registers)
 )
 
 OPERATOR_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -80,6 +79,9 @@ OPERATOR_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Provider configuration and registration; a story's own bindings to its providers
     # (``/stories/{id}/providers[/{name}/binding]``, #204) are the story's, not the operator's.
     re.compile(r"^(?!/stories/[^/]+/providers(?:/|$))(?:.*/)?(?:external-)?providers?(?:/|$)"),
+    # Consumer purposes (#824) are the operator's to register; calling one
+    # (``/purposes/{name}/calls``, #825) is the consumer's.
+    re.compile(r"^(?!(?:.*/)?purposes/[^/]+/calls$)(?:.*/)?purposes(?:/|$)"),
 )
 """FR-AUTH-1's operator enumeration, including paths not built yet. A route outside ``/admin``
 whose path matches one of these is misplaced."""

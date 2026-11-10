@@ -88,9 +88,10 @@ async def global_policy(lib: Engine, rule: dict[str, Any], **fields: Any) -> Pol
 
 
 async def rated_policy_rating(
-    lib: Engine, engine: AsyncEngine, rule: dict[str, Any]
+    lib: Engine, engine: AsyncEngine, rule: dict[str, Any], **fields: Any
 ) -> tuple[str, Policy]:
-    """A new rating (inheriting from nothing) that lists one new rating policy."""
+    """A new rating (inheriting from nothing) that lists one new rating policy (``fields``
+    add to its body: ``applies_to``, say)."""
     rating = await create_rating(
         engine, RatingFields(name=unique("rating")), principal="p-operator"
     )
@@ -101,6 +102,7 @@ async def rated_policy_rating(
             "name": unique("rating-policy"),
             "rule": rule,
             "message": "Not at this rating.",
+            **fields,
         }
     )
     made = (await lib.policies_create(OPERATOR, body)).policy

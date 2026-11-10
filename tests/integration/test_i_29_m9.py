@@ -31,20 +31,25 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import (
+    InvalidRequest,
     PurposeArchived,
     PurposeNotFound,
     PurposeVersionNotFound,
     PurposeVersionStale,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.purposes.output import output_of
+from epistrel.core.purposes.output import output_model, output_of
 from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
 from epistrel.core.purposes.validation import PURPOSE_LIMIT, PurposeRefused
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.adapter import Message, UnknownPurpose
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, validate_purpose
+from epistrel.orchestrator.purposes.call import GUIDANCE_HEADING, PREAMBLE
 from tests.auth_support import auth_settings, bearer
+from tests.event_support import rows as engine_rows
+from tests.minors_support import recognise, subject_checks
 from tests.model_support import restored_model_config
+from tests.policy_support import rated_policy_rating, words
 from tests.profile_support import nest
 from tests.respond_support import new_story, respond_client
 from tests.story_support import WRITE
@@ -65,6 +70,11 @@ SCHEMA: dict[str, Any] = {
     "required": ["reason", "score", "mood", "tags"],
     "additionalProperties": False,
 }
+
+
+CALL: dict[str, Any] = {"inputs": {"voter": "Ash", "target": "Briar"}}
+"""A call of ``purpose_body``'s template (#825)."""
+SECOND_ENDPOINT = "http://second-stub.invalid/v1"
 
 
 def unique(stem: str) -> str:
@@ -566,7 +576,10 @@ async def test_i_29__m9_routing(
     """``GET /admin/model-config`` lists each live consumer purpose, inheriting
     ``generation``'s model (sources ``inherited``); ``PUT /admin/model-config/{name}`` routes it
     to its own model, and a call made through the Model Access Layer (the stub) goes to that
-    model; with the override dropped it goes to ``generation``'s again. An archived purpose's
+    model; with the override dropped it goes to ``generation``'s again. A REST call (#825,
+    ``POST /purposes/{name}/calls``) follows the same route end to end: with no override it
+    reaches ``generation``'s endpoint and model, and with one it reaches the second endpoint,
+    which ``model.endpoint`` in its answer names. An archived purpose's
     configuration is hidden (404) and its calls are refused (410). The built-in purposes are
     unchanged: the registry's ``validate_purpose`` passes for every one.
 
@@ -595,14 +608,38 @@ async def test_i_29__m9_routing(
         await lib.models.send(name, [Message(role="user", content="hello")], None, None)
         call = lib.models.stub.calls[-1]
         assert (call.purpose, call.model) == (name, "house-model")
+        # #825: the REST call goes where the configuration routes it, and says so.
+        house_endpoint = (await lib.models.endpoint("generation"))[0]
+        called = await client.post(f"/purposes/{name}/calls", json=CALL, headers=WRITE)
+        assert called.status_code == 200, called.text
+        assert called.json()["model"] == {
+            "endpoint": house_endpoint,
+            "model": "house-model",
+            "version": None,
+        }
+        assert (lib.models.stub.calls[-1].purpose, lib.models.stub.calls[-1].model) == (
+            name,
+            "house-model",
+        )
 
         own = await client.put(
-            f"/admin/model-config/{name}", json={"model": "consumer-model"}, headers=OPERATOR
+            f"/admin/model-config/{name}",
+            json={"model": "consumer-model", "base_url": SECOND_ENDPOINT},
+            headers=OPERATOR,
         )
         assert own.status_code == 200, own.text
         assert (own.json()["model"], own.json()["sources"]["model"]) == ("consumer-model", "own")
         await lib.models.send(name, [Message(role="user", content="hello")], None, None)
         assert lib.models.stub.calls[-1].model == "consumer-model"
+        called = await client.post(f"/purposes/{name}/calls", json=CALL, headers=WRITE)
+        assert called.status_code == 200, called.text
+        assert called.json()["model"]["endpoint"] == SECOND_ENDPOINT
+        assert called.json()["model"]["model"] == "consumer-model"
+        assert (lib.models.stub.calls[-1].purpose, lib.models.stub.calls[-1].model) == (
+            name,
+            "consumer-model",
+        )
+        assert house_endpoint != SECOND_ENDPOINT
         house = (await client.get("/admin/model-config/generation", headers=bearer())).json()
         assert house["model"] == "house-model"
 
@@ -710,3 +747,326 @@ async def test_i_29__m9_library(served: tuple[httpx.AsyncClient, Engine]) -> Non
         await lib.get_purpose(LIBRARY, unique("nobody"))
     archived = await lib.archive_purpose(LIBRARY, name)
     assert archived.purpose.archived_at is not None
+
+
+# -- #825: calling a consumer purpose with no story (FR-MODEL-15) ------------------------------
+
+MARKER = "QUOKKA-MARKER-825"
+"""A unique string an input or an output carries; it must never reach a log line."""
+BANNED = "zanzibarbanned"
+"""The word the call-rating test policy refuses, on input and output."""
+UNSAFE_PHRASE = "the nightswim scene"
+"""Text the stub's guardrail model flags as sexualizing a depicted minor (in checks of the
+age-conditioned policy only: ``minors_support.recognise``)."""
+
+
+def answer(reason: str = "Because.", **fields: Any) -> str:
+    """A reply valid against ``SCHEMA``, as the model's JSON."""
+    return json.dumps({"reason": reason, "score": 3, "mood": "calm", "tags": [], **fields})
+
+
+def own_calls(lib: Engine, name: str) -> int:
+    """Calls to the purpose's own model (guardrail checks are not counted)."""
+    return sum(1 for call in lib.models.stub.calls if call.purpose == name)
+
+
+async def call(
+    client: httpx.AsyncClient, name: str, body: dict[str, Any] | None = None, **headers: str
+) -> httpx.Response:
+    return await client.post(
+        f"/purposes/{name}/calls", json=CALL if body is None else body, headers={**WRITE, **headers}
+    )
+
+
+@pytest.fixture
+async def banned_rating(served: tuple[httpx.AsyncClient, Engine], engine: AsyncEngine) -> str:
+    """A rating whose one policy refuses ``BANNED`` on input and output."""
+    _, lib = served
+    rating_id, _ = await rated_policy_rating(
+        lib, engine, words(BANNED), applies_to=["text_input", "text_output"]
+    )
+    return rating_id
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A call with no story answers 200 ``{purpose, version, output, model, usage}``, its
+    ``output`` valid against the purpose's schema; the template renders the inputs after
+    Epistrel's preamble; a repeat with the same ``Idempotency-Key`` answers the first result
+    with no model call; and neither an input nor an output string reaches a log line.
+
+    Complements asserted: a pinned older version answers as that version; a different body
+    under the same key is 409 ``idempotency_conflict``."""
+    client, lib = served
+    register, _ = registered
+    name = unique("called")
+    caplog.set_level(logging.DEBUG)
+    assert (await register(purpose_body(name))).status_code == 201
+
+    lib.models.stub.script(name, [answer(f"{MARKER} out", tags=["a", "b"])])
+    body = {"inputs": {"voter": f"Ash {MARKER}", "target": "Briar", "rounds": [1, 2]}}
+    first = await call(client, name, body, **{"Idempotency-Key": "k-825-call"})
+    assert first.status_code == 200, first.text
+    found = first.json()
+    assert (found["purpose"], found["version"]) == (name, 1)
+    assert found["output"] == json.loads(answer(f"{MARKER} out", tags=["a", "b"]))
+    output_model(SCHEMA).model_validate(found["output"])
+    assert found["usage"]["calls"] == 1
+    assert found["usage"]["tokens_in"] > 0
+    assert found["idempotency_key"] == "k-825-call"
+    sent = [c for c in lib.models.stub.calls if c.purpose == name][-1]
+    assert sent.messages[0].role == "system"
+    assert sent.messages[0].content.startswith(GUIDANCE_HEADING)
+    assert PREAMBLE in sent.messages[0].content
+    assert sent.messages[1].content == f"Explain why Ash {MARKER} voted for Briar."
+
+    replay = await call(client, name, body, **{"Idempotency-Key": "k-825-call"})
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == found
+    assert replay.headers["Idempotent-Replay"] == "true"
+    assert own_calls(lib, name) == 1
+    other = await call(client, name, CALL, **{"Idempotency-Key": "k-825-call"})
+    assert reason_of(other)[:2] == (409, "idempotency_conflict")
+    assert own_calls(lib, name) == 1
+
+    replaced = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1, template="Name {{ inputs.target }} only."),
+        headers=OPERATOR,
+    )
+    assert replaced.status_code == 200, replaced.text
+    latest = await call(client, name)
+    assert latest.json()["version"] == 2
+    assert lib.models.stub.calls[-1].messages[1].content == "Name Briar only."
+    pinned = await call(client, name, {**CALL, "version": 1})
+    assert pinned.json()["version"] == 1
+    assert lib.models.stub.calls[-1].messages[1].content == "Explain why Ash voted for Briar."
+    assert MARKER not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_refusals(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """An unknown purpose or version is 404, an archived purpose 410 whatever version is
+    pinned, inputs that do not fit 422 (``too_large``, ``too_deep``, an unknown rating, a
+    template that does not render: ``template_render_error``), all before any model call; an
+    answer that never matches the schema is 502 ``model_output_invalid``; a passed deadline is
+    503 ``model_unavailable`` with ``reason: deadline``.
+
+    Complement asserted: inputs exactly at the size limit pass the size check."""
+    client, lib = served
+    register, _ = registered
+    name = unique("refused")
+    assert (await register(purpose_body(name))).status_code == 201
+
+    unknown = await call(client, unique("nobody"))
+    assert reason_of(unknown)[:2] == (404, "not_found")
+    builtin = await call(client, "generation")
+    assert reason_of(builtin)[:2] == (404, "not_found")
+    version = await call(client, name, {**CALL, "version": 9})
+    assert reason_of(version)[:2] == (404, "version_not_found")
+
+    big = {"inputs": {"voter": "x" * (64 * 1024), "target": "y"}}
+    status, code, details = reason_of(await call(client, name, big))
+    assert (status, code, details["reason"], details["field"]) == (
+        422,
+        "validation_error",
+        "too_large",
+        "body.inputs",
+    )
+    padding = 64 * 1024 - len(json.dumps({"target": "y", "voter": ""}, separators=(",", ":")))
+    exact = {"inputs": {"voter": "x" * padding, "target": "y"}}
+    lib.models.stub.script(name, [answer()])
+    assert (await call(client, name, exact)).status_code == 200
+    deep: Any = "leaf"
+    for _ in range(6):
+        deep = [deep]
+    status, code, details = reason_of(await call(client, name, {"inputs": {"voter": deep}}))
+    assert (status, code, details["reason"]) == (422, "validation_error", "too_deep")
+    rating = await call(client, name, {**CALL, "content_rating": "NO-SUCH-RATING"})
+    status, code, details = reason_of(rating)
+    assert (status, code, details["field"]) == (422, "validation_error", "body.content_rating")
+    missing = await call(client, name, {"inputs": {"voter": "Ash"}})
+    status, code, details = reason_of(missing)
+    assert (status, code, details["field"]) == (422, "template_render_error", "template")
+    depicted = [{"label": "Ash", "true_age": 30}, {"label": "Ash", "true_age": 31}]
+    twice = await call(client, name, {**CALL, "depicted": depicted})
+    assert reason_of(twice)[:2] == (422, "validation_error")
+    calls_before = own_calls(lib, name)
+
+    lib.models.stub.script(name, ["not json at all"] * 3)
+    invalid = await call(client, name)
+    status, code, details = reason_of(invalid)
+    assert (status, code, details["reason"]) == (502, "model_output_invalid", "parse_error")
+    assert "not json" not in invalid.text
+    assert own_calls(lib, name) == calls_before + 3
+
+    lib.models.stub.fault(name, "hang")
+    late = await call(client, name, {**CALL, "deadline_ms": 300})
+    status, code, details = reason_of(late)
+    assert (status, code, details["reason"]) == (503, "model_unavailable", "deadline")
+
+    archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+    assert archived.status_code == 200, archived.text
+    for body in (CALL, {**CALL, "version": 1}):
+        assert reason_of(await call(client, name, body))[:2] == (410, "purpose_archived")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_input_gate(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+    engine: AsyncEngine,
+) -> None:
+    """A string input that breaks a policy of the named rating, at any depth, is 422
+    ``guardrail_violation`` naming its locator, with zero calls to the purpose's model and a
+    ``guardrail_input_rejected`` audit row (no story, entry point ``purpose_call``, no text).
+    With ``depicted`` naming a minor, an input that sexualizes them is refused by the minors
+    policy, again with no call to the purpose's model.
+
+    Complements asserted: the same input under the default rating passes (the rating is what
+    refuses it), and the same minors input with only adults depicted passes."""
+    client, lib = served
+    register, _ = registered
+    name = unique("gated_in")
+    assert (await register(purpose_body(name))).status_code == 201
+    banned = {"inputs": {"voter": "Ash", "target": "Briar", "notes": {"said": ["ok", BANNED]}}}
+
+    refused = await call(client, name, {**banned, "content_rating": banned_rating})
+    status, code, details = reason_of(refused)
+    assert (status, code) == (422, "guardrail_violation")
+    assert details["violations"][0]["locator"] == "inputs.notes.said[1]"
+    assert own_calls(lib, name) == 0
+    rows = await engine_rows(
+        engine,
+        "SELECT story_id, details FROM audit_log WHERE kind = 'guardrail_input_rejected' "
+        "AND details->>'entry_point' = 'purpose_call' AND principal = 'p-author' "
+        "ORDER BY id DESC LIMIT 1",
+    )
+    assert rows
+    assert rows[0][0] is None
+    assert BANNED not in json.dumps(rows[0][1])
+
+    lib.models.stub.script(name, [answer()])
+    passed = await call(client, name, banned)
+    assert passed.status_code == 200, passed.text
+    assert own_calls(lib, name) == 1
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    minor_body = {
+        "inputs": {"voter": f"Ash in {UNSAFE_PHRASE}", "target": "Kit"},
+        "depicted": [{"label": "Kit", "true_age": 15}],
+    }
+    minor = await call(client, name, minor_body)
+    status, code, details = reason_of(minor)
+    assert (status, code) == (422, "guardrail_violation")
+    assert "a minor is involved or present" in minor.json()["error"]["message"]
+    assert "Kit" not in minor.text
+    assert own_calls(lib, name) == 1
+    lib.models.stub.script(name, [answer()])
+    adults = {**minor_body, "depicted": [{"label": "Kit", "true_age": 25}]}
+    grown = await call(client, name, adults)
+    assert grown.status_code == 200, grown.text
+    assert own_calls(lib, name) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_output_gate(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+    engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An output whose string leaf breaks a policy of the call's rating is retried once; a
+    second violation is 422 ``output_policy_violation`` with no part of the output in the body
+    (two calls to the purpose's model) and a ``guardrail_output_rejected`` audit row. With a
+    minor depicted, an output that sexualizes them fails closed the same way.
+
+    Complements asserted: a violation followed by a clean answer is 200 with the clean one;
+    the same minors output with only adults depicted passes; no output text reaches a log."""
+    client, lib = served
+    register, _ = registered
+    name = unique("gated_out")
+    caplog.set_level(logging.DEBUG)
+    assert (await register(purpose_body(name))).status_code == 201
+    rated = {**CALL, "content_rating": banned_rating}
+    bad = answer(f"{MARKER} said {BANNED}")
+
+    lib.models.stub.script(name, [bad, answer(f"{MARKER} also {BANNED}", tags=[BANNED])])
+    refused = await call(client, name, rated)
+    status, code, details = reason_of(refused)
+    assert (status, code, details["attempts"]) == (422, "output_policy_violation", 2)
+    assert MARKER not in refused.text
+    assert BANNED not in refused.text
+    assert own_calls(lib, name) == 2
+    rows = await engine_rows(
+        engine,
+        "SELECT story_id, details FROM audit_log WHERE kind = 'guardrail_output_rejected' "
+        "AND details->>'purpose' = :name",
+        name=name,
+    )
+    assert len(rows) == 1
+    assert rows[0][0] is None
+    assert MARKER not in json.dumps(rows[0][1])
+
+    lib.models.stub.script(name, [bad, answer("Clean.")])
+    retried = await call(client, name, rated)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "Clean."
+    assert retried.json()["usage"]["calls"] == 2
+    assert own_calls(lib, name) == 4
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    unsafe = answer(f"Kit at {UNSAFE_PHRASE}")
+    minor_body = {**CALL, "depicted": [{"label": "Kit", "true_age": 15}]}
+    lib.models.stub.script(name, [unsafe, unsafe])
+    minor = await call(client, name, minor_body)
+    assert reason_of(minor)[:2] == (422, "output_policy_violation")
+    assert UNSAFE_PHRASE not in minor.text
+    assert own_calls(lib, name) == 6
+    checks = subject_checks(lib.models.stub)
+    assert checks
+    assert all("Kit" not in check for check in checks)
+    lib.models.stub.script(name, [unsafe])
+    adults = {**CALL, "depicted": [{"label": "Kit", "true_age": 25}]}
+    grown = await call(client, name, adults)
+    assert grown.status_code == 200, grown.text
+    assert grown.json()["output"]["reason"] == f"Kit at {UNSAFE_PHRASE}"
+    assert MARKER not in caplog.text
+    assert UNSAFE_PHRASE not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_library(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """``Engine.call_purpose`` answers as REST does, and refuses as REST does.
+
+    Complement asserted: a mistyped ``deadline_ms`` is refused at its parameter."""
+    _, lib = served
+    register, _ = registered
+    name = unique("lib_call")
+    assert (await register(purpose_body(name))).status_code == 201
+    lib.models.stub.script(name, [answer("Library.")])
+    result = await lib.call_purpose(
+        LIBRARY, name, CALL["inputs"], depicted=[{"label": "Ash", "true_age": 40}]
+    )
+    assert (result.purpose, result.version, result.output["reason"]) == (name, 1, "Library.")
+    assert result.usage.calls == 1
+    with pytest.raises(PurposeNotFound):
+        await lib.call_purpose(LIBRARY, unique("nobody"), CALL["inputs"])
+    with pytest.raises(InvalidRequest) as mistyped:
+        await lib.call_purpose(LIBRARY, name, CALL["inputs"], deadline_ms=True)
+    assert mistyped.value.details["field"] == "query.deadline_ms"

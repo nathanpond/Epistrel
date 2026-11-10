@@ -99,6 +99,7 @@ from epistrel.orchestrator.models.metrics import (
     Outcome,
     call_started,
     outcome_of,
+    purpose_label,
     record,
 )
 from epistrel.orchestrator.models.openai_compatible import OpenAICompatibleAdapter
@@ -256,7 +257,9 @@ def _without_nul(purpose: str, result: ModelResult) -> ModelResult:
     count = result.text.count(NUL)
     if not count:
         return result
-    log.warning("model answer held NUL characters purpose=%s removed=%d", purpose, count)
+    log.warning(
+        "model answer held NUL characters purpose=%s removed=%d", purpose_label(purpose), count
+    )
     return result.model_copy(update={"text": result.text.replace(NUL, "")})
 
 
@@ -427,7 +430,7 @@ class ModelAccessLayer:
         except TimeoutError:
             if not bound.expired():
                 raise
-            log.warning("model call failed purpose=%s reason=%s", purpose, reason)
+            log.warning("model call failed purpose=%s reason=%s", purpose_label(purpose), reason)
             error = ModelUnavailable(purpose, reason)
             self._record_failure(purpose, model, attempt, started, error, stage)
             raise error from None

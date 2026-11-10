@@ -36,6 +36,7 @@ from epistrel.api.routes import (
     personas,
     predicates,
     principals,
+    purposes,
     reconciliation,
     respond,
     retrieval,
@@ -78,6 +79,7 @@ router.include_router(catalog_images.scenarios)
 router.include_router(media.router)
 router.include_router(image_jobs.router)
 router.include_router(image_prompts.router)
+router.include_router(purposes.router)
 router.include_router(story_images.router)
 router.include_router(image_usage.story_router)  # #269
 router.include_router(image_usage.characters)

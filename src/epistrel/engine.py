@@ -270,6 +270,7 @@ from epistrel.orchestrator.providers import bindings as provider_binding
 from epistrel.orchestrator.providers import in_process as provider_in_process
 from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
+from epistrel.orchestrator.purposes import call as purpose_call
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.rewrite import api as rewrite_api
 from epistrel.orchestrator.rewrite import apply as rewrite_apply
@@ -489,6 +490,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     ),
     "replace_purpose": ResultCodec.of(purpose_store.PurposeWrite, revision_field=_CONFIG),
     "archive_purpose": ResultCodec.of(purpose_store.PurposeWrite, revision_field=_CONFIG),
+    # A consumer purpose's call (#825): deployment-scoped, keyed per purpose
+    # (``purpose_call:<name>``); a refusal is never stored.
+    "call_purpose": ResultCodec.of(purpose_call.PurposeResult, revision_field=_CONFIG),
     "bind_provider": ResultCodec.of(provider_binding.BindingWrite),
     # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
     "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
@@ -1058,6 +1062,7 @@ class Engine:
         material: Mapping[str, Any] | None = None,
         respond_async: bool = False,
         keep: Callable[[T], bool] | None = None,
+        codec_name: str | None = None,
     ) -> T:
         """Run ``run`` as one idempotent call (see the class docstring).
 
@@ -1068,12 +1073,14 @@ class Engine:
         queue waits for that turn (#63), like the original: up to ``turn_deadline``, or not at
         all with ``respond_async`` (then ``TurnAccepted``, REST 202). ``keep``: whether a
         result is stored under the key; one it rejects (a two-stage report that applied
-        nothing, #109) releases the key instead, so the call leaves no trace."""
+        nothing, #109) releases the key instead, so the call leaves no trace. ``codec_name``: the
+        ``CODECS`` entry when ``operation`` names more than its method (#825:
+        ``purpose_call:<name>``)."""
         principal = self.require_principal(ctx)
         key = ctx.idempotency_key
         key = new_ulid() if key is None else idempotency.validate_key(key)
         ctx = dataclasses.replace(ctx, idempotency_key=key)
-        codec: ResultCodec[T] = CODECS[operation]
+        codec: ResultCodec[T] = CODECS[codec_name or operation]
         call = IdempotentCall(
             self.db,
             scope=KeyScope.STORY if story_id is not None else KeyScope.DEPLOYMENT,
@@ -4825,6 +4832,52 @@ class Engine:
             "archive_purpose",
             lambda _: purpose_store.archive(self.db, name, principal=principal),
             material={"name": name},
+        )
+
+    async def call_purpose(
+        self,
+        ctx: RequestContext,
+        name: str,
+        inputs: Mapping[str, Any],
+        *,
+        version: int | None = None,
+        content_rating: str | None = None,
+        depicted: Sequence[purpose_call.Depicted | Mapping[str, Any]] = (),
+        deadline_ms: int = purpose_call.DEFAULT_DEADLINE_MS,
+    ) -> purpose_call.PurposeResult:
+        """Call consumer purpose ``name`` with no story (FR-MODEL-15; REST ``POST
+        /purposes/{name}/calls``): its output, validated against its schema, after the input
+        gate (422 ``guardrail_violation``, no call to the purpose's model) and the output gate
+        (one retry, then 422 ``output_policy_violation`` with no output). 404 for an unknown
+        name or version, 410 ``purpose_archived``, 422 for inputs that do not fit or a template
+        that does not render (``template_render_error``), 502 ``model_output_invalid``, 503
+        ``model_unavailable`` (``reason: deadline`` once ``deadline_ms`` passes). The
+        ``Idempotency-Key`` (``ctx``) answers a repeat from the first result, with no model
+        call; a refusal is never stored."""
+        principal = self.require_principal(ctx)
+        try:
+            request = purpose_call.PurposeCall.model_validate(
+                {
+                    "inputs": inputs,
+                    "version": version,
+                    "content_rating": content_rating,
+                    "depicted": [
+                        d.model_dump() if isinstance(d, BaseModel) else dict(d) for d in depicted
+                    ],
+                    "deadline_ms": deadline_ms,
+                }
+            )
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+        purpose_call.check_inputs(request.inputs)
+        return await self._keyed(
+            ctx,
+            f"purpose_call:{name}",
+            lambda _: purpose_call.call_purpose(
+                self.db, self.models, name, request, principal=principal
+            ),
+            material={"name": name, "body": _body(request)},
+            codec_name="call_purpose",
         )
 
     @refuses_nul()

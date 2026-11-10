@@ -84,6 +84,8 @@ class EntryPoint(StrEnum):
     """An author's directive (#226)."""
     REWRITE = "rewrite"
     """A history-rewrite instruction or a free-text answer to one of its questions (#223)."""
+    PURPOSE_CALL = "purpose_call"
+    """A consumer purpose call's inputs (FR-MODEL-15; #825); its audit row has no story."""
 
 
 @dataclass(frozen=True, slots=True)

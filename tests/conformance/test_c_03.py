@@ -138,6 +138,7 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
+from epistrel.api.routes.purposes import PurposeCallBody
 from epistrel.api.routes.reconciliation import (
     CompensatedBody,
     OutboxBody,
@@ -3455,6 +3456,11 @@ def _steps() -> list[Step]:
             lambda e, ids: _purposes(e),
         ),
         Step(
+            "call_purpose",
+            lambda ids: Rest("POST", f"/purposes/{PURPOSE_NAME}/calls", PURPOSE_CALL),
+            lambda e, ids: _purpose_called(e),
+        ),
+        Step(
             "archive_purpose",
             lambda ids: Rest("POST", f"{PURPOSE_PATH}/archive"),
             lambda e, ids: _purpose_written(e.archive_purpose(CTX, PURPOSE_NAME)),
@@ -4732,6 +4738,15 @@ PURPOSE_EDIT: dict[str, Any] = {
 
 async def _purpose_written(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(PurposeMutation.written(await call))
+
+
+PURPOSE_CALL: dict[str, Any] = {"inputs": {"voter": "Ash"}}
+
+
+async def _purpose_called(engine: Engine) -> dict[str, Any]:
+    return dump(
+        PurposeCallBody.of(await engine.call_purpose(CTX, PURPOSE_NAME, PURPOSE_CALL["inputs"]))
+    )
 
 
 async def _purpose(engine: Engine) -> dict[str, Any]:

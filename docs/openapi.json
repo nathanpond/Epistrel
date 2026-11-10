@@ -2348,6 +2348,66 @@
         "title": "CalendarMonth",
         "type": "object"
       },
+      "CallModel": {
+        "description": "The model the call went to: its endpoint, its model name, and the version the model\nreported (FR-PROF-16; ``null`` when none was reported).",
+        "properties": {
+          "endpoint": {
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "endpoint",
+          "model",
+          "version"
+        ],
+        "title": "CallModel",
+        "type": "object"
+      },
+      "CallUsage": {
+        "description": "The purpose's own model calls and their tokens, and, apart, the guardrail checks the\ncall's gates made (model-assisted policies; FR-GUARD-9).",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "guardrail_calls": {
+            "title": "Guardrail Calls",
+            "type": "integer"
+          },
+          "tokens_in": {
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "tokens_in",
+          "tokens_out",
+          "guardrail_calls"
+        ],
+        "title": "CallUsage",
+        "type": "object"
+      },
       "CandidateBody": {
         "additionalProperties": false,
         "description": "A mention the erasure redacts only when confirmed (ADR-154): a common word of the\nsubject's name capitalised at the start of a sentence. The snippet is returned by the dry\nrun only and never stored.",
@@ -7795,6 +7855,32 @@
           "cause"
         ],
         "title": "DegradationBody",
+        "type": "object"
+      },
+      "Depicted": {
+        "additionalProperties": false,
+        "description": "A person the inputs or the output depict, with their true age (FR-GUARD-11).",
+        "properties": {
+          "label": {
+            "description": "Who this is, unique within the call (at most 120 characters). Never sent to a model.",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "true_age": {
+            "description": "Their true age now. Below the deployment's `minor_age_threshold`, the minors policy applies to the call's inputs and output.",
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "true_age"
+        ],
+        "title": "Depicted",
         "type": "object"
       },
       "DepictedSubject": {
@@ -34433,6 +34519,137 @@
           "archived_at"
         ],
         "title": "PurposeBody",
+        "type": "object"
+      },
+      "PurposeCall": {
+        "additionalProperties": false,
+        "description": "``POST /purposes/{name}/calls``: one call of a consumer purpose with no story.",
+        "examples": [
+          {
+            "content_rating": "00000000000000000000RAT002",
+            "deadline_ms": 30000,
+            "depicted": [
+              {
+                "label": "Ash",
+                "true_age": 34
+              }
+            ],
+            "inputs": {
+              "target": "Briar",
+              "voter": "Ash",
+              "votes": [
+                3,
+                1
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "content_rating": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id of the deployment content rating the call runs under (default: the deployment's default rating). Its policies gate the inputs and the output.",
+            "title": "Content Rating"
+          },
+          "deadline_ms": {
+            "default": 60000,
+            "description": "The call's deadline, from its start, the input gate included (default 60 000, at most 300 000). Once it passes, the call is 503 `model_unavailable` with `details.reason: deadline`.",
+            "maximum": 300000.0,
+            "minimum": 1.0,
+            "title": "Deadline Ms",
+            "type": "integer"
+          },
+          "depicted": {
+            "description": "The people the inputs or the output depict (at most 20), each with a unique label and a true age.",
+            "items": {
+              "$ref": "#/components/schemas/Depicted"
+            },
+            "maxItems": 20,
+            "title": "Depicted",
+            "type": "array"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "description": "The template's `inputs`: a JSON object of strings, numbers, booleans, nulls, and arrays and objects of them (depth at most 6, at most 64 KB as canonical JSON). Every string in it passes the input gate.",
+            "title": "Inputs",
+            "type": "object"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The purpose version to call (default: the latest).",
+            "title": "Version"
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "title": "PurposeCall",
+        "type": "object"
+      },
+      "PurposeCallBody": {
+        "description": "A consumer purpose call's answer: the purpose and the version that answered, its\n``output`` (valid against that version's output schema), the model it went to, and what\nit used: the purpose's own model calls and tokens, and apart, the guardrail checks.\n``config_revision`` is the deployment configuration it was routed by.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "model": {
+            "$ref": "#/components/schemas/CallModel"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/CallUsage"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config_revision",
+          "purpose",
+          "version",
+          "output",
+          "model",
+          "usage"
+        ],
+        "title": "PurposeCallBody",
         "type": "object"
       },
       "PurposeCreate": {
@@ -84290,6 +84507,192 @@
         ]
       }
     },
+    "/purposes/{name}/calls": {
+      "post": {
+        "description": "Render the purpose's templates with `inputs` and call its model (routed by the purpose's own model configuration, else `generation`'s), and answer the output, valid against the purpose's output schema (FR-MODEL-15). Every string in `inputs` passes the input gate under `content_rating` (default: the deployment's default rating) first: a violation is 422 `guardrail_violation` and the purpose's model is not called. `depicted` declares the people the call depicts with their true ages, so the minors policy applies when one is a minor. Every string of the output passes the output gate under the same rating: a violation is retried once, then refused with 422 `output_policy_violation`, with no part of the output. 404 for an unknown purpose or version (`version_not_found`), 410 `purpose_archived`, 422 `template_render_error` when the template does not render for `inputs`, 502 `model_output_invalid` when no answer matches the schema, 503 `model_unavailable` (`details.reason: deadline` once `deadline_ms` passes).",
+        "operationId": "call_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeCall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeCallBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `version_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `purpose_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `output_policy_violation`, `template_render_error`, `validation_error`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The model's answer was unusable; nothing was written: `model_output_invalid`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Call a consumer purpose with no story",
+        "tags": [
+          "purposes"
+        ]
+      }
+    },
     "/stories": {
       "get": {
         "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold), or by `engine_profile` (any version the story runs on, or only `engine_profile_version`). Each item names its `engine_profile` `{id, version, pinned}`. Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8). A story held `blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure is reapplied (FR-ADMIN-7).",
@@ -103637,6 +104040,10 @@
     {
       "description": "Message feedback: each principal's rating (1 to 5) of a generated message, with reason tags and free text, recorded with the configuration the message was produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, and it changes no engine behavior (FR-FB-2). Its aggregates with the implicit signals, the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
       "name": "feedback"
+    },
+    {
+      "description": "Calling a consumer purpose, a model purpose an operator registered under `/admin/purposes` (FR-MODEL-15).",
+      "name": "purposes"
     },
     {
       "description": "Operator endpoints, all under `/admin` (FR-AUTH-1).",

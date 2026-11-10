@@ -2141,3 +2141,33 @@ class PurposeArchived(EpistrelError):
 
     code = "purpose_archived"
     http_status = 410
+
+
+class TemplateRenderError(EpistrelError):
+    """A consumer purpose's template did not render for the call's inputs (FR-MODEL-15; #825):
+    it names a variable or key the inputs do not hold, or fails in the sandbox. Raised before
+    any model call. ``details``: ``purpose``, ``version``, ``field`` (``template`` or
+    ``system_template``) and the error's kind; never the template or the inputs."""
+
+    code = "template_render_error"
+    http_status = 422
+
+
+class OutputPolicyViolation(EpistrelError):
+    """A consumer purpose's output broke a policy of the call's rating twice, the first answer
+    and its one retry (FR-MODEL-15; #825): nothing of the output is returned (fail closed).
+    ``details``: ``purpose``, ``violations`` (``[{policy_id, name, message}]``, as
+    ``guardrail_violation`` names them) and ``attempts``."""
+
+    code = "output_policy_violation"
+    http_status = 422
+
+
+class ModelOutputInvalid(EpistrelError):
+    """A consumer purpose's model gave no answer that validates against the purpose's output
+    schema within its retries (FR-MODEL-15; #825). ``details``: ``purpose`` and ``reason``
+    (``parse_error``, ``schema_error``, ``low_confidence`` or ``budget_exhausted``); never the
+    model's text."""
+
+    code = "model_output_invalid"
+    http_status = 502

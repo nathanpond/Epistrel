@@ -136,6 +136,11 @@ TAGS: list[dict[str, str]] = [
         "the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of "
         "labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
     },
+    {
+        "name": "purposes",
+        "description": "Calling a consumer purpose, a model purpose an operator registered "
+        "under `/admin/purposes` (FR-MODEL-15).",
+    },
     {"name": "admin", "description": "Operator endpoints, all under `/admin` (FR-AUTH-1)."},
     {"name": "ops", "description": "Unauthenticated operational probes."},
 ]
@@ -306,6 +311,10 @@ ERROR_STATUS: dict[str, int] = {
     "version_stale": 409,
     "version_not_found": 404,
     "purpose_archived": 410,
+    # Consumer purpose calls (#825).
+    "template_render_error": 422,
+    "output_policy_violation": 422,
+    "model_output_invalid": 502,
     "provider_in_use": 409,
     "length_required": 411,
     "draft_too_large": 413,
@@ -448,6 +457,7 @@ STATUS_TEXT = {
     416: "Range not satisfiable",
     422: "Invalid request; nothing was written",
     423: "The story is busy",
+    502: "The model's answer was unusable; nothing was written",
     503: "Unavailable; nothing was written",
 }
 
@@ -532,6 +542,16 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "list_purposes": ("cursor_invalid",),
     "get_purpose": ("version_not_found",),
     "replace_purpose": ("version_stale", "purpose_archived"),
+    # A consumer purpose's call (#825): its gates, its output and its model.
+    "call_purpose": (
+        *_GATED,
+        "version_not_found",
+        "purpose_archived",
+        "template_render_error",
+        "output_policy_violation",
+        "model_output_invalid",
+        "erasure_pending",
+    ),
     "bind_provider": ("binding_incomplete", "story_archived"),
     "list_media": ("ledger_unavailable",),
     # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.

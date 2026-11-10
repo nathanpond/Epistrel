@@ -227,8 +227,10 @@ def _field_value(info: FieldInfo) -> Any:
 def conformant_example(schema: type[BaseModel]) -> dict[str, Any]:
     """The stub's answer for ``schema``: defaults where declared, else the most conservative
     value of each type (``False``, ``0``, ``1.0`` capped by the field's bound, empty)."""
-    values = {name: _field_value(info) for name, info in schema.model_fields.items()}
-    return schema.model_validate(values).model_dump(mode="json")
+    values = {info.alias or name: _field_value(info) for name, info in schema.model_fields.items()}
+    # A field with an alias is answered by its alias, as the endpoint's JSON must name it (a
+    # consumer purpose's output model, #825: fields ``p0``... aliased to the schema's names).
+    return schema.model_validate(values).model_dump(mode="json", by_alias=True)
 
 
 def _fault_error(kind: FaultKind) -> Exception | None:

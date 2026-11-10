@@ -13451,3 +13451,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 3):** the capability map's `per_character_renders` entry is narrowed from `FR-MULTI` to `FR-MULTI-1..11`, so FR-MULTI-12 falls to the floor; `docs/capability-map.md` is regenerated.
   **Why:** CI's `capability-map` step failed on the first push. The entry took every FR-MULTI id by prefix, which would have said the story cast limit holds only under per-character renders. The limit applies under every profile, Lite included. The eval and fingerprint checks (`evals --check`, `evals index --check`) stay green.
   **Issue:** #828
+- **Decision (Rule 3):** `tests/gates/test_traceability.py`'s real-docs check now expects 441 §15 rows (was 440), and docs/04's "M requirements first gated per milestone" line gains `M9 1`.
+  **Why:** CI's `test (rest)` shard failed on run 42827024578. The new FR-MULTI-12 row is the 441st, and the line is what `check-traceability --write` generates. Later M9 stories that add FR rows must bump both again.
+  **Issue:** #828

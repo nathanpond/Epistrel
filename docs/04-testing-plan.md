@@ -913,7 +913,7 @@ Generated from the explicit requirement references in each test in §§3–12 (r
 
 **Not release-gated** (S or C requirements with no named test): FR-MODEL-9 (S).
 
-**M requirements first gated per milestone:** M2 105 · M3 51 · M4 89 · M5 64 · M6 59 · M7 41 · M8 14 · M11 5.
+**M requirements first gated per milestone:** M2 105 · M3 51 · M4 89 · M5 64 · M6 59 · M7 41 · M8 14 · M9 1 · M11 5.
 
 ---
 

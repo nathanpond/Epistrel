@@ -1642,6 +1642,11 @@
       "requirement": "FR-MODEL-15"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/purposes/{name}/calls",
+      "requirement": "FR-MODEL-16"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/providers",
       "requirement": "FR-EXT-1"

@@ -25,7 +25,9 @@ regeneration, one constraint line per violated output
 policy (#68). The director's notes never appear here (FR-SCN-11: the narrator's alone). The
 ``user`` block is the player input as the character perceived it (#572: the words it perceived,
 an envelope such as "Wren whispers something to Marcus" as its line), the final ``user`` message. The beats come back as the
-call's ``response_schema`` (#53). -#}
+call's ``response_schema`` (#53). The character's knowledge sections (its definition through its private
+memories, and its scene through canon) live in ``viewpoint_self.j2`` and ``viewpoint_scene.j2``,
+which a consumer purpose's viewpoint (``viewpoint.j2``, #826) renders too: one text for both. -#}
 {% macro line(entry) -%}
 {% if entry.text %}{{ entry.text }}{% else %}{{ entry.name }}:{% if entry.say %} "{{ entry.say }}"{% endif %}{% if entry.do %} *{{ entry.do }}*{% endif %}{% endif %}
 {%- endmacro %}
@@ -44,36 +46,7 @@ call's ``response_schema`` (#53). -#}
 {{ scenario_text }}
 
 {% endif %}
-{% for character in character_definitions %}
-## You are {{ character.name }}
-{{ character.definition }}
-{% if character.deflection_style %}
-When {{ character.name }} refuses or changes the subject: {{ character.deflection_style }}
-{% endif %}
-{% if own_age %}
-{{ own_age }}
-{% endif %}
-
-{% endfor %}
-{% if beliefs %}
-## What you believe
-{% for line in beliefs %}
-- {{ line }}
-{% endfor %}
-
-{% endif %}
-{% if time_belief %}
-## Your sense of time
-{{ time_belief }}
-
-{% endif %}
-{% if private_memories %}
-## Your private memories
-{% for memory in private_memories %}
-- {{ memory }}
-{% endfor %}
-
-{% endif %}
+{% include "viewpoint_self.j2" %}
 {% if pinned_memories %}
 ## Pinned memories
 {% for memory in pinned_memories %}
@@ -88,39 +61,7 @@ When {{ character.name }} refuses or changes the subject: {{ character.deflectio
 {% endfor %}
 
 {% endif %}
-{% if scene %}
-## Scene
-{{ scene }}
-
-{% endif %}
-{% if working_memory %}
-## What you remember
-{% for beat in working_memory %}
-- {{ beat }}
-{% endfor %}
-
-{% endif %}
-{% if just_now %}
-## Just now
-{% for beat in just_now %}
-- {{ beat }}
-{% endfor %}
-
-{% endif %}
-{% if retrieved_memories %}
-## Retrieved
-{% for item in retrieved_memories %}
-- {{ item }}
-{% endfor %}
-
-{% endif %}
-{% if canon_facts %}
-## Canon
-{% for fact in canon_facts %}
-- {{ fact }}
-{% endfor %}
-
-{% endif %}
+{% include "viewpoint_scene.j2" %}
 {% if others_present %}
 ## Others present
 {% for other in others_present %}

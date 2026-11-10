@@ -259,6 +259,9 @@ class PurposeResult:
     usage: CallUsage
     config_revision: int
     """The deployment ``config_revision`` the call's configuration was read at."""
+    timeline_revision: int | None = None
+    """#826: a story-bound call's story revision, as it read the story (a call never moves
+    it); ``None`` with no story."""
     replayed: bool = False
     """``True`` when an ``Idempotency-Key`` retry returned this stored result (FR-RESP-6)."""
 
@@ -385,6 +388,12 @@ class PreparedCall:
     config_revision: int
     started: float
     deadline_s: float
+    actor: str | None = None
+    """#826: the viewpoint character of a story-bound call, the only character whose
+    character-scoped policies gate its inputs and output (``None``: no character's)."""
+    render_ids: tuple[str, ...] | None = None
+    """The characters whose character-scoped output policies apply (``None``: every one, as
+    a story-less call has none; #826: the viewpoint character's only, or none)."""
 
     def budget(self, max_calls: int) -> TurnBudget:
         """A budget of ``max_calls`` under the call's deadline (every budget of the call shares
@@ -496,7 +505,8 @@ async def gate_inputs(
     """Step 4 (module docs): 422 ``guardrail_violation`` before any call to the purpose's
     model."""
     texts = input_texts(inputs)
-    budget = prepared.budget(calls_needed(input_policies(prepared.context), texts))
+    policies = input_policies(prepared.context, actor=prepared.actor)
+    budget = prepared.budget(calls_needed(policies, texts))
     return await enforce_input(
         db,
         models,
@@ -506,6 +516,7 @@ async def gate_inputs(
         principal=principal,
         story_id=story_id,
         budget=budget,
+        actor=prepared.actor,
     )
 
 
@@ -547,7 +558,7 @@ async def gate_output(
     leaves = output_texts(output)
     if not leaves:
         return ()
-    policies = output_policies(prepared.context)
+    policies = output_policies(prepared.context, prepared.render_ids)
     deterministic = [p for p in policies if not isinstance(p.rule, ModelAssistedRule)]
     found: dict[str, Violation] = {}
     for leaf in leaves:

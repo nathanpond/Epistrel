@@ -271,6 +271,7 @@ from epistrel.orchestrator.providers import in_process as provider_in_process
 from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
 from epistrel.orchestrator.purposes import call as purpose_call
+from epistrel.orchestrator.purposes import story as purpose_story
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.rewrite import api as rewrite_api
 from epistrel.orchestrator.rewrite import apply as rewrite_apply
@@ -493,6 +494,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # A consumer purpose's call (#825): deployment-scoped, keyed per purpose
     # (``purpose_call:<name>``); a refusal is never stored.
     "call_purpose": ResultCodec.of(purpose_call.PurposeResult, revision_field=_CONFIG),
+    # #826: a story-bound call, keyed per story and purpose (``story_purpose_call:<name>``).
+    "call_story_purpose": ResultCodec.of(purpose_call.PurposeResult),
     "bind_provider": ResultCodec.of(provider_binding.BindingWrite),
     # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
     "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
@@ -4878,6 +4881,59 @@ class Engine:
             ),
             material={"name": name, "body": _body(request)},
             codec_name="call_purpose",
+        )
+
+    async def call_story_purpose(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        inputs: Mapping[str, Any],
+        *,
+        version: int | None = None,
+        viewpoint_character_id: str | None = None,
+        deadline_ms: int = purpose_call.DEFAULT_DEADLINE_MS,
+    ) -> purpose_call.PurposeResult:
+        """Call consumer purpose ``name`` inside story ``story_id`` (FR-MODEL-16; REST ``POST
+        /stories/{id}/purposes/{name}/calls``), optionally with one character's viewpoint
+        (``viewpoint_character_id``): the template's ``viewpoint`` is what that character
+        knows, believes and has seen, built by ``build_context`` and rendered as its own render
+        would show it. The story supplies the content rating, the policies and the cast's true
+        ages. The call reads the story and never changes it: no lock, no revision, no event.
+        404 for an unknown story, purpose, version or character; 409 ``story_archived``; 422
+        ``player_has_no_context`` (``details.reason``) for the player's character; 409
+        ``module_off`` for a viewpoint on a Lite story; 409 ``erased_subject_referenced`` for an
+        input naming an erased subject; then #825's refusals (``Engine.call_purpose``). The
+        ``Idempotency-Key`` (``ctx``) answers a repeat from the first result, with no model
+        call."""
+        principal = self.require_principal(ctx)
+        try:
+            request = purpose_story.StoryPurposeCall.model_validate(
+                {
+                    "inputs": inputs,
+                    "version": version,
+                    "viewpoint_character_id": viewpoint_character_id,
+                    "deadline_ms": deadline_ms,
+                }
+            )
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+        purpose_call.check_inputs(request.inputs)
+        return await self._keyed(
+            ctx,
+            f"story_purpose_call:{name}",
+            lambda _: purpose_story.call_story_purpose(
+                self.db,
+                self.models,
+                story_id,
+                name,
+                request,
+                principal=principal,
+                lexical=lexical_backend(self.settings.lexical_backend),
+            ),
+            story_id=story_id,
+            material={"story_id": story_id, "name": name, "body": _body(request)},
+            codec_name="call_story_purpose",
         )
 
     @refuses_nul()

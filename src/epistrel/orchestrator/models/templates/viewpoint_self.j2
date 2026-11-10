@@ -1,0 +1,36 @@
+{#- A character's own knowledge sections, first half (NFR-PRIV-4, #170; #826): its definition,
+its deflection style and its own true age, then ``## What you believe``, ``## Your sense of time``
+and ``## Your private memories``. Every section but the definition comes from its
+``CharacterContext`` (``core.epistemic.context.build_context``). Shared by the character render
+(``structured_generation.j2``) and a consumer purpose's viewpoint (``viewpoint.j2``), so both
+send the same text. -#}
+{% for character in character_definitions %}
+## You are {{ character.name }}
+{{ character.definition }}
+{% if character.deflection_style %}
+When {{ character.name }} refuses or changes the subject: {{ character.deflection_style }}
+{% endif %}
+{% if own_age %}
+{{ own_age }}
+{% endif %}
+
+{% endfor %}
+{% if beliefs %}
+## What you believe
+{% for line in beliefs %}
+- {{ line }}
+{% endfor %}
+
+{% endif %}
+{% if time_belief %}
+## Your sense of time
+{{ time_belief }}
+
+{% endif %}
+{% if private_memories %}
+## Your private memories
+{% for memory in private_memories %}
+- {{ memory }}
+{% endfor %}
+
+{% endif %}

@@ -6,8 +6,10 @@ know. Context assembly is the primary privacy control, and output scanning is a 
 measured one: the scan catches some disclosures, and it is never proof that none occurred.
 ``build_context(conn, character_id, state)`` is the only producer of a character render's
 knowledge sections (``CharacterContext``). ``orchestrator.structured.prompt.character_inputs``
-takes nothing else, and ``python -m tools.gates check-character-context`` checks that
-``structured_generation.j2`` is rendered only from inputs built that way. Its sections:
+takes nothing else, nor does ``orchestrator.structured.viewpoint.viewpoint_inputs`` (a consumer
+purpose's viewpoint, #826), and ``python -m tools.gates check-character-context`` checks that
+``structured_generation.j2`` and ``viewpoint.j2`` are rendered only from inputs built that way.
+Its sections:
 
 - **Beliefs** (FR-TURN-8): the character's own partition (#159), first-order beliefs held at
   ``suspected`` or above (never ``unknown``, never a closed row), established false beliefs
@@ -778,9 +780,19 @@ async def _tracked(
 
 
 async def build_context(
-    conn: AsyncConnection, character_id: str, state: TurnState
+    conn: AsyncConnection,
+    character_id: str,
+    state: TurnState,
+    *,
+    query: str | None = None,
+    lazy: bool = True,
 ) -> CharacterContext:
-    """``character_id``'s generation context for this turn (see the module docstring)."""
+    """``character_id``'s generation context for this turn (see the module docstring).
+
+    #826 (FR-MODEL-16): a story-bound consumer purpose call builds its viewpoint here too, at
+    the story's head with nothing pending. ``query`` is then the retrieval query's text in
+    place of the perceived input (the call's string inputs, joined), and ``lazy`` false keeps
+    lazy resolution off (a call is read-only, so it needs no exposure decided)."""
     from epistrel.core.retrieval.pipeline import RetrievalQuery, retrieve
     from epistrel.core.world_clock.time_belief import hidden_canon, time_belief
 
@@ -812,10 +824,14 @@ async def build_context(
     own = [b.text for b in window if b.character_id == character_id and b.fidelity == "content"]
     player_say, player_do, player_heard = _player_input(window, cast.names, character_id)
     # #572: the input as perceived (an envelope left out, like a staged one), never as typed.
-    joined = " ".join(
-        b.text
-        for b in window
-        if b.event_id == PLAYER_PENDING and b.fidelity != "envelope" and b.text
+    joined = (
+        query
+        if query is not None
+        else " ".join(
+            b.text
+            for b in window
+            if b.event_id == PLAYER_PENDING and b.fidelity != "envelope" and b.text
+        )
     )
     # #174: what the earlier primaries just did, as perceived, joins the retrieval query.
     heard = [b.text for b in staged if b.fidelity != "envelope"]
@@ -856,7 +872,7 @@ async def build_context(
         predicates = {pid: p.name for pid, p in registry.predicates.items()}
         names = {**cast.entity_names, **cast.names, **await _state_names(conn, story_id)}
         about = list(dict.fromkeys((*retrieval.resolution.entities, *retrieval.participants)))
-        needed = await _needed(conn, state, character_id, about, registry)
+        needed = await _needed(conn, state, character_id, about, registry) if lazy else []
         pending_beliefs, pending_heard = _needed_lines(needed, predicates, names, cast.names)
         beliefs = pending_beliefs + await _belief_lines(
             conn,

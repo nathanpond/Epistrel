@@ -80,6 +80,7 @@ router.include_router(media.router)
 router.include_router(image_jobs.router)
 router.include_router(image_prompts.router)
 router.include_router(purposes.router)
+router.include_router(purposes.story_router)  # #826
 router.include_router(story_images.router)
 router.include_router(image_usage.story_router)  # #269
 router.include_router(image_usage.characters)

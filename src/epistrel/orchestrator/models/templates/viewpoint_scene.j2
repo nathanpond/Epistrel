@@ -1,0 +1,39 @@
+{#- A character's own knowledge sections, second half (NFR-PRIV-4, #170; #826): ``## Scene``
+(the place and who is present, with apparent ages), ``## What you remember`` (its working
+memory), ``## Just now`` (a sequential turn's staged beats: the render's only, empty in a
+viewpoint), ``## Retrieved`` and ``## Canon``, every one from its ``CharacterContext``. Shared by
+the character render (``structured_generation.j2``) and a consumer purpose's viewpoint
+(``viewpoint.j2``). -#}
+{% if scene %}
+## Scene
+{{ scene }}
+
+{% endif %}
+{% if working_memory %}
+## What you remember
+{% for beat in working_memory %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+{% if just_now %}
+## Just now
+{% for beat in just_now %}
+- {{ beat }}
+{% endfor %}
+
+{% endif %}
+{% if retrieved_memories %}
+## Retrieved
+{% for item in retrieved_memories %}
+- {{ item }}
+{% endfor %}
+
+{% endif %}
+{% if canon_facts %}
+## Canon
+{% for fact in canon_facts %}
+- {{ fact }}
+{% endfor %}
+
+{% endif %}

@@ -815,6 +815,15 @@ async def _no_conflict(client: httpx.AsyncClient, kind: Kind, entity: Entity) ->
     return {"cid": NO_SUCH}
 
 
+NO_PURPOSE = "no_such_purpose_826"
+"""A consumer purpose no deployment registers (#826): a story-bound call of it is 404 for
+anyone, after the story's own prechecks."""
+
+
+async def _no_purpose(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
+    return {"name": NO_PURPOSE}
+
+
 async def _no_amendment(client: httpx.AsyncClient, kind: Kind, entity: Entity) -> dict[str, Any]:
     return {"amendment_id": NO_SUCH}
 
@@ -830,6 +839,10 @@ CALLS: dict[tuple[str, str], Call] = {
     ),
     ("GET", f"{S}/rewrites"): Call(200, queries=(OMNISCIENT,)),
     ("GET", f"{S}/rewrites/{{session_id}}"): Call(404, queries=(OMNISCIENT,), prepare=_no_session),
+    # #826: a consumer purpose called inside the story (an unknown one: 404 for anyone).
+    ("POST", f"{S}/purposes/{{name}}/calls"): Call(
+        404, {"inputs": {"voter": "Ash"}}, prepare=_no_purpose
+    ),
     ("POST", f"{S}/rewrites/{{session_id}}/answers"): Call(
         404,
         {"answers": [{"question_id": NO_SUCH, "accept_recommended": True}]},

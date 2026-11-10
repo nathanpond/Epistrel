@@ -1,4 +1,4 @@
-"""Consumer purpose calls (FR-MODEL-15; #825).
+"""Consumer purpose calls (FR-MODEL-15, FR-MODEL-16; #825, #826).
 
 ``POST /purposes/{name}/calls`` calls a consumer purpose (registered under ``/admin/purposes``,
 FR-MODEL-14) with **no story** and answers its structured output synchronously, after the same
@@ -7,6 +7,11 @@ input, the minors policy with the true ages ``depicted`` declares, structured ou
 purpose's schema, and the output gate on every string of the result under the call's content
 rating, failing closed. ``Idempotency-Key`` is honoured: a repeat answers the first result with
 no model call (FR-RESP-6). A consumer route: it takes the service credential, like every route.
+
+``POST /stories/{id}/purposes/{name}/calls`` (#826) calls one inside a story: the story supplies
+the content rating, its policies and its cast's true ages, and ``viewpoint_character_id`` gives
+the template one character's viewpoint (``orchestrator.purposes.story``). It reads the story and
+never changes it.
 """
 
 from __future__ import annotations
@@ -15,12 +20,14 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Path, Response
 
-from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.api.idempotency import answered
-from epistrel.api.responses import DeploymentMutationResponse
+from epistrel.api.responses import DeploymentMutationResponse, MutationResponse
 from epistrel.orchestrator.purposes.call import CallModel, CallUsage, PurposeCall, PurposeResult
+from epistrel.orchestrator.purposes.story import StoryPurposeCall
 
 router = APIRouter(prefix="/purposes", tags=["purposes"])
+story_router = APIRouter(prefix="/stories", tags=["purposes"])
 
 PurposeNamePath = Annotated[
     str,
@@ -92,4 +99,72 @@ async def call_purpose(
     return answered(PurposeCallBody.of(result), ctx, response, replayed=result.replayed)
 
 
-__all__ = ["PurposeCallBody", "router"]
+class StoryPurposeCallBody(MutationResponse):
+    """A story-bound consumer purpose call's answer: #825's ``{purpose, version, output, model,
+    usage}``, the story's ``timeline_revision`` as the call read it (a call never moves it) and
+    the deployment ``config_revision`` it was routed by."""
+
+    config_revision: int
+    purpose: str
+    version: int
+    output: dict[str, Any]
+    model: CallModel
+    usage: CallUsage
+
+    @classmethod
+    def of(cls, result: PurposeResult) -> StoryPurposeCallBody:
+        return cls(
+            timeline_revision=result.timeline_revision or 0,
+            config_revision=result.config_revision,
+            purpose=result.purpose,
+            version=result.version,
+            output=result.output,
+            model=result.model,
+            usage=result.usage,
+        )
+
+
+@story_router.post(
+    "/{story_id}/purposes/{name}/calls",
+    response_model=StoryPurposeCallBody,
+    operation_id="call_story_purpose",
+    summary="Call a consumer purpose inside a story",
+    description=(
+        "Call the purpose as `POST /purposes/{name}/calls` does, inside the story "
+        "(FR-MODEL-16): the story's content rating (its prompt guidance first in the system "
+        "message), its effective policies and its cast's true ages gate the inputs and the "
+        "output, the cast present at the latest scene counting for the minors policy. With "
+        "`viewpoint_character_id`, the template's `viewpoint` is that character's viewpoint "
+        "(`viewpoint.name`, and `viewpoint.text`: what it knows, believes and has seen, as "
+        "its own render would show it; never what it does not know), and `story` holds `id`, "
+        "`title`, `location`, `present` and `scene`; without one, `story` holds `id` and "
+        "`title`. The call reads the story and never changes it: no lock, no revision, no "
+        "event, so it runs while a turn is in flight. Routed by the deployment's model "
+        "configuration, never the story's. 404 for an unknown story, purpose, version or "
+        "character; 409 `story_archived`; 422 `validation_error` with `details.reason: "
+        "player_has_no_context` for the player's character; 409 `module_off` for a "
+        "viewpoint on a Lite story; 409 `erased_subject_referenced` for an input naming an "
+        "erased subject; then the refusals of `POST /purposes/{name}/calls`."
+    ),
+)
+async def call_story_purpose(
+    story_id: StoryId,
+    name: PurposeNamePath,
+    body: StoryPurposeCall,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> StoryPurposeCallBody:
+    result = await engine.call_story_purpose(
+        ctx,
+        story_id,
+        name,
+        body.inputs,
+        version=body.version,
+        viewpoint_character_id=body.viewpoint_character_id,
+        deadline_ms=body.deadline_ms,
+    )
+    return answered(StoryPurposeCallBody.of(result), ctx, response, replayed=result.replayed)
+
+
+__all__ = ["PurposeCallBody", "StoryPurposeCallBody", "router", "story_router"]

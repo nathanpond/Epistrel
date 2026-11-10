@@ -552,6 +552,19 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         "model_output_invalid",
         "erasure_pending",
     ),
+    # #826: the story-bound call adds the story's prechecks and the erased-subject guard.
+    "call_story_purpose": (
+        *_GATED,
+        "version_not_found",
+        "purpose_archived",
+        "template_render_error",
+        "output_policy_violation",
+        "model_output_invalid",
+        "story_archived",
+        "module_off",
+        "erased_subject_referenced",
+        "config_key_missing",
+    ),
     "bind_provider": ("binding_incomplete", "story_archived"),
     "list_media": ("ledger_unavailable",),
     # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.

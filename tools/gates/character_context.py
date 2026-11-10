@@ -27,6 +27,18 @@ A repair's regeneration (#151) and a policy regeneration (#68) rebuild their inp
 render's own (``Rendered.character_inputs``), so they carry the same context. The age-repair
 and narrator templates are out of scope: they are not a character's prompt.
 
+**The purpose path** (#826, FR-MODEL-16): a story-bound consumer purpose call may carry one
+character's viewpoint, the same knowledge sections rendered through ``viewpoint.j2``
+(``orchestrator.structured.viewpoint``). The scan also finds:
+
+- a ``viewpoint_inputs`` whose first parameter is not annotated ``CharacterContext``, or that
+  passes ``ViewpointInputs`` a section other than a ``CONTEXT`` one from the context and the
+  character's definition (``VIEWPOINT_SECTIONS``), or a turn-shaped one (``VIEWPOINT_OMITS``:
+  the player's input, ``## Just now``, the tracked values);
+- a ``Viewpoint(...)`` construction outside ``VIEWPOINT_MODULE``, and a ``render_viewpoint``
+  call whose inputs are not a name the same function assigned from ``viewpoint_inputs(...)``;
+- a narrator-only name in ``viewpoint.j2`` or anything it includes.
+
 Run ``python -m tools.gates check-character-context``. It exits 0 when clean and 1 on findings.
 CI enforces it through ``tests/gates/test_character_context_gate.py``.
 """
@@ -49,6 +61,8 @@ SEALERS = frozenset(
     }
 )
 """The modules that may seal an already viewpoint-filtered set."""
+VIEWPOINT_MODULE = "src/epistrel/orchestrator/structured/viewpoint.py"
+"""The only module that builds a ``Viewpoint`` (#826)."""
 RENDERERS = frozenset({"render_beats", "prepare"})
 """The calls that render a character template when given ``variant=STRUCTURED``."""
 
@@ -99,6 +113,10 @@ SECTIONS: dict[str, str] = {
     "clock_now": NARRATOR,
 }
 """Every section a character's ``GenerationInputs`` may carry, classified (#544)."""
+VIEWPOINT_SECTIONS = frozenset({"character_definitions"})
+"""The one ``TURN`` section a viewpoint carries (#826): the character's own author notes."""
+VIEWPOINT_OMITS = frozenset({"player_input", "just_now", "tracked_values", "tracked_syntax"})
+"""The turn-shaped sections a viewpoint never carries (#826): a call has no turn."""
 
 
 def _name(node: ast.AST) -> str | None:
@@ -124,8 +142,9 @@ def _inputs_arg(call: ast.Call) -> ast.AST | None:
     return next((k.value for k in call.keywords if k.arg == "inputs"), None)
 
 
-def _context_names(function: ast.AST) -> set[str]:
-    """The names ``function`` assigns from a ``character_inputs(...)`` call."""
+def _context_names(function: ast.AST, producer: str = "character_inputs") -> set[str]:
+    """The names ``function`` assigns from a ``producer(...)`` call (``character_inputs``, or
+    ``viewpoint_inputs`` for #826's viewpoint)."""
     found: set[str] = set()
     for node in ast.walk(function):
         value = None
@@ -134,7 +153,7 @@ def _context_names(function: ast.AST) -> set[str]:
             value, targets = node.value, list(node.targets)
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
             value, targets = node.value, [node.target]
-        if isinstance(value, ast.Call) and _name(value.func) == "character_inputs":
+        if isinstance(value, ast.Call) and _name(value.func) == producer:
             found |= {t.id for t in targets if isinstance(t, ast.Name)}
     return found
 
@@ -171,9 +190,13 @@ def _guarded(value: ast.AST, context: str) -> bool:
 
 def _section_findings(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
+    built: str = "GenerationInputs",
+    viewpoint: bool = False,
 ) -> Iterator[tuple[int, str]]:
-    """#544: every section ``character_inputs`` hands the character template, against
-    ``SECTIONS`` (see the module docstring)."""
+    """#544: every section ``character_inputs`` hands the character template (``built``:
+    ``GenerationInputs``), against ``SECTIONS``; #826: every section ``viewpoint_inputs`` hands
+    ``viewpoint.j2`` (``ViewpointInputs``, ``viewpoint`` true), which takes only context sections
+    and the definition, never a turn-shaped one (see the module docstring)."""
     params = function.args.posonlyargs + function.args.args
     if not params:
         return
@@ -190,11 +213,17 @@ def _section_findings(
                 elif _mentions(k.value, context):
                     from_context.add(k.arg)
     for node in ast.walk(function):
-        if not (isinstance(node, ast.Call) and _name(node.func) == "GenerationInputs"):
+        if not (isinstance(node, ast.Call) and _name(node.func) == built):
             continue
         for k in node.keywords:
             kind = SECTIONS.get(k.arg or "")
             used = _attrs(k.value)
+            if viewpoint and k.arg in VIEWPOINT_OMITS:
+                yield node.lineno, f"passes the turn-shaped section {k.arg!r} to a viewpoint"
+                continue
+            if viewpoint and kind not in (None, CONTEXT) and k.arg not in VIEWPOINT_SECTIONS:
+                yield node.lineno, f"passes the {kind} section {k.arg!r} to a viewpoint"
+                continue
             if kind is None:
                 yield node.lineno, f"passes the unclassified section {k.arg!r} to a character"
             elif kind == NARRATOR:
@@ -217,8 +246,11 @@ def _findings(rel: str, tree: ast.AST) -> Iterator[tuple[int, str]]:
             yield node.lineno, "builds a CharacterContext outside core.epistemic.context"
         if name == "_seal" and rel not in SEALERS:
             yield node.lineno, "seals a viewpoint-filtered set outside the filtering modules"
+        if name == "Viewpoint" and rel != VIEWPOINT_MODULE:
+            yield node.lineno, "builds a Viewpoint outside orchestrator.structured.viewpoint"
     for function in _functions(tree):
         allowed = _context_names(function)
+        viewed = _context_names(function, "viewpoint_inputs")
         for node in ast.walk(function):
             if isinstance(node, ast.Call) and _name(node.func) in RENDERERS and _structured(node):
                 given = _inputs_arg(node)
@@ -228,24 +260,38 @@ def _findings(rel: str, tree: ast.AST) -> Iterator[tuple[int, str]]:
                         "renders structured_generation.j2 with inputs not built by "
                         "character_inputs",
                     )
-        if function.name == "character_inputs":
+            if isinstance(node, ast.Call) and _name(node.func) == "render_viewpoint":
+                given = node.args[0] if node.args else None
+                if not (isinstance(given, ast.Name) and given.id in viewed):
+                    yield (
+                        node.lineno,
+                        "renders viewpoint.j2 with inputs not built by viewpoint_inputs",
+                    )
+        if function.name in ("character_inputs", "viewpoint_inputs"):
             params = function.args.posonlyargs + function.args.args
             first = params[0].annotation if params else None
             if not (first is not None and _name(first) == "CharacterContext"):
-                yield function.lineno, "character_inputs does not take a CharacterContext first"
-            yield from _section_findings(function)
+                yield (
+                    function.lineno,
+                    f"{function.name} does not take a CharacterContext first",
+                )
+            if function.name == "character_inputs":
+                yield from _section_findings(function)
+            else:
+                yield from _section_findings(function, "ViewpointInputs", viewpoint=True)
 
 
 TEMPLATES = "src/epistrel/orchestrator/models/templates"
 CHARACTER_TEMPLATE = "structured_generation.j2"
+VIEWPOINT_TEMPLATE = "viewpoint.j2"
 INCLUDE = re.compile(r"""{%-?\s*include\s+["']([^"']+)["']""")
 
 
 def _template_findings(root: Path) -> Iterator[str]:
     """#208: the character template, and every template it includes, never names a
-    ``NARRATOR`` section."""
+    ``NARRATOR`` section; #826: nor does the viewpoint template."""
     narrator_only = [name for name, kind in SECTIONS.items() if kind == NARRATOR]
-    pending, seen = [CHARACTER_TEMPLATE], set()
+    pending, seen = [CHARACTER_TEMPLATE, VIEWPOINT_TEMPLATE], set()
     while pending:
         name = pending.pop()
         path = root / TEMPLATES / name
@@ -295,6 +341,10 @@ __all__ = [
     "TEMPLATES",
     "TURN",
     "UNSCOPED",
+    "VIEWPOINT_MODULE",
+    "VIEWPOINT_OMITS",
+    "VIEWPOINT_SECTIONS",
+    "VIEWPOINT_TEMPLATE",
     "main",
     "scan",
 ]

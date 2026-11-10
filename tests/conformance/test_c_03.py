@@ -138,7 +138,7 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
-from epistrel.api.routes.purposes import PurposeCallBody
+from epistrel.api.routes.purposes import PurposeCallBody, StoryPurposeCallBody
 from epistrel.api.routes.reconciliation import (
     CompensatedBody,
     OutboxBody,
@@ -3460,6 +3460,12 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", f"/purposes/{PURPOSE_NAME}/calls", PURPOSE_CALL),
             lambda e, ids: _purpose_called(e),
         ),
+        # #826: the same purpose inside the story (no viewpoint: it reads, never writes).
+        Step(
+            "call_story_purpose",
+            lambda ids: Rest("POST", f"{s}/purposes/{PURPOSE_NAME}/calls", PURPOSE_CALL),
+            lambda e, ids: _story_purpose_called(e, ids["story"]),
+        ),
         Step(
             "archive_purpose",
             lambda ids: Rest("POST", f"{PURPOSE_PATH}/archive"),
@@ -4746,6 +4752,14 @@ PURPOSE_CALL: dict[str, Any] = {"inputs": {"voter": "Ash"}}
 async def _purpose_called(engine: Engine) -> dict[str, Any]:
     return dump(
         PurposeCallBody.of(await engine.call_purpose(CTX, PURPOSE_NAME, PURPOSE_CALL["inputs"]))
+    )
+
+
+async def _story_purpose_called(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        StoryPurposeCallBody.of(
+            await engine.call_story_purpose(CTX, story_id, PURPOSE_NAME, PURPOSE_CALL["inputs"])
+        )
     )
 
 

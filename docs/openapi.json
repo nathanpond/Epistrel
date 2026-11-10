@@ -54387,6 +54387,123 @@
         "title": "StoryProfileWriteBody",
         "type": "object"
       },
+      "StoryPurposeCall": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/purposes/{name}/calls``: one call of a consumer purpose inside a\nstory. The story supplies the content rating and the true ages of everyone in it.",
+        "examples": [
+          {
+            "deadline_ms": 30000,
+            "inputs": {
+              "challenge": "the raft race",
+              "winner": "Ash"
+            },
+            "viewpoint_character_id": "01J9Z8Q4N6M3W2V1T0S9R8P7Q6"
+          }
+        ],
+        "properties": {
+          "deadline_ms": {
+            "default": 60000,
+            "description": "The call's deadline, from its start, the input gate and the viewpoint included (default 60 000, at most 300 000). Once it passes, the call is 503 `model_unavailable` with `details.reason: deadline`.",
+            "maximum": 300000.0,
+            "minimum": 1.0,
+            "title": "Deadline Ms",
+            "type": "integer"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "description": "The template's `inputs`: a JSON object of strings, numbers, booleans, nulls, and arrays and objects of them (depth at most 6, at most 64 KB as canonical JSON). Every string in it passes the input gate under the story's guardrails, and they are joined as the viewpoint's retrieval query.",
+            "title": "Inputs",
+            "type": "object"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The purpose version to call (default: the latest).",
+            "title": "Version"
+          },
+          "viewpoint_character_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A character of the story whose viewpoint the template receives as `viewpoint` (`name`, and `text`: what that character knows, believes and has seen, as its own render would show it). Not the player's character; not on a Lite story.",
+            "title": "Viewpoint Character Id"
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "title": "StoryPurposeCall",
+        "type": "object"
+      },
+      "StoryPurposeCallBody": {
+        "description": "A story-bound consumer purpose call's answer: #825's ``{purpose, version, output, model,\nusage}``, the story's ``timeline_revision`` as the call read it (a call never moves it) and\nthe deployment ``config_revision`` it was routed by.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "model": {
+            "$ref": "#/components/schemas/CallModel"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/CallUsage"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "config_revision",
+          "purpose",
+          "version",
+          "output",
+          "model",
+          "usage"
+        ],
+        "title": "StoryPurposeCallBody",
+        "type": "object"
+      },
       "StoryRatingBody": {
         "description": "The story's rating: the rating, its current version and its name.",
         "properties": {
@@ -96944,6 +97061,235 @@
         "summary": "List a story's prunings",
         "tags": [
           "timeline"
+        ]
+      }
+    },
+    "/stories/{story_id}/purposes/{name}/calls": {
+      "post": {
+        "description": "Call the purpose as `POST /purposes/{name}/calls` does, inside the story (FR-MODEL-16): the story's content rating (its prompt guidance first in the system message), its effective policies and its cast's true ages gate the inputs and the output, the cast present at the latest scene counting for the minors policy. With `viewpoint_character_id`, the template's `viewpoint` is that character's viewpoint (`viewpoint.name`, and `viewpoint.text`: what it knows, believes and has seen, as its own render would show it; never what it does not know), and `story` holds `id`, `title`, `location`, `present` and `scene`; without one, `story` holds `id` and `title`. The call reads the story and never changes it: no lock, no revision, no event, so it runs while a turn is in flight. Routed by the deployment's model configuration, never the story's. 404 for an unknown story, purpose, version or character; 409 `story_archived`; 422 `validation_error` with `details.reason: player_has_no_context` for the player's character; 409 `module_off` for a viewpoint on a Lite story; 409 `erased_subject_referenced` for an input naming an erased subject; then the refusals of `POST /purposes/{name}/calls`.",
+        "operationId": "call_story_purpose",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryPurposeCall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryPurposeCallBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `version_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `purpose_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `output_policy_violation`, `template_render_error`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The model's answer was unusable; nothing was written: `model_output_invalid`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Call a consumer purpose inside a story",
+        "tags": [
+          "purposes"
         ]
       }
     },

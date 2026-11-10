@@ -7,13 +7,16 @@ are left alone. #544: every section ``character_inputs`` passes the template is 
 (``SECTIONS``), and a partitioned character gets no unscoped turn text (the rolling summary, the
 text pins), statically and at run time. #572: the player's input is a context section
 (perception-routed, never the typed text): a render handed the raw input is a finding, and a
-whisper's non-target gets only the envelope."""
+whisper's non-target gets only the envelope. #826: a consumer purpose's viewpoint
+(``viewpoint.j2``) is held the same way: built only by ``viewpoint_inputs`` from a
+``CharacterContext``, with no turn-shaped, unscoped or narrator section."""
 
 from __future__ import annotations
 
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
 from tools.gates.__main__ import main as gates_main
 from tools.gates.character_context import (
     CHARACTER_TEMPLATE,
@@ -24,6 +27,10 @@ from tools.gates.character_context import (
     TEMPLATES,
     TURN,
     UNSCOPED,
+    VIEWPOINT_MODULE,
+    VIEWPOINT_OMITS,
+    VIEWPOINT_SECTIONS,
+    VIEWPOINT_TEMPLATE,
     main,
     scan,
 )
@@ -31,6 +38,7 @@ from tools.gates.character_context import (
 from epistrel.core.epistemic.context import CharacterContext
 from epistrel.core.turns import CastEntry
 from epistrel.orchestrator.structured.prompt import RenderSections, character_inputs
+from epistrel.orchestrator.structured.viewpoint import render_viewpoint, viewpoint_inputs
 
 BYPASSES = '''"""Renders structured_generation.j2 with CharacterContext( in prose only."""
 from epistrel.core.epistemic.context import CharacterContext
@@ -245,3 +253,126 @@ def test_external_data_is_narrator_only(tmp_path: Path) -> None:
         "passes the narrator-only section 'external_data' to a character",
     ]
     assert [f for f in scan(root) if "part.j2" in f]
+
+
+# -- a consumer purpose's viewpoint (#826) --------------------------------------------------------
+
+VIEWPOINT_BYPASSES = '''"""Builds a viewpoint from the turn, and renders it from anything."""
+
+
+def viewpoint_inputs(sections, character):
+    return ViewpointInputs(scene=sections.scene)
+
+
+def leaky_inputs(context: CharacterContext, sections):
+    return ViewpointInputs(
+        scene=context.scene,
+        just_now=list(context.just_now),
+        player_input=context.player_say,
+        summary_segments=list(sections.segments),
+        rating_guidance=sections.guidance,
+    )
+
+
+def viewpoint_inputs_too(context: CharacterContext, sections):
+    return 0
+
+
+async def call(context, everything):
+    inputs = ViewpointInputs(canon_facts=everything)
+    told = render_viewpoint(inputs)
+    return told, Viewpoint(name="Bobby", text=everything)
+'''
+
+VIEWPOINT_FOLLOWS = '''"""The shape orchestrator.purposes.story keeps."""
+
+
+async def call(context, character, budget):
+    inputs = viewpoint.viewpoint_inputs(context, character, budget=budget)
+    return viewpoint.render_viewpoint(inputs)
+'''
+
+
+def test_a_viewpoint_comes_only_from_its_context(tmp_path: Path) -> None:
+    """#826 (FR-MODEL-16, NFR-PRIV-4): the purpose path is held like the render. A
+    ``viewpoint_inputs`` that takes something other than a ``CharacterContext`` first, a
+    ``Viewpoint`` built outside its module and a ``render_viewpoint`` of hand-built inputs are
+    findings. Complement: the shape the story call keeps is not."""
+    root = _tree(
+        tmp_path,
+        {
+            "src/epistrel/orchestrator/bypass.py": VIEWPOINT_BYPASSES,
+            "src/epistrel/orchestrator/follows.py": VIEWPOINT_FOLLOWS,
+            VIEWPOINT_MODULE: (
+                "def render_viewpoint(inputs):\n    return Viewpoint(name='a', text='b')\n"
+            ),
+        },
+    )
+    found = sorted(f.split(": ", 1)[1].split(";")[0] for f in scan(root))
+    assert found == [
+        "builds a Viewpoint outside orchestrator.structured.viewpoint",
+        "renders viewpoint.j2 with inputs not built by viewpoint_inputs",
+        "viewpoint_inputs does not take a CharacterContext first",
+    ]
+
+
+def test_a_viewpoint_takes_no_turn_text(tmp_path: Path) -> None:
+    """#826: ``viewpoint_inputs`` hands ``ViewpointInputs`` only context sections and the
+    character's definition: a turn-shaped section (``## Just now``, the player's input), an
+    unscoped one and a turn one are findings, and so is a narrator-only name in
+    ``viewpoint.j2`` or a template it includes. Complement: the repository's own
+    ``viewpoint_inputs`` passes (``test_the_repository_renders_characters_only_from_their_
+    context``)."""
+    assert set(SECTIONS) >= VIEWPOINT_OMITS
+    assert {"character_definitions"} == VIEWPOINT_SECTIONS
+    leaky = VIEWPOINT_BYPASSES.replace("def leaky_inputs(", "def viewpoint_inputs(", 1)
+    leaky = leaky.replace("def viewpoint_inputs(sections, character)", "def other(sections)", 1)
+    templates = tmp_path / TEMPLATES
+    templates.mkdir(parents=True)
+    (templates / VIEWPOINT_TEMPLATE).write_text('{% include "seen.j2" %}\n', encoding="utf-8")
+    (templates / "seen.j2").write_text("{{ clock_now }}\n", encoding="utf-8")
+    root = _tree(tmp_path, {"src/epistrel/orchestrator/structured/viewpoint.py": leaky})
+    found = sorted(f.split(": ", 1)[1].split(";")[0] for f in scan(root))
+    assert found == [
+        "names the narrator-only section 'clock_now'",
+        "passes the turn section 'rating_guidance' to a viewpoint",
+        "passes the turn-shaped section 'just_now' to a viewpoint",
+        "passes the turn-shaped section 'player_input' to a viewpoint",
+        "passes the unscoped section 'summary_segments' to a viewpoint",
+        "renders viewpoint.j2 with inputs not built by viewpoint_inputs",
+    ]
+
+
+def test_a_viewpoint_is_the_characters_knowledge_alone() -> None:
+    """#826, the run-time half: ``viewpoint_inputs`` fills only sections ``SECTIONS`` classifies
+    as context, plus the character's definition; a context holding the player's input, staged
+    beats and tracked values gives none of them to the viewpoint, and the rendered text carries
+    the knowledge sections the render's partials show. Complement: another character's context
+    is refused."""
+    character = CastEntry(id="c-b", name="Bobby", definition="DEF", is_player=False)
+    context = CharacterContext(
+        character_id="c-b",
+        beliefs=("you know CONTEXT-belief",),
+        working_memory=("CONTEXT-memory",),
+        just_now=("STAGED-beat",),
+        scene="CONTEXT-scene",
+        partitioned=True,
+        player_say="TYPED-say",
+        player_heard=("TYPED-heard",),
+        tracked=("TRACKED-value",),
+        tracked_syntax="TRACKED-syntax",
+    )
+    inputs = viewpoint_inputs(context, character, budget=1_000_000)
+    given = inputs.model_dump(exclude_defaults=True)
+    assert set(given) - VIEWPOINT_SECTIONS <= {n for n, k in SECTIONS.items() if k == CONTEXT}
+    assert not set(given) & VIEWPOINT_OMITS
+    seen = render_viewpoint(inputs)
+    assert seen.name == "Bobby"
+    assert "## You are Bobby\nDEF" in seen.text
+    assert "- you know CONTEXT-belief" in seen.text
+    assert "## Scene\nCONTEXT-scene" in seen.text
+    for hidden in ("STAGED", "TYPED", "TRACKED"):
+        assert hidden not in seen.text
+    other = CastEntry(id="c-x", name="Xena", definition="", is_player=False)
+    with pytest.raises(ValueError, match="own context"):
+        viewpoint_inputs(context, other, budget=1_000_000)

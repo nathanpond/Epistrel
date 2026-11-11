@@ -460,12 +460,15 @@ async def test_i_31__m9_sequestered(
     text. No exposure row, no belief and no routed memory is written for him (the absence of
     the rows, not only of a prompt line). After his reactivation, a render of Bobby asked about
     it holds nothing of it. Complement: the same scenario without the bench leaves Bobby an
-    exposure and a routed memory, and his later context says he heard Jenni say it."""
+    exposure, a ``sent`` belief and a routed memory, and his later context says he heard Jenni
+    say it. #840: lazy resolution is off, so the turn resolves the belief it would write; under
+    lazy resolution no belief is written even for an unbenched character, and the benched
+    half's "no belief" would hold whether or not the bench worked."""
     client, lib = served
 
-    async def scene(benched: bool) -> tuple[str, dict[str, str], str, str]:
+    async def scene(benched: bool) -> tuple[str, dict[str, str], int, str]:
         story, ids, things = await ts.room(client, engine, "Wren", "Jenni", "Bobby")
-        await ts.enable_testimony(engine, story, "defaulted", salience="rules")
+        await ts.enable_testimony(engine, story, "defaulted", salience="rules", lazy=False)
         bobby = ids["Bobby"]
         if benched:
             assert (await bench(client, story, bobby)).status_code == 200
@@ -489,14 +492,13 @@ async def test_i_31__m9_sequestered(
             client, story, body(ids["Wren"], "What happened?", render_character_ids=[ids["Jenni"]])
         )
         assert told.status_code == 200, told.text
+        sent = [
+            b for b in await ts.beliefs_of(engine, story, bobby) if b.predicate_id == things["sent"]
+        ]
         if benched:
             assert await exposures_of(engine, story, bobby) == 0
             assert await heard_by(engine, story, bobby, "Olivia") == []
-            assert [
-                b
-                for b in await ts.beliefs_of(engine, story, bobby)
-                if b.predicate_id == things["sent"]
-            ] == []
+            assert sent == []
             assert (await reactivate(client, story, bobby)).status_code == 200
         stub.reset()
         stub.script("generation", [render(beat("do", "Bobby shrugs."))])
@@ -509,13 +511,14 @@ async def test_i_31__m9_sequestered(
         assert asked.status_code == 200, asked.text
         (call,) = schema_calls(stub, "CharacterRender")
         prompt = "\n".join(m.content for m in call.messages)
-        return story, ids, things["sent"], prompt
+        return story, ids, len(sent), prompt
 
     _, _, _, benched_prompt = await scene(benched=True)
     assert "you heard Jenni say Olivia sent the text" not in benched_prompt
     assert ts.CLAIM_LINE not in benched_prompt
 
-    story, ids, _, prompt = await scene(benched=False)
+    story, ids, beliefs, prompt = await scene(benched=False)
+    assert beliefs >= 1
     assert await exposures_of(engine, story, ids["Bobby"]) >= 1
     assert await heard_by(engine, story, ids["Bobby"], "Olivia") != []
     assert "you heard Jenni say Olivia sent the text" in prompt

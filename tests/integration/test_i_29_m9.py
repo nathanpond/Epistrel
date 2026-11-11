@@ -324,6 +324,39 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
         "template_invalid",
         "body.template",
     ),
+    (
+        "attr_filter",
+        {"template": "{{ inputs|attr('__class__') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "computed_item",
+        {"template": "{{ inputs['_' ~ '_class__'] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "private_map_attribute",
+        {"template": "{{ inputs.items|map(attribute='__class__')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "private_selectattr",
+        {"template": "{{ inputs.items|selectattr('_x')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "computed_attribute",
+        {"template": "{{ inputs.items|map(**inputs.k)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    ("global_cycler", {"template": "{{ cycler }}"}, "template_invalid", "body.template"),
+    ("global_lipsum", {"template": "{{ lipsum() }}"}, "template_invalid", "body.template"),
+    ("global_range", {"template": "{{ range(3) }}"}, "template_invalid", "body.template"),
     ("undeclared", {"template": "{{ secret }}"}, "template_invalid", "body.template"),
     (
         "unknown_filter",
@@ -461,6 +494,9 @@ async def test_i_29__m9_valid_edges(registered: tuple[Register, list[str]]) -> N
         unique("edges"),
         template=(
             "{% for t in inputs.items %}{{ t | upper }}{% endfor %}"
+            # #837: constant keys, a slice and a constant attribute name stay accepted.
+            "{{ inputs['voter'] }}{{ inputs.items[0] }}{{ inputs.items[1:] | join(',') }}"
+            "{{ inputs.items | map(attribute='name') | list }}"
             "{% if viewpoint is defined %}{{ viewpoint.name }}{% endif %}"
             "{% if story is defined %}{{ story.title | default('') }}{% endif %}"
         ),
@@ -1330,6 +1366,22 @@ async def test_i_29__m9_story_guardrails(
     grown = await story_call(client, adults["story_id"], name, unsafe)
     assert grown.status_code == 200, grown.text
 
+    # #839: the output side of the minors policy, on the story-bound call's own guard context
+    # (the latest scene's present set): an output sexualizing with the 15-year-old present is
+    # refused after its retry, and the same output passes with the all-adult cast.
+    unsafe_out = answer(f"Kit at {UNSAFE_PHRASE}")
+    lib.models.stub.script(name, [unsafe_out, unsafe_out])
+    own_before = own_calls(lib, name)
+    minor_out = await story_call(client, minor_cast["story_id"], name)
+    status, code, details = reason_of(minor_out)
+    assert (status, code, details["attempts"]) == (422, "output_policy_violation", 2)
+    assert UNSAFE_PHRASE not in minor_out.text
+    assert own_calls(lib, name) == own_before + 2
+    lib.models.stub.script(name, [unsafe_out])
+    grown_out = await story_call(client, adults["story_id"], name)
+    assert grown_out.status_code == 200, grown_out.text
+    assert grown_out.json()["output"]["reason"] == f"Kit at {UNSAFE_PHRASE}"
+
 
 @pytest.mark.integration
 @pytest.mark.part("M9", "FR-MODEL-16")
@@ -1861,6 +1913,49 @@ async def test_i_29__m9_memory_refusals(
     await override(client, story, off)
     status, code, details = reason_of(await story_call(client, story, name, store_body(briar)))
     assert (status, code, details["module"]) == (409, "module_off", "episodic")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_output_gate(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    banned_rating: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#838: an output the story's output gate refuses twice under ``store_as_memory`` is 422
+    ``output_policy_violation`` and stores nothing: no memory row, no ``purpose_memory_stored``
+    event, the revision unchanged.
+
+    Complement asserted: a refused output followed by a clean one stores the clean text only."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client, content_rating_id=banned_rating)
+    briar = ids["Briar"]
+    before = await revision_of(engine, story)
+    bad = remembered(f"I voted {BANNED} for Briar.")
+
+    lib.models.stub.script(name, [bad, bad])
+    refused = await story_call(client, story, name, store_body(briar))
+    status, code, details = reason_of(refused)
+    assert (status, code, details["attempts"]) == (422, "output_policy_violation", 2)
+    assert BANNED not in refused.text
+    assert await memories_of(engine, story) == []
+    assert await revision_of(engine, story) == before
+    stored_events = await engine_rows(
+        engine,
+        "SELECT id FROM events WHERE story_id = :s AND type = 'purpose_memory_stored'",
+        s=story,
+    )
+    assert stored_events == []
+
+    lib.models.stub.script(name, [bad, remembered()])
+    retried = await story_call(client, story, name, store_body(briar))
+    assert retried.status_code == 200, retried.text
+    (row,) = await memories_of(engine, story)
+    assert row.text == f"I voted for Briar because of the {REMEMBERED} pact."
+    assert BANNED not in row.text
 
 
 @pytest.mark.integration

@@ -15,6 +15,14 @@ refused here, before the sandbox would refuse it at render); only Jinja's built-
 no top-level variable other than ``inputs`` (the call's input object), ``viewpoint`` (#826) and
 ``story`` (#826). It then compiles.
 
+#837: the scan also refuses every other way to name an attribute or item at render time. An
+item's key is a constant (a slice is fine), never a computed one (``inputs['_' ~ '_class__']``).
+The ``attr`` filter is refused, and a filter that reads attributes by name (``map``,
+``selectattr``, ``rejectattr``, ``sort``, ``groupby``, ``sum``, ``unique``, ``min``, ``max``)
+takes each name as a constant with no ``_``-prefixed segment. The environment has no globals
+(``range``, ``cycler``, ``lipsum``, ``dict``, ``joiner``, ``namespace``), so the undeclared-variable
+check names them like any other variable.
+
 **Output schemas** are the JSON Schema subset the strict structured path (#761) can send as it
 is: an object root; each node a single-string ``type`` among string, number, integer, boolean,
 array and object; ``properties``, ``required`` (listing every property, as strict decoding
@@ -60,6 +68,13 @@ NAME_TAKEN: Final = "name_taken"
 TEMPLATE_INVALID: Final = "template_invalid"
 SCHEMA_INVALID: Final = "schema_invalid"
 PURPOSE_LIMIT_REACHED: Final = "purpose_limit"
+
+ATTRIBUTE_FILTERS: Final = frozenset(
+    {"map", "selectattr", "rejectattr", "sort", "groupby", "sum", "unique", "min", "max"}
+)
+"""Built-in filters that read attributes by a name argument (#837)."""
+POSITIONAL_ATTRIBUTE_FILTERS: Final = frozenset({"selectattr", "rejectattr", "groupby"})
+"""Of those, the ones whose first argument is the attribute's name."""
 
 _NAME = re.compile(NAME_PATTERN)
 _PROPERTY = re.compile(PROPERTY_NAME_PATTERN)
@@ -122,7 +137,7 @@ def check_name(name: str, reserved: Collection[str]) -> None:
 
 def environment() -> ImmutableSandboxedEnvironment:
     """The environment every consumer template is checked and rendered in (module docs)."""
-    return ImmutableSandboxedEnvironment(
+    env = ImmutableSandboxedEnvironment(
         undefined=StrictUndefined,
         # Prompts are plain text sent to a model, never HTML.
         autoescape=False,
@@ -130,6 +145,9 @@ def environment() -> ImmutableSandboxedEnvironment:
         lstrip_blocks=True,
         keep_trailing_newline=False,
     )
+    # #837: no globals, so the scan's undeclared-variable check refuses them at save.
+    env.globals.clear()
+    return env
 
 
 _ENVIRONMENT = environment()
@@ -137,6 +155,25 @@ _ENVIRONMENT = environment()
 
 def _private(name: object) -> bool:
     return isinstance(name, str) and name.startswith("_")
+
+
+def _attribute_names(node: nodes.Filter) -> list[nodes.Expr]:
+    """The arguments of an ``ATTRIBUTE_FILTERS`` filter that name an attribute."""
+    named = [kw.value for kw in node.kwargs if kw.key == "attribute"]
+    if node.name in POSITIONAL_ATTRIBUTE_FILTERS and node.args:
+        named.append(node.args[0])
+    return named
+
+
+def _safe_attribute(arg: nodes.Expr) -> bool:
+    """A constant attribute name (Jinja's dotted path or an index) with no ``_`` segment."""
+    if not isinstance(arg, nodes.Const):
+        return False
+    if isinstance(arg.value, int):
+        return True
+    return isinstance(arg.value, str) and not any(
+        _private(part.strip()) for part in re.split(r"[.,]", arg.value)
+    )
 
 
 def _scan(tree: nodes.Template) -> str | None:
@@ -147,14 +184,25 @@ def _scan(tree: nodes.Template) -> str | None:
             return f"the template uses {{% {refused} %}}, which consumer templates may not"
         if isinstance(node, nodes.Getattr) and _private(node.attr):
             return "the template reads an attribute whose name starts with '_'"
-        if (
-            isinstance(node, nodes.Getitem)
-            and isinstance(node.arg, nodes.Const)
-            and _private(node.arg.value)
-        ):
-            return "the template reads an item whose name starts with '_'"
-        if isinstance(node, nodes.Filter) and node.name not in FILTERS:
-            return f"the template uses the filter {node.name!r}, which is not a Jinja built-in"
+        if isinstance(node, nodes.Getitem):
+            if isinstance(node.arg, nodes.Const) and _private(node.arg.value):
+                return "the template reads an item whose name starts with '_'"
+            if not isinstance(node.arg, (nodes.Const, nodes.Slice)):
+                return "the template reads an item by a computed key; item keys are constants"
+        if isinstance(node, nodes.Filter):
+            if node.name not in FILTERS:
+                return f"the template uses the filter {node.name!r}, which is not a Jinja built-in"
+            if node.name == "attr":
+                return "the template uses the filter 'attr', which consumer templates may not"
+            if node.name in ATTRIBUTE_FILTERS and (
+                node.dyn_args is not None
+                or node.dyn_kwargs is not None
+                or not all(_safe_attribute(arg) for arg in _attribute_names(node))
+            ):
+                return (
+                    f"the filter {node.name!r} names an attribute that is computed or "
+                    "starts with '_'"
+                )
     undeclared = sorted(meta.find_undeclared_variables(tree) - TEMPLATE_VARIABLES)
     if undeclared:
         names = ", ".join(repr(name) for name in undeclared)

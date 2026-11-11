@@ -22,6 +22,7 @@ from epistrel.core.tables.beliefs import (
     beliefs,
     nested_belief_state,
 )
+from epistrel.core.tables.bench import character_bench
 from epistrel.core.tables.bundles import bundle_jobs
 from epistrel.core.tables.catalog import (
     character_catalog,
@@ -38,6 +39,7 @@ from epistrel.core.tables.certifications import (
 from epistrel.core.tables.characters import character_snapshots, characters
 from epistrel.core.tables.client_events import client_events
 from epistrel.core.tables.commitments import promissory_ledger, thunks
+from epistrel.core.tables.consumer_purposes import consumer_purpose_versions, consumer_purposes
 from epistrel.core.tables.deployment import config_changes, deployment_state
 from epistrel.core.tables.detection import extraction_shadow
 from epistrel.core.tables.directives import directives
@@ -130,6 +132,7 @@ __all__ = [
     "bundle_jobs",
     "capability_coverage",
     "certification_runs",
+    "character_bench",
     "character_catalog",
     "character_snapshots",
     "character_versions",
@@ -137,6 +140,8 @@ __all__ = [
     "client_events",
     "closed_sets",
     "config_changes",
+    "consumer_purpose_versions",
+    "consumer_purposes",
     "content_rating_versions",
     "content_ratings",
     "dependency_edges",

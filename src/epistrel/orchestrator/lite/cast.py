@@ -25,7 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from epistrel.core.errors import InvalidRequest
+from epistrel.core.errors import CharacterBenched, InvalidRequest
+from epistrel.core.settings_schema import CHARACTER_VIEWPOINT_PREFIX
 from epistrel.core.turns import CastEntry, StoryCast
 from epistrel.orchestrator.lite.schemas import RespondRequest
 
@@ -90,6 +91,37 @@ def resolve_cast(story: StoryCast, request: RespondRequest) -> ResolvedCast:
     return ResolvedCast(actor=actor, render=tuple(members[i] for i in ids))
 
 
+def named_characters(request: RespondRequest) -> list[str]:
+    """Every character id ``request`` names (#831's list): its actor, its render characters, a
+    ``character:<id>`` output viewpoint, its whisper targets, ``characters_present`` and the
+    characters its participation overrides name, in that order."""
+    named = [request.actor_character_id, *(request.render_character_ids or ())]
+    viewpoint = request.output_viewpoint or ""
+    if viewpoint.startswith(CHARACTER_VIEWPOINT_PREFIX):
+        named.append(viewpoint.removeprefix(CHARACTER_VIEWPOINT_PREFIX))
+    named.extend(request.player_input.whisper_to)
+    if request.scene_context is not None:
+        named.extend(request.scene_context.characters_present)
+    named.extend(request.roles or {})
+    return list(dict.fromkeys(named))
+
+
+def refuse_benched(story: StoryCast, request: RespondRequest) -> StoryCast:
+    """409 ``character_benched`` ``{character_id}`` when ``request`` names a benched character
+    (FR-MULTI-13; #831); else the story as the turn sees it (``StoryCast.active``: the benched
+    characters out of the cast, so no default render, role or prompt cast lists them). Runs
+    before the cast is resolved, on a new turn and on a queued turn as it starts."""
+    if not story.benched:
+        return story
+    found = next((c for c in named_characters(request) if c in story.benched), None)
+    if found is not None:
+        raise CharacterBenched(
+            "the request names a benched character; reactivate it first",
+            {"character_id": found},
+        )
+    return story.active()
+
+
 CAST_FIELDS = {
     "unknown_actor": "body.actor_character_id",
     "unknown_render_ids": "body.render_character_ids",
@@ -97,4 +129,11 @@ CAST_FIELDS = {
 }
 """Each cast problem and the request field it names (``details.field`` is the first)."""
 
-__all__ = ["CAST_FIELDS", "ResolvedCast", "default_render_ids", "resolve_cast"]
+__all__ = [
+    "CAST_FIELDS",
+    "ResolvedCast",
+    "default_render_ids",
+    "named_characters",
+    "refuse_benched",
+    "resolve_cast",
+]

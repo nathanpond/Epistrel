@@ -33,7 +33,8 @@ running story, from #50's free-text shape (name, definition, a required true age
 fallback line and deflection style) plus optional ``images`` (media asset ids, by reference), never
 as a player. It is story-scoped: a ``characters`` row with no ``source_catalog_id``, never a
 catalog entry (it becomes one only by promotion, ``core.catalog.promote``). The order of checks:
-the story (404) → the cast cap (``CAST_MAX``), a name the story already has (ignoring case) and the
+the story (404) → the cast limit (``max_story_cast``, FR-MULTI-12: the story's full
+characters, weight ``major``), a name the story already has (ignoring case) and the
 images (each a live image asset) → 409 ``story_archived`` → the expected revision → 423
 ``story_busy`` while a turn is in flight → the input gate over the definition (and the deflection
 style), with the new character's age in the cast → one ``control`` operation that bumps the
@@ -74,14 +75,24 @@ from sqlalchemy import Table, and_, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import audit, clock, ownership, pause, providers
+from epistrel.core import bench as benches
 from epistrel.core.concurrency import check_expected_revision
-from epistrel.core.enums import OperationKind, OperationStatus, Provenance, StoryStatus
+from epistrel.core.enums import (
+    CharacterWeight,
+    OperationKind,
+    OperationStatus,
+    Provenance,
+    StoryStatus,
+)
 from epistrel.core.epistemic import modeling
 from epistrel.core.erasure import ledger as erasure_ledger
 from epistrel.core.erasure.index import drop_many, reindex_story
 from epistrel.core.erasure.records import character_record, idempotency_id, index_rows, story_record
 from epistrel.core.errors import (
+    AlreadyBenched,
+    CharacterBenched,
     InvalidRequest,
+    NotBenched,
     StoryArchived,
     StoryBusy,
     StoryCharacterNotFound,
@@ -90,9 +101,13 @@ from epistrel.core.errors import (
     ViewpointUnresolved,
 )
 from epistrel.core.events import Operation
+from epistrel.core.events.registry import EventPayload
 from epistrel.core.events.types import (
     CastMember,
+    CharacterBenchedEvent,
+    CharacterBenchModeChanged,
     CharacterDefined,
+    CharacterReactivated,
     CharacterWeightSet,
     ScenarioOrigin,
     StoryArchivedEvent,
@@ -115,6 +130,7 @@ from epistrel.core.resolution.entities import add_entities, character_spec
 from epistrel.core.settings_schema import (
     CHARACTER_VIEWPOINT_PREFIX,
     COLUMN_SETTINGS,
+    STORY_CAST_LIMIT_MAX,
     SUPERSEDED_STORY_SETTINGS,
     StorySettings,
     superseded,
@@ -174,6 +190,7 @@ from epistrel.core.tables.beliefs import (
     beliefs,
     nested_belief_state,
 )
+from epistrel.core.tables.bench import character_bench
 from epistrel.core.tables.characters import DEFLECTION_STYLE_MAX, TRUE_AGE_MAX, TRUE_AGE_MIN
 from epistrel.core.tables.commitments import promissory_ledger, thunks
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -217,7 +234,6 @@ from epistrel.core.trimmed import trim_as_sent
 Database = AsyncEngine | AsyncConnection
 
 CAST_MIN = 1
-CAST_MAX = 20
 CHARACTER_NAME_MAX = 80
 DEFINITION_MAX = 20_000
 STORY_NAME_MAX = 200
@@ -284,6 +300,9 @@ STORY_TABLES: tuple[Table, ...] = (
     # Scheduled events (#196): a derived table (each lifecycle step a version), before the
     # operations it references; copied by a fork through the fork point like ``facts``.
     scheduled_events,
+    # Character bench (#831): a derived table (each bench and reactivation a version), before
+    # the operations it references; copied by a fork through the fork point.
+    character_bench,
     # Story images (#261): a derived table, before the operations it references (the placing
     # and the deleting one); copied by a fork by reference to the same assets.
     story_images,
@@ -572,7 +591,13 @@ class StorySpec(BaseModel):
     )
 
     name: str | None = Field(default=None, max_length=STORY_NAME_MAX)
-    characters: list[CharacterSpec] = Field(min_length=CAST_MIN, max_length=CAST_MAX)
+    characters: list[CharacterSpec] = Field(
+        min_length=CAST_MIN,
+        description="The cast, the player's character included: at most the deployment's "
+        "`max_story_cast` (FR-MULTI-12; default 50, at most 200), or 422 `validation_error` "
+        '`{cap: "cast_max", limit, actual}`.',
+        json_schema_extra={"maxItems": STORY_CAST_LIMIT_MAX},
+    )
     content_rating_id: str | None = None
     settings: CreationSettings = Field(default_factory=CreationSettings)
     owner: Owner | None = Field(
@@ -657,6 +682,9 @@ class CharacterView:
     unless the read is omniscient."""
     participation: dict[str, Any] | None = None
     """``{role, fixed}`` (FR-MULTI-7; #176); ``None`` for the player's character."""
+    bench: dict[str, Any] | None = None
+    """``{mode, since_turn}`` while the character is benched (FR-MULTI-13; #831), else
+    ``None``."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,6 +726,9 @@ class StoryView:
     amendment_checks_pending: dict[str, Any] | None = None
     """#239: ``{count, session_id}`` of the open support-check questions about the story's
     amendments (``None`` when none); filled by ``Engine.get_story``."""
+    cast: dict[str, int] | None = None
+    """#831 (FR-MULTI-13): ``{active, benched}``: the full characters ``max_story_cast`` counts
+    (weight ``major``, not benched) and the benched characters. Read by ``get_story`` only."""
     pruning: dict[str, Any] | None = None
     """#703 (FR-STORE-32): ``{policy, last_prune_at, next_run_at}``: the story's
     ``prune_policy`` (``None``: off), its latest pruning (manual or by the policy) and, while
@@ -761,13 +792,19 @@ async def create_story_from(
     db: Database, spec: StorySpec, *, principal: str, story_id: str | None = None
 ) -> CreatedStory:
     """Create a story from ``spec`` atomically: the story row, its cast and its genesis
-    operation (``story_created``) exist together or not at all."""
+    operation (``story_created``) exist together or not at all. A cast larger than the
+    deployment's ``max_story_cast`` is 422 ``cast_max`` (FR-MULTI-12)."""
     _check_unique_names(spec.characters)
     story_id = story_id or new_ulid()
     cast = [(new_ulid(), character) for character in spec.characters]
     settings = _stored_settings(spec, cast)
     document, columns = split_settings(settings)
     async with _transaction(db) as conn:
+        # FR-MULTI-12 (#828): the cast against the deployment's limit in force now, after the
+        # duplicate names and before the rating and the bindings.
+        limit = await story_cast_limit(conn)
+        if len(spec.characters) > limit:
+            raise cast_max(limit, len(spec.characters))
         rating = await _rating_ref(conn, await resolve_story_rating(conn, spec.content_rating_id))
         await conn.execute(
             insert(stories).values(
@@ -998,19 +1035,68 @@ CharacterGate = Callable[[Sequence[tuple[str, str]]], Awaitable[None]]
 raises 422 ``guardrail_violation``."""
 
 
-async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
-    """422 ``validation_error`` when the story's cast already holds ``CAST_MAX`` characters."""
-    count = int(
+def cast_max(limit: int, actual: int, *, field: str = "body") -> InvalidRequest:
+    """FR-MULTI-12's refusal: 422 ``validation_error`` ``{cap: "cast_max", limit, actual}``,
+    ``actual`` being the full characters the request would leave the story with."""
+    return InvalidRequest(
+        f"the story's cast holds at most {limit} full characters",
+        {"field": field, "cap": "cast_max", "limit": limit, "actual": actual},
+    )
+
+
+async def story_cast_limit(conn: AsyncConnection) -> int:
+    """The deployment's ``max_story_cast`` (FR-MULTI-12), read in ``conn``'s transaction."""
+    from epistrel.core.config_changes import read_story_cast_limit
+
+    return await read_story_cast_limit(conn)
+
+
+async def _major_count(conn: AsyncConnection, story_id: str) -> int:
+    """The story's characters of weight ``major`` (FR-EPI-10), benched or not."""
+    return int(
         await conn.scalar(
-            select(func.count()).select_from(characters).where(characters.c.story_id == story_id)
+            select(func.count())
+            .select_from(characters)
+            .where(
+                characters.c.story_id == story_id,
+                characters.c.weight == CharacterWeight.MAJOR.value,
+            )
         )
         or 0
     )
-    if count >= CAST_MAX:
-        raise InvalidRequest(
-            f"the story's cast holds at most {CAST_MAX} characters",
-            {"field": "body", "cap": "cast_max", "limit": CAST_MAX, "actual": count + 1},
+
+
+async def _active_cast_count(conn: AsyncConnection, story_id: str) -> int:
+    """The story's full characters, the ones FR-MULTI-12's limit counts: weight ``major``
+    (FR-EPI-10), the player's character included. A ``minor`` character (introduced by a turn
+    or modeled lazily) never counts, and neither does a benched one (FR-MULTI-13; #831)."""
+    query = (
+        select(func.count())
+        .select_from(characters)
+        .where(
+            characters.c.story_id == story_id,
+            characters.c.weight == CharacterWeight.MAJOR.value,
         )
+    )
+    benched = sorted(await benches.bench_states(conn, story_id))
+    if benched:
+        query = query.where(characters.c.id.not_in(benched))
+    return int(await conn.scalar(query) or 0)
+
+
+async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
+    """422 ``validation_error`` (``cast_max``) when the story already holds as many full
+    characters as the deployment's ``max_story_cast`` allows (FR-MULTI-12): one more would
+    pass it. A story above a lowered limit is refused the same way. Benched characters do not
+    count (FR-MULTI-13), but benched and unbenched full characters together never pass
+    ``STORY_CAST_LIMIT_MAX`` (``limit`` 200)."""
+    limit = await story_cast_limit(conn)
+    count = await _active_cast_count(conn, story_id)
+    if count >= limit:
+        raise cast_max(limit, count + 1)
+    total = await _major_count(conn, story_id)
+    if total >= STORY_CAST_LIMIT_MAX:
+        raise cast_max(STORY_CAST_LIMIT_MAX, total + 1)
 
 
 async def _name_taken(conn: AsyncConnection, story_id: str, name: str) -> None:
@@ -1216,7 +1302,15 @@ async def _character_view(conn: AsyncConnection, story_id: str, character_id: st
         weight=str(row.weight),
         modeled_at=_modeled_at(row),
         participation=_participation_of(row),
+        bench=await _bench_document(conn, story_id, character_id),
     )
+
+
+async def _bench_document(
+    conn: AsyncConnection, story_id: str, character_id: str
+) -> dict[str, Any] | None:
+    found = await benches.bench_of(conn, story_id, character_id)
+    return None if found is None else found.document()
 
 
 async def _story_exists(conn: AsyncConnection, story_id: str) -> None:
@@ -1240,7 +1334,9 @@ async def set_character_weight(
     nothing promotes automatically). 404 for an unknown story or character; 422 ``is_player``
     for the player's character (always ``major``, FR-EPI-12); 409 ``story_archived``; 409
     ``revision_conflict`` for a stale expected revision; 423 ``story_busy`` while a turn is in
-    flight. Setting the weight it has records nothing new but still answers it."""
+    flight; 422 ``cast_max`` for a ``minor`` made ``major`` when the story already holds the
+    deployment's ``max_story_cast`` full characters (FR-MULTI-12). Setting the weight it has
+    records nothing new but still answers it."""
     async with db.connect() as conn, conn.begin():
         await _story_exists(conn, story_id)
         view = await _character_view(conn, story_id, character_id)
@@ -1253,6 +1349,7 @@ async def set_character_weight(
     await check_expected_revision(db, story_id, expected_revision)
     async with db.connect() as conn:
         await _refuse_busy(conn, story_id, turns_only=True)
+        await refuse_benched(conn, story_id, character_id)
     op = Operation(
         db,
         story_id=story_id,
@@ -1265,6 +1362,17 @@ async def set_character_weight(
 
     async def set_weight(conn: AsyncConnection) -> None:
         await _refuse_busy(conn, story_id, turns_only=True, own=op.operation_id)
+        await refuse_benched(conn, story_id, character_id)
+        if request.weight == CharacterWeight.MAJOR.value:
+            # FR-MULTI-12 (#828): making a minor character full takes a place in the cast,
+            # under the story lock; a major one staying major is never refused.
+            current = await conn.scalar(
+                select(characters.c.weight).where(
+                    characters.c.story_id == story_id, characters.c.id == character_id
+                )
+            )
+            if current != CharacterWeight.MAJOR.value:
+                await _cast_full(conn, story_id)
         await conn.execute(
             update(characters)
             .where(characters.c.story_id == story_id, characters.c.id == character_id)
@@ -1304,7 +1412,8 @@ async def model_entity(
     ``already_modeled`` for an entity that is a character, ``not_a_person`` for a place, item,
     organization or event; 422 ``allow_new_arrivals`` when the story refuses new arrivals; 409
     ``story_archived``; 409 ``revision_conflict``; 423 ``story_busy`` while a turn is in flight.
-    Minors are exempt from the cast cap."""
+    A ``minor`` character never counts against the story cast limit (``max_story_cast``,
+    FR-MULTI-12), so this is never refused by it."""
     # Imported here: ``core.turns.beats`` reaches this module through the turn package.
     from epistrel.core.turns.beats import write_character_facts
 
@@ -1444,6 +1553,7 @@ async def set_participation(
                 "the player's character has no participation role (FR-MULTI-7)",
                 {"field": "character_id", "reason": "is_player"},
             )
+        await refuse_benched(conn, story_id, character_id)
         before = dict(view.participation or {"role": "reactive", "fixed": False})
         wanted = request.model_dump(mode="json")
         config_revision = int(row.config_revision)
@@ -1478,6 +1588,369 @@ async def set_participation(
         )
         after = await _character_view(conn, story_id, character_id)
     return ParticipationSet(after, config_revision, int(row.timeline_revision), changed=True)
+
+
+# -- bench and reactivate (FR-MULTI-13; #831) ------------------------------------------------
+
+
+async def refuse_benched(conn: AsyncConnection, story_id: str, character_id: str) -> None:
+    """409 ``character_benched`` when ``character_id`` is benched at the story's head
+    (FR-MULTI-13): its participation and weight writes are refused while it is."""
+    if await benches.bench_of(conn, story_id, character_id) is not None:
+        raise CharacterBenched(
+            "the character is benched; reactivate it first",
+            {"character_id": character_id},
+        )
+
+
+class BenchRequest(BaseModel):
+    """``POST /stories/{id}/characters/{cid}/bench``: the bench's ``mode`` (FR-MULTI-13).
+    ``sequestered`` (the default): the benched character perceives nothing. ``present``
+    (FR-MULTI-14; #832): it stays in the scene and perceives what happens where it is, but is
+    never rendered and never speaks."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, json_schema_extra={"examples": [{"mode": "sequestered"}]}
+    )
+
+    mode: Literal["sequestered", "present"] = "sequestered"
+
+
+@dataclass(frozen=True, slots=True)
+class BenchChanged:
+    """A character after a bench or a reactivation (FR-MULTI-13): the character as a read lists
+    it (``bench`` set while benched) and the story's revision after."""
+
+    character: CharacterView
+    timeline_revision: int
+    replayed: bool = False
+    """``True`` when an ``Idempotency-Key`` retry returned this stored result (#61)."""
+
+
+async def _bench_prechecks(
+    db: AsyncEngine, story_id: str, character_id: str, expected_revision: int | None
+) -> CharacterView:
+    """404 for an unknown story or character, then 409 ``story_archived`` (and a paused
+    story's refusal), then 409 ``revision_conflict`` for a stale expected revision."""
+    async with db.connect() as conn:
+        await _story_exists(conn, story_id)
+        view = await _character_view(conn, story_id, character_id)
+    await require_writable(db, story_id)
+    await check_expected_revision(db, story_id, expected_revision)
+    return view
+
+
+def _already(character_id: str, found: benches.Bench) -> AlreadyBenched:
+    return AlreadyBenched(
+        "the character is benched already",
+        {"character_id": character_id, "mode": found.mode, "since_turn": found.since_turn},
+    )
+
+
+def _not_benched(character_id: str) -> NotBenched:
+    return NotBenched("the character is not benched", {"character_id": character_id})
+
+
+async def _reactivation_room(conn: AsyncConnection, story_id: str, character_id: str) -> None:
+    """422 ``cast_max`` when reactivating a full (``major``) character would pass the story's
+    ``max_story_cast`` (FR-MULTI-12); a ``minor`` one never counts."""
+    weight = await conn.scalar(
+        select(characters.c.weight).where(
+            characters.c.story_id == story_id, characters.c.id == character_id
+        )
+    )
+    if weight == CharacterWeight.MAJOR.value:
+        await _cast_full(conn, story_id)
+
+
+async def _source_event(conn: AsyncConnection, operation_id: str, type_: str) -> str:
+    found = await conn.scalar(
+        select(events.c.id).where(events.c.operation_id == operation_id, events.c.type == type_)
+    )
+    return str(found)
+
+
+async def _bench_change(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    *,
+    principal: str,
+    idempotency_key: str | None,
+    check: Callable[[AsyncConnection], Awaitable[EventPayload]],
+    write: Callable[[AsyncConnection, Operation, EventPayload, str], Awaitable[None]],
+    event_type: str,
+) -> BenchChanged:
+    """The shared body of a bench and a reactivation: an inter-turn slot operation (FR-MULTI-13)
+    holding the story's turn slot (423 ``story_busy`` while a turn is in flight, or a wait under
+    ``queue``), ``check`` deciding the event (its 422 and 409 refusals) before anything is
+    written and again under the story lock, then the event and ``write``'s version row."""
+    from epistrel.core.states.api import turn_slot  # here: States import this module
+    from epistrel.core.world_clock.slots import open_inter_turn
+
+    operation_id = new_ulid()
+    async with turn_slot(db, story_id, operation_id):
+        async with db.connect() as conn:
+            await _refuse_busy(conn, story_id, turns_only=True)
+            payload = await check(conn)
+        op = open_inter_turn(
+            db,
+            story_id,
+            source=Provenance.CONSUMER,
+            principal=principal,
+            idempotency_key=idempotency_key,
+            operation_id=operation_id,
+        )
+        op.holds_turn_slot = True
+
+        async def commit(conn: AsyncConnection) -> None:
+            await _refuse_busy(conn, story_id, turns_only=True, own=op.operation_id)
+            again = await check(conn)
+            if again != payload:
+                raise StoryBusy(
+                    "the character changed while the request was prepared; retry",
+                    {"reason": "in_flight", "story_id": story_id},
+                )
+            await write(conn, op, payload, await _source_event(conn, operation_id, event_type))
+
+        async with op:
+            op.append(event_type, payload, provenance=Provenance.CONSUMER)
+            op.add_commit_step(commit)
+            await op.commit()
+    assert op.timeline_revision is not None  # noqa: S101 - set by a committed story operation
+    async with db.connect() as conn:
+        after = await _character_view(conn, story_id, character_id)
+    return BenchChanged(character=after, timeline_revision=op.timeline_revision)
+
+
+async def _write_version(
+    conn: AsyncConnection,
+    op: Operation,
+    *,
+    character_id: str,
+    mode: str,
+    benched: bool,
+    source_event_id: str,
+    previous: Mapping[str, Any] | None = None,
+) -> None:
+    from epistrel.core.membership import insert_derived
+    from epistrel.core.world_clock.slots import slot_position
+
+    position = slot_position(op)
+    await insert_derived(
+        conn,
+        character_bench,
+        [
+            {
+                "id": new_ulid(),
+                "story_id": op.story_id,
+                "character_id": character_id,
+                "mode": mode,
+                "benched": benched,
+                "previous_role": None if previous is None else previous["role"],
+                "previous_fixed": None if previous is None else previous["fixed"],
+                "operation_id": op.operation_id,
+                "source_event_ids": [source_event_id],
+                "narrative_turn": position.turn,
+                "turn_variant": position.variant,
+                "slot_k": position.slot_k,
+                "beat": position.beat,
+                "step": position.step,
+            }
+        ],
+    )
+
+
+async def bench_character(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    request: BenchRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+    expected_revision: int | None = None,
+) -> BenchChanged:
+    """Bench a story character (FR-MULTI-13; see ``core.bench``). Refusals, in order: 404 for an
+    unknown story or character; 409 ``story_archived`` (and a paused story's refusal); 409
+    ``revision_conflict``; 423 ``story_busy`` while a turn is in flight; 422
+    ``validation_error`` for the player's character (``player_not_benchable``); 409
+    ``already_benched`` (in any mode)."""
+    view = await _bench_prechecks(db, story_id, character_id, expected_revision)
+
+    async def check(conn: AsyncConnection) -> EventPayload:
+        if view.is_player:
+            raise InvalidRequest(
+                "the player's character cannot be benched",
+                {"field": "character_id", "reason": "player_not_benchable"},
+            )
+        found = await benches.bench_of(conn, story_id, character_id)
+        if found is not None:
+            raise _already(character_id, found)
+        current = await _character_view(conn, story_id, character_id)
+        role = dict(current.participation or {"role": "reactive", "fixed": False})
+        return CharacterBenchedEvent(
+            character_id=character_id,
+            mode=request.mode,
+            previous_role=str(role["role"]),
+            previous_fixed=bool(role["fixed"]),
+        )
+
+    async def write(
+        conn: AsyncConnection, op: Operation, payload: EventPayload, source: str
+    ) -> None:
+        assert isinstance(payload, CharacterBenchedEvent)  # noqa: S101 - check's own payload
+        await _write_version(
+            conn,
+            op,
+            character_id=character_id,
+            mode=payload.mode,
+            benched=True,
+            source_event_id=source,
+            previous={"role": payload.previous_role, "fixed": payload.previous_fixed},
+        )
+
+    return await _bench_change(
+        db,
+        story_id,
+        character_id,
+        principal=principal,
+        idempotency_key=idempotency_key,
+        check=check,
+        write=write,
+        event_type="character_benched",
+    )
+
+
+async def reactivate_character(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+    expected_revision: int | None = None,
+) -> BenchChanged:
+    """Reactivate a benched story character (FR-MULTI-13): its participation role is restored
+    from its bench. Refusals, in order: 404; 409 ``story_archived`` (and a paused story's
+    refusal); 409 ``revision_conflict``; 423 ``story_busy``; 422 ``cast_max`` when the story's
+    active cast is full (a ``minor`` character never counts); 409 ``not_benched``."""
+    await _bench_prechecks(db, story_id, character_id, expected_revision)
+
+    async def check(conn: AsyncConnection) -> EventPayload:
+        found = await benches.bench_of(conn, story_id, character_id)
+        if found is None:
+            raise _not_benched(character_id)
+        await _reactivation_room(conn, story_id, character_id)
+        return CharacterReactivated(
+            character_id=character_id,
+            mode=found.mode,
+            restored_role=found.previous_role or "reactive",
+            restored_fixed=bool(found.previous_fixed),
+        )
+
+    async def write(
+        conn: AsyncConnection, op: Operation, payload: EventPayload, source: str
+    ) -> None:
+        assert isinstance(payload, CharacterReactivated)  # noqa: S101 - check's own payload
+        await conn.execute(
+            update(characters)
+            .where(characters.c.story_id == story_id, characters.c.id == character_id)
+            .values(
+                participation_role=payload.restored_role,
+                participation_fixed=payload.restored_fixed,
+            )
+        )
+        await _write_version(
+            conn,
+            op,
+            character_id=character_id,
+            mode=payload.mode,
+            benched=False,
+            source_event_id=source,
+        )
+
+    return await _bench_change(
+        db,
+        story_id,
+        character_id,
+        principal=principal,
+        idempotency_key=idempotency_key,
+        check=check,
+        write=write,
+        event_type="character_reactivated",
+    )
+
+
+class BenchModeRequest(BaseModel):
+    """``PATCH /stories/{id}/characters/{cid}/bench``: the benched character's new ``mode``
+    (FR-MULTI-14; #832)."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, json_schema_extra={"examples": [{"mode": "present"}]}
+    )
+
+    mode: Literal["sequestered", "present"]
+
+
+async def set_bench_mode(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    request: BenchModeRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+) -> BenchChanged:
+    """Switch a benched character's mode (FR-MULTI-14; #832): an inter-turn slot operation
+    recording ``character_bench_mode_changed`` and one more ``benched`` version in the new mode,
+    so the switch takes effect from the next turn and each earlier turn keeps the mode it had.
+    The bench's ``previous_role`` carries over, so a reactivation still restores it. A switch to
+    the mode it has is a 200 no-op: no event, no revision change. Refusals, in order: 404; 409
+    ``story_archived`` (and a paused story's refusal); 423 ``story_busy`` while a turn is in
+    flight; 409 ``not_benched``."""
+    view = await _bench_prechecks(db, story_id, character_id, None)
+    if view.bench is not None and view.bench["mode"] == request.mode:
+        async with db.connect() as conn:
+            revision = await conn.scalar(
+                select(stories.c.timeline_revision).where(stories.c.id == story_id)
+            )
+        return BenchChanged(character=view, timeline_revision=int(revision or 0))
+
+    async def check(conn: AsyncConnection) -> EventPayload:
+        found = await benches.bench_of(conn, story_id, character_id)
+        if found is None:
+            raise _not_benched(character_id)
+        return CharacterBenchModeChanged(
+            character_id=character_id, mode=request.mode, previous_mode=found.mode
+        )
+
+    async def write(
+        conn: AsyncConnection, op: Operation, payload: EventPayload, source: str
+    ) -> None:
+        assert isinstance(payload, CharacterBenchModeChanged)  # noqa: S101 - check's own payload
+        found = await benches.bench_of(conn, story_id, character_id)
+        assert found is not None  # noqa: S101 - check refused an unbenched character
+        await _write_version(
+            conn,
+            op,
+            character_id=character_id,
+            mode=payload.mode,
+            benched=True,
+            source_event_id=source,
+            previous={"role": found.previous_role, "fixed": found.previous_fixed},
+        )
+
+    return await _bench_change(
+        db,
+        story_id,
+        character_id,
+        principal=principal,
+        idempotency_key=idempotency_key,
+        check=check,
+        write=write,
+        event_type="character_bench_mode_changed",
+    )
 
 
 # -- archive --------------------------------------------------------------------------------
@@ -1852,6 +2325,8 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 .order_by(characters.c.ordinal)
             )
         ).all()
+        benched = await benches.bench_states(conn, story_id)
+        active = await _active_cast_count(conn, story_id)
     view = _view(
         row,
         tuple(
@@ -1870,6 +2345,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
                 weight=str(c.weight) if omniscient else None,
                 modeled_at=_modeled_at(c) if omniscient else None,
                 participation=_participation_of(c),
+                bench=benched[c.id].document() if c.id in benched else None,
             )
             for c in cast
         ),
@@ -1881,7 +2357,13 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
     )
     async with db.connect() as conn:
         pruning = await _pruning(conn, story_id, view.settings)
-    return dataclasses.replace(view, pause=paused, scenario=scenario, pruning=pruning)
+    return dataclasses.replace(
+        view,
+        pause=paused,
+        scenario=scenario,
+        pruning=pruning,
+        cast={"active": active, "benched": sum(1 for c in view.characters if c.bench)},
+    )
 
 
 async def _pruning(

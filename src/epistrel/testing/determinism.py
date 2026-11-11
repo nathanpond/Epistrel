@@ -264,6 +264,11 @@ ORDER: dict[str, str] = {
         f"{_STORY_RANK}, t.narrative_turn, t.slot_k, t.beat, t.step, t.turn_variant, "
         "t.planned_offset_minutes, t.status"
     ),
+    # Character bench (#831): versions by character, then position.
+    "character_bench": (
+        f"{_STORY_RANK}, {_CAST_RANK}, t.narrative_turn, t.slot_k, t.beat, t.step, "
+        "t.turn_variant, t.benched"
+    ),
     # Story images (#261): by position, then audience and camera, then the asset's checksum.
     "story_images": (
         f"{_STORY_RANK}, t.at_turn, t.at_slot_k, t.at_beat, t.at_step, t.at_variant, "  # noqa: S608

@@ -154,6 +154,17 @@ async def _amend(engine: AsyncEngine, story_id: str) -> None:
             ),
             {"i": new_ulid(), "s": story_id, "a": new_ulid()},
         )
+        # #831: a character's bench version, written by the genesis operation (planted).
+        await conn.execute(
+            text(
+                "INSERT INTO character_bench (id, story_id, character_id, mode, benched, "
+                "operation_id, membership_tx, narrative_turn, turn_variant, slot_k) "
+                "SELECT :i, :s, c.id, 'sequestered', true, o.operation_id, now(), 0, 0, 1 "
+                "FROM operations o, characters c WHERE o.story_id = :s AND c.story_id = :s "
+                "ORDER BY o.operation_id, c.ordinal LIMIT 1"
+            ),
+            {"i": new_ulid(), "s": story_id},
+        )
 
 
 async def _populate(engine: AsyncEngine, lib: Engine, story_id: str, character_id: str) -> None:

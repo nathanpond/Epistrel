@@ -22,6 +22,12 @@ unset), which is how an operator sees where each purpose's data goes (FR-MODEL-1
 For the image port with a null ``base_url`` it is the configured adapter's default host
 (``openrouter.ai``, #255).
 
+A **consumer purpose** (FR-MODEL-14, #824; ``core.purposes``) is configured like a delivered
+purpose: ``GET`` lists every live one after the built-in ones, and its parent is ``generation``
+(``CONSUMER_PARENT``), so every field it does not set is ``generation``'s and reads ``source:
+inherited``. An archived one's row is kept but hidden: it is not listed, and reading or writing
+it is 404 (``require_configurable``).
+
 **Writes** (FR-MODEL-4) follow every deployment-scoped configuration write (#48): take
 ``lock_deployment``, move ``deployment_state.config_revision`` by exactly one, and record one
 ``config_changes`` row per changed field (class ``prospective``, setting
@@ -75,9 +81,10 @@ from epistrel.core.config_changes import (
     lock_deployment,
     record_config_change,
 )
-from epistrel.core.errors import ConfigConflict, InvalidRequest
+from epistrel.core.errors import ConfigConflict, InvalidRequest, PurposeNotFound
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.profiles.tiers import STRONGEST
+from epistrel.core.purposes import store as purpose_store
 from epistrel.core.settings_schema import ConfigClass, StructuredSettings
 from epistrel.core.tables import deployment_state, model_config
 from epistrel.core.tables.deployment import DEPLOYMENT_ROW_ID
@@ -87,10 +94,20 @@ from epistrel.orchestrator.images.params import (
     ImageGenerationParams,
     default_base_url,
 )
+from epistrel.orchestrator.models import registry
 from epistrel.orchestrator.models.adapter import ModelParams, ModelUnavailable
-from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, DELIVERED, OWN_ROW_ONLY, PORTS
+from epistrel.orchestrator.models.registry import (
+    DEFAULT_MODEL_KEY,
+    DELIVERED,
+    GENERATION,
+    OWN_ROW_ONLY,
+    PORTS,
+)
 
 FINGERPRINT_HEX = 8
+CONSUMER_PARENT = GENERATION.name
+"""The purpose a consumer purpose (FR-MODEL-14, #824) inherits every field it does not set
+from: ``generation``."""
 MAX_API_KEY_CHARS = 512
 MAX_MODEL_CHARS = 200
 MAX_BASE_URL_CHARS = 2048
@@ -274,10 +291,24 @@ def _wire_params(raw: Mapping[str, Any], purpose: str) -> dict[str, Any]:
     return _params(raw, purpose).wire()
 
 
+def is_consumer(purpose: str) -> bool:
+    """Whether ``purpose`` is not one the registry declares (nor ``default``): a consumer
+    purpose (FR-MODEL-14, #824), once the caller has checked that one is registered."""
+    # ``registry.RESERVED`` read at call time: a test may declare a reserved purpose.
+    return (
+        purpose not in DELIVERED
+        and purpose not in PORTS
+        and purpose not in registry.RESERVED
+        and purpose != DEFAULT_MODEL_KEY
+    )
+
+
 def parent_of(purpose: str) -> str | None:
     """The purpose whose row ``purpose`` inherits from before ``default`` (its registry
-    ``default_model_key``: ``rating_suggestion`` → ``guardrail_check``, FR-MODEL-2), or
-    ``None`` when it inherits from ``default`` directly."""
+    ``default_model_key``: ``rating_suggestion`` → ``guardrail_check``, FR-MODEL-2; a consumer
+    purpose → ``generation``, #824), or ``None`` when it inherits from ``default`` directly."""
+    if is_consumer(purpose):
+        return CONSUMER_PARENT
     declared = DELIVERED.get(purpose)
     if declared is None or declared.default_model_key in (DEFAULT_MODEL_KEY, purpose):
         return None
@@ -336,11 +367,14 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
     """``purpose``'s effective configuration with a ``source`` per field: ``own``,
     ``inherited`` (from the purpose it defaults to, ``parent_of``), ``default``, or ``unset``
     (an own-row-only purpose's field it has not set: ``image_check``, #254); ``params`` carry a
-    source per key. Every field of ``default`` and of a port is its own."""
+    source per key. Every field of ``default`` and of a port is its own. A consumer purpose's
+    field it does not set is ``inherited``: it is ``generation``'s, wherever ``generation``'s
+    came from (#824)."""
     default = _default_row(rows, purpose)
     own = rows.get(purpose) if purpose != DEFAULT_MODEL_KEY else None
     parent = _parent_row(rows, purpose)
     effective = resolve(purpose, own, default, 0, parent)
+    consumer = is_consumer(purpose)
 
     def source(name: str) -> Source:
         if purpose == DEFAULT_MODEL_KEY or purpose in PORTS:
@@ -349,6 +383,8 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
             return "own"
         if purpose in OWN_ROW_ONLY:
             return "unset"
+        if consumer:
+            return "inherited"
         if parent is not None and getattr(parent, name) is not None:
             return "inherited"
         return "default"
@@ -359,7 +395,7 @@ def describe(purpose: str, rows: Mapping[str, ConfigRow], keybox: KeyBox) -> Con
     def param_source(key: str) -> Source:
         if purpose == DEFAULT_MODEL_KEY or purpose in OWN_ROW_ONLY or key in own_params:
             return "own"
-        return "inherited" if key in parent_params else "default"
+        return "inherited" if consumer or key in parent_params else "default"
 
     image = effective.image_params
     params = image.wire() if image is not None else effective.params.wire()
@@ -434,11 +470,18 @@ async def current_revision(conn: AsyncConnection) -> int:
 
 async def snapshot(db: AsyncEngine) -> tuple[int, dict[str, ConfigRow]]:
     """``config_revision`` and every row, read in one REPEATABLE READ snapshot."""
+    revision, rows, _ = await _snapshot(db)
+    return revision, rows
+
+
+async def _snapshot(db: AsyncEngine) -> tuple[int, dict[str, ConfigRow], list[str]]:
+    """``snapshot`` and the live consumer purposes' names (#824), in the same snapshot."""
     async with db.begin() as conn:
         await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
         revision = await current_revision(conn)
         rows = await read_rows(conn)
-    return revision, rows
+        consumer = await purpose_store.live_names(conn)
+    return revision, rows, consumer
 
 
 def structured_settings(document: Mapping[str, Any] | None) -> StructuredSettings:
@@ -501,19 +544,24 @@ class ConfigCache:
 
 
 def configurable() -> tuple[str, ...]:
-    """The purposes ``/admin/model-config`` lists and writes: ``default`` plus every delivered
-    purpose and port (reserved ones are not configurable yet, FR-MODEL-2)."""
+    """The built-in purposes ``/admin/model-config`` lists and writes: ``default`` plus every
+    delivered purpose and port (reserved ones are not configurable yet, FR-MODEL-2). Every
+    live consumer purpose (#824) is configurable too (``require_configurable``)."""
     return (DEFAULT_MODEL_KEY, *DELIVERED, *PORTS)
 
 
 async def listing(db: AsyncEngine, keybox: KeyBox) -> tuple[int, dict[str, ConfigEntry]]:
-    """``config_revision`` and every configurable purpose, ``default`` first."""
-    revision, rows = await snapshot(db)
-    return revision, {name: describe(name, rows, keybox) for name in configurable()}
+    """``config_revision`` and every configurable purpose, ``default`` first, then the
+    built-in ones and the live consumer purposes by name (an archived one's row is kept but
+    not listed)."""
+    revision, rows, consumer = await _snapshot(db)
+    names = (*configurable(), *consumer)
+    return revision, {name: describe(name, rows, keybox) for name in names}
 
 
 async def entry(db: AsyncEngine, keybox: KeyBox, purpose: str) -> tuple[int, ConfigEntry]:
-    check_purpose(purpose)
+    async with db.connect() as conn:
+        await require_configurable(conn, purpose)
     revision, rows = await snapshot(db)
     return revision, describe(purpose, rows, keybox)
 
@@ -522,10 +570,27 @@ async def entry(db: AsyncEngine, keybox: KeyBox, purpose: str) -> tuple[int, Con
 
 
 def check_purpose(purpose: str) -> None:
+    """422 unless ``purpose`` is a built-in configurable purpose."""
     if purpose not in configurable():
         raise InvalidRequest(
             f"unknown model purpose {purpose!r}",
             details={"field": "path.purpose", "purpose": purpose, "reason": "unknown"},
+        )
+
+
+async def require_configurable(conn: AsyncConnection, purpose: str) -> None:
+    """Pass for a built-in configurable purpose or a live consumer purpose (#824); 404 for an
+    archived consumer purpose (its row is kept but hidden); 422 for any other name."""
+    if purpose in configurable():
+        return
+    found = await purpose_store.find(conn, purpose)
+    if found is None:
+        check_purpose(purpose)
+        return
+    if found.archived_at is not None:
+        raise PurposeNotFound(
+            f"consumer purpose {purpose!r} is archived; its model configuration is hidden",
+            {"field": "path.purpose", "purpose": purpose, "reason": "archived"},
         )
 
 
@@ -724,9 +789,10 @@ type Change = Callable[[dict[str, Any]], dict[str, Any] | None]
 async def _store(
     db: AsyncEngine, purpose: str, change: Change, *, keybox: KeyBox, principal: str
 ) -> ConfigWrite:
-    check_purpose(purpose)
     async with db.begin() as conn:
         current = await lock_deployment(conn)
+        # Under the lock, so an archive cannot land between the check and the write (#824).
+        await require_configurable(conn, purpose)
         result = await conn.execute(select(model_config).where(model_config.c.purpose == purpose))
         found = result.mappings().one_or_none()
         own = _row(found) if found is not None else None
@@ -880,7 +946,6 @@ async def remove_override(
 ) -> ConfigWrite:
     """Drop ``purpose``'s own row (its key included) so it inherits ``default`` entirely; the
     ``default`` row cannot be removed (409)."""
-    check_purpose(purpose)
     if purpose == DEFAULT_MODEL_KEY:
         raise ConfigConflict(
             "the default model configuration cannot be removed",

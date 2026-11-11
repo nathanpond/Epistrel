@@ -18,7 +18,8 @@ Every model call attempt the Model Access Layer makes is recorded once, by
 ``http_error`` (any other transport or status failure), ``invalid_output`` (an answer that is
 garbage, empty, or not the structured result asked for) and ``cancelled``. Label values are
 enums, purpose names, and the configured model name reduced to ``[a-z0-9._-]``; never story
-content (invariant 3).
+content (invariant 3). A consumer purpose (FR-MODEL-14,15) is labelled ``consumer``, never by
+its name (``purpose_label``): the name is the consumer's, and the call log keeps it.
 """
 
 from __future__ import annotations
@@ -35,12 +36,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.observability import tracing
 from epistrel.orchestrator.models.errors import ModelError
+from epistrel.orchestrator.models.registry import DELIVERED, PORTS, RESERVED
 
 Outcome = Literal["ok", "timeout", "http_error", "invalid_output", "cancelled"]
 OUTCOMES: tuple[Outcome, ...] = ("ok", "timeout", "http_error", "invalid_output", "cancelled")
 TOKEN_KINDS = ("input", "output")
 MAX_LABEL_CHARS = 100
 _LABEL_UNSAFE = re.compile(r"[^a-z0-9._-]+")
+CONSUMER_LABEL = "consumer"
+"""The ``purpose`` label of every consumer purpose's calls (#825)."""
 LATENCY_BUCKETS = (0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0)
 
 MODEL_CALLS = Counter(
@@ -169,6 +173,14 @@ def model_label(model: str | None) -> str:
     return cleaned or "unknown"
 
 
+def purpose_label(purpose: str) -> str:
+    """``purpose`` as a metric label, span attribute or log field: a built-in purpose or port
+    by its name, a consumer purpose as ``consumer`` (#825)."""
+    if purpose in DELIVERED or purpose in PORTS or purpose in RESERVED:
+        return purpose
+    return CONSUMER_LABEL
+
+
 def outcome_of(error: BaseException) -> Outcome:
     """The outcome a failed call attempt records."""
     if isinstance(error, ModelError):
@@ -181,18 +193,19 @@ def outcome_of(error: BaseException) -> Outcome:
 def record(call: ModelCall) -> None:
     """Count ``call`` in the metrics and append it to the operation's log, if one is open."""
     model = model_label(call.model)
-    MODEL_CALLS.labels(call.purpose, model, call.outcome).inc()
-    MODEL_TOKENS.labels(call.purpose, "input").inc(call.tokens_in)
-    MODEL_TOKENS.labels(call.purpose, "output").inc(call.tokens_out)
+    purpose = purpose_label(call.purpose)
+    MODEL_CALLS.labels(purpose, model, call.outcome).inc()
+    MODEL_TOKENS.labels(purpose, "input").inc(call.tokens_in)
+    MODEL_TOKENS.labels(purpose, "output").inc(call.tokens_out)
     if call.cost is not None and call.cost >= 0:
-        MODEL_COST.labels(call.purpose, model).inc(call.cost)
-    MODEL_LATENCY.labels(call.purpose).observe(call.latency_ms / 1000)
+        MODEL_COST.labels(purpose, model).inc(call.cost)
+    MODEL_LATENCY.labels(purpose).observe(call.latency_ms / 1000)
     # A child span of whatever is current (the turn, the job): identifiers only (#74).
     tracing.finished_span(
         "model_call",
         call.latency_ms / 1000,
         {
-            "epistrel.purpose": call.purpose,
+            "epistrel.purpose": purpose,
             "epistrel.model": model,
             "epistrel.attempt": call.attempt,
             "epistrel.outcome": call.outcome,
@@ -210,6 +223,7 @@ def sample(name: str, **labels: str) -> float:
 
 __all__ = [
     "CALL_LOG",
+    "CONSUMER_LABEL",
     "MODEL_CALLS",
     "MODEL_COST",
     "MODEL_LATENCY",
@@ -223,6 +237,7 @@ __all__ = [
     "model_label",
     "model_seconds_since",
     "outcome_of",
+    "purpose_label",
     "record",
     "recording",
     "sample",

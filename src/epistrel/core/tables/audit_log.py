@@ -65,6 +65,10 @@ class AuditKind(StrEnum):
     IMAGE_CHECK_CERTIFICATION_INVALIDATED = "image_check_certification_invalidated"
     """#270: an image checker's certification withdrawn (the record's id and the reason code;
     the policy id). Never the note."""
+    GUARDRAIL_OUTPUT_REJECTED = "guardrail_output_rejected"
+    """#825: a consumer purpose call's output refused after its one retry (the entry point,
+    the purpose's name and version, the attempts; the policy ids). Never the output. A turn's
+    rejected output is a ``guardrail_output_rejected`` event in its story instead."""
 
 
 KIND_CHECK = "kind IN (" + ", ".join(f"'{k.value}'" for k in AuditKind) + ")"

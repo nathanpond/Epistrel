@@ -1,0 +1,1896 @@
+"""I-29's M9 parts: consumer purposes, registered, versioned and routed (FR-MODEL-14; #824).
+
+An operator registers a consumer purpose under ``/admin/purposes`` (a name, a sandboxed Jinja2
+template and an output schema in the strict-path JSON Schema subset). Everything is checked at
+save, each refusal a 422 ``validation_error`` naming its ``details.reason``; a replacement with
+``expected_version`` writes the next version (409 ``version_stale`` otherwise); an archived
+purpose's versions stay readable and its calls are refused (410 ``purpose_archived``). Each
+purpose is routed like a built-in one: ``/admin/model-config`` lists it, an override routes it,
+and with none it uses ``generation``'s model. Until #825's call route exists, a call is made at
+the Model Access Layer (``send``, under the stub), the seam #825's route goes through; #825
+extends ``test_i_29__m9_routing`` with its REST call.
+
+Purposes are deployment-wide and never deleted, so every name is unique to its test
+(``unique``) and each test archives what it registered (``registered``): archived purposes do
+not count toward the 100-purpose limit. Every I-29 M9 part lives in this file (the
+traceability gate takes one file per test ID and milestone).
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
+
+import httpx2 as httpx
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from epistrel.config import Settings
+from epistrel.core.context import RequestContext
+from epistrel.core.errors import (
+    InvalidRequest,
+    ModuleOff,
+    PurposeArchived,
+    PurposeNotFound,
+    PurposeVersionNotFound,
+    PurposeVersionStale,
+    StoryNotFound,
+)
+from epistrel.core.ids import new_ulid
+from epistrel.core.purposes.output import output_model, output_of
+from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
+from epistrel.core.purposes.validation import PURPOSE_LIMIT, PurposeRefused
+from epistrel.engine import Engine
+from epistrel.orchestrator.models.adapter import Message, UnknownPurpose
+from epistrel.orchestrator.models.registry import DELIVERED, PORTS, validate_purpose
+from epistrel.orchestrator.purposes.call import GUIDANCE_HEADING, PREAMBLE
+from epistrel.testing.profiles import structured_m4
+from tests import genesis_support as g
+from tests import seeded_partitions_support as sp
+from tests.auth_support import auth_settings, bearer
+from tests.concurrency_support import start_turn
+from tests.event_support import rows as engine_rows
+from tests.minors_support import recognise, subject_checks
+from tests.model_support import restored_model_config
+from tests.policy_support import rated_policy_rating, words
+from tests.profile_support import nest
+from tests.respond_support import new_story, respond_client
+from tests.story_support import WRITE, character, create, override
+
+OPERATOR = {**bearer(), "X-Epistrel-Principal": "p-operator"}
+LIBRARY = RequestContext(principal="p-operator")
+CANARY = "ZEBRA-CANARY-824"
+"""Template text that must never reach a log line (invariant 3)."""
+
+SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "reason": {"type": "string", "maxLength": 500, "description": "Why."},
+        "score": {"type": "integer", "minimum": 0, "maximum": 10},
+        "mood": {"type": "string", "enum": ["calm", "angry"]},
+        "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
+    },
+    "required": ["reason", "score", "mood", "tags"],
+    "additionalProperties": False,
+}
+
+
+CALL: dict[str, Any] = {"inputs": {"voter": "Ash", "target": "Briar"}}
+"""A call of ``purpose_body``'s template (#825)."""
+SECOND_ENDPOINT = "http://second-stub.invalid/v1"
+
+
+def unique(stem: str) -> str:
+    """A name no other test (or run on the shared database) uses."""
+    return f"{stem}_{new_ulid().lower()[-10:]}"
+
+
+def purpose_body(name: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": "A juror's in-character reason for a vote.",
+        "template": "Explain why {{ inputs.voter }} voted for {{ inputs.target }}.",
+        "output_schema": SCHEMA,
+        **fields,
+    }
+
+
+def replace_body(expected_version: int, **fields: Any) -> dict[str, Any]:
+    """A ``PUT /admin/purposes/{name}`` body (``name`` is the path's, never the body's)."""
+    body = purpose_body("unused", **fields)
+    del body["name"]
+    return {**body, "expected_version": expected_version}
+
+
+Register = Callable[..., Awaitable[httpx.Response]]
+
+
+@pytest.fixture
+def stub_settings(pg_url: str) -> Settings:
+    return auth_settings(pg_url, model_adapter="stub")
+
+
+@pytest.fixture
+async def served(
+    stub_settings: Settings, engine: AsyncEngine
+) -> AsyncIterator[tuple[httpx.AsyncClient, Engine]]:
+    async with respond_client(stub_settings, engine) as found:
+        yield found
+
+
+@pytest.fixture
+async def registered(
+    served: tuple[httpx.AsyncClient, Engine],
+) -> AsyncIterator[tuple[Register, list[str]]]:
+    """``POST /admin/purposes`` that remembers what it created; every purpose it created is
+    archived afterwards, so none counts toward another test's limit."""
+    client, _ = served
+    names: list[str] = []
+
+    async def register(body: dict[str, Any], **headers: str) -> httpx.Response:
+        response = await client.post("/admin/purposes", json=body, headers={**OPERATOR, **headers})
+        if response.status_code == 201:
+            names.append(response.json()["name"])
+        return response
+
+    try:
+        yield register, names
+    finally:
+        for name in names:
+            archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+            assert archived.status_code == 200, archived.text
+
+
+def reason_of(response: httpx.Response) -> tuple[int, str, dict[str, Any]]:
+    error = response.json()["error"]
+    return response.status_code, error["code"], error["details"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_round_trip(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Create v1, replace it to make v2, read both and the versions list, archive the purpose,
+    and show it still reads while its calls and its replacement are refused (410). Each write
+    is a configuration change recorded with the principal, and no template text reaches a log.
+
+    Complements asserted: an identical replacement writes nothing; a repeat archive is 200 and
+    changes nothing; an unknown name and an unknown version are 404."""
+    client, lib = served
+    register, _ = registered
+    name = unique("vote_reason")
+    caplog.set_level(logging.DEBUG)
+
+    made = await register(purpose_body(name, template=f"{CANARY} {{{{ inputs.voter }}}}"))
+    assert made.status_code == 201, made.text
+    first = made.json()
+    assert (first["name"], first["version"], first["latest_version"]) == (name, 1, 1)
+    assert first["changed"] is True
+    assert first["archived_at"] is None
+    assert first["output_schema"] == SCHEMA
+
+    replaced = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1),
+        headers=OPERATOR,
+    )
+    assert replaced.status_code == 200, replaced.text
+    second = replaced.json()
+    assert (second["version"], second["latest_version"]) == (2, 2)
+    assert second["config_revision"] == first["config_revision"] + 1
+    assert CANARY not in second["template"]
+
+    same = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(2),
+        headers=OPERATOR,
+    )
+    assert same.status_code == 200, same.text
+    assert (same.json()["changed"], same.json()["version"]) == (False, 2)
+    assert same.json()["config_revision"] == second["config_revision"]
+
+    latest = (await client.get(f"/admin/purposes/{name}", headers=bearer())).json()
+    assert (latest["version"], latest["latest_version"]) == (2, 2)
+    one = (await client.get(f"/admin/purposes/{name}?version=1", headers=bearer())).json()
+    assert (one["version"], one["latest_version"]) == (1, 2)
+    assert one["template"].startswith(CANARY)
+    versions = (await client.get(f"/admin/purposes/{name}/versions", headers=bearer())).json()
+    assert [v["version"] for v in versions["items"]] == [1, 2]
+    assert {v["created_by"] for v in versions["items"]} == {"p-operator"}
+
+    missing = await client.get(f"/admin/purposes/{name}?version=9", headers=bearer())
+    assert reason_of(missing)[:2] == (404, "version_not_found")
+    unknown = await client.get(f"/admin/purposes/{unique('nobody')}", headers=bearer())
+    assert reason_of(unknown)[:2] == (404, "not_found")
+    unknown_put = await client.put(
+        f"/admin/purposes/{unique('nobody')}",
+        json=replace_body(1),
+        headers=OPERATOR,
+    )
+    assert reason_of(unknown_put)[:2] == (404, "not_found")
+
+    # The call path resolves the latest version, or a pinned one (FR-MODEL-14).
+    resolved = await lib.models.consumer_purpose(name)
+    assert (resolved.version, resolved.latest_version) == (2, 2)
+    pinned = await lib.models.consumer_purpose(name, 1)
+    assert pinned.template.render(inputs={"voter": "Ann"}).startswith(f"{CANARY} Ann")
+    reply = resolved.output.model_validate_json(
+        json.dumps({"reason": "She lied.", "score": 3, "mood": "calm", "tags": ["vote"]})
+    )
+    assert output_of(reply) == {"reason": "She lied.", "score": 3, "mood": "calm", "tags": ["vote"]}
+    with pytest.raises(PurposeVersionNotFound):
+        await lib.models.consumer_purpose(name, 3)
+
+    archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+    assert archived.status_code == 200, archived.text
+    assert archived.json()["archived_at"] is not None
+    again = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+    assert again.status_code == 200, again.text
+    assert again.json()["changed"] is False
+    assert again.json()["config_revision"] == archived.json()["config_revision"]
+
+    # Its versions stay readable; its calls and its replacement are refused.
+    still = (await client.get(f"/admin/purposes/{name}?version=1", headers=bearer())).json()
+    assert still["archived_at"] is not None
+    assert still["version"] == 1
+    gone = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(2),
+        headers=OPERATOR,
+    )
+    assert reason_of(gone)[:2] == (410, "purpose_archived")
+    with pytest.raises(PurposeArchived):
+        await lib.models.consumer_purpose(name)
+    with pytest.raises(PurposeArchived):
+        await lib.models.send(name, [Message(role="user", content="hi")], None, None)
+    listed = (await client.get("/admin/purposes?limit=200", headers=bearer())).json()
+    mine = [item for item in listed["items"] if item["name"] == name]
+    assert len(mine) == 1
+    assert mine[0]["archived_at"] is not None
+    assert mine[0]["latest_version"] == 2
+
+    async with engine.connect() as conn:
+        changes = (
+            await conn.execute(
+                text(
+                    "SELECT actor, class, new FROM config_changes WHERE setting = :s "
+                    "ORDER BY config_revision"
+                ),
+                {"s": f"consumer_purpose:{name}"},
+            )
+        ).all()
+    assert [c.actor for c in changes] == ["p-operator"] * 3
+    assert {c[1] for c in changes} == {"prospective"}
+    assert [c.new.get("version") for c in changes[:2]] == [1, 2]
+    assert all(CANARY not in json.dumps(c.new) for c in changes)
+    assert CANARY not in caplog.text
+
+
+VALID_TEMPLATE = "Explain {{ inputs.voter }}."
+
+
+def _schema(**properties: Any) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
+def _nested(depth: int) -> dict[str, Any]:
+    """An object schema ``depth`` levels deep (the root is 1)."""
+    node: dict[str, Any] = {"type": "string"}
+    for _ in range(depth - 1):
+        node = _schema(inner=node)
+    return _schema(inner=node)
+
+
+REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
+    ("pattern", {"name": "Vote-Reason"}, "name_invalid", "body.name"),
+    ("too_short", {"name": "ab"}, "name_invalid", "body.name"),
+    ("too_long", {"name": "a" * 49}, "name_invalid", "body.name"),
+    ("builtin_generation", {"name": "generation"}, "name_taken", "body.name"),
+    ("builtin_guardrail", {"name": "guardrail_check"}, "name_taken", "body.name"),
+    ("builtin_port", {"name": "embedding"}, "name_taken", "body.name"),
+    ("default_row", {"name": "default"}, "name_taken", "body.name"),
+    ("include", {"template": '{% include "x.j2" %}'}, "template_invalid", "body.template"),
+    ("import", {"template": '{% import "x.j2" as x %}'}, "template_invalid", "body.template"),
+    ("from", {"template": '{% from "x.j2" import y %}'}, "template_invalid", "body.template"),
+    ("extends", {"template": '{% extends "x.j2" %}'}, "template_invalid", "body.template"),
+    ("macro", {"template": "{% macro m() %}x{% endmacro %}"}, "template_invalid", "body.template"),
+    (
+        "call",
+        {"template": "{% call inputs.f() %}x{% endcall %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "sandbox_escape",
+        {"template": "{{ cycler.__init__.__globals__ }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "private_item",
+        {"template": "{{ inputs['__class__'] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    ("undeclared", {"template": "{{ secret }}"}, "template_invalid", "body.template"),
+    (
+        "unknown_filter",
+        {"template": "{{ inputs.voter | shout }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    ("syntax", {"template": "{% if %}"}, "template_invalid", "body.template"),
+    ("too_large", {"template": "x" * (32 * 1024 + 1)}, "template_invalid", "body.template"),
+    (
+        "system_template",
+        {"system_template": "{% include 'x' %}"},
+        "template_invalid",
+        "body.system_template",
+    ),
+    (
+        "root_not_object",
+        {"output_schema": {"type": "string"}},
+        "schema_invalid",
+        "body.output_schema.type",
+    ),
+    (
+        "ref",
+        {"output_schema": _schema(a={"$ref": "#/$defs/x"})},
+        "schema_invalid",
+        "body.output_schema.properties.a.$ref",
+    ),
+    (
+        "any_of",
+        {"output_schema": _schema(a={"anyOf": [{"type": "string"}]})},
+        "schema_invalid",
+        "body.output_schema.properties.a.anyOf",
+    ),
+    (
+        "type_list",
+        {"output_schema": _schema(a={"type": ["string", "null"]})},
+        "schema_invalid",
+        "body.output_schema.properties.a.type",
+    ),
+    (
+        "nullable",
+        {"output_schema": _schema(a={"type": "string", "nullable": True})},
+        "schema_invalid",
+        "body.output_schema.properties.a.nullable",
+    ),
+    (
+        "open_object",
+        {"output_schema": {**_schema(a={"type": "string"}), "additionalProperties": True}},
+        "schema_invalid",
+        "body.output_schema.additionalProperties",
+    ),
+    (
+        "optional_property",
+        {"output_schema": {**_schema(a={"type": "string"}), "required": []}},
+        "schema_invalid",
+        "body.output_schema.required",
+    ),
+    (
+        "array_without_items",
+        {"output_schema": _schema(a={"type": "array"})},
+        "schema_invalid",
+        "body.output_schema.properties.a.items",
+    ),
+    (
+        "unsupported_keyword",
+        {"output_schema": _schema(a={"type": "string", "format": "email"})},
+        "schema_invalid",
+        "body.output_schema.properties.a.format",
+    ),
+    ("too_deep", {"output_schema": _nested(7)}, "schema_invalid", None),
+    (
+        "too_large_schema",
+        {"output_schema": _schema(a={"type": "string", "description": "d" * (16 * 1024)})},
+        "schema_invalid",
+        "body.output_schema",
+    ),
+    # The first fault wins: a bad name before a bad template, a bad template before a bad
+    # schema.
+    (
+        "name_first",
+        {"name": "Bad", "template": "{% include 'x' %}"},
+        "name_invalid",
+        "body.name",
+    ),
+    (
+        "template_first",
+        {"template": "{{ secret }}", "output_schema": {"type": "string"}},
+        "template_invalid",
+        "body.template",
+    ),
+]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+@pytest.mark.parametrize(
+    ("case", "change", "reason", "field"), REFUSALS, ids=[r[0] for r in REFUSALS]
+)
+async def test_i_29__m9_refusals(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    case: str,
+    change: dict[str, Any],
+    reason: str,
+    field: str | None,
+) -> None:
+    """Each crafted bad body is refused at save with 422 ``validation_error`` naming its
+    ``details.reason``, ``field`` and ``message``, and nothing is written.
+
+    Complements asserted: the same body with the fault removed is accepted (``_valid``), and
+    a schema of depth 6 is accepted where 7 is refused."""
+    client, _ = served
+    register, _ = registered
+    name = unique("refused")
+    body = {**purpose_body(name), **change}
+    response = await register(body)
+    status, code, details = reason_of(response)
+    assert (status, code, details["reason"]) == (422, "validation_error", reason), case
+    assert details["message"]
+    if field is not None:
+        assert details["field"] == field, details
+    if body["name"] == name:
+        found = await client.get(f"/admin/purposes/{name}", headers=bearer())
+        assert found.status_code == 404, found.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_valid_edges(registered: tuple[Register, list[str]]) -> None:
+    """The edges the refusals sit beside are accepted: a schema exactly 6 levels deep, a
+    template using ``viewpoint``, ``story`` and built-in filters, a ``system_template``, and
+    ``const``/``pattern``/``minItems`` keywords."""
+    register, _ = registered
+    body = purpose_body(
+        unique("edges"),
+        template=(
+            "{% for t in inputs.items %}{{ t | upper }}{% endfor %}"
+            "{% if viewpoint is defined %}{{ viewpoint.name }}{% endif %}"
+            "{% if story is defined %}{{ story.title | default('') }}{% endif %}"
+        ),
+        system_template="Answer as {{ inputs.voter }}.",
+        output_schema=_nested(6),
+    )
+    made = await register(body)
+    assert made.status_code == 201, made.text
+    keywords = _schema(
+        kind={"type": "string", "const": "vote", "title": "Kind"},
+        code={"type": "string", "pattern": "^[A-Z]{3}$", "minLength": 3},
+        picks={"type": "array", "items": {"type": "number"}, "minItems": 1},
+        flag={"type": "boolean"},
+    )
+    made = await register(purpose_body(unique("keywords"), output_schema=keywords))
+    assert made.status_code == 201, made.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_names_taken(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """A registered name is taken, and stays taken once archived (there is no unarchive); a
+    name differing only in case is not the same name, but upper case is never a valid one.
+
+    Complement asserted: the first registration succeeds."""
+    client, _ = served
+    register, _ = registered
+    name = unique("taken")
+    assert (await register(purpose_body(name))).status_code == 201
+    again = await register(purpose_body(name))
+    assert reason_of(again)[0] == 422
+    assert reason_of(again)[2]["reason"] == "name_taken"
+    await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+    after = await register(purpose_body(name))
+    assert reason_of(after)[2]["reason"] == "name_taken"
+    upper = await register(purpose_body(name.upper()))
+    assert reason_of(upper)[2]["reason"] == "name_invalid"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_version_stale(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """A replacement whose ``expected_version`` is not the latest is 409 ``version_stale`` and
+    writes nothing; the latest one succeeds.
+
+    Complement asserted: a stale replacement's bad template is not reported (staleness is
+    checked first), and the library raises the same error."""
+    client, lib = served
+    register, _ = registered
+    name = unique("stale")
+    assert (await register(purpose_body(name))).status_code == 201
+    first = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1, description="v2"),
+        headers=OPERATOR,
+    )
+    assert first.status_code == 200, first.text
+    stale = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1, template="{{ secret }}"),
+        headers=OPERATOR,
+    )
+    status, code, details = reason_of(stale)
+    assert (status, code) == (409, "version_stale")
+    assert (details["expected_version"], details["current_version"]) == (1, 2)
+    latest = (await client.get(f"/admin/purposes/{name}", headers=bearer())).json()
+    assert (latest["version"], latest["description"]) == (2, "v2")
+    request = PurposeReplace.model_validate(replace_body(1))
+    with pytest.raises(PurposeVersionStale):
+        await lib.replace_purpose(LIBRARY, name, request)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_limit(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+) -> None:
+    """With 100 live consumer purposes the next registration is 422 ``purpose_limit``;
+    archiving one frees a place, because archived purposes do not count.
+
+    Complement asserted: the 100th registration itself succeeds."""
+    client, _ = served
+    register, _ = registered
+    async with engine.connect() as conn:
+        live = int(
+            await conn.scalar(
+                text("SELECT count(*) FROM consumer_purposes WHERE archived_at IS NULL")
+            )
+            or 0
+        )
+    assert live < PURPOSE_LIMIT
+    made: list[str] = []
+    for _ in range(PURPOSE_LIMIT - live):
+        name = unique("bulk")
+        response = await register(purpose_body(name))
+        assert response.status_code == 201, response.text
+        made.append(name)
+    over = await register(purpose_body(unique("over")))
+    assert reason_of(over)[:2] == (422, "validation_error")
+    assert reason_of(over)[2]["reason"] == "purpose_limit"
+    archived = await client.post(f"/admin/purposes/{made[0]}/archive", headers=OPERATOR)
+    assert archived.status_code == 200, archived.text
+    assert (await register(purpose_body(unique("freed")))).status_code == 201
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_routing(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+) -> None:
+    """``GET /admin/model-config`` lists each live consumer purpose, inheriting
+    ``generation``'s model (sources ``inherited``); ``PUT /admin/model-config/{name}`` routes it
+    to its own model, and a call made through the Model Access Layer (the stub) goes to that
+    model; with the override dropped it goes to ``generation``'s again. A REST call (#825,
+    ``POST /purposes/{name}/calls``) follows the same route end to end: with no override it
+    reaches ``generation``'s endpoint and model, and with one it reaches the second endpoint,
+    which ``model.endpoint`` in its answer names. An archived purpose's
+    configuration is hidden (404) and its calls are refused (410). The built-in purposes are
+    unchanged: the registry's ``validate_purpose`` passes for every one.
+
+    Complements asserted: ``generation`` itself is untouched by the override, and an unknown
+    name is still 422 at ``/admin/model-config/{name}``."""
+    client, lib = served
+    register, _ = registered
+    name = unique("routed")
+    assert (await register(purpose_body(name))).status_code == 201
+    async with restored_model_config(engine):
+        generation = await client.put(
+            "/admin/model-config/generation",
+            json={"model": "house-model"},
+            headers=OPERATOR,
+        )
+        assert generation.status_code == 200, generation.text
+
+        listing = (await client.get("/admin/model-config", headers=bearer())).json()
+        entry = listing["purposes"][name]
+        assert entry["model"] == "house-model"
+        assert entry["sources"]["model"] == "inherited"
+        names = list(listing["purposes"])
+        assert names[0] == "default"
+        assert names.index(name) >= len(DELIVERED) + len(PORTS) + 1
+
+        await lib.models.send(name, [Message(role="user", content="hello")], None, None)
+        call = lib.models.stub.calls[-1]
+        assert (call.purpose, call.model) == (name, "house-model")
+        # #825: the REST call goes where the configuration routes it, and says so.
+        house_endpoint = (await lib.models.endpoint("generation"))[0]
+        called = await client.post(f"/purposes/{name}/calls", json=CALL, headers=WRITE)
+        assert called.status_code == 200, called.text
+        assert called.json()["model"] == {
+            "endpoint": house_endpoint,
+            "model": "house-model",
+            "version": None,
+        }
+        assert (lib.models.stub.calls[-1].purpose, lib.models.stub.calls[-1].model) == (
+            name,
+            "house-model",
+        )
+
+        own = await client.put(
+            f"/admin/model-config/{name}",
+            json={"model": "consumer-model", "base_url": SECOND_ENDPOINT},
+            headers=OPERATOR,
+        )
+        assert own.status_code == 200, own.text
+        assert (own.json()["model"], own.json()["sources"]["model"]) == ("consumer-model", "own")
+        await lib.models.send(name, [Message(role="user", content="hello")], None, None)
+        assert lib.models.stub.calls[-1].model == "consumer-model"
+        called = await client.post(f"/purposes/{name}/calls", json=CALL, headers=WRITE)
+        assert called.status_code == 200, called.text
+        assert called.json()["model"]["endpoint"] == SECOND_ENDPOINT
+        assert called.json()["model"]["model"] == "consumer-model"
+        assert (lib.models.stub.calls[-1].purpose, lib.models.stub.calls[-1].model) == (
+            name,
+            "consumer-model",
+        )
+        assert house_endpoint != SECOND_ENDPOINT
+        house = (await client.get("/admin/model-config/generation", headers=bearer())).json()
+        assert house["model"] == "house-model"
+
+        dropped = await client.delete(f"/admin/model-config/{name}", headers=OPERATOR)
+        assert dropped.status_code == 200, dropped.text
+        await lib.models.send(name, [Message(role="user", content="hello")], None, None)
+        assert lib.models.stub.calls[-1].model == "house-model"
+
+        unknown = await client.put(
+            f"/admin/model-config/{unique('nobody')}", json={"model": "m"}, headers=OPERATOR
+        )
+        assert reason_of(unknown)[:2] == (422, "validation_error")
+        with pytest.raises(UnknownPurpose):
+            await lib.models.send(unique("nobody"), [Message(role="user", content="x")], None, None)
+
+        await client.put(f"/admin/model-config/{name}", json={"model": "kept"}, headers=OPERATOR)
+        archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+        assert archived.status_code == 200, archived.text
+        listing = (await client.get("/admin/model-config", headers=bearer())).json()
+        assert name not in listing["purposes"]
+        hidden = await client.get(f"/admin/model-config/{name}", headers=bearer())
+        assert reason_of(hidden)[:2] == (404, "not_found")
+        hidden_put = await client.put(
+            f"/admin/model-config/{name}", json={"model": "m"}, headers=OPERATOR
+        )
+        assert reason_of(hidden_put)[:2] == (404, "not_found")
+        with pytest.raises(PurposeArchived):
+            await lib.models.send(name, [Message(role="user", content="x")], None, None)
+        async with engine.connect() as conn:
+            kept = await conn.scalar(
+                text("SELECT model FROM model_config WHERE purpose = :p"), {"p": name}
+            )
+        assert kept == "kept"
+
+    for purpose in DELIVERED.values():
+        validate_purpose(purpose)
+    assert name not in DELIVERED
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_never_a_turn_purpose(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """A consumer purpose is never a turn's purpose: an engine profile and a story's overrides
+    that route one in ``models.purposes`` are refused with 422 at that setting.
+
+    Complement asserted: the same profile routing ``generation`` is accepted."""
+    client, _ = served
+    register, _ = registered
+    name = unique("not_a_turn")
+    assert (await register(purpose_body(name))).status_code == 201
+    profile = await client.post(
+        "/engine-profiles",
+        json={"name": unique("profile"), "settings": nest(f"models.purposes.{name}.model", "m")},
+        headers=WRITE,
+    )
+    status, code, details = reason_of(profile)
+    assert (status, code) == (422, "validation_error")
+    assert details["field"] == f"body.settings.models.purposes.{name}"
+    fine = await client.post(
+        "/engine-profiles",
+        json={"name": unique("profile"), "settings": nest("models.purposes.generation.model", "m")},
+        headers=WRITE,
+    )
+    assert fine.status_code == 201, fine.text
+
+    story, _ = await new_story(client)
+    override = await client.patch(
+        f"/stories/{story}/profile-overrides",
+        json={"settings": nest(f"models.purposes.{name}.model", "m"), "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert reason_of(override)[:2] == (422, "validation_error")
+    assert name in reason_of(override)[2]["field"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_library(served: tuple[httpx.AsyncClient, Engine]) -> None:
+    """The in-process library registers, reads, lists, versions, replaces and archives a
+    consumer purpose as REST does, and refuses as REST does.
+
+    Complement asserted: the library's refusal is the same ``PurposeRefused`` reason the REST
+    route answers, and an unknown name is ``PurposeNotFound``."""
+    _, lib = served
+    name = unique("library")
+    created = await lib.register_purpose(LIBRARY, PurposeCreate.model_validate(purpose_body(name)))
+    assert (created.purpose.version, created.changed) == (1, True)
+    read = await lib.get_purpose(LIBRARY, name)
+    assert read.output_schema == SCHEMA
+    _, page = await lib.list_purposes(LIBRARY, limit=200)
+    assert name in [item.name for item in page.items] or page.next_cursor is not None
+    replaced = await lib.replace_purpose(
+        LIBRARY,
+        name,
+        PurposeReplace.model_validate(replace_body(1, description="two")),
+    )
+    assert replaced.purpose.version == 2
+    assert [v.version for v in await lib.list_purpose_versions(LIBRARY, name)] == [1, 2]
+    with pytest.raises(PurposeRefused) as refused:
+        await lib.register_purpose(LIBRARY, PurposeCreate.model_validate(purpose_body(name)))
+    assert refused.value.details["reason"] == "name_taken"
+    with pytest.raises(PurposeNotFound):
+        await lib.get_purpose(LIBRARY, unique("nobody"))
+    archived = await lib.archive_purpose(LIBRARY, name)
+    assert archived.purpose.archived_at is not None
+
+
+# -- #825: calling a consumer purpose with no story (FR-MODEL-15) ------------------------------
+
+MARKER = "QUOKKA-MARKER-825"
+"""A unique string an input or an output carries; it must never reach a log line."""
+BANNED = "zanzibarbanned"
+"""The word the call-rating test policy refuses, on input and output."""
+UNSAFE_PHRASE = "the nightswim scene"
+"""Text the stub's guardrail model flags as sexualizing a depicted minor (in checks of the
+age-conditioned policy only: ``minors_support.recognise``)."""
+
+
+def answer(reason: str = "Because.", **fields: Any) -> str:
+    """A reply valid against ``SCHEMA``, as the model's JSON."""
+    return json.dumps({"reason": reason, "score": 3, "mood": "calm", "tags": [], **fields})
+
+
+def own_calls(lib: Engine, name: str) -> int:
+    """Calls to the purpose's own model (guardrail checks are not counted)."""
+    return sum(1 for call in lib.models.stub.calls if call.purpose == name)
+
+
+async def call(
+    client: httpx.AsyncClient, name: str, body: dict[str, Any] | None = None, **headers: str
+) -> httpx.Response:
+    return await client.post(
+        f"/purposes/{name}/calls", json=CALL if body is None else body, headers={**WRITE, **headers}
+    )
+
+
+@pytest.fixture
+async def banned_rating(served: tuple[httpx.AsyncClient, Engine], engine: AsyncEngine) -> str:
+    """A rating whose one policy refuses ``BANNED`` on input and output."""
+    _, lib = served
+    rating_id, _ = await rated_policy_rating(
+        lib, engine, words(BANNED), applies_to=["text_input", "text_output"]
+    )
+    return rating_id
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A call with no story answers 200 ``{purpose, version, output, model, usage}``, its
+    ``output`` valid against the purpose's schema; the template renders the inputs after
+    Epistrel's preamble; a repeat with the same ``Idempotency-Key`` answers the first result
+    with no model call; and neither an input nor an output string reaches a log line.
+
+    Complements asserted: a pinned older version answers as that version; a different body
+    under the same key is 409 ``idempotency_conflict``."""
+    client, lib = served
+    register, _ = registered
+    name = unique("called")
+    caplog.set_level(logging.DEBUG)
+    assert (await register(purpose_body(name))).status_code == 201
+
+    lib.models.stub.script(name, [answer(f"{MARKER} out", tags=["a", "b"])])
+    body = {"inputs": {"voter": f"Ash {MARKER}", "target": "Briar", "rounds": [1, 2]}}
+    first = await call(client, name, body, **{"Idempotency-Key": "k-825-call"})
+    assert first.status_code == 200, first.text
+    found = first.json()
+    assert (found["purpose"], found["version"]) == (name, 1)
+    assert found["output"] == json.loads(answer(f"{MARKER} out", tags=["a", "b"]))
+    output_model(SCHEMA).model_validate(found["output"])
+    assert found["usage"]["calls"] == 1
+    assert found["usage"]["tokens_in"] > 0
+    assert found["idempotency_key"] == "k-825-call"
+    sent = [c for c in lib.models.stub.calls if c.purpose == name][-1]
+    assert sent.messages[0].role == "system"
+    assert sent.messages[0].content.startswith(GUIDANCE_HEADING)
+    assert PREAMBLE in sent.messages[0].content
+    assert sent.messages[1].content == f"Explain why Ash {MARKER} voted for Briar."
+
+    replay = await call(client, name, body, **{"Idempotency-Key": "k-825-call"})
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == found
+    assert replay.headers["Idempotent-Replay"] == "true"
+    assert own_calls(lib, name) == 1
+    other = await call(client, name, CALL, **{"Idempotency-Key": "k-825-call"})
+    assert reason_of(other)[:2] == (409, "idempotency_conflict")
+    assert own_calls(lib, name) == 1
+
+    replaced = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1, template="Name {{ inputs.target }} only."),
+        headers=OPERATOR,
+    )
+    assert replaced.status_code == 200, replaced.text
+    latest = await call(client, name)
+    assert latest.json()["version"] == 2
+    assert lib.models.stub.calls[-1].messages[1].content == "Name Briar only."
+    pinned = await call(client, name, {**CALL, "version": 1})
+    assert pinned.json()["version"] == 1
+    assert lib.models.stub.calls[-1].messages[1].content == "Explain why Ash voted for Briar."
+    assert MARKER not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_refusals(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """An unknown purpose or version is 404, an archived purpose 410 whatever version is
+    pinned, inputs that do not fit 422 (``too_large``, ``too_deep``, an unknown rating, a
+    template that does not render: ``template_render_error``), all before any model call; an
+    answer that never matches the schema is 502 ``model_output_invalid``; a passed deadline is
+    503 ``model_unavailable`` with ``reason: deadline``.
+
+    Complement asserted: inputs exactly at the size limit pass the size check."""
+    client, lib = served
+    register, _ = registered
+    name = unique("refused")
+    assert (await register(purpose_body(name))).status_code == 201
+
+    unknown = await call(client, unique("nobody"))
+    assert reason_of(unknown)[:2] == (404, "not_found")
+    builtin = await call(client, "generation")
+    assert reason_of(builtin)[:2] == (404, "not_found")
+    version = await call(client, name, {**CALL, "version": 9})
+    assert reason_of(version)[:2] == (404, "version_not_found")
+
+    big = {"inputs": {"voter": "x" * (64 * 1024), "target": "y"}}
+    status, code, details = reason_of(await call(client, name, big))
+    assert (status, code, details["reason"], details["field"]) == (
+        422,
+        "validation_error",
+        "too_large",
+        "body.inputs",
+    )
+    padding = 64 * 1024 - len(json.dumps({"target": "y", "voter": ""}, separators=(",", ":")))
+    exact = {"inputs": {"voter": "x" * padding, "target": "y"}}
+    lib.models.stub.script(name, [answer()])
+    assert (await call(client, name, exact)).status_code == 200
+    deep: Any = "leaf"
+    for _ in range(6):
+        deep = [deep]
+    status, code, details = reason_of(await call(client, name, {"inputs": {"voter": deep}}))
+    assert (status, code, details["reason"]) == (422, "validation_error", "too_deep")
+    rating = await call(client, name, {**CALL, "content_rating": "NO-SUCH-RATING"})
+    status, code, details = reason_of(rating)
+    assert (status, code, details["field"]) == (422, "validation_error", "body.content_rating")
+    missing = await call(client, name, {"inputs": {"voter": "Ash"}})
+    status, code, details = reason_of(missing)
+    assert (status, code, details["field"]) == (422, "template_render_error", "template")
+    depicted = [{"label": "Ash", "true_age": 30}, {"label": "Ash", "true_age": 31}]
+    twice = await call(client, name, {**CALL, "depicted": depicted})
+    assert reason_of(twice)[:2] == (422, "validation_error")
+    calls_before = own_calls(lib, name)
+
+    lib.models.stub.script(name, ["not json at all"] * 3)
+    invalid = await call(client, name)
+    status, code, details = reason_of(invalid)
+    assert (status, code, details["reason"]) == (502, "model_output_invalid", "parse_error")
+    assert "not json" not in invalid.text
+    assert own_calls(lib, name) == calls_before + 3
+
+    lib.models.stub.fault(name, "hang")
+    late = await call(client, name, {**CALL, "deadline_ms": 300})
+    status, code, details = reason_of(late)
+    assert (status, code, details["reason"]) == (503, "model_unavailable", "deadline")
+
+    archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+    assert archived.status_code == 200, archived.text
+    for body in (CALL, {**CALL, "version": 1}):
+        assert reason_of(await call(client, name, body))[:2] == (410, "purpose_archived")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_input_gate(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+    engine: AsyncEngine,
+) -> None:
+    """A string input that breaks a policy of the named rating, at any depth, is 422
+    ``guardrail_violation`` naming its locator, with zero calls to the purpose's model and a
+    ``guardrail_input_rejected`` audit row (no story, entry point ``purpose_call``, no text).
+    With ``depicted`` naming a minor, an input that sexualizes them is refused by the minors
+    policy, again with no call to the purpose's model.
+
+    Complements asserted: the same input under the default rating passes (the rating is what
+    refuses it), and the same minors input with only adults depicted passes."""
+    client, lib = served
+    register, _ = registered
+    name = unique("gated_in")
+    assert (await register(purpose_body(name))).status_code == 201
+    banned = {"inputs": {"voter": "Ash", "target": "Briar", "notes": {"said": ["ok", BANNED]}}}
+
+    refused = await call(client, name, {**banned, "content_rating": banned_rating})
+    status, code, details = reason_of(refused)
+    assert (status, code) == (422, "guardrail_violation")
+    assert details["violations"][0]["locator"] == "inputs.notes.said[1]"
+    assert own_calls(lib, name) == 0
+    rows = await engine_rows(
+        engine,
+        "SELECT story_id, details FROM audit_log WHERE kind = 'guardrail_input_rejected' "
+        "AND details->>'entry_point' = 'purpose_call' AND principal = 'p-author' "
+        "ORDER BY id DESC LIMIT 1",
+    )
+    assert rows
+    assert rows[0][0] is None
+    assert BANNED not in json.dumps(rows[0][1])
+
+    lib.models.stub.script(name, [answer()])
+    passed = await call(client, name, banned)
+    assert passed.status_code == 200, passed.text
+    assert own_calls(lib, name) == 1
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    minor_body = {
+        "inputs": {"voter": f"Ash in {UNSAFE_PHRASE}", "target": "Kit"},
+        "depicted": [{"label": "Kit", "true_age": 15}],
+    }
+    minor = await call(client, name, minor_body)
+    status, code, details = reason_of(minor)
+    assert (status, code) == (422, "guardrail_violation")
+    assert "a minor is involved or present" in minor.json()["error"]["message"]
+    assert "Kit" not in minor.text
+    assert own_calls(lib, name) == 1
+    lib.models.stub.script(name, [answer()])
+    adults = {**minor_body, "depicted": [{"label": "Kit", "true_age": 25}]}
+    grown = await call(client, name, adults)
+    assert grown.status_code == 200, grown.text
+    assert own_calls(lib, name) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_output_gate(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+    engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An output whose string leaf breaks a policy of the call's rating is retried once; a
+    second violation is 422 ``output_policy_violation`` with no part of the output in the body
+    (two calls to the purpose's model) and a ``guardrail_output_rejected`` audit row. With a
+    minor depicted, an output that sexualizes them fails closed the same way.
+
+    Complements asserted: a violation followed by a clean answer is 200 with the clean one;
+    the same minors output with only adults depicted passes; no output text reaches a log."""
+    client, lib = served
+    register, _ = registered
+    name = unique("gated_out")
+    caplog.set_level(logging.DEBUG)
+    assert (await register(purpose_body(name))).status_code == 201
+    rated = {**CALL, "content_rating": banned_rating}
+    bad = answer(f"{MARKER} said {BANNED}")
+
+    lib.models.stub.script(name, [bad, answer(f"{MARKER} also {BANNED}", tags=[BANNED])])
+    refused = await call(client, name, rated)
+    status, code, details = reason_of(refused)
+    assert (status, code, details["attempts"]) == (422, "output_policy_violation", 2)
+    assert MARKER not in refused.text
+    assert BANNED not in refused.text
+    assert own_calls(lib, name) == 2
+    rows = await engine_rows(
+        engine,
+        "SELECT story_id, details FROM audit_log WHERE kind = 'guardrail_output_rejected' "
+        "AND details->>'purpose' = :name",
+        name=name,
+    )
+    assert len(rows) == 1
+    assert rows[0][0] is None
+    assert MARKER not in json.dumps(rows[0][1])
+
+    lib.models.stub.script(name, [bad, answer("Clean.")])
+    retried = await call(client, name, rated)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "Clean."
+    assert retried.json()["usage"]["calls"] == 2
+    assert own_calls(lib, name) == 4
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    unsafe = answer(f"Kit at {UNSAFE_PHRASE}")
+    minor_body = {**CALL, "depicted": [{"label": "Kit", "true_age": 15}]}
+    lib.models.stub.script(name, [unsafe, unsafe])
+    minor = await call(client, name, minor_body)
+    assert reason_of(minor)[:2] == (422, "output_policy_violation")
+    assert UNSAFE_PHRASE not in minor.text
+    assert own_calls(lib, name) == 6
+    checks = subject_checks(lib.models.stub)
+    assert checks
+    assert all("Kit" not in check for check in checks)
+    lib.models.stub.script(name, [unsafe])
+    adults = {**CALL, "depicted": [{"label": "Kit", "true_age": 25}]}
+    grown = await call(client, name, adults)
+    assert grown.status_code == 200, grown.text
+    assert grown.json()["output"]["reason"] == f"Kit at {UNSAFE_PHRASE}"
+    assert MARKER not in caplog.text
+    assert UNSAFE_PHRASE not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_library(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """``Engine.call_purpose`` answers as REST does, and refuses as REST does.
+
+    Complement asserted: a mistyped ``deadline_ms`` is refused at its parameter."""
+    _, lib = served
+    register, _ = registered
+    name = unique("lib_call")
+    assert (await register(purpose_body(name))).status_code == 201
+    lib.models.stub.script(name, [answer("Library.")])
+    result = await lib.call_purpose(
+        LIBRARY, name, CALL["inputs"], depicted=[{"label": "Ash", "true_age": 40}]
+    )
+    assert (result.purpose, result.version, result.output["reason"]) == (name, 1, "Library.")
+    assert result.usage.calls == 1
+    with pytest.raises(PurposeNotFound):
+        await lib.call_purpose(LIBRARY, unique("nobody"), CALL["inputs"])
+    with pytest.raises(InvalidRequest) as mistyped:
+        await lib.call_purpose(LIBRARY, name, CALL["inputs"], deadline_ms=True)
+    assert mistyped.value.details["field"] == "query.deadline_ms"
+
+
+# -- a consumer purpose called inside a story (FR-MODEL-16; #826) -----------------------------
+
+VIEWPOINT_TEMPLATE = (
+    "{{ viewpoint.name }} | {{ story.id }} | {{ story.location }} | "
+    "{% for name in story.present %}{{ name }};{% endfor %}\n{{ story.scene }}\n"
+    "{{ viewpoint.text }}"
+)
+"""A story-bound purpose that shows everything a viewpoint call hands its template."""
+STORY_TEMPLATE = "{{ story.id }} / {{ story.title }} / {{ inputs.voter }}"
+SECRET_ROOT = "letter"
+"""The Mother's affair (``seeded_partitions_support.AFFAIR``), by its root word."""
+
+
+async def story_call(
+    client: httpx.AsyncClient,
+    story_id: str,
+    name: str,
+    body: dict[str, Any] | None = None,
+    **headers: str,
+) -> httpx.Response:
+    return await client.post(
+        f"/stories/{story_id}/purposes/{name}/calls",
+        json=CALL if body is None else body,
+        headers={**WRITE, **headers},
+    )
+
+
+def prompt_of(lib: Engine, name: str, *, everything: bool = False) -> str:
+    """The user message of the purpose's latest call (``everything``: every message, joined)."""
+    sent = [c for c in lib.models.stub.calls if c.purpose == name][-1]
+    if everything:
+        return "\n".join(m.content for m in sent.messages)
+    return sent.messages[-1].content
+
+
+async def unchanged(engine: AsyncEngine, story_id: str) -> tuple[int, int, int]:
+    """The story's timeline and config revisions and its event count."""
+    found = await engine_rows(
+        engine,
+        "SELECT s.timeline_revision, s.config_revision, "
+        "(SELECT count(*) FROM events e WHERE e.story_id = s.id) "
+        "FROM stories s WHERE s.id = :s",
+        s=story_id,
+    )
+    return int(found[0][0]), int(found[0][1]), int(found[0][2])
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_viewpoint(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The viewpoint is the character's alone (NFR-PRIV-4). In the Sunday Dinner with
+    per-character partitions, only the Mother knows of her affair (her seeded secret: a belief,
+    a canon fact and a memory visible to her alone). A call asking who keeps the love letters,
+    with the Father's viewpoint, sends a prompt with no trace of it, neither its words nor their
+    root; with the Mother's, the prompt carries it. Each prompt holds the viewpoint's own
+    knowledge (the Father knows of the sale), its name, and the story's id, location, present
+    names and the viewpoint's scene line. Neither call changes the story: its revisions and its
+    event count are as they were, and no viewpoint text reaches a log.
+
+    Complement asserted: run against a viewpoint built from the omniscient context, the
+    Father's prompt carries the affair and this test fails (#826's fail-first run)."""
+    client, lib = served
+    register, _ = registered
+    name = unique("viewpoint")
+    caplog.set_level(logging.DEBUG)
+    assert (await register(purpose_body(name, template=VIEWPOINT_TEMPLATE))).status_code == 201
+    profile = await sp.partitioned_profile(client)
+    characters = await sp.cast(client)
+    scenario_id, _ = await g.published_scenario(client, sp.family())
+    made = await g.create_from(client, sp.request(scenario_id, characters, profile))
+    story = made["story_id"]
+    by_role = {c["role_id"]: c["id"] for c in made["characters"]}
+    before = await unchanged(engine, story)
+    question = {"inputs": {"question": "Who keeps the love letters?"}}
+
+    async def seen(role: str) -> str:
+        response = await story_call(
+            client, story, name, {**question, "viewpoint_character_id": by_role[role]}
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["timeline_revision"] == before[0]
+        return prompt_of(lib, name)
+
+    father = await seen("father")
+    assert father.startswith(f"Frank Harrow | {story} | ")
+    assert SECRET_ROOT not in prompt_of(lib, name, everything=True).casefold()
+    assert sp.AFFAIR not in father
+    assert "sale contract" in father.casefold()
+    assert "## You are Frank Harrow" in father
+    mother = await seen("mother")
+    assert mother.startswith(f"Linda Harrow | {story} | ")
+    assert "love letters" in mother.casefold()
+    assert await unchanged(engine, story) == before
+    assert SECRET_ROOT not in caplog.text.casefold()
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_refusals(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """A story-bound call answers 200 with ``timeline_revision``, and refuses in the planned
+    order, each before any model call: an unknown story 404; an archived story 409
+    ``story_archived`` (before its character is looked at); an unknown character 404; the
+    player's character 422 ``player_has_no_context``; a viewpoint on a Lite story 409
+    ``module_off`` (after the character checks); an unknown purpose 404; a template reading
+    ``viewpoint`` when none was asked for 422 ``template_render_error``.
+
+    Complements asserted: the same Lite story answers a call with no viewpoint, whose template
+    sees the story's id and title; a structured story with shared character knowledge accepts a
+    viewpoint."""
+    client, lib = served
+    register, _ = registered
+    name, needs = unique("in_story"), unique("needs_viewpoint")
+    assert (await register(purpose_body(name, template=STORY_TEMPLATE))).status_code == 201
+    assert (await register(purpose_body(needs, template=VIEWPOINT_TEMPLATE))).status_code == 201
+    story, ids = await new_story(client, "Ash", "Briar")
+    calls_before = len(lib.models.stub.calls)
+
+    def ask(character: str) -> dict[str, Any]:
+        return {**CALL, "viewpoint_character_id": character}
+
+    assert reason_of(await story_call(client, new_ulid(), name))[:2] == (404, "not_found")
+    missing = await story_call(client, story, name, ask(new_ulid()))
+    assert reason_of(missing)[:2] == (404, "not_found")
+    status, code, details = reason_of(await story_call(client, story, name, ask(ids["Ash"])))
+    assert (status, code, details["reason"]) == (422, "validation_error", "player_has_no_context")
+    assert details["field"] == "body.viewpoint_character_id"
+    lite = await story_call(client, story, name, ask(ids["Briar"]))
+    assert reason_of(lite)[:2] == (409, "module_off")
+    unknown = await story_call(client, story, unique("nobody"))
+    assert reason_of(unknown)[:2] == (404, "not_found")
+    rendered = await story_call(client, story, needs)
+    status, code, details = reason_of(rendered)
+    assert (status, code, details["field"]) == (422, "template_render_error", "template")
+    assert len(lib.models.stub.calls) == calls_before
+
+    lib.models.stub.script(name, [answer()])
+    plain = await story_call(client, story, name)
+    assert plain.status_code == 200, plain.text
+    assert plain.json()["timeline_revision"] >= 0
+    assert prompt_of(lib, name).endswith(f"{story} / A story / Ash")
+
+    shared, shared_ids = await new_story(client, "Ash", "Briar")
+    assigned = await client.put(
+        f"/stories/{shared}/engine-profile",
+        json={"profile_id": structured_m4(), "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert assigned.status_code == 200, assigned.text
+    lib.models.stub.script(needs, [answer()])
+    accepted = await story_call(client, shared, needs, ask(shared_ids["Briar"]))
+    assert accepted.status_code == 200, accepted.text
+    assert prompt_of(lib, needs).startswith(f"Briar | {shared} | ")
+
+    archived = await client.post(f"/stories/{story}/archive", headers=WRITE)
+    assert archived.status_code == 200, archived.text
+    late = await story_call(client, story, name, ask(new_ulid()))
+    assert reason_of(late)[:2] == (409, "story_archived")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_guardrails(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+    engine: AsyncEngine,
+) -> None:
+    """The story's guardrails apply, as to a turn. Under the story's rating, an input that
+    breaks its policy is 422 ``guardrail_violation`` with zero model calls (none at all) and a
+    ``guardrail_input_rejected`` row naming the story; an output that breaks it twice is 422
+    ``output_policy_violation``; the rating's prompt guidance leads the system message. With a
+    15-year-old in the cast, an input that sexualizes is refused by the minors policy, with no
+    call to the purpose's model.
+
+    Complements asserted: a violation followed by a clean answer is 200; the same minors input
+    in a story whose cast is all adults passes."""
+    client, lib = served
+    register, _ = registered
+    name = unique("story_gated")
+    assert (await register(purpose_body(name))).status_code == 201
+    story, _ = await new_story(client, "Ash", "Briar", content_rating_id=banned_rating)
+
+    calls_before = len(lib.models.stub.calls)
+    banned = {"inputs": {"voter": "Ash", "target": "Briar", "notes": [BANNED]}}
+    refused = await story_call(client, story, name, banned)
+    status, code, details = reason_of(refused)
+    assert (status, code) == (422, "guardrail_violation")
+    assert details["violations"][0]["locator"] == "inputs.notes[0]"
+    assert len(lib.models.stub.calls) == calls_before
+    rows = await engine_rows(
+        engine,
+        "SELECT story_id, details FROM audit_log WHERE kind = 'guardrail_input_rejected' "
+        "AND details->>'entry_point' = 'purpose_call' AND story_id = :s",
+        s=story,
+    )
+    assert len(rows) == 1
+    assert BANNED not in json.dumps(rows[0][1])
+
+    bad = answer(f"said {BANNED}")
+    lib.models.stub.script(name, [bad, bad])
+    out = await story_call(client, story, name)
+    assert reason_of(out)[:2] == (422, "output_policy_violation")
+    assert BANNED not in out.text
+    assert own_calls(lib, name) == 2
+    lib.models.stub.script(name, [bad, answer("Clean.")])
+    retried = await story_call(client, story, name)
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "Clean."
+
+    rated, _ = await new_story(client, "Ash", "Briar")
+    lib.models.stub.script(name, [answer()])
+    assert (await story_call(client, rated, name)).status_code == 200
+    system = [c for c in lib.models.stub.calls if c.purpose == name][-1].messages[0].content
+    assert system.startswith(GUIDANCE_HEADING)
+    assert PREAMBLE in system
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    minor_cast = await create(
+        client,
+        {
+            "name": "A story",
+            "characters": [
+                character("Ash", 30, is_player=True),
+                character("Kit", 15),
+            ],
+        },
+    )
+    unsafe = {"inputs": {"voter": f"Ash in {UNSAFE_PHRASE}", "target": "Kit"}}
+    own_before = own_calls(lib, name)
+    minor = await story_call(client, minor_cast["story_id"], name, unsafe)
+    assert reason_of(minor)[:2] == (422, "guardrail_violation")
+    assert "a minor is involved or present" in minor.json()["error"]["message"]
+    assert own_calls(lib, name) == own_before
+    adults = await create(
+        client,
+        {
+            "name": "A story",
+            "characters": [character("Ash", 30, is_player=True), character("Kit", 25)],
+        },
+    )
+    lib.models.stub.script(name, [answer()])
+    grown = await story_call(client, adults["story_id"], name, unsafe)
+    assert grown.status_code == 200, grown.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_read_only(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+) -> None:
+    """A call reads the story and never changes it: while a turn of the story is in flight
+    (held inside its model call), a call answers 200, and the story's timeline and config
+    revisions and its event count are what they were before it; the turn then commits.
+
+    Complement asserted: the held turn itself moves the revision once it commits, so the
+    measure would see a write."""
+    client, lib = served
+    register, _ = registered
+    name = unique("read_only")
+    assert (await register(purpose_body(name))).status_code == 201
+    story, _ = await new_story(client, "Ash", "Briar")
+    before = await unchanged(engine, story)
+    held = await start_turn(engine, story, "Hello there.")
+    try:
+        lib.models.stub.script(name, [answer()])
+        called = await story_call(client, story, name)
+        assert called.status_code == 200, called.text
+        assert called.json()["timeline_revision"] == before[0]
+        assert await unchanged(engine, story) == before
+        assert not held.done
+    finally:
+        await held.release()
+        await held.task
+    assert (await unchanged(engine, story))[2] > before[2]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_routing(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+) -> None:
+    """A story-bound call follows the purpose's own model configuration (#824), not the
+    story's: routed to a second endpoint, the call reaches it and says so, though the story's
+    profile routes ``generation`` to a model of its own.
+
+    Complement asserted: with the purpose's override dropped, the call reaches ``generation``'s
+    deployment model, still never the story's."""
+    client, lib = served
+    register, _ = registered
+    name = unique("story_routed")
+    assert (await register(purpose_body(name))).status_code == 201
+    story, _ = await new_story(
+        client,
+        "Ash",
+        "Briar",
+        overrides=nest("models.purposes", {"generation": {"model": "story-model"}}),
+    )
+    async with restored_model_config(engine):
+        generation = await client.put(
+            "/admin/model-config/generation", json={"model": "house-model"}, headers=OPERATOR
+        )
+        assert generation.status_code == 200, generation.text
+        own = await client.put(
+            f"/admin/model-config/{name}",
+            json={"model": "consumer-model", "base_url": SECOND_ENDPOINT},
+            headers=OPERATOR,
+        )
+        assert own.status_code == 200, own.text
+        called = await story_call(client, story, name)
+        assert called.status_code == 200, called.text
+        assert called.json()["model"]["endpoint"] == SECOND_ENDPOINT
+        assert called.json()["model"]["model"] == "consumer-model"
+        assert lib.models.stub.calls[-1].model == "consumer-model"
+        dropped = await client.delete(f"/admin/model-config/{name}", headers=OPERATOR)
+        assert dropped.status_code == 200, dropped.text
+        again = await story_call(client, story, name)
+        assert again.status_code == 200, again.text
+        assert again.json()["model"]["model"] == "house-model"
+        assert lib.models.stub.calls[-1].model == "house-model"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_library(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """``Engine.call_story_purpose`` answers as REST does, and refuses as REST does.
+
+    Complement asserted: a mistyped ``viewpoint_character_id`` is refused at its parameter."""
+    client, lib = served
+    register, _ = registered
+    name = unique("lib_story")
+    assert (await register(purpose_body(name, template=STORY_TEMPLATE))).status_code == 201
+    story, ids = await new_story(client, "Ash", "Briar")
+    lib.models.stub.script(name, [answer("Library.")])
+    result = await lib.call_story_purpose(LIBRARY, story, name, CALL["inputs"])
+    assert (result.purpose, result.version, result.output["reason"]) == (name, 1, "Library.")
+    assert result.timeline_revision is not None
+    assert prompt_of(lib, name).endswith(f"{story} / A story / Ash")
+    with pytest.raises(StoryNotFound):
+        await lib.call_story_purpose(LIBRARY, new_ulid(), name, CALL["inputs"])
+    with pytest.raises(ModuleOff):
+        await lib.call_story_purpose(
+            LIBRARY, story, name, CALL["inputs"], viewpoint_character_id=ids["Briar"]
+        )
+    with pytest.raises(InvalidRequest) as mistyped:
+        await lib.call_story_purpose(
+            LIBRARY,
+            story,
+            name,
+            CALL["inputs"],
+            viewpoint_character_id=7,  # type: ignore[arg-type]
+        )
+    assert mistyped.value.details["field"] == "body.viewpoint_character_id"
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_erased(pg_url: str, engine: AsyncEngine) -> None:
+    """An input naming a subject erased from the story is 409 ``erased_subject_referenced``
+    with no model call, and the erased character is no viewpoint (404: erasure deletes it).
+
+    Complement asserted: the same call naming someone never erased answers 200."""
+    from tests import erasure_support as es
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, lib):
+        name = unique("erased")
+        made = await client.post("/admin/purposes", json=purpose_body(name), headers=OPERATOR)
+        assert made.status_code == 201, made.text
+        try:
+            story, ids = await new_story(client, "Ash", "Briar", "Quillon")
+            await es.erase(client, "character", ids["Quillon"], story, confirm_all=True)
+            calls_before = len(lib.models.stub.calls)
+            named = {"inputs": {"voter": "Quillon", "target": "Briar"}}
+            refused = await story_call(client, story, name, named)
+            assert reason_of(refused)[:2] == (409, "erased_subject_referenced")
+            gone = await story_call(
+                client, story, name, {**CALL, "viewpoint_character_id": ids["Quillon"]}
+            )
+            assert reason_of(gone)[:2] == (404, "not_found")
+            assert len(lib.models.stub.calls) == calls_before
+            lib.models.stub.script(name, [answer()])
+            assert (await story_call(client, story, name)).status_code == 200
+        finally:
+            archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+            assert archived.status_code == 200, archived.text
+
+
+# -- a purpose result stored as the viewpoint character's memory (FR-MODEL-17; #827) ---------
+
+MEMORY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "memory": {"type": "string", "description": "What the character remembers."},
+        "score": {"type": "integer", "minimum": 0, "maximum": 10},
+        "detail": {
+            "type": "object",
+            "properties": {"note": {"type": "string"}},
+            "required": ["note"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["memory", "score", "detail"],
+    "additionalProperties": False,
+}
+"""An output whose ``memory`` field is a top-level string (``score`` and ``detail.note`` are
+not one)."""
+MEMORY_TEMPLATE = "Why did {{ viewpoint.name }} vote for {{ inputs.target }}?"
+REMEMBERED = "PELICAN-827"
+"""A unique word the stored memory carries; it must never reach a log line."""
+STORE = {"text_field": "memory"}
+
+
+def remembered(text: str = f"I voted for Briar because of the {REMEMBERED} pact.") -> str:
+    """A reply valid against ``MEMORY_SCHEMA``, as the model's JSON."""
+    return json.dumps({"memory": text, "score": 4, "detail": {"note": "n"}})
+
+
+def store_body(character_id: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "inputs": {"target": "Briar"},
+        "viewpoint_character_id": character_id,
+        "store_as_memory": STORE,
+        **fields,
+    }
+
+
+async def partitioned_story(
+    client: httpx.AsyncClient, *names: str, **fields: Any
+) -> tuple[str, dict[str, str]]:
+    """A story (the first name the player) under ``Structured (M4)`` with per-character
+    partitions (``seeded_partitions_support.partitioned_profile``)."""
+    story, ids = await new_story(client, *(names or ("Ash", "Briar", "Cato")), **fields)
+    profile = await sp.partitioned_profile(client, f"Partitions {new_ulid()[-6:]}")
+    assigned = await client.put(
+        f"/stories/{story}/engine-profile",
+        json={"profile_id": profile, "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert assigned.status_code == 200, assigned.text
+    return story, ids
+
+
+async def memories_of(engine: AsyncEngine, story_id: str) -> list[Any]:
+    """The story's consumer purpose memories, active or not."""
+    return await engine_rows(
+        engine,
+        "SELECT id, text, holder_character_id, character_id, visibility, provenance, "
+        "trust_tier, kind, fidelity, channel, membership, importance, proposition_ids, "
+        "participants, event_type, operation_id, source_event_ids FROM memories "
+        "WHERE story_id = :s AND provenance = 'consumer_purpose' ORDER BY id",
+        s=story_id,
+    )
+
+
+async def revision_of(engine: AsyncEngine, story_id: str) -> int:
+    return (await unchanged(engine, story_id))[0]
+
+
+@pytest.fixture
+async def memory_purpose(registered: tuple[Register, list[str]]) -> str:
+    """A live purpose whose output has a top-level string ``memory``."""
+    register, _ = registered
+    name = unique("remember")
+    made = await register(purpose_body(name, template=MEMORY_TEMPLATE, output_schema=MEMORY_SCHEMA))
+    assert made.status_code == 201, made.text
+    return name
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_isolation(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``store_as_memory`` writes the named output field as one episodic memory of the
+    viewpoint character alone: holder and visibility ``characters: [Briar]``, fidelity
+    ``content``, channel ``self``, provenance ``consumer_purpose`` (trust tier ``in_world``), the
+    text as given, no propositions, no event type, participants ``[Briar]`` and no importance
+    yet. It is written by an ``inter_turn`` slot operation at ``N⁺1`` that records one
+    ``purpose_memory_stored`` event holding identifiers only, and the call answers the memory's
+    id and the revision the write left (one more). Only that character remembers: Briar's
+    context (built by ``build_context``, through a viewpoint call) holds the memory, Cato's does
+    not. The memory's text never reaches a log.
+
+    Complement asserted: the same call without ``store_as_memory`` stores nothing, answers
+    ``memory_id: null`` and leaves the revision where it was."""
+    client, lib = served
+    name = memory_purpose
+    caplog.set_level(logging.DEBUG)
+    story, ids = await partitioned_story(client)
+    briar, cato = ids["Briar"], ids["Cato"]
+    before = await revision_of(engine, story)
+
+    lib.models.stub.script(name, [remembered()])
+    plain = await story_call(client, story, name, {**store_body(briar), "store_as_memory": None})
+    assert plain.status_code == 200, plain.text
+    assert (plain.json()["memory_id"], plain.json()["timeline_revision"]) == (None, before)
+    assert await memories_of(engine, story) == []
+
+    lib.models.stub.script(name, [remembered()])
+    stored = await story_call(client, story, name, store_body(briar))
+    assert stored.status_code == 200, stored.text
+    body = stored.json()
+    assert body["timeline_revision"] == before + 1 == await revision_of(engine, story)
+    assert body["output"]["memory"].endswith(f"{REMEMBERED} pact.")
+    (row,) = await memories_of(engine, story)
+    assert row.id == body["memory_id"]
+    assert row.text == f"I voted for Briar because of the {REMEMBERED} pact."
+    assert (row.holder_character_id, row.character_id) == (briar, briar)
+    assert row.visibility == {"scope": "characters", "characters": [briar]}
+    assert (row.provenance, row.trust_tier, row.kind) == (
+        "consumer_purpose",
+        "in_world",
+        "episodic",
+    )
+    assert (row.fidelity, row.channel, row.membership) == ("content", "self", "active")
+    assert (row.importance, row.proposition_ids, row.event_type) == (None, [], None)
+    assert row.participants == [briar]
+    (op,) = await engine_rows(
+        engine,
+        "SELECT kind, narrative_turn, slot_k, membership FROM operations WHERE operation_id = :o",
+        o=row.operation_id,
+    )
+    assert (op.kind, op.narrative_turn, op.slot_k, op.membership) == ("inter_turn", 0, 1, "active")
+    (event,) = await engine_rows(
+        engine,
+        "SELECT id, type, category, payload FROM events WHERE operation_id = :o",
+        o=row.operation_id,
+    )
+    assert (event.type, event.category) == ("purpose_memory_stored", "derived")
+    assert event.payload == {
+        "purpose": name,
+        "version": 1,
+        "memory_id": row.id,
+        "character_id": briar,
+    }
+    assert row.source_event_ids == [event.id]
+
+    question = {"inputs": {"target": f"the {REMEMBERED} pact"}}
+    lib.models.stub.script(name, [remembered("Again."), remembered("Again.")])
+    own = await story_call(client, story, name, {**question, "viewpoint_character_id": briar})
+    assert own.status_code == 200, own.text
+    assert REMEMBERED in prompt_of(lib, name)
+    other = await story_call(client, story, name, {**question, "viewpoint_character_id": cato})
+    assert other.status_code == 200, other.text
+    assert f"{REMEMBERED} pact." not in prompt_of(lib, name)
+    assert "voted for Briar" not in prompt_of(lib, name, everything=True)
+    assert REMEMBERED not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_timeline(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """The memory follows its slot like any record. Truncating the story to before the call
+    (the boundary ``0``, without its slot) discards it; untruncating brings it back. A fork
+    through the slot (``at_turn`` 0, ``slot`` 1) copies it, the copy the fork's own (its new
+    character's, under new ids); a fork through ``0`` alone does not.
+
+    Complement asserted: before the truncation the memory is active, so the discard is the
+    truncation's."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client)
+    lib.models.stub.script(name, [remembered()])
+    stored = await story_call(client, story, name, store_body(ids["Briar"]))
+    assert stored.status_code == 200, stored.text
+    assert [r.membership for r in await memories_of(engine, story)] == ["active"]
+
+    through = await client.post(
+        f"/stories/{story}/fork", json={"at_turn": 0, "slot": 1}, headers=WRITE
+    )
+    assert through.status_code in (200, 201), through.text
+    forked = through.json()["story_id"]
+    (copy,) = await memories_of(engine, forked)
+    assert copy.text.endswith(f"{REMEMBERED} pact.")
+    assert copy.membership == "active"
+    assert copy.holder_character_id not in (ids["Briar"], None)
+    (holder,) = await engine_rows(
+        engine,
+        "SELECT name FROM characters WHERE story_id = :s AND id = :c",
+        s=forked,
+        c=copy.holder_character_id,
+    )
+    assert holder.name == "Briar"
+    before = await client.post(f"/stories/{story}/fork", json={"at_turn": 0}, headers=WRITE)
+    assert before.status_code in (200, 201), before.text
+    assert await memories_of(engine, before.json()["story_id"]) == []
+
+    cut = await client.post(f"/stories/{story}/truncate", json={"to_turn": 0}, headers=WRITE)
+    assert cut.status_code == 200, cut.text
+    assert [r.membership for r in await memories_of(engine, story)] == ["discarded"]
+    back = await client.post(f"/stories/{story}/untruncate", json={}, headers=WRITE)
+    assert back.status_code == 200, back.text
+    assert [r.membership for r in await memories_of(engine, story)] == ["active"]
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_erasure(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """Erasure reaches the memory like any memory (the erasure index): after Quillon is erased
+    from the story, no memory names Quillon. Then a result whose text names Quillon is refused
+    with 409 ``erased_subject_referenced``: nothing is stored, no output is returned and the
+    revision stays.
+
+    Complement asserted: before the erasure the stored memory names Quillon."""
+    from tests import erasure_support as es
+
+    async with respond_client(es.erasure_settings(pg_url), engine) as (client, lib):
+        name = unique("erased_memory")
+        body = purpose_body(name, template=MEMORY_TEMPLATE, output_schema=MEMORY_SCHEMA)
+        made = await client.post("/admin/purposes", json=body, headers=OPERATOR)
+        assert made.status_code == 201, made.text
+        try:
+            story, ids = await partitioned_story(client, "Ash", "Briar", "Quillon")
+            lib.models.stub.script(name, [remembered("Quillon cried at the vote.")])
+            stored = await story_call(client, story, name, store_body(ids["Briar"]))
+            assert stored.status_code == 200, stored.text
+            assert [r.text for r in await memories_of(engine, story)] == [
+                "Quillon cried at the vote."
+            ]
+            await es.erase(client, "character", ids["Quillon"], story, confirm_all=True)
+            assert (await es.residue(engine, story, ["Quillon"]))["memories"] == 0
+
+            before = await revision_of(engine, story)
+            count = len(await memories_of(engine, story))
+            lib.models.stub.script(name, [remembered("Quillon was right.")])
+            refused = await story_call(client, story, name, store_body(ids["Briar"]))
+            assert reason_of(refused)[:2] == (409, "erased_subject_referenced")
+            assert "Quillon" not in refused.text
+            assert await revision_of(engine, story) == before
+            assert len(await memories_of(engine, story)) == count
+        finally:
+            archived = await client.post(f"/admin/purposes/{name}/archive", headers=OPERATOR)
+            assert archived.status_code == 200, archived.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_idempotent(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """A repeat under the same ``Idempotency-Key`` answers the first result (the same
+    ``memory_id`` and revision) and writes nothing new: one memory, one model call, the
+    revision moved once. The same key with a different ``store_as_memory`` is 409
+    ``idempotency_conflict``.
+
+    Complement asserted: a new key stores a second memory."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client)
+    key = {"Idempotency-Key": new_ulid()}
+    lib.models.stub.script(name, [remembered()])
+    first = await story_call(client, story, name, store_body(ids["Briar"]), **key)
+    assert first.status_code == 200, first.text
+    calls = own_calls(lib, name)
+    again = await story_call(client, story, name, store_body(ids["Briar"]), **key)
+    assert again.status_code == 200, again.text
+    assert again.json()["memory_id"] == first.json()["memory_id"]
+    assert again.json()["timeline_revision"] == first.json()["timeline_revision"]
+    assert own_calls(lib, name) == calls
+    assert len(await memories_of(engine, story)) == 1
+    assert await revision_of(engine, story) == first.json()["timeline_revision"]
+    changed = store_body(ids["Briar"], store_as_memory={"text_field": "other"})
+    conflict = await story_call(client, story, name, changed, **key)
+    assert reason_of(conflict)[:2] == (409, "idempotency_conflict")
+
+    lib.models.stub.script(name, [remembered()])
+    fresh = await story_call(client, story, name, store_body(ids["Briar"]))
+    assert fresh.status_code == 200, fresh.text
+    assert len(await memories_of(engine, story)) == 2
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_refusals(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """Each refusal stores nothing, returns no output and leaves the revision:
+    ``store_as_memory`` without a viewpoint is 422 (``viewpoint_required``), before a Lite
+    story's 409 ``module_off`` for its viewpoint; a structured story with shared knowledge is
+    409 ``module_off`` (``partitions``), and with episodic memory off 409 ``module_off``
+    (``episodic``); a ``text_field`` that is missing, nested or not a string is 422
+    ``text_field_invalid`` with no model call; an empty or whitespace text is 422
+    ``memory_text_empty`` and one over 2 000 characters 422 ``memory_text_too_long``; while a
+    turn holds the story's turn slot, the write is 423 ``story_busy``.
+
+    Complement asserted: once the turn gives the slot back, the same call stores the memory."""
+    from epistrel.core import turn_gate
+
+    client, lib = served
+    name = memory_purpose
+    lite, lite_ids = await new_story(client, "Ash", "Briar")
+    no_viewpoint = {"inputs": {"target": "Briar"}, "store_as_memory": STORE}
+    status, code, details = reason_of(await story_call(client, lite, name, no_viewpoint))
+    assert (status, code, details["reason"]) == (422, "validation_error", "viewpoint_required")
+    assert details["field"] == "body.viewpoint_character_id"
+    on_lite = await story_call(client, lite, name, store_body(lite_ids["Briar"]))
+    assert reason_of(on_lite)[:2] == (409, "module_off")
+
+    shared, shared_ids = await new_story(client, "Ash", "Briar")
+    assigned = await client.put(
+        f"/stories/{shared}/engine-profile",
+        json={"profile_id": structured_m4(), "version": 1, "ignore_warnings": True},
+        headers=WRITE,
+    )
+    assert assigned.status_code == 200, assigned.text
+    status, code, details = reason_of(
+        await story_call(client, shared, name, store_body(shared_ids["Briar"]))
+    )
+    assert (status, code, details.get("module")) == (409, "module_off", "partitions"), details
+
+    story, ids = await partitioned_story(client)
+    briar = ids["Briar"]
+    before = await revision_of(engine, story)
+    calls = own_calls(lib, name)
+    for field in ("absent", "score", "detail", "note"):
+        status, code, details = reason_of(
+            await story_call(
+                client, story, name, store_body(briar, store_as_memory={"text_field": field})
+            )
+        )
+        assert (status, code, details["reason"]) == (422, "validation_error", "text_field_invalid")
+    assert own_calls(lib, name) == calls
+
+    for text_, refusal in (
+        ("", "memory_text_empty"),
+        ("   ", "memory_text_empty"),
+        ("x" * 2_001, "memory_text_too_long"),
+    ):
+        lib.models.stub.script(name, [remembered(text_)])
+        refused = await story_call(client, story, name, store_body(briar))
+        assert reason_of(refused)[:2] == (422, refusal)
+        assert "output" not in refused.json()
+
+    holder = new_ulid()
+    assert await turn_gate.acquire(engine, story, holder, lease_s=60) is None
+    try:
+        lib.models.stub.script(name, [remembered()])
+        busy = await story_call(client, story, name, store_body(briar))
+        assert reason_of(busy)[:2] == (423, "story_busy")
+    finally:
+        await turn_gate.release_now(engine, story, holder)
+    assert await revision_of(engine, story) == before
+    assert await memories_of(engine, story) == []
+
+    lib.models.stub.script(name, [remembered()])
+    stored = await story_call(client, story, name, store_body(briar))
+    assert stored.status_code == 200, stored.text
+    assert len(await memories_of(engine, story)) == 1
+
+    off = {"memory": {"episodic": {"enabled": False}, "consolidation": {"enabled": False}}}
+    await override(client, story, off)
+    status, code, details = reason_of(await story_call(client, story, name, store_body(briar)))
+    assert (status, code, details["module"]) == (409, "module_off", "episodic")
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-17")
+async def test_i_29__m9_memory_library(
+    served: tuple[httpx.AsyncClient, Engine],
+    memory_purpose: str,
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """``Engine.call_story_purpose(..., store_as_memory=...)`` stores as REST does and
+    answers the memory's id.
+
+    Complement asserted: without a viewpoint it is refused at ``viewpoint_character_id``."""
+    client, lib = served
+    name = memory_purpose
+    story, ids = await partitioned_story(client)
+    lib.models.stub.script(name, [remembered()])
+    result = await lib.call_story_purpose(
+        LIBRARY,
+        story,
+        name,
+        {"target": "Briar"},
+        viewpoint_character_id=ids["Briar"],
+        store_as_memory={"text_field": "memory"},
+    )
+    assert result.memory_id is not None
+    assert [r.id for r in await memories_of(engine, story)] == [result.memory_id]
+    with pytest.raises(InvalidRequest) as missing:
+        await lib.call_story_purpose(
+            LIBRARY, story, name, {"target": "Briar"}, store_as_memory=STORE
+        )
+    assert missing.value.details["reason"] == "viewpoint_required"

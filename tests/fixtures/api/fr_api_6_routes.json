@@ -1472,6 +1472,21 @@
       "requirement": "FR-MULTI-7"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/characters/{character_id}/bench",
+      "requirement": "FR-MULTI-13"
+    },
+    {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/characters/{character_id}/bench",
+      "requirement": "FR-MULTI-14"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/characters/{character_id}/reactivate",
+      "requirement": "FR-MULTI-13"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/clock",
       "requirement": "FR-CLOCK-13"
@@ -1605,6 +1620,51 @@
       "method": "DELETE",
       "path": "/admin/external-providers/{name}",
       "requirement": "FR-EXT-6"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/purposes",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/purposes",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/purposes/{name}",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "PUT",
+      "path": "/admin/purposes/{name}",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "GET",
+      "path": "/admin/purposes/{name}/versions",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "POST",
+      "path": "/admin/purposes/{name}/archive",
+      "requirement": "FR-MODEL-14"
+    },
+    {
+      "method": "POST",
+      "path": "/purposes/{name}/calls",
+      "requirement": "FR-MODEL-15"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/purposes/{name}/calls",
+      "requirement": "FR-MODEL-16"
+    },
+    {
+      "method": "POST",
+      "path": "/subject-images",
+      "requirement": "FR-IMG-14"
     },
     {
       "method": "GET",

@@ -52,6 +52,7 @@ from epistrel.orchestrator.models.adapter import (
 )
 from epistrel.orchestrator.models.config import EffectiveConfig, KeyBox, key_fingerprint
 from epistrel.orchestrator.models.errors import ProviderGarbage
+from epistrel.orchestrator.models.metrics import purpose_label
 from epistrel.orchestrator.models.provider_schema import is_anthropic, strict_wire_schema
 
 log = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ class OpenAICompatibleAdapter:
         )
         log.info(
             "model call purpose=%s model=%s latency_ms=%d key=%s",
-            purpose,
+            purpose_label(purpose),
             result.model,
             latency_ms,
             key_fingerprint(secret),

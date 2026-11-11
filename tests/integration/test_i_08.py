@@ -64,12 +64,13 @@ KEPT_ON_DOWNGRADE = {
     ("public.membership", "pruned"),
     ("public.state_change_source", "backfill"),
     ("public.operation_kind", "story_image"),
+    ("public.record_provenance", "consumer_purpose"),
 }
 """Enum labels a downgrade cannot remove (PostgreSQL has no ``DROP VALUE``): 0015 adds
 ``queued`` and documents that its downgrade leaves it, after failing any queued operation;
 0114 adds ``backfill`` (#228), 0124 ``pruned`` (#247), 0129 the State-change source
-``backfill`` (#709) and 0136 the operation kind ``story_image`` (#261), each left the same
-way."""
+``backfill`` (#709), 0136 the operation kind ``story_image`` (#261) and 0147 the record
+provenance ``consumer_purpose`` (#827), each left the same way."""
 
 
 def _same(up: dict[str, list[tuple[Any, ...]]], down: dict[str, list[tuple[Any, ...]]]) -> None:

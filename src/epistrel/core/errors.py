@@ -2108,3 +2108,113 @@ class StoryImageNotFound(EpistrelError):
 
     code = "not_found"
     http_status = 404
+
+
+class PurposeNotFound(EpistrelError):
+    """No consumer purpose is registered under the name a call gives (FR-MODEL-14; #824); for
+    ``PUT /admin/model-config/{name}``, also an archived one. ``details``: ``purpose``."""
+
+    code = "not_found"
+    http_status = 404
+
+
+class PurposeVersionNotFound(EpistrelError):
+    """The consumer purpose has no such version (FR-MODEL-14; #824). ``details``: ``purpose``
+    and ``version``."""
+
+    code = "version_not_found"
+    http_status = 404
+
+
+class PurposeVersionStale(EpistrelError):
+    """A replacement's ``expected_version`` is not the purpose's latest version (FR-MODEL-14;
+    #824): another write made a newer one. Nothing is written; re-read and retry.
+    ``details``: ``purpose``, ``expected_version`` and ``current_version``."""
+
+    code = "version_stale"
+    http_status = 409
+
+
+class PurposeArchived(EpistrelError):
+    """The consumer purpose is archived (FR-MODEL-14; #824): its calls and replacements are
+    refused, and its versions stay readable. There is no unarchive. ``details``: ``purpose``."""
+
+    code = "purpose_archived"
+    http_status = 410
+
+
+class TemplateRenderError(EpistrelError):
+    """A consumer purpose's template did not render for the call's inputs (FR-MODEL-15; #825):
+    it names a variable or key the inputs do not hold, or fails in the sandbox. Raised before
+    any model call. ``details``: ``purpose``, ``version``, ``field`` (``template`` or
+    ``system_template``) and the error's kind; never the template or the inputs."""
+
+    code = "template_render_error"
+    http_status = 422
+
+
+class OutputPolicyViolation(EpistrelError):
+    """A consumer purpose's output broke a policy of the call's rating twice, the first answer
+    and its one retry (FR-MODEL-15; #825): nothing of the output is returned (fail closed).
+    ``details``: ``purpose``, ``violations`` (``[{policy_id, name, message}]``, as
+    ``guardrail_violation`` names them) and ``attempts``."""
+
+    code = "output_policy_violation"
+    http_status = 422
+
+
+class MemoryTextEmpty(EpistrelError):
+    """A story-bound consumer purpose call asked to store its result as a memory
+    (``store_as_memory``, FR-MODEL-17; #827), and the output field it names is empty or only
+    whitespace: nothing is stored and no output is returned. ``details``: ``purpose``,
+    ``field`` (the output field)."""
+
+    code = "memory_text_empty"
+    http_status = 422
+
+
+class MemoryTextTooLong(EpistrelError):
+    """A story-bound consumer purpose call asked to store its result as a memory
+    (``store_as_memory``, FR-MODEL-17; #827), and the output field it names is longer than a
+    memory holds: nothing is stored and no output is returned. ``details``: ``purpose``,
+    ``field``, ``limit`` and ``actual`` (characters); never the text."""
+
+    code = "memory_text_too_long"
+    http_status = 422
+
+
+class ModelOutputInvalid(EpistrelError):
+    """A consumer purpose's model gave no answer that validates against the purpose's output
+    schema within its retries (FR-MODEL-15; #825). ``details``: ``purpose`` and ``reason``
+    (``parse_error``, ``schema_error``, ``low_confidence`` or ``budget_exhausted``); never the
+    model's text."""
+
+    code = "model_output_invalid"
+    http_status = 502
+
+
+class CharacterBenched(EpistrelError):
+    """The request names a benched story character (FR-MULTI-13; #831): a turn naming it (its
+    actor, a render target, the output viewpoint, a whisper target, ``characters_present`` or a
+    participation override), or a participation or weight write on it. Nothing is written.
+    ``details``: ``character_id``."""
+
+    code = "character_benched"
+    http_status = 409
+
+
+class AlreadyBenched(EpistrelError):
+    """A bench of a story character that is benched already, in any mode (FR-MULTI-13; #831).
+    Nothing is written. ``details``: ``character_id``, ``mode`` and ``since_turn`` (the bench in
+    force)."""
+
+    code = "already_benched"
+    http_status = 409
+
+
+class NotBenched(EpistrelError):
+    """A reactivation of a story character that is not benched (FR-MULTI-13; #831). Nothing is
+    written. ``details``: ``character_id``."""
+
+    code = "not_benched"
+    http_status = 409

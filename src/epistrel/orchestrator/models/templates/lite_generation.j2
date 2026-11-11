@@ -84,6 +84,9 @@ You voice the listed characters in turn; never speak or act for {{ player_input.
 Characters you voice: {{ voiced_characters | join(", ") }}.
 {% endif %}
 Each character knows only what their notes and the scene show.
+{% if present_benched %}
+Present but not taking part: {{ present_benched | join(", ") }}; never give them dialogue.
+{% endif %}
 {% for constraint in policy_constraints %}
 {{ constraint }}
 {% endfor %}

@@ -151,6 +151,7 @@ from epistrel.core.profiles.schema import Purposes
 from epistrel.core.profiles.validate import ProfileValidation
 from epistrel.core.projections import structured as structured_projections
 from epistrel.core.propositions import registry as predicate_registry
+from epistrel.core.purposes import store as purpose_store
 from epistrel.core.ratings import change as rating_change
 from epistrel.core.ratings import reactivation
 from epistrel.core.ratings import suggest as rating_suggestion
@@ -207,6 +208,7 @@ from epistrel.orchestrator.images.port import MAX_REFERENCE_IMAGES
 from epistrel.orchestrator.images.references import MediaReferences
 from epistrel.orchestrator.images.targets import catalog as catalog_images
 from epistrel.orchestrator.images.targets import story as story_image_target
+from epistrel.orchestrator.images.targets import subject as subject_images
 from epistrel.orchestrator.jobs import queue as job_queue
 from epistrel.orchestrator.jobs import settlement as settlement_job
 from epistrel.orchestrator.jobs.handlers import backfill as backfill_job
@@ -248,6 +250,7 @@ from epistrel.orchestrator.lite.schemas import (
 )
 from epistrel.orchestrator.models import ModelAccessLayer, ModelError, ModelParams
 from epistrel.orchestrator.models import config as model_config
+from epistrel.orchestrator.models import consumer as consumer_purposes
 from epistrel.orchestrator.models import facts as model_facts
 from epistrel.orchestrator.models import held as held_models
 from epistrel.orchestrator.models import metrics as model_metrics
@@ -268,6 +271,8 @@ from epistrel.orchestrator.providers import bindings as provider_binding
 from epistrel.orchestrator.providers import in_process as provider_in_process
 from epistrel.orchestrator.providers import registry as provider_registry
 from epistrel.orchestrator.providers.manifest import ProviderRegistration, ProviderSpec
+from epistrel.orchestrator.purposes import call as purpose_call
+from epistrel.orchestrator.purposes import story as purpose_story
 from epistrel.orchestrator.ratings import suggest as rating_suggestion_driver
 from epistrel.orchestrator.rewrite import api as rewrite_api
 from epistrel.orchestrator.rewrite import apply as rewrite_apply
@@ -364,6 +369,11 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
     # #176: a character's participation role (a story configuration write).
     "set_participation": ResultCodec.of(stories.ParticipationSet, revision_field=_CONFIG),
+    # #831: a character benched and reactivated (story-scoped inter-turn slot operations).
+    "bench_character": ResultCodec.of(stories.BenchChanged),
+    "reactivate_character": ResultCodec.of(stories.BenchChanged),
+    # #832: a benched character's mode switched (an inter-turn slot operation).
+    "set_bench_mode": ResultCodec.of(stories.BenchChanged),
     # #193: the world clock moved forward between turns, and its settings changed.
     "advance_clock": ResultCodec.of(clock_service.ClockMoved),
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
@@ -481,6 +491,17 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "delete_external_provider": ResultCodec.of(
         provider_registry.ProviderWrite, status=204, revision_field=_CONFIG
     ),
+    # Consumer purposes (#824): deployment-scoped registrations, each write a new revision.
+    "register_purpose": ResultCodec.of(
+        purpose_store.PurposeWrite, status=201, revision_field=_CONFIG
+    ),
+    "replace_purpose": ResultCodec.of(purpose_store.PurposeWrite, revision_field=_CONFIG),
+    "archive_purpose": ResultCodec.of(purpose_store.PurposeWrite, revision_field=_CONFIG),
+    # A consumer purpose's call (#825): deployment-scoped, keyed per purpose
+    # (``purpose_call:<name>``); a refusal is never stored.
+    "call_purpose": ResultCodec.of(purpose_call.PurposeResult, revision_field=_CONFIG),
+    # #826: a story-bound call, keyed per story and purpose (``story_purpose_call:<name>``).
+    "call_story_purpose": ResultCodec.of(purpose_call.PurposeResult),
     "bind_provider": ResultCodec.of(provider_binding.BindingWrite),
     # Gate tightening (#155): deployment-scoped writes of a shape's threshold.
     "set_verify_gate": ResultCodec.of(yield_queries.GateWrite, revision_field=_CONFIG),
@@ -603,6 +624,10 @@ CODECS.update(
         )
         for kind in catalog_images.ENTRY_KINDS
     }
+)
+# A subject's images (#830; FR-IMG-14), deployment-scoped.
+CODECS["request_subject_images"] = ResultCodec.of(
+    subject_images.SubjectImagesQueued, status=202, revision_field=_CONFIG
 )
 # A catalog entry's listing status (#110): one method, one codec per catalog kind (the key is the
 # route's ``operation_id``, ``set_listing_status_character``), deployment-scoped.
@@ -1050,6 +1075,7 @@ class Engine:
         material: Mapping[str, Any] | None = None,
         respond_async: bool = False,
         keep: Callable[[T], bool] | None = None,
+        codec_name: str | None = None,
     ) -> T:
         """Run ``run`` as one idempotent call (see the class docstring).
 
@@ -1060,12 +1086,14 @@ class Engine:
         queue waits for that turn (#63), like the original: up to ``turn_deadline``, or not at
         all with ``respond_async`` (then ``TurnAccepted``, REST 202). ``keep``: whether a
         result is stored under the key; one it rejects (a two-stage report that applied
-        nothing, #109) releases the key instead, so the call leaves no trace."""
+        nothing, #109) releases the key instead, so the call leaves no trace. ``codec_name``: the
+        ``CODECS`` entry when ``operation`` names more than its method (#825:
+        ``purpose_call:<name>``)."""
         principal = self.require_principal(ctx)
         key = ctx.idempotency_key
         key = new_ulid() if key is None else idempotency.validate_key(key)
         ctx = dataclasses.replace(ctx, idempotency_key=key)
-        codec: ResultCodec[T] = CODECS[operation]
+        codec: ResultCodec[T] = CODECS[codec_name or operation]
         call = IdempotentCall(
             self.db,
             scope=KeyScope.STORY if story_id is not None else KeyScope.DEPLOYMENT,
@@ -1914,8 +1942,9 @@ class Engine:
         A blank story's every character ``definition`` (and ``deflection_style``, #115) goes
         through the input gate first (FR-GUARD-10), against the global policies and the chosen
         rating's, with the cast's true ages: a violation is 422 ``guardrail_violation`` and no
-        story exists. A story from a scenario is refused with nothing written (one 422 with the
-        creation report in ``details.report``), held back by #109's two stages
+        story exists. Either kind's cast larger than the deployment's ``max_story_cast`` is 422
+        ``cast_max`` (FR-MULTI-12). A story from a scenario is refused with nothing written (one
+        422 with the creation report in ``details.report``), held back by #109's two stages
         (``CreationHeld``, the key released), or created in one transaction."""
         principal = self.require_principal(ctx)
         if isinstance(spec, StoryFromScenario):
@@ -3564,10 +3593,11 @@ class Engine:
     ) -> stories.StoryCharacterAdded:
         """Add a character to a running story (FR-CAT-7): story-scoped, never a catalog entry,
         never a player, with its required true age (FR-CAT-12). 404 for an unknown story; 422
-        for a full cast (``CAST_MAX``), a name the story has, or an image that is not a live
-        image asset; 409 ``story_archived``; 409 ``revision_conflict`` for a stale expected
-        revision; 423 ``story_busy`` while a turn is in flight; then the definition passes the
-        input gate, checked with the new character's age in the cast (422
+        ``cast_max`` for a full cast (the story already holds the deployment's
+        ``max_story_cast`` full characters, FR-MULTI-12), a name the story has, or an image that
+        is not a live image asset; 409 ``story_archived``; 409 ``revision_conflict`` for a stale
+        expected revision; 423 ``story_busy`` while a turn is in flight; then the definition
+        passes the input gate, checked with the new character's age in the cast (422
         ``guardrail_violation``). The addition bumps the revision (FR-CONC-1), as a
         story-text edit does: the cast is part of every Lite prompt."""
         principal = self.require_principal(ctx)
@@ -3636,6 +3666,103 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    async def bench_character(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.BenchRequest | None = None,
+    ) -> stories.BenchChanged:
+        """Bench a story character (FR-MULTI-13; #831): it keeps its partition and memories,
+        takes no part in any turn and does not count toward ``max_story_cast``; benched
+        ``sequestered`` (the default ``mode``), it perceives nothing. An inter-turn slot
+        operation that bumps the timeline revision. 404 for an unknown story or character; 409
+        ``story_archived``; 409 ``revision_conflict``; 423 ``story_busy`` while a turn is in
+        flight; 422 ``validation_error`` (``player_not_benchable``); 409
+        ``already_benched``. Benched ``present`` (FR-MULTI-14; #832), it stays in the scene and
+        perceives what happens where it is, but never speaks. Answers the character as a read
+        lists it, with its ``bench``."""
+        principal = self.require_principal(ctx)
+        body = request if request is not None else stories.BenchRequest()
+
+        async def run(ctx: RequestContext) -> stories.BenchChanged:
+            return await stories.bench_character(
+                self.db,
+                story_id,
+                character_id,
+                body,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "bench_character",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(body)},
+        )
+
+    async def set_bench_mode(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.BenchModeRequest,
+    ) -> stories.BenchChanged:
+        """Switch a benched character's mode between ``sequestered`` and ``present``
+        (FR-MULTI-14; #832), from the next turn on: an inter-turn slot operation recording
+        ``character_bench_mode_changed``. The mode it has already is a no-op (no event, no
+        revision change). 404; 409 ``story_archived``; 423 ``story_busy``; 409 ``not_benched``.
+        Answers the character as a read lists it, with its ``bench``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.BenchChanged:
+            return await stories.set_bench_mode(
+                self.db,
+                story_id,
+                character_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_bench_mode",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    async def reactivate_character(
+        self, ctx: RequestContext, story_id: str, character_id: str
+    ) -> stories.BenchChanged:
+        """Reactivate a benched story character (FR-MULTI-13; #831): its participation role is
+        restored from its bench. 404; 409 ``story_archived``; 409 ``revision_conflict``; 423
+        ``story_busy``; 422 ``cast_max`` when the active cast is full; 409 ``not_benched``.
+        Answers the character as a read lists it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.BenchChanged:
+            return await stories.reactivate_character(
+                self.db,
+                story_id,
+                character_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "reactivate_character",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id},
         )
 
     # -- the world clock (FR-CLOCK-1,5,13; #193) ----------------------------------------------
@@ -4224,8 +4351,9 @@ class Engine:
         prospective, a control operation that bumps the revision. 404 for an unknown story or a
         character not in it; 422 ``is_player`` for the player's character; 409
         ``story_archived``; 409 ``revision_conflict`` for a stale expected revision; 423
-        ``story_busy`` while a turn is in flight. Answers the character as an omniscient read
-        lists it."""
+        ``story_busy`` while a turn is in flight; 422 ``cast_max`` for a ``minor`` made
+        ``major`` when the story already holds the deployment's ``max_story_cast`` full
+        characters (FR-MULTI-12). Answers the character as an omniscient read lists it."""
         principal = self.require_principal(ctx)
 
         async def run(ctx: RequestContext) -> stories.CharacterWeighted:
@@ -4575,7 +4703,8 @@ class Engine:
         purpose's own schema first (the ``image_generation`` port's image fields, #254), so a
         refused body claims no key."""
         principal = self.require_principal(ctx)
-        model_config.check_purpose(purpose)
+        async with self.db.connect() as conn:
+            await model_config.require_configurable(conn, purpose)
         params = body.params_for(purpose)
         probe = await self._probe_embedding_change(purpose, body)
         with reembed_job.changing(self.models.embeddings, probe):
@@ -4764,6 +4893,211 @@ class Engine:
             ),
             material={"purpose": purpose},
         )
+
+    # -- consumer purposes (FR-MODEL-14; #824) -----------------------------------------------
+    # Deployment-scoped like the model configuration: each write takes the deployment lock,
+    # moves ``config_revision`` and records a prospective ``config_changes`` row; the next call
+    # resolves the new version (``ModelAccessLayer.consumer_purpose``).
+
+    async def register_purpose(
+        self, ctx: RequestContext, request: purpose_store.PurposeCreate
+    ) -> purpose_store.PurposeWrite:
+        """Register a consumer purpose at version 1 (REST 201). Refused with 422
+        ``validation_error`` and ``details.reason``: ``name_invalid``, ``name_taken`` (a
+        built-in purpose's name, or one already registered), ``template_invalid``,
+        ``schema_invalid`` or ``purpose_limit``, checked in that order."""
+        principal = self.require_principal(ctx)
+        reserved = consumer_purposes.builtin_names()
+        return await self._keyed(
+            ctx,
+            "register_purpose",
+            lambda _: purpose_store.register(
+                self.db, request, reserved=reserved, principal=principal
+            ),
+            material={"body": _body(request)},
+        )
+
+    async def replace_purpose(
+        self, ctx: RequestContext, name: str, request: purpose_store.PurposeReplace
+    ) -> purpose_store.PurposeWrite:
+        """Write the next version of a consumer purpose. 404 for an unknown name, 410
+        ``purpose_archived``, 409 ``version_stale`` when ``expected_version`` is not the
+        latest, then the template and schema checks; a replacement identical to the latest
+        version writes nothing."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "replace_purpose",
+            lambda _: purpose_store.replace(self.db, name, request, principal=principal),
+            material={"name": name, "body": _body(request)},
+        )
+
+    async def archive_purpose(self, ctx: RequestContext, name: str) -> purpose_store.PurposeWrite:
+        """Archive a consumer purpose: its calls are refused with 410 ``purpose_archived``,
+        its versions stay readable, its name stays taken and its model configuration is
+        hidden. Archiving it again changes nothing (200)."""
+        principal = self.require_principal(ctx)
+        return await self._keyed(
+            ctx,
+            "archive_purpose",
+            lambda _: purpose_store.archive(self.db, name, principal=principal),
+            material={"name": name},
+        )
+
+    async def call_purpose(
+        self,
+        ctx: RequestContext,
+        name: str,
+        inputs: Mapping[str, Any],
+        *,
+        version: int | None = None,
+        content_rating: str | None = None,
+        depicted: Sequence[purpose_call.Depicted | Mapping[str, Any]] = (),
+        deadline_ms: int = purpose_call.DEFAULT_DEADLINE_MS,
+    ) -> purpose_call.PurposeResult:
+        """Call consumer purpose ``name`` with no story (FR-MODEL-15; REST ``POST
+        /purposes/{name}/calls``): its output, validated against its schema, after the input
+        gate (422 ``guardrail_violation``, no call to the purpose's model) and the output gate
+        (one retry, then 422 ``output_policy_violation`` with no output). 404 for an unknown
+        name or version, 410 ``purpose_archived``, 422 for inputs that do not fit or a template
+        that does not render (``template_render_error``), 502 ``model_output_invalid``, 503
+        ``model_unavailable`` (``reason: deadline`` once ``deadline_ms`` passes). The
+        ``Idempotency-Key`` (``ctx``) answers a repeat from the first result, with no model
+        call; a refusal is never stored."""
+        principal = self.require_principal(ctx)
+        try:
+            request = purpose_call.PurposeCall.model_validate(
+                {
+                    "inputs": inputs,
+                    "version": version,
+                    "content_rating": content_rating,
+                    "depicted": [
+                        d.model_dump() if isinstance(d, BaseModel) else dict(d) for d in depicted
+                    ],
+                    "deadline_ms": deadline_ms,
+                }
+            )
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+        purpose_call.check_inputs(request.inputs)
+        return await self._keyed(
+            ctx,
+            f"purpose_call:{name}",
+            lambda _: purpose_call.call_purpose(
+                self.db, self.models, name, request, principal=principal
+            ),
+            material={"name": name, "body": _body(request)},
+            codec_name="call_purpose",
+        )
+
+    async def call_story_purpose(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        name: str,
+        inputs: Mapping[str, Any],
+        *,
+        version: int | None = None,
+        viewpoint_character_id: str | None = None,
+        deadline_ms: int = purpose_call.DEFAULT_DEADLINE_MS,
+        store_as_memory: purpose_story.StoreAsMemory | Mapping[str, Any] | None = None,
+    ) -> purpose_call.PurposeResult:
+        """Call consumer purpose ``name`` inside story ``story_id`` (FR-MODEL-16; REST ``POST
+        /stories/{id}/purposes/{name}/calls``), optionally with one character's viewpoint
+        (``viewpoint_character_id``): the template's ``viewpoint`` is what that character
+        knows, believes and has seen, built by ``build_context`` and rendered as its own render
+        would show it. The story supplies the content rating, the policies and the cast's true
+        ages. The call reads the story and never changes it: no lock, no revision, no event.
+        404 for an unknown story, purpose, version or character; 409 ``story_archived``; 422
+        ``player_has_no_context`` (``details.reason``) for the player's character; 409
+        ``module_off`` for a viewpoint on a Lite story; 409 ``erased_subject_referenced`` for an
+        input naming an erased subject; then #825's refusals (``Engine.call_purpose``). The
+        ``Idempotency-Key`` (``ctx``) answers a repeat from the first result, with no model
+        call.
+
+        ``store_as_memory`` (``{text_field}``, FR-MODEL-17) also stores the named output
+        field's text as the viewpoint character's memory: an inter-turn slot write after the
+        unlocked model call, which bumps the revision and answers the ``memory_id``. 422
+        without a viewpoint (``viewpoint_required``) or for a ``text_field`` that is no
+        top-level string field (``text_field_invalid``); 409 ``module_off`` without partitions
+        or episodic memory, ``story_paused`` or ``revision_conflict``; 423 ``story_busy``
+        while a turn is in flight; 422 ``memory_text_empty`` or ``memory_text_too_long``, and
+        409 ``erased_subject_referenced`` for a text naming an erased subject, each with
+        nothing stored and no output returned."""
+        principal = self.require_principal(ctx)
+        store = (
+            store_as_memory.model_dump()
+            if isinstance(store_as_memory, purpose_story.StoreAsMemory)
+            else store_as_memory
+        )
+        try:
+            request = purpose_story.StoryPurposeCall.model_validate(
+                {
+                    "inputs": inputs,
+                    "version": version,
+                    "viewpoint_character_id": viewpoint_character_id,
+                    "deadline_ms": deadline_ms,
+                    "store_as_memory": store,
+                }
+            )
+        except ValidationError as exc:
+            raise InvalidRequest.from_errors(exc.errors(), prefix=("body",)) from None
+        purpose_call.check_inputs(request.inputs)
+
+        async def run(ctx: RequestContext) -> purpose_call.PurposeResult:
+            if request.store_as_memory is not None:
+                await self.check_expected_revision(ctx, story_id)
+            return await purpose_story.call_story_purpose(
+                self.db,
+                self.models,
+                story_id,
+                name,
+                request,
+                principal=principal,
+                lexical=lexical_backend(self.settings.lexical_backend),
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            f"story_purpose_call:{name}",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "name": name, "body": _body(request)},
+            codec_name="call_story_purpose",
+        )
+
+    @refuses_nul()
+    async def list_purposes(
+        self,
+        ctx: RequestContext,
+        *,
+        limit: int = purpose_store.DEFAULT_PAGE,
+        cursor: str | None = None,
+    ) -> tuple[int, purpose_store.PurposePage]:
+        """``config_revision`` and one page of consumer purposes by name, archived ones
+        included, each at its latest version."""
+        del ctx
+        return await purpose_store.revision_and_listing(self.db, limit=limit, cursor=cursor)
+
+    @refuses_nul()
+    async def get_purpose(
+        self, ctx: RequestContext, name: str, *, version: int | None = None
+    ) -> purpose_store.ConsumerPurpose:
+        """A consumer purpose at its latest version, or ``version`` (404 ``version_not_found``
+        when it has none); an archived one still reads, with its ``archived_at``."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await purpose_store.read(conn, name, version)
+
+    @refuses_nul()
+    async def list_purpose_versions(
+        self, ctx: RequestContext, name: str
+    ) -> list[purpose_store.PurposeVersionInfo]:
+        """Every version of a consumer purpose, oldest first."""
+        del ctx
+        async with self.db.connect() as conn:
+            return await purpose_store.versions(conn, name)
 
     # -- external-data providers (FR-EXT-1,6; #204) -------------------------------------------
     # Deployment-scoped registrations (each write an interpretive configuration change, read
@@ -5991,6 +6325,65 @@ class Engine:
                 "entry_id": entry_id,
                 "body": request.model_dump(mode="json", exclude_unset=True),
             },
+        )
+
+    async def request_subject_images(
+        self, ctx: RequestContext, request: subject_images.SubjectImageRequest
+    ) -> subject_images.SubjectImagesQueued:
+        """Generate ``request.n`` (1 to 4) images of a consumer-described subject that is in no
+        story or catalog (FR-IMG-14; #830): 202 ``{job_id, status: queued}``; follow it at
+        ``GET /image-jobs/{id}``, which ends ``completed`` with the ``asset_ids`` and the
+        ``failures`` (``{index, reason}`` per output not stored), or ``failed`` when none
+        passed. The prompt is built by ``image_prompt`` from the description and style (the true
+        age only as its apparent age band) and checked before any generation against the
+        global and the rating's image-prompt policies with the declared true age, together
+        with the description and style (FR-IMG-3, FR-GUARD-11); figure classification and the
+        output check run on every image, and a failing one is never stored. Each passing image
+        is a live media asset owned by the caller (``origin: subject``), kept until it is
+        deleted or its owner is offboarded (ADR-186) and usable as a story character's image.
+        Refused before any job, reservation or provider call: 409 ``not_configured`` without
+        an image adapter, 409 ``image_check_unconfigured`` while an image-output policy applies
+        and ``image_check`` is unset, 422 for an unknown or retired ``content_rating`` (the
+        deployment default is read now), 503 ``image_prompt_unavailable``, 422
+        ``guardrail_violation`` (its audit row names the subject's id, never its label) or 503
+        ``model_unavailable`` from the prompt check, and 409 ``image_limit_reached`` or 422
+        ``images_disabled`` from the deployment's daily image limit. Idempotent under its key
+        (deployment-scoped)."""
+        principal = self.require_principal(ctx)
+
+        async def run(_: RequestContext) -> subject_images.SubjectImagesQueued:
+            await image_jobs.require_generation(self.models, self.db)
+            async with self.db.connect() as conn:
+                rating = await subject_images.subject_rating(conn, request.content_rating)
+            deployment = await self._image_deployment()
+            view = subject_images.subject_view(request, rating.guidance, deployment)
+            built = await prompt_builder.write_image_prompt(self.models, view)
+            subject_id = new_ulid()
+            job_request = image_jobs.ImageJobRequest(
+                prompt=built.prompt,
+                negative_prompt=built.negative_prompt,
+                n=request.n,
+                size=built.size,
+                aspect_ratio=None if built.size is not None else built.aspect_ratio,
+            )
+            prepared = await image_jobs.prepare_image_job(
+                self.image_runtime(),
+                ImageJobKind.SUBJECT,
+                subject_images.job_target(subject_id, rating.rating_id, rating.version_id),
+                subject_images.job_origin(subject_id, request),
+                job_request,
+                principal,
+            )
+            async with self.db.begin() as conn:
+                queued = await image_jobs.insert_image_job(conn, prepared, ctx.idempotency_key)
+                revision = await catalog_service.config_revision(conn)
+            return subject_images.SubjectImagesQueued(queued.job_id, revision)
+
+        return await self._keyed(
+            ctx,
+            "request_subject_images",
+            run,
+            material={"body": request.model_dump(mode="json", exclude_unset=True)},
         )
 
     @refuses_nul()

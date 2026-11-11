@@ -136,6 +136,11 @@ TAGS: list[dict[str, str]] = [
         "the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of "
         "labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
     },
+    {
+        "name": "purposes",
+        "description": "Calling a consumer purpose, a model purpose an operator registered "
+        "under `/admin/purposes` (FR-MODEL-15).",
+    },
     {"name": "admin", "description": "Operator endpoints, all under `/admin` (FR-AUTH-1)."},
     {"name": "ops", "description": "Unauthenticated operational probes."},
 ]
@@ -302,6 +307,20 @@ ERROR_STATUS: dict[str, int] = {
     "fact_inactive": 409,
     "gate_not_promotable": 409,
     "provider_exists": 409,
+    # Consumer purposes (#824).
+    "version_stale": 409,
+    "version_not_found": 404,
+    "purpose_archived": 410,
+    # Consumer purpose calls (#825).
+    "template_render_error": 422,
+    "output_policy_violation": 422,
+    "model_output_invalid": 502,
+    "memory_text_empty": 422,
+    "memory_text_too_long": 422,
+    # Benched characters (#831).
+    "character_benched": 409,
+    "already_benched": 409,
+    "not_benched": 409,
     "provider_in_use": 409,
     "length_required": 411,
     "draft_too_large": 413,
@@ -437,12 +456,14 @@ STATUS_TEXT = {
     403: "Forbidden",
     404: "Not found",
     409: "Conflict; nothing was written",
+    410: "Gone; nothing was written",
     411: "The body's length is required; nothing was written",
     413: "Too large; nothing was written",
     415: "Unsupported media type; nothing was written",
     416: "Range not satisfiable",
     422: "Invalid request; nothing was written",
     423: "The story is busy",
+    502: "The model's answer was unusable; nothing was written",
     503: "Unavailable; nothing was written",
 }
 
@@ -522,6 +543,39 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "register_external_provider": (*_ADMIN_CONFIG, "invalid_manifest", "provider_exists"),
     "replace_external_provider": (*_ADMIN_CONFIG, "invalid_manifest"),
     "delete_external_provider": (*_ADMIN_CONFIG, "provider_in_use"),
+    # Consumer purposes (#824): a name, template, schema or limit refusal is the 422
+    # ``validation_error`` every route declares (``details.reason``).
+    "list_purposes": ("cursor_invalid",),
+    "get_purpose": ("version_not_found",),
+    "replace_purpose": ("version_stale", "purpose_archived"),
+    # A consumer purpose's call (#825): its gates, its output and its model.
+    "call_purpose": (
+        *_GATED,
+        "version_not_found",
+        "purpose_archived",
+        "template_render_error",
+        "output_policy_violation",
+        "model_output_invalid",
+        "erasure_pending",
+    ),
+    # #826: the story-bound call adds the story's prechecks and the erased-subject guard.
+    "call_story_purpose": (
+        *_GATED,
+        "version_not_found",
+        "purpose_archived",
+        "template_render_error",
+        "output_policy_violation",
+        "model_output_invalid",
+        "story_archived",
+        "module_off",
+        "erased_subject_referenced",
+        "config_key_missing",
+        # #827: ``store_as_memory``'s write (an inter-turn slot) and its text's refusals.
+        "story_paused",
+        "story_busy",
+        "memory_text_empty",
+        "memory_text_too_long",
+    ),
     "bind_provider": ("binding_incomplete", "story_archived"),
     "list_media": ("ledger_unavailable",),
     # Gate tightening (#155): a promotion below the rule; an unknown shape's promote or delete.
@@ -540,6 +594,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         # #608: a multi-primary override (``interaction_mode``, ``sequence_order``,
         # ``simultaneous_tie_break``) on a ``combined`` or Lite story (``multi.refuse_override``).
         "module_off",
+        # #831: a request naming a benched character.
+        "character_benched",
     ),
     "regenerate": (
         *_GATED,
@@ -746,9 +802,14 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     ),
     "promote_character": ("rating_retired", "seed_memory_invalid", "erased_subject_referenced"),
     # #163: an author's weight change and modeling directive (control operations).
-    "set_character_weight": ("story_archived", "story_paused", "story_busy"),
+    "set_character_weight": ("story_archived", "story_paused", "story_busy", "character_benched"),
     # #176: a character's participation role (a story configuration write).
-    "set_participation": ("story_archived",),
+    "set_participation": ("story_archived", "character_benched"),
+    # #831: a character benched and reactivated (inter-turn slot operations).
+    "bench_character": ("story_archived", "story_paused", "story_busy", "already_benched"),
+    "reactivate_character": ("story_archived", "story_paused", "story_busy", "not_benched"),
+    # #832: a benched character's mode switched (an inter-turn slot operation).
+    "set_bench_mode": ("story_archived", "story_paused", "story_busy", "not_benched"),
     "model_entity": (
         "story_archived",
         "story_paused",
@@ -1036,6 +1097,18 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         )
         for kind in ("character", "scenario")
     },
+    # A subject's images (#830; FR-IMG-14): refused before any job like a catalog request,
+    # with no entry to look up.
+    "request_subject_images": (
+        "not_configured",
+        "image_check_unconfigured",
+        "image_limit_reached",
+        "images_disabled",
+        "guardrail_violation",
+        "image_prompt_unavailable",
+        "model_unavailable",
+        "erasure_pending",
+    ),
     **{
         f"list_image_candidates_{kind}": ("not_found", "erasure_pending")
         for kind in ("character", "scenario")

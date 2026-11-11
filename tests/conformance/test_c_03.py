@@ -63,6 +63,12 @@ from epistrel.api.routes.admin.providers import (
     ProviderList,
     ProviderMutation,
 )
+from epistrel.api.routes.admin.purposes import (
+    PurposeBody,
+    PurposeListBody,
+    PurposeMutation,
+    PurposeVersionsBody,
+)
 from epistrel.api.routes.admin.ratings import RatingDetailBody, RatingList, RatingMutation
 from epistrel.api.routes.admin.settings import SettingsBody
 from epistrel.api.routes.admin.stories import (
@@ -132,6 +138,7 @@ from epistrel.api.routes.ownership import (
 )
 from epistrel.api.routes.personas import PersonaBody, PersonaListBody
 from epistrel.api.routes.predicates import PredicateDecisionBody, PredicateListBody
+from epistrel.api.routes.purposes import PurposeCallBody, StoryPurposeCallBody
 from epistrel.api.routes.reconciliation import (
     CompensatedBody,
     OutboxBody,
@@ -158,6 +165,7 @@ from epistrel.api.routes.states import (
     StateWrittenBody,
 )
 from epistrel.api.routes.stories import (
+    BenchedCharacterBody,
     CharacterWeightedBody,
     IngestResponse,
     ParticipationSetBody,
@@ -245,6 +253,7 @@ from epistrel.core.propositions.registry import ApproveRequest
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME, MEMBER_OF
 from epistrel.core.providers import BindingRequest
 from epistrel.core.prune import PruneRequest
+from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
 from epistrel.core.ratings import RatingFields, RatingReplacement
 from epistrel.core.ratings.change import RatingChangeRequest, RatingCheckStarted
 from epistrel.core.ratings.suggest import SuggestionRequest
@@ -254,6 +263,8 @@ from epistrel.core.states.api import StateDefineRequest, StateSetRequest
 from epistrel.core.states.proposals import StateProposalApproveRequest
 from epistrel.core.stories import (
     AdHocCharacter,
+    BenchModeRequest,
+    BenchRequest,
     CharacterWeightRequest,
     ModelEntityRequest,
     ParticipationSpec,
@@ -1973,6 +1984,27 @@ def _steps() -> list[Step]:
                 )
             ),
         ),
+        # #831: the added character benched, then reactivated (its role restored).
+        Step(
+            "bench_character",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/bench", {"mode": "sequestered"}),
+            lambda e, ids: _benched(
+                e.bench_character(CTX, ids["story"], ids["dale"], BenchRequest(mode="sequestered"))
+            ),
+        ),
+        # #832: the benched character switched to ``present``.
+        Step(
+            "set_bench_mode",
+            lambda ids: Rest("PATCH", f"{s}/characters/{{dale}}/bench", {"mode": "present"}),
+            lambda e, ids: _benched(
+                e.set_bench_mode(CTX, ids["story"], ids["dale"], BenchModeRequest(mode="present"))
+            ),
+        ),
+        Step(
+            "reactivate_character",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/reactivate"),
+            lambda e, ids: _benched(e.reactivate_character(CTX, ids["story"], ids["dale"])),
+        ),
         # #193: the world clock read, its settings changed, and an advance, on the Lite story
         # running the clock and States at prompt_only from here on (#203).
         Step(
@@ -2869,6 +2901,13 @@ def _steps() -> list[Step]:
             lambda e, ids: _catalog_images(e, ids["scenario"], kind="scenario"),
             status=lambda body: 202,
         ),
+        # #830: images of a subject in no story or catalog (the adapter and checker above).
+        Step(
+            "request_subject_images",
+            lambda ids: Rest("POST", "/subject-images", SUBJECT_REQUEST),
+            lambda e, ids: _subject_images(e),
+            status=lambda body: 202,
+        ),
         # #263: a story image generated for the omniscient audience after turn 1's player beat
         # (the JSON body of the upload's route; the adapter and checker above), and one
         # declaring subjects without a prompt (422 on both).
@@ -3417,6 +3456,52 @@ def _steps() -> list[Step]:
             lambda ids: Rest("DELETE", "/admin/model-config/image_check"),
             lambda e, ids: _model_remove(e, "image_check"),
         ),
+        # -- consumer purposes (#824): registered, versioned, listed and archived
+        Step(
+            "register_purpose",
+            lambda ids: Rest("POST", "/admin/purposes", PURPOSE),
+            lambda e, ids: _purpose_written(
+                e.register_purpose(CTX, PurposeCreate.model_validate(PURPOSE))
+            ),
+        ),
+        Step(
+            "replace_purpose",
+            lambda ids: Rest("PUT", PURPOSE_PATH, PURPOSE_EDIT),
+            lambda e, ids: _purpose_written(
+                e.replace_purpose(CTX, PURPOSE_NAME, PurposeReplace.model_validate(PURPOSE_EDIT))
+            ),
+        ),
+        Step(
+            "get_purpose",
+            lambda ids: Rest("GET", PURPOSE_PATH),
+            lambda e, ids: _purpose(e),
+        ),
+        Step(
+            "list_purpose_versions",
+            lambda ids: Rest("GET", f"{PURPOSE_PATH}/versions"),
+            lambda e, ids: _purpose_versions(e),
+        ),
+        Step(
+            "list_purposes",
+            lambda ids: Rest("GET", "/admin/purposes"),
+            lambda e, ids: _purposes(e),
+        ),
+        Step(
+            "call_purpose",
+            lambda ids: Rest("POST", f"/purposes/{PURPOSE_NAME}/calls", PURPOSE_CALL),
+            lambda e, ids: _purpose_called(e),
+        ),
+        # #826: the same purpose inside the story (no viewpoint: it reads, never writes).
+        Step(
+            "call_story_purpose",
+            lambda ids: Rest("POST", f"{s}/purposes/{PURPOSE_NAME}/calls", PURPOSE_CALL),
+            lambda e, ids: _story_purpose_called(e, ids["story"]),
+        ),
+        Step(
+            "archive_purpose",
+            lambda ids: Rest("POST", f"{PURPOSE_PATH}/archive"),
+            lambda e, ids: _purpose_written(e.archive_purpose(CTX, PURPOSE_NAME)),
+        ),
         # -- external-data providers (#204): registration and a story's binding
         Step(
             "register_external_provider",
@@ -3859,6 +3944,10 @@ async def _story_image(engine: Engine, story_id: str, image_id: str) -> dict[str
 
 
 CANDIDATE_REQUEST = {"slot": "primary", "n": 1}
+SUBJECT_REQUEST = {
+    "subject": {"description": "A tall lighthouse keeper.", "true_age": 40, "label": "Keeper"},
+    "n": 1,
+}
 COVER_REQUEST = {"slot": "cover", "n": 1}
 PARITY_IMAGE_ADAPTER = "parity_png"
 
@@ -3955,6 +4044,14 @@ async def _catalog_images(
         request = CatalogImageRequest.model_validate(COVER_REQUEST)
         queued = await engine.request_catalog_images(CTX, request, scenario_id=entry_id)
     return dump(CatalogImagesAccepted.of(queued))
+
+
+async def _subject_images(engine: Engine) -> dict[str, Any]:
+    from epistrel.api.routes.subject_images import SubjectImagesAccepted
+    from epistrel.orchestrator.images.targets.subject import SubjectImageRequest
+
+    request = SubjectImageRequest.model_validate(SUBJECT_REQUEST)
+    return dump(SubjectImagesAccepted.of(await engine.request_subject_images(CTX, request)))
 
 
 async def _candidates(engine: Engine, character_id: str) -> dict[str, Any]:
@@ -4097,6 +4194,10 @@ async def _proposal_dismissed(call: Awaitable[Any]) -> dict[str, Any]:
 
 async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CharacterWeightedBody.of(await call))
+
+
+async def _benched(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(BenchedCharacterBody.of(await call))
 
 
 async def _modelable(engine: Engine, ids: Ids) -> None:
@@ -4668,6 +4769,62 @@ PROVIDER_EDIT: dict[str, Any] = {
 BINDING: dict[str, Any] = {"external_ids": {"player": "p-1"}}
 
 
+PURPOSE_NAME = "parity_vote_reason"
+PURPOSE_PATH = f"/admin/purposes/{PURPOSE_NAME}"
+PURPOSE: dict[str, Any] = {
+    "name": PURPOSE_NAME,
+    "description": "A juror's reason for a vote.",
+    "template": "Why did {{ inputs.voter }} vote?",
+    "output_schema": {
+        "type": "object",
+        "properties": {"reason": {"type": "string"}},
+        "required": ["reason"],
+        "additionalProperties": False,
+    },
+}
+PURPOSE_EDIT: dict[str, Any] = {
+    **{k: v for k, v in PURPOSE.items() if k != "name"},
+    "description": "A juror's in-character reason for a vote.",
+    "expected_version": 1,
+}
+
+
+async def _purpose_written(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(PurposeMutation.written(await call))
+
+
+PURPOSE_CALL: dict[str, Any] = {"inputs": {"voter": "Ash"}}
+
+
+async def _purpose_called(engine: Engine) -> dict[str, Any]:
+    return dump(
+        PurposeCallBody.of(await engine.call_purpose(CTX, PURPOSE_NAME, PURPOSE_CALL["inputs"]))
+    )
+
+
+async def _story_purpose_called(engine: Engine, story_id: str) -> dict[str, Any]:
+    return dump(
+        StoryPurposeCallBody.of(
+            await engine.call_story_purpose(CTX, story_id, PURPOSE_NAME, PURPOSE_CALL["inputs"])
+        )
+    )
+
+
+async def _purpose(engine: Engine) -> dict[str, Any]:
+    return dump(PurposeBody.of(await engine.get_purpose(CTX, PURPOSE_NAME)))
+
+
+async def _purpose_versions(engine: Engine) -> dict[str, Any]:
+    return dump(PurposeVersionsBody(items=await engine.list_purpose_versions(CTX, PURPOSE_NAME)))
+
+
+async def _purposes(engine: Engine) -> dict[str, Any]:
+    revision, page = await engine.list_purposes(CTX)
+    return dump(
+        PurposeListBody(config_revision=revision, items=page.items, next_cursor=page.next_cursor)
+    )
+
+
 async def _provider_written(call: Awaitable[Any]) -> dict[str, Any]:
     write = await call
     return dump(ProviderMutation.written(write.provider, write.config_revision))
@@ -4910,6 +5067,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         for step, (status, _) in zip(steps, rest, strict=True)
         if step.group == MUTATION_GROUP
     ] == MUTATION_ANSWERS
+    # #832: the bench mode switch answered on both surfaces.
+    assert [
+        status
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.operation == "set_bench_mode"
+    ] == [200]
     # The character steps (#103) answered what they were written to answer, on both surfaces.
     answered = [
         (step.operation, status)
@@ -4920,6 +5083,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         ("add_story_character", 201),
         ("promote_character", 201),
         ("set_character_weight", 200),
+        ("bench_character", 200),
+        ("reactivate_character", 200),
         ("create_character_draft", 201),
         ("save_character_draft", 200),
         ("save_character_draft", 409),

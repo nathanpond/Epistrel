@@ -200,6 +200,11 @@ CATEGORY_DESCRIPTIONS: Mapping[ContentCategory, str] = {
         "A reference image the image adapter is given: one the image's audience has perceived "
         "(FR-IMG-5), sent as a signed URL or a data URL (#255)."
     ),
+    ContentCategory.CONSUMER_INPUT: (
+        "A consumer purpose's call inputs (FR-MODEL-14): the JSON object the consumer sends, "
+        "rendered by the purpose's own template. Consumer purposes are registered in the "
+        "database, not in this registry, so they have no rows here (ADR-185)."
+    ),
 }
 
 NEVER_RECEIVES_NOTES: Mapping[str, str] = {

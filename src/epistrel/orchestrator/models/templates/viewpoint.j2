@@ -1,0 +1,8 @@
+{#- One character's viewpoint for a story-bound consumer purpose call (FR-MODEL-16, NFR-PRIV-4;
+#826): the character render's knowledge sections, from the same partials, so a purpose sees what
+the character's own render would. Its inputs are ``orchestrator.structured.viewpoint``'s
+``ViewpointInputs``, built only by ``viewpoint_inputs`` from a ``CharacterContext``
+(``check-character-context``). The turn-shaped sections (the player's input, ``## Just now``, the
+tracked values and their effect syntax) are never set. -#}
+{% include "viewpoint_self.j2" %}
+{% include "viewpoint_scene.j2" %}

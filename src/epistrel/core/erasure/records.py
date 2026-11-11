@@ -774,6 +774,10 @@ def persona_record(row: Any) -> Record:
     )
 
 
+INDEXED_SUBJECT_KINDS = frozenset(k.value for k in SubjectKind)
+"""The ``depicted_subjects`` kinds an asset's index declares (not #830's ``subject``)."""
+
+
 def media_record(row: Any) -> Record:
     """A media asset (#105): its captions and prompts, and its declared subjects."""
     from epistrel.core.media import assets
@@ -787,7 +791,13 @@ def media_record(row: Any) -> Record:
     }
     subjects: list[Declared] = []
     for item in row.depicted_subjects if isinstance(row.depicted_subjects, list) else []:
-        if isinstance(item, Mapping) and isinstance(item.get("id"), str):
+        # A subject image's declared subject (#830, ``kind: subject``) is in no story or
+        # catalog: no erasure names it, so it is not indexed (its texts still are).
+        if (
+            isinstance(item, Mapping)
+            and isinstance(item.get("id"), str)
+            and item.get("kind") in INDEXED_SUBJECT_KINDS
+        ):
             subjects.append((SubjectKind(item["kind"]), item["id"], assets.DECLARED_FIELD))
     return Record(
         assets.RECORD_TABLE,

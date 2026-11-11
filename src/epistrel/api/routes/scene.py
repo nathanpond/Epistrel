@@ -14,10 +14,10 @@ handlers over ``Engine``.
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Path
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, StoryId
 from epistrel.core.ids import ULID_PATTERN
@@ -61,15 +61,30 @@ class EntityBody(BaseModel):
         return cls(entity_id=ref.entity_id, kind=ref.kind, name=ref.name)
 
 
+class SceneBenchBody(BaseModel):
+    """A present entity's bench (FR-MULTI-14; #832): its character is benched ``present``, so it
+    is there and perceives, but never speaks."""
+
+    mode: Literal["present"]
+
+
+class PresentEntityBody(EntityBody):
+    """An entity present in the scene. ``bench`` (#832) marks a character benched ``present``,
+    omitted otherwise; a ``sequestered`` character is never listed."""
+
+    bench: SceneBenchBody | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
 class SceneBody(BaseModel):
     """The scene as of a turn for one viewpoint: the turn and its active variant (``null`` at
     turn 0), the player character's location (``null`` when unknown to the viewpoint), and the
-    entities present there, characters and objects, by id."""
+    entities present there, characters and objects, by id. A character benched ``sequestered``
+    is out of the scene; one benched ``present`` is listed with its ``bench`` (FR-MULTI-14)."""
 
     turn: int
     variant: int | None
     location: EntityBody | None
-    present: list[EntityBody]
+    present: list[PresentEntityBody]
     viewpoint: str
 
     @classmethod
@@ -78,7 +93,19 @@ class SceneBody(BaseModel):
             turn=found.turn,
             variant=found.variant,
             location=None if found.location is None else EntityBody.of(found.location),
-            present=[EntityBody.of(e) for e in found.present],
+            present=[
+                PresentEntityBody(
+                    entity_id=e.entity_id,
+                    kind=e.kind,
+                    name=e.name,
+                    bench=(
+                        SceneBenchBody(mode="present")
+                        if found.bench.get(e.entity_id) == "present"
+                        else None
+                    ),
+                )
+                for e in found.present
+            ],
             viewpoint=found.viewpoint,
         )
 

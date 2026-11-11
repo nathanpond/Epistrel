@@ -36,6 +36,18 @@ decision) is ``other_character_secret``, as it would be for the narrator's own r
 player's character stays ``player_character``. The reactor's thoughts never reach this rule: a
 narrated thought is dropped before verification (``core.epistemic.roles``).
 
+**The present-bench exception** (FR-MULTI-14, FR-VERIFY-11; #832). A character benched
+``present`` is in the scene but never rendered, so the narrator (a director pass) or a primary's
+render may describe what it visibly does ("the juror shifts in her seat"). A claim of a director
+pass or a character render about such a character, with a predicate of
+``BENCH_PRESENT_PREDICATES`` (where it is, what it holds: its non-speech observable actions), every
+modeled character it names being benched ``present`` (``PermissionFacts.bench_present``, read
+from ``core.bench`` as the claim's turn starts), is permitted with basis ``bench_present``.
+Anything else stays #144's denial: that it spoke (``spoke``, ``spoke_to``), its backstory, a
+relationship, a state, a claim also naming an unbenched character, and any claim about a
+``sequestered`` or unbenched character (``other_character_secret``). The player's character is
+never benched. Its thoughts and decisions never become claims of another's beat.
+
 **The hand-over exception** (FR-VERIFY-11; #519). A render's affirmed ``holds`` of the player's
 character, of an item, whose detected transfer (``core.verify.detect``'s transfer table) names
 the render's own character as the giver ("Jenni hands Cal the key." in Jenni's render), is that
@@ -95,9 +107,9 @@ character is reconciled by #154 (FR-COMMIT-11,14), not refused here. External va
 author-locked canon still win.
 
 A permitted claim carries its basis: ``own`` (the asserter's own actions, thoughts and minor
-backstory within its constraints), ``co_author`` (#180), ``texture`` (incidental scene texture,
-an unmodeled person included), ``arrival``, ``world`` (a director's world fact), ``identity``
-(#171), ``author`` or ``resolution``. An
+backstory within its constraints), ``co_author`` (#180), ``bench_present`` (#832),
+``texture`` (incidental scene texture, an unmodeled person included), ``arrival``, ``world``
+(a director's world fact), ``identity`` (#171), ``author`` or ``resolution``. An
 **arrival** is a ``located_at``/``present_at`` claim on a person with no prior placement (no
 current fact of either predicate).
 
@@ -188,6 +200,9 @@ class Basis(StrEnum):
     CO_AUTHOR = "co_author"
     """#180 (FR-RESP-11): another character's observable action the ``co_author`` player
     narrated."""
+    BENCH_PRESENT = "bench_present"
+    """#832 (FR-MULTI-14): a present-benched character's non-speech observable action, as the
+    narrator or a primary describes it."""
     AUTHOR_FIAT = "author_fiat"
     """#649 (FR-RESP-14, ADR-177): a fact about another character the asserting character holds
     through an ``author_fiat`` acquisition (ADR-174): it may state it, as it could a fact it
@@ -202,6 +217,10 @@ CO_AUTHOR_PREDICATES: frozenset[str] = frozenset(
 )
 """What ``co_author`` narration may establish about another character (#180): its observable
 actions, that it spoke (to someone), what it holds (a transfer) and where it is."""
+
+BENCH_PRESENT_PREDICATES: frozenset[str] = frozenset({"holds", "located_at", "present_at"})
+"""What the narrator or a primary may establish about a character benched ``present`` (#832):
+its non-speech observable actions, what it holds and where it is. Never that it spoke."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +336,9 @@ class PermissionFacts:
     """#649: the asserting character holds the claim through an active ``author_fiat``
     acquisition at the claim's position (the verifier reads it from the character's beliefs;
     nothing here does)."""
+    bench_present: frozenset[str] = frozenset()
+    """#832 (FR-MULTI-14): the characters benched ``present`` as the claim's turn starts (by
+    character id; see "The present-bench exception")."""
 
 
 # -- the matrix ---------------------------------------------------------------------------------
@@ -387,6 +409,9 @@ def permission(
             # #200 (FR-CLOCK-15): the scene narrates a character passing out, falling asleep
             # or waking: the world's to say, as an arrival is.
             return _texture(facts, Basis.WORLD)
+        if _bench_present(claim, facts, modeled, name):
+            # #832: the present-bench exception (see the module docstring).
+            return _texture(facts, Basis.BENCH_PRESENT)
         if modeled:
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         return _texture(facts, Basis.WORLD)
@@ -413,6 +438,9 @@ def permission(
     elif any(e.is_player for e in others):
         return Denied(Reason.PLAYER_CHARACTER)
     elif others:
+        if asserter.kind == "character" and _bench_present(claim, facts, others, name):
+            # #832: the present-bench exception (see the module docstring).
+            return _texture(facts, Basis.BENCH_PRESENT)
         if not (facts.fiat_known and asserter.kind == "character"):
             return Denied(Reason.OTHER_CHARACTER_SECRET)
         # #649: what the co-author made the character aware of, it may state.
@@ -457,6 +485,22 @@ def _reactive(
     if others and name != "spoke_to":
         return Denied(Reason.OTHER_CHARACTER_SECRET)
     return _texture(facts, Basis.REACTIVE)
+
+
+def _bench_present(
+    claim: Proposition, facts: PermissionFacts, named: Sequence[EntityInfo], name: str | None
+) -> bool:
+    """#832: ``claim`` is a non-speech observable action of a character benched ``present``:
+    its subject is one, every other modeled character it names (``named``) is one, and its
+    predicate is one of ``BENCH_PRESENT_PREDICATES``."""
+    if name not in BENCH_PRESENT_PREDICATES or not named or not facts.bench_present:
+        return False
+    subject = facts.entities.get(claim.subject_id)
+    return (
+        subject is not None
+        and subject.character_id in facts.bench_present
+        and all(e.character_id in facts.bench_present for e in named)
+    )
 
 
 def _hands_over(claim: Proposition, facts: PermissionFacts, own: str | None) -> bool:
@@ -598,8 +642,14 @@ async def facts_for(
                 through_position=through_position,
             )
             placed = placed or bool(found)
+    from epistrel.core.bench import PRESENT, bench_states
     from epistrel.core.states.verify import external_claim
 
+    # #832: who is benched present as the claim's turn starts (no turn runs while a bench
+    # changes: a bench holds the turn slot, so this needs no keyed read).
+    benched = await bench_states(
+        conn, story_id, before_turn=None if through_position is None else through_position[0]
+    )
     return PermissionFacts(
         entities=known,
         predicate=predicate,
@@ -610,6 +660,7 @@ async def facts_for(
         protected=protected,
         resolves=resolves,
         giver=giver,
+        bench_present=frozenset(c for c, b in benched.items() if b.mode == PRESENT),
     )
 
 

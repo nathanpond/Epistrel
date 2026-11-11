@@ -581,6 +581,44 @@ class CharacterWeightSet(EventPayload):
     previous: str
 
 
+@register("character_benched", category=EventCategory.CONTROL)
+class CharacterBenchedEvent(EventPayload):
+    """A story character was benched (FR-MULTI-13; #831's ``POST
+    /stories/{id}/characters/{cid}/bench``): its ``mode`` (``sequestered``; #832 adds
+    ``present``) and the participation role it had, which a reactivation restores. Recorded by
+    an inter-turn slot operation (``N⁺k`` after the head turn), so a truncation to N or earlier
+    un-benches the character and a fork through the slot copies the bench. Identifiers only."""
+
+    character_id: str
+    mode: str
+    previous_role: str
+    previous_fixed: bool
+
+
+@register("character_reactivated", category=EventCategory.CONTROL)
+class CharacterReactivated(EventPayload):
+    """A benched story character was reactivated (FR-MULTI-13; #831's ``…/reactivate``): the
+    ``mode`` it left and the participation role restored from its bench. Recorded by an
+    inter-turn slot operation, as the bench is. Identifiers only."""
+
+    character_id: str
+    mode: str
+    restored_role: str
+    restored_fixed: bool
+
+
+@register("character_bench_mode_changed", category=EventCategory.CONTROL)
+class CharacterBenchModeChanged(EventPayload):
+    """A benched story character's bench mode was switched (FR-MULTI-14; #832's ``PATCH
+    /stories/{id}/characters/{cid}/bench``): the ``mode`` it now has and the ``previous_mode``.
+    Recorded by an inter-turn slot operation, as the bench is, so the switch takes effect from
+    the next turn and a truncation before it restores the previous mode. Identifiers only."""
+
+    character_id: str
+    mode: str
+    previous_mode: str
+
+
 @register("character_modeled", category=EventCategory.DERIVED)
 class CharacterModeled(EventPayload):
     """A story entity became a modeled character (FR-EPI-9; #163): the trigger
@@ -907,6 +945,20 @@ class MemoryUnpinned(EventPayload):
     """A pin was removed (#147): the memory counts toward the hot-set budgets again."""
 
     memory_id: str
+
+
+@register("purpose_memory_stored", category=EventCategory.DERIVED)
+class PurposeMemoryStored(EventPayload):
+    """A story-bound consumer purpose call stored its result as its viewpoint character's
+    memory (FR-MODEL-17; #827): the purpose's name and version, the memory and the character.
+    Recorded by an inter-turn slot operation (``N⁺k`` after the head turn), so a truncation to
+    N discards it with its memory and a fork through the slot copies both. Identifiers only:
+    the text is the memory's, never the event's."""
+
+    purpose: str
+    version: int = Field(ge=1)
+    memory_id: str
+    character_id: str
 
 
 @register("sanitized", category=EventCategory.NARRATIVE_STATE)

@@ -12,13 +12,15 @@ as ``RuntimeFacts``.
   configuration that routes a purpose (``models.purposes``) names its own model in the
   fingerprint (``core.profiles.fingerprint.routed_models``, #325), as its calls use it.
 - **Templates** (``TEMPLATE_HASHES``): the SHA-256 of each delivered purpose's template file as
-  it ships, by template name, computed once at import. Editing a template changes every
+  it ships, followed by every template it includes (``template_source``), by template name,
+  computed once at import. Editing a template changes every
   fingerprint, as FR-PROF-16's "prompt-template versions" require.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import types
 from collections.abc import Mapping
 from importlib import resources
@@ -35,12 +37,33 @@ TEMPLATE_PACKAGE = "epistrel.orchestrator.models"
 TEMPLATE_SUFFIX = ".j2"
 
 
-def _template_hashes() -> dict[str, str]:
+INCLUDE = re.compile(rb"""{%-?\s*include\s+["']([^"']+)["']""")
+"""A Jinja ``{% include "name.j2" %}`` tag (its template's name)."""
+
+
+def template_source(name: str) -> bytes:
+    """``name``'s bytes followed by those of every template it includes, depth first, each
+    once (#826: the character render's knowledge sections live in shared partials, and editing
+    one must move the fingerprint as editing the render's own file does)."""
     folder = resources.files(TEMPLATE_PACKAGE).joinpath("templates")
+    seen: list[str] = []
+
+    def visit(current: str) -> bytes:
+        if current in seen:
+            return b""
+        seen.append(current)
+        source = folder.joinpath(current).read_bytes()
+        included = [visit(found.decode()) for found in INCLUDE.findall(source)]
+        return source + b"".join(included)
+
+    return visit(name)
+
+
+def _template_hashes() -> dict[str, str]:
     found: dict[str, str] = {}
     for purpose in STORY_PURPOSES.values():
         for template in (purpose.template, *purpose.variants.values()):
-            source = folder.joinpath(template).read_bytes()
+            source = template_source(template)
             found[template.removesuffix(TEMPLATE_SUFFIX)] = hashlib.sha256(source).hexdigest()
     return dict(sorted(found.items()))
 
@@ -86,4 +109,4 @@ async def runtime_facts(conn: AsyncConnection) -> RuntimeFacts:
     )
 
 
-__all__ = ["TEMPLATE_HASHES", "identities", "runtime_facts"]
+__all__ = ["TEMPLATE_HASHES", "identities", "runtime_facts", "template_source"]

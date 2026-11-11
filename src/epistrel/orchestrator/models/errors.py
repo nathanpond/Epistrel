@@ -173,9 +173,13 @@ def map_provider_error(purpose: str, exc: BaseException) -> ModelError | None:
         error = ModelUnavailable(purpose, "garbage")
     else:
         return None
+    # Imported here: ``metrics`` imports this module. A consumer purpose is logged as
+    # ``consumer``, never by its name (#825).
+    from epistrel.orchestrator.models.metrics import purpose_label
+
     log.warning(
         "model call failed purpose=%s reason=%s status=%s error=%s",
-        purpose,
+        purpose_label(purpose),
         error.details.get("reason"),
         error.details.get("provider_status"),
         type(exc).__name__,

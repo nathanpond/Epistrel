@@ -1877,6 +1877,115 @@
         "title": "BeliefsBody",
         "type": "object"
       },
+      "BenchBody": {
+        "description": "A benched character's bench (FR-MULTI-13; #831): its ``mode`` (``sequestered``: it\nperceives nothing; ``present``, FR-MULTI-14: it perceives what happens where it is, but never\nspeaks) and ``since_turn``, the head turn it was benched after (0 before any turn).",
+        "properties": {
+          "mode": {
+            "enum": [
+              "sequestered",
+              "present"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "since_turn": {
+            "title": "Since Turn",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "since_turn"
+        ],
+        "title": "BenchBody",
+        "type": "object"
+      },
+      "BenchModeRequest": {
+        "additionalProperties": false,
+        "description": "``PATCH /stories/{id}/characters/{cid}/bench``: the benched character's new ``mode``\n(FR-MULTI-14; #832).",
+        "examples": [
+          {
+            "mode": "present"
+          }
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "sequestered",
+              "present"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "BenchModeRequest",
+        "type": "object"
+      },
+      "BenchRequest": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/characters/{cid}/bench``: the bench's ``mode`` (FR-MULTI-13).\n``sequestered`` (the default): the benched character perceives nothing. ``present``\n(FR-MULTI-14; #832): it stays in the scene and perceives what happens where it is, but is\nnever rendered and never speaks.",
+        "examples": [
+          {
+            "mode": "sequestered"
+          }
+        ],
+        "properties": {
+          "mode": {
+            "default": "sequestered",
+            "enum": [
+              "sequestered",
+              "present"
+            ],
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "title": "BenchRequest",
+        "type": "object"
+      },
+      "BenchedCharacterBody": {
+        "description": "A character after a bench or a reactivation (FR-MULTI-13; #831): the character as an\nomniscient read lists it, its ``bench`` (``null`` once reactivated) and the story's\n``timeline_revision`` after (the operation is positional, so ``config_revision`` does not\nmove).",
+        "properties": {
+          "bench": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "character": {
+            "$ref": "#/components/schemas/OmniscientCharacterBody"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "character",
+          "bench"
+        ],
+        "title": "BenchedCharacterBody",
+        "type": "object"
+      },
       "BindingBody": {
         "description": "A story's binding to one provider.",
         "properties": {
@@ -2346,6 +2455,66 @@
           "days"
         ],
         "title": "CalendarMonth",
+        "type": "object"
+      },
+      "CallModel": {
+        "description": "The model the call went to: its endpoint, its model name, and the version the model\nreported (FR-PROF-16; ``null`` when none was reported).",
+        "properties": {
+          "endpoint": {
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "endpoint",
+          "model",
+          "version"
+        ],
+        "title": "CallModel",
+        "type": "object"
+      },
+      "CallUsage": {
+        "description": "The purpose's own model calls and their tokens, and, apart, the guardrail checks the\ncall's gates made (model-assisted policies; FR-GUARD-9).",
+        "properties": {
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "guardrail_calls": {
+            "title": "Guardrail Calls",
+            "type": "integer"
+          },
+          "tokens_in": {
+            "title": "Tokens In",
+            "type": "integer"
+          },
+          "tokens_out": {
+            "title": "Tokens Out",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "tokens_in",
+          "tokens_out",
+          "guardrail_calls"
+        ],
+        "title": "CallUsage",
         "type": "object"
       },
       "CandidateBody": {
@@ -3913,8 +4082,18 @@
         "type": "object"
       },
       "CharacterBody": {
-        "description": "A character as a read returns it; ``is_player`` marks a player character. A story created\nfrom a scenario (#119) names each character's ``role_id`` and, for a catalog character, its\n``source``; a blank story's characters carry neither. ``participation`` (#176) is every\nnon-player character's role; the player's character has none.",
+        "description": "A character as a read returns it; ``is_player`` marks a player character. A story created\nfrom a scenario (#119) names each character's ``role_id`` and, for a catalog character, its\n``source``; a blank story's characters carry neither. ``participation`` (#176) is every\nnon-player character's role; the player's character has none. ``bench`` (#831) is a benched\ncharacter's bench, omitted while it is not benched.",
         "properties": {
+          "bench": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -7795,6 +7974,32 @@
           "cause"
         ],
         "title": "DegradationBody",
+        "type": "object"
+      },
+      "Depicted": {
+        "additionalProperties": false,
+        "description": "A person the inputs or the output depict, with their true age (FR-GUARD-11).",
+        "properties": {
+          "label": {
+            "description": "Who this is, unique within the call (at most 120 characters). Never sent to a model.",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "true_age": {
+            "description": "Their true age now. Below the deployment's `minor_age_threshold`, the minors policy applies to the call's inputs and output.",
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "true_age"
+        ],
+        "title": "Depicted",
         "type": "object"
       },
       "DepictedSubject": {
@@ -16948,6 +17153,21 @@
             "title": "Created At",
             "type": "string"
           },
+          "failures": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/OutputFailure"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A completed subject job's outputs that were not stored, by index in the provider's return order: `guardrail_violation` (an output check failed) or `provider_empty_result` (no usable image came back for it). Absent otherwise.",
+            "title": "Failures"
+          },
           "job_id": {
             "title": "Job Id",
             "type": "string"
@@ -16955,7 +17175,8 @@
           "kind": {
             "enum": [
               "catalog",
-              "story"
+              "story",
+              "subject"
             ],
             "title": "Kind",
             "type": "string"
@@ -21438,7 +21659,14 @@
           },
           "depicted_subjects": {
             "items": {
-              "$ref": "#/components/schemas/DepictedSubject"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                {
+                  "$ref": "#/components/schemas/SubjectDeclaration"
+                }
+              ]
             },
             "title": "Depicted Subjects",
             "type": "array"
@@ -21487,6 +21715,19 @@
           "mime_type": {
             "title": "Mime Type",
             "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "const": "subject",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`subject` for an image generated for a consumer-described subject in no story or catalog (`POST /subject-images`, FR-IMG-14): it is kept while live until it is deleted or its owner is offboarded, and the media sweep never purges it; `null` for any other asset.",
+            "title": "Origin"
           },
           "owner_principal": {
             "title": "Owner Principal",
@@ -21814,7 +22055,14 @@
           },
           "depicted_subjects": {
             "items": {
-              "$ref": "#/components/schemas/DepictedSubject"
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DepictedSubject"
+                },
+                {
+                  "$ref": "#/components/schemas/SubjectDeclaration"
+                }
+              ]
             },
             "title": "Depicted Subjects",
             "type": "array"
@@ -21874,6 +22122,19 @@
           "mime_type": {
             "title": "Mime Type",
             "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "const": "subject",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`subject` for an image generated for a consumer-described subject in no story or catalog (`POST /subject-images`, FR-IMG-14): it is kept while live until it is deleted or its owner is offboarded, and the media sweep never purges it; `null` for any other asset.",
+            "title": "Origin"
           },
           "owner_principal": {
             "title": "Owner Principal",
@@ -23763,6 +24024,16 @@
       "OmniscientCharacterBody": {
         "description": "A character as an omniscient read returns it: with its true age (FR-CAT-12), the\ncatalog entries promoted from it (``promoted_to``, FR-CAT-8; oldest first), its narrative\n``weight`` (``minor``: modeled lazily by interaction or salience; ``major``: the cast, the\nplayer, an author-created or promoted character; FR-EPI-10) and the position it was\nmodeled at (``modeled_at``, #163).",
         "properties": {
+          "bench": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BenchBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -24829,6 +25100,25 @@
           "received_at"
         ],
         "title": "OutcomeView",
+        "type": "object"
+      },
+      "OutputFailure": {
+        "description": "One output of a subject job that was not stored (FR-IMG-14): its index and a code.",
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "reason"
+        ],
+        "title": "OutputFailure",
         "type": "object"
       },
       "OverridesRef": {
@@ -27612,6 +27902,40 @@
           "config_revision"
         ],
         "title": "PredicateListBody",
+        "type": "object"
+      },
+      "PresentEntityBody": {
+        "description": "An entity present in the scene. ``bench`` (#832) marks a character benched ``present``,\nomitted otherwise; a ``sequestered`` character is never listed.",
+        "properties": {
+          "bench": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SceneBenchBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_id",
+          "kind",
+          "name"
+        ],
+        "title": "PresentEntityBody",
         "type": "object"
       },
       "PrincipalLookup": {
@@ -34353,6 +34677,590 @@
         "title": "PublishRequest",
         "type": "object"
       },
+      "PurposeBody": {
+        "description": "A consumer purpose at one version: its templates, output schema and description, which\nversion it is and the latest one, and when it was registered, written and archived.",
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "latest_version": {
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Template"
+          },
+          "template": {
+            "title": "Template",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "version_created_at": {
+            "format": "date-time",
+            "title": "Version Created At",
+            "type": "string"
+          },
+          "version_created_by": {
+            "title": "Version Created By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "latest_version",
+          "description",
+          "template",
+          "system_template",
+          "output_schema",
+          "created_at",
+          "version_created_at",
+          "version_created_by",
+          "archived_at"
+        ],
+        "title": "PurposeBody",
+        "type": "object"
+      },
+      "PurposeCall": {
+        "additionalProperties": false,
+        "description": "``POST /purposes/{name}/calls``: one call of a consumer purpose with no story.",
+        "examples": [
+          {
+            "content_rating": "00000000000000000000RAT002",
+            "deadline_ms": 30000,
+            "depicted": [
+              {
+                "label": "Ash",
+                "true_age": 34
+              }
+            ],
+            "inputs": {
+              "target": "Briar",
+              "voter": "Ash",
+              "votes": [
+                3,
+                1
+              ]
+            }
+          }
+        ],
+        "properties": {
+          "content_rating": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The id of the deployment content rating the call runs under (default: the deployment's default rating). Its policies gate the inputs and the output.",
+            "title": "Content Rating"
+          },
+          "deadline_ms": {
+            "default": 60000,
+            "description": "The call's deadline, from its start, the input gate included (default 60 000, at most 300 000). Once it passes, the call is 503 `model_unavailable` with `details.reason: deadline`.",
+            "maximum": 300000.0,
+            "minimum": 1.0,
+            "title": "Deadline Ms",
+            "type": "integer"
+          },
+          "depicted": {
+            "description": "The people the inputs or the output depict (at most 20), each with a unique label and a true age.",
+            "items": {
+              "$ref": "#/components/schemas/Depicted"
+            },
+            "maxItems": 20,
+            "title": "Depicted",
+            "type": "array"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "description": "The template's `inputs`: a JSON object of strings, numbers, booleans, nulls, and arrays and objects of them (depth at most 6, at most 64 KB as canonical JSON). Every string in it passes the input gate.",
+            "title": "Inputs",
+            "type": "object"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The purpose version to call (default: the latest).",
+            "title": "Version"
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "title": "PurposeCall",
+        "type": "object"
+      },
+      "PurposeCallBody": {
+        "description": "A consumer purpose call's answer: the purpose and the version that answered, its\n``output`` (valid against that version's output schema), the model it went to, and what\nit used: the purpose's own model calls and tokens, and apart, the guardrail checks.\n``config_revision`` is the deployment configuration it was routed by.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "model": {
+            "$ref": "#/components/schemas/CallModel"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/CallUsage"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "config_revision",
+          "purpose",
+          "version",
+          "output",
+          "model",
+          "usage"
+        ],
+        "title": "PurposeCallBody",
+        "type": "object"
+      },
+      "PurposeCreate": {
+        "additionalProperties": false,
+        "description": "``POST /admin/purposes``: a new consumer purpose at version 1.",
+        "examples": [
+          {
+            "description": "A contestant's in-character reason for a vote.",
+            "name": "vote_reason",
+            "output_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "maxLength": 500,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            },
+            "template": "Explain why {{ inputs.voter }} voted for {{ inputs.target }}."
+          }
+        ],
+        "properties": {
+          "description": {
+            "description": "What the purpose does, for operators (at most 1000 characters).",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "description": "The purpose's name: 3 to 48 characters, a lowercase letter then lowercase letters, digits and `_`. Immutable; never a built-in purpose's name.",
+            "title": "Name",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "description": "The JSON Schema of the reply, in the subset the strict structured path sends as it is: an object root; `type` among string, number, integer, boolean, array and object; `properties`, `required` (every property) and `additionalProperties: false` on every object; `items` on every array; `enum`, `const`, `description`, `title`, `minLength`/`maxLength`, `pattern`, `minItems`/`maxItems`, `minimum`/`maximum`; depth at most 6; at most 16 KB.",
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An optional template rendered after Epistrel's fixed system preamble (the rating guidance and the instruction to answer only with JSON matching the schema); the same rules as `template`.",
+            "title": "System Template"
+          },
+          "template": {
+            "description": "The Jinja2 template of the user message (sandboxed, `StrictUndefined`, built-in filters only; variables `inputs`, `viewpoint` and `story`; at most 32 KB).",
+            "title": "Template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "template",
+          "output_schema",
+          "name"
+        ],
+        "title": "PurposeCreate",
+        "type": "object"
+      },
+      "PurposeListBody": {
+        "description": "One page of consumer purposes by name (archived ones included, with ``archived_at``),\nthe deployment's ``config_revision`` and the cursor of the next page.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PurposeSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "config_revision",
+          "items",
+          "next_cursor"
+        ],
+        "title": "PurposeListBody",
+        "type": "object"
+      },
+      "PurposeMutation": {
+        "description": "The purpose at its latest version after a write, with the ``config_revision`` the write\nproduced (unchanged when it changed nothing) and whether it ``changed`` anything.",
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "changed": {
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "latest_version": {
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "System Template"
+          },
+          "template": {
+            "title": "Template",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "version_created_at": {
+            "format": "date-time",
+            "title": "Version Created At",
+            "type": "string"
+          },
+          "version_created_by": {
+            "title": "Version Created By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "name",
+          "version",
+          "latest_version",
+          "description",
+          "template",
+          "system_template",
+          "output_schema",
+          "created_at",
+          "version_created_at",
+          "version_created_by",
+          "archived_at",
+          "changed"
+        ],
+        "title": "PurposeMutation",
+        "type": "object"
+      },
+      "PurposeReplace": {
+        "additionalProperties": false,
+        "description": "``PUT /admin/purposes/{name}``: the next version, replacing every per-version field.",
+        "examples": [
+          {
+            "description": "A contestant's in-character reason for a vote.",
+            "expected_version": 1,
+            "output_schema": {
+              "additionalProperties": false,
+              "properties": {
+                "reason": {
+                  "maxLength": 500,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "reason"
+              ],
+              "type": "object"
+            },
+            "template": "In {{ inputs.voter }}'s voice, explain the vote for {{ inputs.target }}."
+          }
+        ],
+        "properties": {
+          "description": {
+            "description": "What the purpose does, for operators (at most 1000 characters).",
+            "maxLength": 1000,
+            "title": "Description",
+            "type": "string"
+          },
+          "expected_version": {
+            "description": "The latest version the edit was based on (409 `version_stale` otherwise).",
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Expected Version",
+            "type": "integer"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "description": "The JSON Schema of the reply, in the subset the strict structured path sends as it is: an object root; `type` among string, number, integer, boolean, array and object; `properties`, `required` (every property) and `additionalProperties: false` on every object; `items` on every array; `enum`, `const`, `description`, `title`, `minLength`/`maxLength`, `pattern`, `minItems`/`maxItems`, `minimum`/`maximum`; depth at most 6; at most 16 KB.",
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "system_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "An optional template rendered after Epistrel's fixed system preamble (the rating guidance and the instruction to answer only with JSON matching the schema); the same rules as `template`.",
+            "title": "System Template"
+          },
+          "template": {
+            "description": "The Jinja2 template of the user message (sandboxed, `StrictUndefined`, built-in filters only; variables `inputs`, `viewpoint` and `story`; at most 32 KB).",
+            "title": "Template",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "template",
+          "output_schema",
+          "expected_version"
+        ],
+        "title": "PurposeReplace",
+        "type": "object"
+      },
+      "PurposeSummary": {
+        "description": "A consumer purpose as the list shows it (its latest version's description).",
+        "properties": {
+          "archived_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archived At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "latest_version": {
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "latest_version",
+          "description",
+          "created_at",
+          "updated_at",
+          "archived_at"
+        ],
+        "title": "PurposeSummary",
+        "type": "object"
+      },
+      "PurposeVersionInfo": {
+        "description": "One version of a consumer purpose, as the versions list shows it.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "description",
+          "created_at",
+          "created_by"
+        ],
+        "title": "PurposeVersionInfo",
+        "type": "object"
+      },
+      "PurposeVersionsBody": {
+        "description": "Every version of a consumer purpose, oldest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PurposeVersionInfo"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PurposeVersionsBody",
+        "type": "object"
+      },
       "Quality": {
         "description": "FR-PROF-16: whether a setting is part of a configuration's fingerprint.",
         "enum": [
@@ -35660,7 +36568,7 @@
         "type": "object"
       },
       "RecordProvenance": {
-        "description": "Where a structured record came from (#133; shared by ``facts`` and #135's memories):\nthe author or the scenario's seed, the engine's consolidation, an in-world source, a\nrender, the director or the player, an external authority (with its timestamp in the\nrecord's reference), a resolution, or a backfill. Postgres enum ``record_provenance``.",
+        "description": "Where a structured record came from (#133; shared by ``facts`` and #135's memories):\nthe author or the scenario's seed, the engine's consolidation, an in-world source, a\nrender, the director or the player, an external authority (with its timestamp in the\nrecord's reference), a resolution, a backfill, or a consumer purpose's result stored as a\ncharacter's memory (#827). Postgres enum ``record_provenance``.",
         "enum": [
           "author",
           "seed",
@@ -35671,7 +36579,8 @@
           "player",
           "external",
           "resolution",
-          "backfill"
+          "backfill",
+          "consumer_purpose"
         ],
         "title": "RecordProvenance",
         "type": "string"
@@ -41543,8 +42452,23 @@
         "title": "ScenarioWorld",
         "type": "object"
       },
+      "SceneBenchBody": {
+        "description": "A present entity's bench (FR-MULTI-14; #832): its character is benched ``present``, so it\nis there and perceives, but never speaks.",
+        "properties": {
+          "mode": {
+            "const": "present",
+            "title": "Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "SceneBenchBody",
+        "type": "object"
+      },
       "SceneBody": {
-        "description": "The scene as of a turn for one viewpoint: the turn and its active variant (``null`` at\nturn 0), the player character's location (``null`` when unknown to the viewpoint), and the\nentities present there, characters and objects, by id.",
+        "description": "The scene as of a turn for one viewpoint: the turn and its active variant (``null`` at\nturn 0), the player character's location (``null`` when unknown to the viewpoint), and the\nentities present there, characters and objects, by id. A character benched ``sequestered``\nis out of the scene; one benched ``present`` is listed with its ``bench`` (FR-MULTI-14).",
         "properties": {
           "location": {
             "anyOf": [
@@ -41558,7 +42482,7 @@
           },
           "present": {
             "items": {
-              "$ref": "#/components/schemas/EntityBody"
+              "$ref": "#/components/schemas/PresentEntityBody"
             },
             "title": "Present",
             "type": "array"
@@ -42564,6 +43488,13 @@
             "maximum": 100000.0,
             "minimum": 1.0,
             "title": "Max Pinned Per Story",
+            "type": "integer"
+          },
+          "max_story_cast": {
+            "default": 50,
+            "maximum": 200.0,
+            "minimum": 1.0,
+            "title": "Max Story Cast",
             "type": "integer"
           },
           "media_allowed_types": {
@@ -44341,6 +45272,17 @@
               }
             ],
             "title": "Max Pinned Per Story"
+          },
+          "max_story_cast": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Story Cast"
           },
           "media_allowed_types": {
             "anyOf": [
@@ -47382,6 +48324,29 @@
         "title": "StatusBody",
         "type": "object"
       },
+      "StoreAsMemory": {
+        "additionalProperties": false,
+        "description": "``store_as_memory``: store the call's result as its viewpoint character's memory\n(FR-MODEL-17).",
+        "examples": [
+          {
+            "text_field": "reason"
+          }
+        ],
+        "properties": {
+          "text_field": {
+            "description": "The output field whose text becomes the memory: a top-level `string` property of the called version's output schema.",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Text Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text_field"
+        ],
+        "title": "StoreAsMemory",
+        "type": "object"
+      },
       "StoredResultBody": {
         "description": "The stored response of the operation's ``Idempotency-Key``: its status and body.",
         "properties": {
@@ -47425,6 +48390,16 @@
               }
             ],
             "title": "Archived At"
+          },
+          "cast": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoryCastBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "characters": {
             "items": {
@@ -48560,6 +49535,95 @@
           "story_id"
         ],
         "title": "StoryBundleRecord_capability_coverage",
+        "type": "object"
+      },
+      "StoryBundleRecord_character_bench": {
+        "additionalProperties": false,
+        "description": "One line of a story bundle's `records/character_bench.jsonl` (or `catalog/character_bench.jsonl`): a `character_bench` row as exported (FR-STORE-7).",
+        "properties": {
+          "beat": {
+            "type": "integer"
+          },
+          "benched": {
+            "type": "boolean"
+          },
+          "character_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "membership": {
+            "enum": [
+              "active",
+              "discarded",
+              "dormant",
+              "pruned",
+              "superseded"
+            ],
+            "type": "string"
+          },
+          "membership_tx": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "narrative_turn": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "operation_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "previous_fixed": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "previous_role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slot_k": {
+            "type": "integer"
+          },
+          "source_event_ids": {
+            "type": "array"
+          },
+          "step": {
+            "type": "integer"
+          },
+          "story_id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "type": "string"
+          },
+          "turn_variant": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "benched",
+          "character_id",
+          "id",
+          "membership_tx",
+          "mode",
+          "operation_id",
+          "story_id"
+        ],
+        "title": "StoryBundleRecord_character_bench",
         "type": "object"
       },
       "StoryBundleRecord_character_snapshots": {
@@ -49703,6 +50767,7 @@
             "enum": [
               "author",
               "backfill",
+              "consumer_purpose",
               "director",
               "external",
               "in_world",
@@ -50108,6 +51173,7 @@
             "enum": [
               "author",
               "backfill",
+              "consumer_purpose",
               "director",
               "external",
               "in_world",
@@ -52202,6 +53268,25 @@
         "title": "StoryBundleRecord_utterances",
         "type": "object"
       },
+      "StoryCastBody": {
+        "description": "#831: the story's cast counts: ``active`` (the full characters FR-MULTI-12's limit\ncounts: weight ``major``, not benched) and ``benched``.",
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "benched": {
+            "title": "Benched",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "active",
+          "benched"
+        ],
+        "title": "StoryCastBody",
+        "type": "object"
+      },
       "StoryCertificationRunBody": {
         "description": "A story's run request's answer (#233): as ``CertificationRunBody``, with the story's\n``timeline_revision`` (unchanged) beside the deployment's ``config_revision``.",
         "properties": {
@@ -53699,6 +54784,147 @@
         "title": "StoryProfileWriteBody",
         "type": "object"
       },
+      "StoryPurposeCall": {
+        "additionalProperties": false,
+        "description": "``POST /stories/{id}/purposes/{name}/calls``: one call of a consumer purpose inside a\nstory. The story supplies the content rating and the true ages of everyone in it.",
+        "examples": [
+          {
+            "deadline_ms": 30000,
+            "inputs": {
+              "challenge": "the raft race",
+              "winner": "Ash"
+            },
+            "viewpoint_character_id": "01J9Z8Q4N6M3W2V1T0S9R8P7Q6"
+          }
+        ],
+        "properties": {
+          "deadline_ms": {
+            "default": 60000,
+            "description": "The call's deadline, from its start, the input gate and the viewpoint included (default 60 000, at most 300 000). Once it passes, the call is 503 `model_unavailable` with `details.reason: deadline`.",
+            "maximum": 300000.0,
+            "minimum": 1.0,
+            "title": "Deadline Ms",
+            "type": "integer"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "description": "The template's `inputs`: a JSON object of strings, numbers, booleans, nulls, and arrays and objects of them (depth at most 6, at most 64 KB as canonical JSON). Every string in it passes the input gate under the story's guardrails, and they are joined as the viewpoint's retrieval query.",
+            "title": "Inputs",
+            "type": "object"
+          },
+          "store_as_memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoreAsMemory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Store the result as the viewpoint character's memory (FR-MODEL-17): the named output field's text becomes one episodic memory of that character alone, at the story's head, and the call bumps the story's revision. Needs `viewpoint_character_id`, and a story that keeps per-character partitions and episodic memory."
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The purpose version to call (default: the latest).",
+            "title": "Version"
+          },
+          "viewpoint_character_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A character of the story whose viewpoint the template receives as `viewpoint` (`name`, and `text`: what that character knows, believes and has seen, as its own render would show it). Not the player's character; not on a Lite story.",
+            "title": "Viewpoint Character Id"
+          }
+        },
+        "required": [
+          "inputs"
+        ],
+        "title": "StoryPurposeCall",
+        "type": "object"
+      },
+      "StoryPurposeCallBody": {
+        "description": "A story-bound consumer purpose call's answer: #825's ``{purpose, version, output, model,\nusage}``, the story's ``timeline_revision`` (as the call read it, or the revision its\n``store_as_memory`` write left), the deployment ``config_revision`` it was routed by and the\nstored memory's id (#827).",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "memory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The memory `store_as_memory` wrote (FR-MODEL-17); null when the call stored nothing.",
+            "title": "Memory Id"
+          },
+          "model": {
+            "$ref": "#/components/schemas/CallModel"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "timeline_revision": {
+            "title": "Timeline Revision",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/CallUsage"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "timeline_revision",
+          "config_revision",
+          "purpose",
+          "version",
+          "output",
+          "model",
+          "usage",
+          "memory_id"
+        ],
+        "title": "StoryPurposeCallBody",
+        "type": "object"
+      },
       "StoryRatingBody": {
         "description": "The story's rating: the rating, its current version and its name.",
         "properties": {
@@ -54523,10 +55749,11 @@
         ],
         "properties": {
           "characters": {
+            "description": "The cast, the player's character included: at most the deployment's `max_story_cast` (FR-MULTI-12; default 50, at most 200), or 422 `validation_error` `{cap: \"cast_max\", limit, actual}`.",
             "items": {
               "$ref": "#/components/schemas/CharacterSpec"
             },
-            "maxItems": 20,
+            "maxItems": 200,
             "minItems": 1,
             "title": "Characters",
             "type": "array"
@@ -54674,6 +55901,131 @@
         "title": "StorySummaryBody",
         "type": "object"
       },
+      "SubjectDeclaration": {
+        "additionalProperties": false,
+        "description": "A subject image's declared subject (#830; FR-IMG-14): a consumer-described subject in no\nstory or catalog, by a per-request id, with the consumer's ``label`` and the ``true_age`` it\ndeclared. Only a subject image carries one: no upload or other request declares it.",
+        "properties": {
+          "id": {
+            "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "subject",
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "true_age": {
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "label",
+          "true_age"
+        ],
+        "title": "SubjectDeclaration",
+        "type": "object"
+      },
+      "SubjectImageRequest": {
+        "additionalProperties": false,
+        "description": "``POST /subject-images`` (FR-IMG-14): the ``subject``, an optional ``style`` (free text,\nat most 1,000 characters, checked with the prompt), an optional ``content_rating`` (the\ndeployment default when omitted) and ``n`` (1 to 4, default 1). No seed or size.",
+        "examples": [
+          {
+            "n": 2,
+            "style": "oil painting, warm light",
+            "subject": {
+              "description": "Weathered fisherman, grey beard, yellow oilskin coat.",
+              "label": "Contestant 7",
+              "true_age": 52
+            }
+          }
+        ],
+        "properties": {
+          "content_rating": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Rating"
+          },
+          "n": {
+            "default": 1,
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "N",
+            "type": "integer"
+          },
+          "style": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Style"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/SubjectSpec"
+          }
+        },
+        "required": [
+          "subject"
+        ],
+        "title": "SubjectImageRequest",
+        "type": "object"
+      },
+      "SubjectImagesAccepted": {
+        "description": "A subject image request's answer (202): the job to follow at ``Location``.",
+        "properties": {
+          "config_revision": {
+            "title": "Config Revision",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "config_revision",
+          "job_id",
+          "status"
+        ],
+        "title": "SubjectImagesAccepted",
+        "type": "object"
+      },
       "SubjectKind": {
         "description": "Who a subject is (#123): a story character, a catalog character, or a persona.",
         "enum": [
@@ -54716,6 +56068,37 @@
           "id"
         ],
         "title": "SubjectRef",
+        "type": "object"
+      },
+      "SubjectSpec": {
+        "additionalProperties": false,
+        "description": "The subject an image depicts: its appearance (``description``, at most 4,000\ncharacters), the ``true_age`` the consumer declares (0 to 150; the safety path judges by\nit, the image model never sees it) and a ``label`` naming who it is (at most 120 printable\ncharacters, not unique). ``label`` and ``true_age`` are the depicted-subject declaration.",
+        "properties": {
+          "description": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "true_age": {
+            "maximum": 150.0,
+            "minimum": 0.0,
+            "title": "True Age",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "description",
+          "true_age",
+          "label"
+        ],
+        "title": "SubjectSpec",
         "type": "object"
       },
       "SuggestionRequest": {
@@ -58312,6 +59695,7 @@
                           "max_pinned_memories",
                           "max_pinned_per_character",
                           "max_pinned_per_story",
+                          "max_story_cast",
                           "media_allowed_types",
                           "media_max_bytes",
                           "media_moderation_timeout_ms",
@@ -63283,6 +64667,799 @@
           }
         ],
         "summary": "Replace a policy",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes": {
+      "get": {
+        "operationId": "list_purposes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The previous page's `next_cursor`.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The previous page's `next_cursor`.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeListBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `cursor_invalid`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List the consumer purposes",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "description": "Register a model purpose of the consumer's own (FR-MODEL-14) at version 1: a name (`^[a-z][a-z0-9_]{2,47}$`, never a built-in purpose's), a Jinja2 `template` of the user message, an optional `system_template`, and the `output_schema` the reply must match. Everything is checked now, never at call time: 422 `validation_error` with `details.reason` `name_invalid`, `name_taken`, `template_invalid`, `schema_invalid` or `purpose_limit`, the first fault only. It has no quality floor and no certification: its output quality is the consumer's concern (ADR-185).",
+        "operationId": "register_purpose",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Register a consumer purpose",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes/{name}": {
+      "get": {
+        "description": "The purpose at its latest version; `version` reads another (404 `version_not_found`). An archived purpose still reads, with its `archived_at`.",
+        "operationId": "get_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A version's number (default: the latest).",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A version's number (default: the latest).",
+              "title": "Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `version_not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read a consumer purpose",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Write version n+1, replacing the description, templates and output schema; `expected_version` must be the latest (409 `version_stale`). An archived purpose is 410 `purpose_archived`. A replacement identical to the latest version writes nothing (`changed: false`). Calls that do not pin a version use the new one from their next call.",
+        "operationId": "replace_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeReplace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `version_stale`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `purpose_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Replace a consumer purpose (a new version)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes/{name}/archive": {
+      "post": {
+        "description": "Archive the purpose: its calls are refused with 410 `purpose_archived`, its versions stay readable, its name stays taken and its model configuration is hidden. Archiving it again changes nothing. There is no unarchive.",
+        "operationId": "archive_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeMutation"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Archive a consumer purpose",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/purposes/{name}/versions": {
+      "get": {
+        "operationId": "list_purpose_versions",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeVersionsBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List a consumer purpose's versions",
         "tags": [
           "admin"
         ]
@@ -78377,7 +80554,7 @@
     },
     "/image-jobs/{job_id}": {
       "delete": {
-        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
+        "description": "Cancels a queued or running image job: it ends `cancelled`, a worker running it is fenced and promotes nothing, and its staged bytes are deleted. A job that already ended answers 200 with its state unchanged, so the cancel is idempotent by design and takes no `Idempotency-Key`. 404 `image_job_not_found`. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `completed` (a subject job, FR-IMG-14), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready`, `completed` and `cancelled`. A story or subject job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds; a completed subject job also answers `failures`, each output that was not stored (`{index, reason}`), and ends `target_gone` when its owner is offboarded first. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.",
         "operationId": "cancel_image_job",
         "parameters": [
           {
@@ -78496,7 +80673,7 @@
         "x-epistrel-mutating": false
       },
       "get": {
-        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready` and `cancelled`. A story job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
+        "description": "An image job's state. `status` is `queued`, `generating`, `checking`, `promoted` (a story job), `candidates_ready` (a catalog job), `completed` (a subject job, FR-IMG-14), `failed`, `stale`, `target_gone`, `cap_reached` or `cancelled`. `status_reason` is a bare code (`guardrail_violation`, `image_check_unconfigured`, `image_check_unavailable`, `provider_unavailable`, `provider_empty_result`, `adapter_auth`, `adapter_credits`, `request_invalid`, …) and null for `promoted`, `candidates_ready`, `completed` and `cancelled`. A story or subject job answers `asset_ids` and a catalog job `candidate_ids`, never both, `[]` until it succeeds; a completed subject job also answers `failures`, each output that was not stored (`{index, reason}`), and ends `target_gone` when its owner is offboarded first. `attempts` lists its provider attempts by start (FR-IMG-11): each one's token, `outcome`, the outputs it `requested`, and once settled its `used`, `overage` and `extra_outputs`, with its `cost`, `cost_status` (`known`, `zero` or `unknown`, never 0 for unknown), `currency`, `outputs_billed` and `accounting`; the job's `usage` (outputs used, overage, extra outputs, ambiguous sends) and `cost` (known costs per currency, and the unknown and zero attempts) total them. A worker that stalls past its lease is fenced: no attempt starts before the stalled call's horizon (`waiting_for_horizon`), and a late result is counted and costed, never shown (`late_discarded`, `late_after_horizon`, `late_duplicate`). A worker lost mid-send leaves an ambiguous send: an adapter whose provider deduplicates by key re-sends it (`resent`); otherwise it is held to its horizon and counted as presumed (`presumed`), corrected once if its result arrives (`late_after_presumed`). With an adapter that confirms completion, the job asks the provider until `confirm_deadline_at`, then falls back to retrying (`confirm_fallback`). A job that failed on a policy also answers `policy_ids`. A story job is revalidated against its story before its image is attached (FR-IMG-4): it ends `target_gone` when the story was deleted, or `stale` when its source changed (`status_reason` `target_inactive`, `amended`, `erased`, `policy_changed` or `paused_too_long`, with `status_detail`). While its story is paused it stays `checking` with `waiting_on: pause` and `next_check_at`. Until an image has passed every check it has no media asset, URL or history entry: nothing a consumer can reach.\n\nWith `wait` (1 to 30 seconds) the read is a long poll: it answers as soon as the status differs from `since_status` (default: the status when the read began), or when the wait ends, with the current state either way (200). A notification wakes it; it also looks once a second, so a missed one never makes it wait longer. 422 `validation_error` for a `wait` outside the range or an unknown `since_status`; 503 `too_many_waiters` when this process already holds 200 long polls; 404 `image_job_not_found`.",
         "operationId": "get_image_job",
         "parameters": [
           {
@@ -83024,6 +85201,192 @@
         ]
       }
     },
+    "/purposes/{name}/calls": {
+      "post": {
+        "description": "Render the purpose's templates with `inputs` and call its model (routed by the purpose's own model configuration, else `generation`'s), and answer the output, valid against the purpose's output schema (FR-MODEL-15). Every string in `inputs` passes the input gate under `content_rating` (default: the deployment's default rating) first: a violation is 422 `guardrail_violation` and the purpose's model is not called. `depicted` declares the people the call depicts with their true ages, so the minors policy applies when one is a minor. Every string of the output passes the output gate under the same rating: a violation is retried once, then refused with 422 `output_policy_violation`, with no part of the output. 404 for an unknown purpose or version (`version_not_found`), 410 `purpose_archived`, 422 `template_render_error` when the template does not render for `inputs`, 502 `model_output_invalid` when no answer matches the schema, 503 `model_unavailable` (`details.reason: deadline` once `deadline_ms` passes).",
+        "operationId": "call_purpose",
+        "parameters": [
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurposeCall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurposeCallBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `version_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `purpose_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `output_policy_violation`, `template_render_error`, `validation_error`."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The model's answer was unusable; nothing was written: `model_output_invalid`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Call a consumer purpose with no story",
+        "tags": [
+          "purposes"
+        ]
+      }
+    },
     "/stories": {
       "get": {
         "description": "Every story, newest first, unless the request filters: by `status`, by `owner` (the owner principal, `system` included), by `relation` (`name:principal`, or `name:` for any principal; repeat it and every one must hold), or by `engine_profile` (any version the story runs on, or only `engine_profile_version`). Each item names its `engine_profile` `{id, version, pinned}`. Owners and relations narrow a list only when a request asks: they gate nothing (FR-AUTH-8). A story held `blocked_by_erasure` after a restore is listed with a `null` `name` until its erasure is reapplied (FR-ADMIN-7).",
@@ -83163,7 +85526,7 @@
         ]
       },
       "post": {
-        "description": "Create a story, blank or from a scenario, in one operation; answers 201 with `Location`.\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists.\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): the scenario (and a published version; default the latest), who fills each NPC role (`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and default roles kept as pre-filled need none), each player's principal and persona (`players`, saved or ad hoc, in the scenario's player role), permitted `overrides`, an optional rating, engine profile and `max_characters_at_start`, and `strict`. The story is created in one transaction: one genesis operation, full snapshots of the scenario and of each catalog character (`catalog_id@version`), story settings and policies, a `player` relation per player principal, and the opening narration as turn 1. A refusal writes nothing: one 422 whose code is the first present of `creation_conflicts` (under `strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, `persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, `eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's `guardrail_violation`, then, for a story whose profile runs the `structured` pipeline, `seed_unnormalizable` (a canon seed naming an entity the cast and world lack), with the full creation report in `details.report`. A structured story's knowledge seeds, story rules, places and entities are materialized in the same transaction (#149): the report lists each item's outcome under `materialized` and the merge conflicts it dropped. A scenario rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked (FR-AUTH-8). When the engine profile leaves a capability the scenario recommends unmet, the answer is 200 with `applied: false` and the reports, unless the request sets `ignore_warnings` (FR-PROF-7).",
+        "description": "Create a story, blank or from a scenario, in one operation; answers 201 with `Location`.\n\n**Blank** (`StorySpec`): its cast (each character with a required `true_age`), its content rating (default: the deployment's) and its settings. Every character `definition` (and `deflection_style`, how it refuses or changes the subject: FR-GUARD-7) passes the input gate first: a violation is 422 `guardrail_violation` and no story exists. A cast larger than the deployment's `max_story_cast` (FR-MULTI-12; default 50, at most 200) is 422 `validation_error` with `{cap: \"cast_max\", limit, actual}`.\n\n**From a scenario** (`StoryFromScenario`, the body naming `scenario`; FR-SCN-6,9): the scenario (and a published version; default the latest), who fills each NPC role (`slots`: a catalog `character@version` or an `ad_hoc` definition; locked roles and default roles kept as pre-filled need none), each player's principal and persona (`players`, saved or ad hoc, in the scenario's player role), permitted `overrides`, an optional rating, engine profile and `max_characters_at_start`, and `strict`. The story is created in one transaction: one genesis operation, full snapshots of the scenario and of each catalog character (`catalog_id@version`), story settings and policies, a `player` relation per player principal, and the opening narration as turn 1. A refusal writes nothing: one 422 whose code is the first present of `creation_conflicts` (under `strict`), `slot_required`, `locked_slot_reassigned`, `player_role_fixed`, `persona_required`, `entry_archived`, `not_published`, `override_not_allowed`, `eligibility_failed`, `cast_limit_exceeded`, `rating_check_failed`, then the input gate's `guardrail_violation`, then, for a story whose profile runs the `structured` pipeline, `seed_unnormalizable` (a canon seed naming an entity the cast and world lack), with the full creation report in `details.report`. A structured story's knowledge seeds, story rules, places and entities are materialized in the same transaction (#149): the report lists each item's outcome under `materialized` and the merge conflicts it dropped. A scenario rating mismatch is a warning (FR-RATE-5). Owners and listing statuses are never checked (FR-AUTH-8). A cast, every filled role and the player included, larger than the deployment's `max_story_cast` (FR-MULTI-12) is 422 `validation_error` with `{cap: \"cast_max\", limit, actual}` on its own, without a report. When the engine profile leaves a capability the scenario recommends unmet, the answer is 200 with `applied: false` and the reports, unless the request sets `ignore_warnings` (FR-PROF-7).",
         "operationId": "create_story",
         "parameters": [
           {
@@ -85586,7 +87949,7 @@
     },
     "/stories/{story_id}/characters": {
       "post": {
-        "description": "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text `definition`, its required `true_age` (FR-CAT-12) and optionally its `safe_fallback_text`, its `deflection_style` (FR-GUARD-7) and `images` (media asset ids it shows, each a live image, by reference). It is story-scoped and never a catalog entry or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full cast (20 characters), a name the story has (ignoring case) or an image that is not a live image asset is 422. The definition and the deflection style pass the input gate, with the new character's age in the cast: a violation is 422 `guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while a turn is in flight. The addition bumps the story's revision (the cast is part of every prompt), records a `character_defined` event and is kept by a truncation and copied by every fork, as a story-text edit is. Answers 201 with the new character's id and place in the cast.",
+        "description": "Add an ad-hoc character to the story's cast (FR-CAT-7): its `name`, its free-text `definition`, its required `true_age` (FR-CAT-12) and optionally its `safe_fallback_text`, its `deflection_style` (FR-GUARD-7) and `images` (media asset ids it shows, each a live image, by reference). It is story-scoped and never a catalog entry or a player character; `POST /stories/{id}/characters/{cid}/promote` makes a catalog draft from it. A full cast is 422 `validation_error` with `{cap: \"cast_max\", limit, actual}`: the story already holds the deployment's `max_story_cast` full characters (FR-MULTI-12; weight `major`, default 50, at most 200; a `minor` character never counts). A name the story has (ignoring case) or an image that is not a live image asset is 422. The definition and the deflection style pass the input gate, with the new character's age in the cast: a violation is 422 `guardrail_violation`. 409 `story_archived` on an archived story, 423 `story_busy` while a turn is in flight. The addition bumps the story's revision (the cast is part of every prompt), records a `character_defined` event and is kept by a truncation and copied by every fork, as a story-text edit is. Answers 201 with the new character's id and place in the cast.",
         "operationId": "add_story_character",
         "parameters": [
           {
@@ -85778,9 +88141,432 @@
         ]
       }
     },
+    "/stories/{story_id}/characters/{character_id}/bench": {
+      "patch": {
+        "description": "Switch a benched character between `sequestered` and `present` (FR-MULTI-14). The switch takes effect from the next turn; each earlier turn keeps the mode it had. A switch to the mode the character has is a no-op: 200 with no event and no revision change. Benching is positional (FR-MULTI-13): an inter-turn slot operation after the head turn that records an event and bumps the story's `timeline_revision` (no `config_changes` row). A truncation to before it undoes it, an untruncation re-applies it, a swap to another variant of that turn drops it, and a fork after it keeps it. `Idempotency-Key` is honoured; there is no `If-Match`. 404 for an unknown story or character; 409 `story_archived`; 423 `story_busy` while a turn is in flight; 422 `validation_error` for an unknown mode; 409 `not_benched` for a character that is not benched. Answers the character as an omniscient read lists it, with its `bench`.",
+        "operationId": "set_bench_mode",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BenchModeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchedCharacterBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `not_benched`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Switch a benched character's mode",
+        "tags": [
+          "stories"
+        ]
+      },
+      "post": {
+        "description": "Bench a character (FR-MULTI-13). It keeps its partition and memories, but takes no part in any turn: it is never rendered, has no participation role, is in no other character's cast in a prompt, and does not count toward the deployment's `max_story_cast`. A turn request naming it (its actor, a render target, a `character:<id>` output viewpoint, a whisper target, `characters_present` or a role override) is 409 `character_benched`, and so are participation and weight writes on it. A purpose call from its viewpoint (with `store_as_memory`) and the operator's belief, fact and memory writes still reach it. `mode` is `sequestered` (the default): while benched the character perceives nothing, whatever its location, and receives no exposure, belief or perceived memory. `mode: present` (FR-MULTI-14) keeps it in the scene: it perceives what happens where it is under the normal presence and location rules, the scene read and the other characters' scene line name it, and narration may describe what it does, but it is still never rendered and never given speech, thoughts or decisions. On a Lite story there is no per-character perception: benching takes the character out of the cast and the rendering only, so a reactivated character's prompts include the transcript from its time away. Benching is positional (FR-MULTI-13): an inter-turn slot operation after the head turn that records an event and bumps the story's `timeline_revision` (no `config_changes` row). A truncation to before it undoes it, an untruncation re-applies it, a swap to another variant of that turn drops it, and a fork after it keeps it. 404 for an unknown story or character; 409 `story_archived`; 423 `story_busy` while a turn is in flight; 422 `validation_error` for the player's character (`reason: player_not_benchable`); 409 `already_benched` `{character_id, mode, since_turn}` for a benched character, in any mode. Answers the character as an omniscient read lists it, with its `bench` `{mode, since_turn}`.",
+        "operationId": "bench_character",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BenchRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchedCharacterBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `already_benched`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Bench a story character",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/characters/{character_id}/participation": {
       "patch": {
-        "description": "Set a character's participation role (FR-MULTI-7): `role` is `primary` (it renders when a turn names it), `reactive` (another render may narrate its brief observable reaction, FR-MULTI-9; the default) or `silent` (nothing is narrated for it), and `fixed` makes the role a bound the engine never crosses on its own: escalation never raises a fixed `reactive` or `silent` character to a primary render (FR-MULTI-10), and budget planning never lowers a fixed `primary` one to reactive narration (it defers it instead). Only a request changes a fixed role, for that request, by naming the character or overriding its role (`roles`). A cast lead may be set `primary`. A prospective story configuration write: it moves the story's `config_revision` and records a `config_changes` row (`participation:<character id>`); a turn already running keeps its roles. The player's character has no role (422 `is_player`); 404 for a character the story does not have; 409 `story_archived`. Setting the role it has changes nothing. Answers the character as a read lists it.",
+        "description": "Set a character's participation role (FR-MULTI-7): `role` is `primary` (it renders when a turn names it), `reactive` (another render may narrate its brief observable reaction, FR-MULTI-9; the default) or `silent` (nothing is narrated for it), and `fixed` makes the role a bound the engine never crosses on its own: escalation never raises a fixed `reactive` or `silent` character to a primary render (FR-MULTI-10), and budget planning never lowers a fixed `primary` one to reactive narration (it defers it instead). Only a request changes a fixed role, for that request, by naming the character or overriding its role (`roles`). A cast lead may be set `primary`. A prospective story configuration write: it moves the story's `config_revision` and records a `config_changes` row (`participation:<character id>`); a turn already running keeps its roles. The player's character has no role (422 `is_player`); 404 for a character the story does not have; 409 `story_archived`; 409 `character_benched` for a benched character (FR-MULTI-13; reactivation restores the role it had). Setting the role it has changes nothing. Answers the character as a read lists it.",
         "operationId": "set_participation",
         "parameters": [
           {
@@ -85927,7 +88713,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
+            "description": "Conflict; nothing was written: `character_benched`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`."
           },
           "422": {
             "content": {
@@ -86209,9 +88995,208 @@
         ]
       }
     },
+    "/stories/{story_id}/characters/{character_id}/reactivate": {
+      "post": {
+        "description": "Bring a benched character back (FR-MULTI-13): it takes part in turns again, with the participation role it had when it was benched, and counts toward `max_story_cast` again. It keeps every memory it held; a `sequestered` character learned nothing while benched (on a Lite story its prompts include the transcript from its time away). Benching is positional (FR-MULTI-13): an inter-turn slot operation after the head turn that records an event and bumps the story's `timeline_revision` (no `config_changes` row). A truncation to before it undoes it, an untruncation re-applies it, a swap to another variant of that turn drops it, and a fork after it keeps it. The body is empty. 404 for an unknown story or character; 409 `story_archived`; 423 `story_busy` while a turn is in flight; 422 `validation_error` with `{cap: \"cast_max\", limit, actual}` when the active cast is full (a `minor` character never counts); 409 `not_benched` for a character that is not benched. Answers the character as an omniscient read lists it, with `bench: null`.",
+        "operationId": "reactivate_character",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+            "in": "path",
+            "name": "character_id",
+            "required": true,
+            "schema": {
+              "description": "The id of one of the story's characters (a ULID), as `GET /stories/{id}` lists them.",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2CA"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Character Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchedCharacterBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `not_benched`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Reactivate a benched story character",
+        "tags": [
+          "stories"
+        ]
+      }
+    },
     "/stories/{story_id}/characters/{character_id}/weight": {
       "post": {
-        "description": "Set a character's narrative `weight` (FR-EPI-10): `minor` (a character modeled lazily by interaction or salience: a sparse partition that accrues only from the interactions it takes part in, a smaller consolidation window and hot budget, never rendered unless a request names it) or `major`. Prospective: what the character already holds stays as it is, and nothing promotes automatically. The player's character is always `major` (422 `is_player`). A control operation: it bumps the story's revision and records `character_weight_set`; 409 `story_archived`, 423 `story_busy` while a turn is in flight. Answers the character as an omniscient read lists it.",
+        "description": "Set a character's narrative `weight` (FR-EPI-10): `minor` (a character modeled lazily by interaction or salience: a sparse partition that accrues only from the interactions it takes part in, a smaller consolidation window and hot budget, never rendered unless a request names it) or `major`. Prospective: what the character already holds stays as it is, and nothing promotes automatically. The player's character is always `major` (422 `is_player`). Making a `minor` character `major` takes a place in the story's cast: when the story already holds the deployment's `max_story_cast` full characters (FR-MULTI-12) it is 422 `validation_error` with `{cap: \"cast_max\", limit, actual}`; a `major` one set `major` again never is. A control operation: it bumps the story's revision and records `character_weight_set`; 409 `story_archived`, 423 `story_busy` while a turn is in flight, 409 `character_benched` for a benched character (FR-MULTI-13). Answers the character as an omniscient read lists it.",
         "operationId": "set_character_weight",
         "parameters": [
           {
@@ -86358,7 +89343,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+            "description": "Conflict; nothing was written: `character_benched`, `idempotency_conflict`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
           },
           "422": {
             "content": {
@@ -95278,6 +98263,235 @@
         ]
       }
     },
+    "/stories/{story_id}/purposes/{name}/calls": {
+      "post": {
+        "description": "Call the purpose as `POST /purposes/{name}/calls` does, inside the story (FR-MODEL-16): the story's content rating (its prompt guidance first in the system message), its effective policies and its cast's true ages gate the inputs and the output, the cast present at the latest scene counting for the minors policy. With `viewpoint_character_id`, the template's `viewpoint` is that character's viewpoint (`viewpoint.name`, and `viewpoint.text`: what it knows, believes and has seen, as its own render would show it; never what it does not know), and `story` holds `id`, `title`, `location`, `present` and `scene`; without one, `story` holds `id` and `title`. Without `store_as_memory` the call reads the story and never changes it: no lock, no revision, no event, so it runs while a turn is in flight. With `store_as_memory: {text_field}` (FR-MODEL-17; it needs `viewpoint_character_id`, 422 `viewpoint_required` otherwise) the named output field's text is also stored as the viewpoint character's memory, its alone: after the unlocked model call, an inter-turn slot write at the story's head that takes the story's turn slot (423 `story_busy` while a turn is in flight), records a `purpose_memory_stored` event, bumps the revision and answers `memory_id`; 409 `module_off` without per-character partitions or episodic memory, 422 `text_field_invalid` (`details.reason`) for a field that is no top-level string, 422 `memory_text_empty` or `memory_text_too_long`, and 409 `erased_subject_referenced` for a text naming an erased subject, each storing nothing and returning no output. Routed by the deployment's model configuration, never the story's. 404 for an unknown story, purpose, version or character; 409 `story_archived`; 422 `validation_error` with `details.reason: player_has_no_context` for the player's character; 409 `module_off` for a viewpoint on a Lite story; 409 `erased_subject_referenced` for an input naming an erased subject; then the refusals of `POST /purposes/{name}/calls`.",
+        "operationId": "call_story_purpose",
+        "parameters": [
+          {
+            "description": "The story's id (a ULID).",
+            "in": "path",
+            "name": "story_id",
+            "required": true,
+            "schema": {
+              "description": "The story's id (a ULID).",
+              "examples": [
+                "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"
+              ],
+              "pattern": "^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$",
+              "title": "Story Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The consumer purpose's name.",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The consumer purpose's name.",
+              "examples": [
+                "vote_reason"
+              ],
+              "maxLength": 64,
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The story revision the call expects; a stale one is 409 `revision_conflict` with nothing written (FR-RESP-6).",
+            "in": "header",
+            "name": "X-Epistrel-Expected-Revision",
+            "required": false,
+            "schema": {
+              "pattern": "^\\s*[+-]?[0-9]+\\s*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoryPurposeCall"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryPurposeCallBody"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not found: `not_found`, `version_not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `purpose_archived`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `budget_below_safety_minimum`, `guardrail_violation`, `memory_text_empty`, `memory_text_too_long`, `output_policy_violation`, `template_render_error`, `validation_error`."
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The story is busy: `story_busy`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The model's answer was unusable; nothing was written: `model_output_invalid`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `config_key_missing`, `database_unavailable`, `erasure_pending`, `ledger_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Call a consumer purpose inside a story",
+        "tags": [
+          "purposes"
+        ]
+      }
+    },
     "/stories/{story_id}/reconciliation": {
       "get": {
         "description": "The effects dispatched to write-capable providers that are not confirmed, oldest first:\neach one's outbox id (the provider idempotency key), provider and value, status, why it is\nlisted (`reason`: `unconfirmed`, `failed`, `unknown`, `reconciliation_required`,\n`cancelled_on_reactivation`, `confirmed_unsettled`, `confirmed_discarded_origin`,\n`settlement_conflict`, `late_success_after_expiry`, `outcome_conflict` or\n`reservation_expired`), since when, the effect, and the latest outcome recorded for it. A\n`late_success_after_expiry` carries its `reverification` (`passed` or `failed`, with\n`reasons`); an effect the author chose to compensate shows `status: compensated` and\n`compensated_by`, the compensating effect, until that one is confirmed. A confirmed or\ncancelled effect is not listed. 404 for an unknown story.",
@@ -96969,7 +100183,7 @@
                 }
               }
             },
-            "description": "Conflict; nothing was written: `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
+            "description": "Conflict; nothing was written: `character_benched`, `erased_subject_referenced`, `idempotency_conflict`, `module_off`, `revision_conflict`, `story_archived`, `story_importing`, `story_paused`, `timeline_changed`."
           },
           "422": {
             "content": {
@@ -102317,6 +105531,147 @@
           "timeline"
         ]
       }
+    },
+    "/subject-images": {
+      "post": {
+        "description": "Generates `n` images (1 to 4, default 1) of a **subject that is in no story or catalog** (FR-IMG-14): `subject.description` is its appearance (at most 4,000 characters), `subject.true_age` the age the consumer declares (0 to 150) and `subject.label` who it is (at most 120 printable characters, not unique); the label and true age are the depicted-subject declaration. `style` (at most 1,000 characters) and `content_rating` (default: the deployment's default rating, read now) are optional; no seed or size is taken. The prompt is written by the `image_prompt` purpose from the description, the true age's apparent age band, the style and the rating's image guidance (the image model never receives the true age), then checked **before any generation**, together with the description and style, against the global and the rating's image-prompt policies, the seeded minors policy included, judged by the declared true age (FR-IMG-3, FR-GUARD-11). Every output is classified for figures and passes the image-output check in private staging; one that fails is never stored. 202 `{job_id, status: queued}` with `Location: /image-jobs/{id}`: the job ends `completed` with `asset_ids` and `failures` (`[{index, reason}]`, codes only) when at least one image passed, or `failed` (`guardrail_violation`) when none did. Each stored image is a **live** media asset owned by the caller with `origin: subject`, `source: generated`, the rating's current version and `depicted_subjects` `[{kind: subject, id, label, true_age}]`; the media sweep never purges it while it is live (ADR-186): it stays until `DELETE /media/{id}` or its owner's offboarding (whose `media` action applies), and it can be named in a story character's `images`.\n\nRefused before any job, reservation or provider call: 422 `validation_error` for a body outside these bounds or an unknown or retired `content_rating`; 409 `not_configured` without an image adapter; 409 `image_check_unconfigured` while an image-output policy applies and `image_check` is unset; 503 `image_prompt_unavailable`; 422 `guardrail_violation` when the prompt, description or style violates an image-prompt policy (its audit row names the subject's id, never its label), 503 `model_unavailable` when the check cannot reach its model; 409 `image_limit_reached` or 422 `images_disabled` from the deployment's daily image limit. Idempotent under `Idempotency-Key` (deployment-scoped). The description, label and style never reach an operational log, metric or trace.",
+        "operationId": "request_subject_images",
+        "parameters": [
+          {
+            "description": "The opaque requesting principal (FR-AUTH-4): required on every mutation (400 `principal_required` when missing, blank, longer than 256 characters, holding a control character, or the reserved `system`), recorded for attribution and never interpreted. Surrounding spaces and tabs are trimmed.",
+            "in": "header",
+            "name": "X-Epistrel-Principal",
+            "required": true,
+            "schema": {
+              "pattern": "^[\\t ]*[^\\x00-\\x1f\\x7f-\\x9f]{1,256}[\\t ]*$",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Makes the call idempotent (FR-CONC-6): a retry with the same key and request returns the stored response; generated when absent and echoed either way.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._:-]{1,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubjectImageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubjectImagesAccepted"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Idempotency-Key": {
+                "description": "The request's key, echoed (generated if absent).",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Idempotent-Replay": {
+                "description": "`true` when this is a stored response replayed for a retry.",
+                "schema": {
+                  "enum": [
+                    "true"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad request: `principal_required`."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No valid service credential: `unauthenticated`.",
+            "headers": {
+              "WWW-Authenticate": {
+                "description": "`Bearer`.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `idempotency_conflict`, `image_check_unconfigured`, `image_limit_reached`, `not_configured`."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Invalid request; nothing was written: `guardrail_violation`, `images_disabled`, `validation_error`."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Unavailable; nothing was written: `database_unavailable`, `erasure_pending`, `image_prompt_unavailable`, `model_unavailable`, `original_in_flight_timeout`.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Generate images of a subject outside any story or catalog",
+        "tags": [
+          "images"
+        ]
+      }
     }
   },
   "tags": [
@@ -102371,6 +105726,10 @@
     {
       "description": "Message feedback: each principal's rating (1 to 5) of a generated message, with reason tags and free text, recorded with the configuration the message was produced under (FR-FB-1). Feedback is an audit record: nothing in the story reads it, and it changes no engine behavior (FR-FB-2). Its aggregates with the implicit signals, the guardrail and memory review lists (FR-FB-3), and the operator's opt-in export of labelled cases under `/admin/feedback` (FR-FB-4) are flag-only reports.",
       "name": "feedback"
+    },
+    {
+      "description": "Calling a consumer purpose, a model purpose an operator registered under `/admin/purposes` (FR-MODEL-15).",
+      "name": "purposes"
     },
     {
       "description": "Operator endpoints, all under `/admin` (FR-AUTH-1).",

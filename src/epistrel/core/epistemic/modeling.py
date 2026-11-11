@@ -36,7 +36,8 @@ indexed for erasure in the same transaction (``SubjectWriter("characters", …)`
 ``{trigger, entity_id, position}`` are appended, and the canon facts it needs (its ``age``, its
 ``located_at`` in the scene) are written by ``core.turns.beats.write_character_facts``: the
 epistemic model never writes canon (#160's gate). The new character joins the routed scene in the
-same commit, so the triggering wave lands in its partition. Minors are exempt from the cast cap.
+same commit, so the triggering wave lands in its partition. A ``minor`` character never counts
+against the story cast limit (``max_story_cast``, FR-MULTI-12), so modeling is never refused by it.
 
 **Weight and sparsity** (FR-EPI-10). Modeling is liberal, weight conservative: a modeled
 character is ``minor`` (the cast, the player and an author-created character are ``major``;

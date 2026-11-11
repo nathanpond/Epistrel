@@ -563,6 +563,7 @@ async def insert_generated_asset(
     source_job_id: str | None = None,
     source_attempt_token: str | None = None,
     output_index: int | None = None,
+    origin: str | None = None,
 ) -> str:
     """A promoted output's ``media_assets`` row (``kind = image``, ``source`` ``generated`` or
     ``generated_from_consumer_prompt``, with its output check's fields, #258) in ``conn``'s
@@ -570,7 +571,8 @@ async def insert_generated_asset(
     store: until the transaction commits, nothing names it, and the media sweep's orphan step
     only removes a blob nothing names after an hour. ``source_job_id``, ``source_attempt_token``
     and ``output_index`` name the output (#268): their unique index refuses a second promotion
-    of it."""
+    of it. ``origin`` is ``subject`` for a subject image (#830), which the media sweep keeps
+    while it is live."""
     from epistrel.core.erasure.guard import assert_not_erased
 
     # No new medium depicts a subject a catalog-scope erasure removed (FR-ADMIN-9; #127, #266).
@@ -610,6 +612,7 @@ async def insert_generated_asset(
             source_job_id=source_job_id,
             source_attempt_token=source_attempt_token,
             output_index=output_index,
+            origin=origin,
         )
     )
     if viewpoint_basis is None:

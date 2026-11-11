@@ -59,7 +59,7 @@ from epistrel.core.profiles.store import ProfileUpdate
 from epistrel.core.profiles.validate import parse_settings
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.orchestrator.models.config import ConfigRow
-from epistrel.orchestrator.models.facts import TEMPLATE_HASHES, identities
+from epistrel.orchestrator.models.facts import TEMPLATE_HASHES, identities, template_source
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, STORY_PURPOSES
 from epistrel.testing.profiles import data_producing
 from tests.conftest import REPO_ROOT
@@ -354,12 +354,16 @@ def test_model_ids_and_template_hashes() -> None:
     assert identities({})["generation"].id is None
     folder = resources.files("epistrel.orchestrator.models").joinpath("templates")
     assert dict(TEMPLATE_HASHES) == {
-        template.removesuffix(".j2"): hashlib.sha256(
-            folder.joinpath(template).read_bytes()
-        ).hexdigest()
+        template.removesuffix(".j2"): hashlib.sha256(template_source(template)).hexdigest()
         for purpose in STORY_PURPOSES.values()
         for template in (purpose.template, *purpose.variants.values())
     }
+    # #826: a template's own bytes come first, then each template it includes, once.
+    own = folder.joinpath("structured_generation.j2").read_bytes()
+    rendered = template_source("structured_generation.j2")
+    assert rendered.startswith(own)
+    for partial in ("viewpoint_self.j2", "viewpoint_scene.j2", "steps_contract.j2"):
+        assert rendered.count(folder.joinpath(partial).read_bytes()) == 1, partial
     assert {"structured_generation", "narrator_generation", "age_repair"} <= set(TEMPLATE_HASHES)
 
 

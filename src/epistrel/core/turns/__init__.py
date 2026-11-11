@@ -35,13 +35,14 @@ and final message is in the transcript with its position (FR-PROF-11).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from epistrel.core.bench import bench_states
 from epistrel.core.config_changes import read_guardrail_settings
 from epistrel.core.enums import Authority, Membership, OperationKind, OperationStatus, Provenance
 from epistrel.core.errors import (
@@ -111,6 +112,9 @@ class StoryCast:
     status: str
     settings: StorySettings
     cast: tuple[CastEntry, ...]
+    benched: Mapping[str, str] = field(default_factory=dict)
+    """#831 (FR-MULTI-13): the characters benched at the story's head, by id, with their bench
+    mode. ``cast`` still lists them; ``active()`` leaves them out."""
 
     @property
     def ids(self) -> tuple[str, ...]:
@@ -118,6 +122,13 @@ class StoryCast:
 
     def by_id(self) -> dict[str, CastEntry]:
         return {c.id: c for c in self.cast}
+
+    def active(self) -> StoryCast:
+        """The story as a new turn sees it: the benched characters out of ``cast`` (no render,
+        no role, no place in another character's cast; FR-MULTI-13)."""
+        if not self.benched:
+            return self
+        return replace(self, cast=tuple(c for c in self.cast if c.id not in self.benched))
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,10 +229,25 @@ async def read_story_cast(db: AsyncEngine, story_id: str) -> StoryCast:
         if row is None:
             raise StoryNotFound(f"story {story_id} does not exist", {"story_id": story_id})
         cast = _cast((await conn.execute(_cast_query(story_id))).all())
+        benched = await bench_states(conn, story_id)
     settings = StorySettings.from_row(
         row.settings, turn_concurrency=row.turn_concurrency, turn_queue_max=row.turn_queue_max
     )
-    return StoryCast(status=row.status, settings=settings, cast=cast)
+    return StoryCast(
+        status=row.status,
+        settings=settings,
+        cast=cast,
+        benched={c: b.mode for c, b in benched.items()},
+    )
+
+
+async def cast_at_turn(db: AsyncEngine, story: StoryCast, story_id: str, turn: int) -> StoryCast:
+    """``story`` as turn ``turn`` saw it as it started (FR-MULTI-13; #831): the characters
+    benched before it out of the cast. A regenerate of the turn reads it so, keeping its
+    recorded render ids (a bench in the turn's own slot came after it)."""
+    async with db.connect() as conn:
+        found = await bench_states(conn, story_id, before_turn=turn)
+    return replace(story, benched={c: b.mode for c, b in found.items()}).active()
 
 
 def _active_committed(story_id: str) -> Any:

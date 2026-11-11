@@ -270,7 +270,35 @@ async def structured_call[T: BaseModel](
         conclusive = deterministic_first()
         if conclusive is not None:
             return conclusive
+    return await structured_messages(
+        mal,
+        purpose,
+        schema,
+        base,
+        params=params,
+        budget=budget,
+        failures=failures,
+        keep_low_confidence=keep_low_confidence,
+        fields=payload_fields(payload),
+    )
 
+
+async def structured_messages[T: BaseModel](
+    mal: ModelAccessLayer,
+    purpose: str,
+    schema: type[T],
+    base: Sequence[Message],
+    *,
+    params: ModelParams | None = None,
+    budget: TurnBudget,
+    failures: list[str] | None = None,
+    keep_low_confidence: bool = False,
+    fields: tuple[str, ...] | None = None,
+) -> T | Uncertain:
+    """Steps 2 to 4 of the module docstring over messages already rendered (``base``): what
+    ``structured_call`` runs after its deterministic step, and what a consumer purpose's call
+    runs (FR-MODEL-15, #825: its messages come from its own templates, not the registry's, and
+    it has no deterministic step). ``fields`` are the declared input paths the stub records."""
     settings = await mal.structured_settings()
     base_url, model, revision = await mal.endpoint(purpose)
     key = (base_url, model)
@@ -279,7 +307,7 @@ async def structured_call[T: BaseModel](
     call_params = params
     retries_left = settings.structured_retry_budget
     attempts = 0
-    token = REQUEST_FIELDS.set(payload_fields(payload))
+    token = REQUEST_FIELDS.set(fields)
     try:
         while True:
             if budget.expired():
@@ -387,6 +415,7 @@ __all__ = [
     "parse",
     "resolve_uncertain",
     "structured_call",
+    "structured_messages",
     "uncertain_verdict",
     "unfence",
     "usable",

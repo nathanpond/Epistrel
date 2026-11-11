@@ -14,7 +14,9 @@ attachment compare it, so a fenced or cancelled worker never promotes), how many
 (``[{attempt_token, output, policy_id, result}]``), the promoted ``asset_ids``, the
 ``idempotency_key`` of the request (a reference to #61's table, not unique here), and the
 requesting ``principal``. A story job generates one image (``params.n = 1``); only a story job
-is ``promoted`` and only a catalog job is ``candidates_ready``.
+is ``promoted``, only a catalog job is ``candidates_ready`` and only a ``subject`` job (#830;
+FR-IMG-14: a consumer-described subject in no story or catalog, ``target`` ``{subject_id,
+content_rating_id, content_rating_version_id}``) is ``completed``.
 
 ``image_reservations`` holds one row per provider attempt, unique on ``(job_id,
 attempt_token)``: when it was ``started_at`` and its ``horizon_at`` (null until the worker
@@ -79,7 +81,10 @@ outlive the job, the story (``core.stories.STORY_ID_EXCEPTIONS``: deletion nulls
 and the entry, and are purged with the accounting retention (``limits.retain``).
 
 ``image_jobs.result`` (#260) holds what a successful job made beyond its ``asset_ids``: a catalog
-job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes.
+job's ``{candidate_ids}``, which outlive the candidate rows an attach or a discard deletes, and a
+subject job's ``{asset_ids, failures}`` (#830: each output that was not stored, ``{index,
+reason}``, codes only). A subject job's records are attributed to ``entry_kind = subject`` and
+its subject's id.
 
 ``catalog.image_candidates`` (#260; FR-IMG-7) holds one row per catalog candidate: its id (a ULID
 of its own, never the asset's), the entry it belongs to (``entry_kind`` and ``entry_id``, no
@@ -123,6 +128,7 @@ from epistrel.core.tables.catalog import CATALOG_SCHEMA
 class ImageJobKind(StrEnum):
     CATALOG = "catalog"
     STORY = "story"
+    SUBJECT = "subject"
 
 
 class ImageJobStatus(StrEnum):
@@ -138,6 +144,7 @@ class ImageJobStatus(StrEnum):
     TARGET_GONE = "target_gone"
     CAP_REACHED = "cap_reached"
     CANCELLED = "cancelled"
+    COMPLETED = "completed"
 
 
 TERMINAL_STATUSES: frozenset[ImageJobStatus] = frozenset(
@@ -149,6 +156,7 @@ TERMINAL_STATUSES: frozenset[ImageJobStatus] = frozenset(
         ImageJobStatus.TARGET_GONE,
         ImageJobStatus.CAP_REACHED,
         ImageJobStatus.CANCELLED,
+        ImageJobStatus.COMPLETED,
     }
 )
 """The statuses a job never leaves."""
@@ -228,12 +236,13 @@ STORY_CHECK = "(story_id IS NOT NULL) = (kind = 'story')"
 STORY_N_CHECK = "kind <> 'story' OR (params->>'n')::int = 1"
 PROMOTED_CHECK = "status <> 'promoted' OR kind = 'story'"
 CANDIDATES_CHECK = "status <> 'candidates_ready' OR kind = 'catalog'"
+COMPLETED_CHECK = "status <> 'completed' OR kind = 'subject'"
 SEND_STATE_CHECK = _in("send_state", SendState)
 OUTCOME_CHECK = "outcome IS NULL OR " + _in("outcome", AttemptOutcome)
 STATE_CHECK = _in("state", ReservationState)
 BASIS_CHECK = _in("basis", SettlementBasis)
 SCOPE_CHECK = _in("scope", LimitScope)
-ENTRY_KIND_CHECK = "entry_kind IS NULL OR entry_kind IN ('character', 'scenario')"
+ENTRY_KIND_CHECK = "entry_kind IS NULL OR entry_kind IN ('character', 'scenario', 'subject')"
 ACCOUNTING_CHECK = "requested >= 0 AND used >= 0 AND overage >= 0 AND extra_outputs >= 0"
 COUNTER_CHECK = "reserved >= 0 AND used >= 0 AND overage >= 0 AND extra_outputs >= 0"
 IMMUTABLE_ERROR = "image_reservation_immutable"
@@ -277,6 +286,7 @@ image_jobs = Table(
     CheckConstraint(STORY_N_CHECK, name="story_n"),
     CheckConstraint(PROMOTED_CHECK, name="promoted_story"),
     CheckConstraint(CANDIDATES_CHECK, name="candidates_catalog"),
+    CheckConstraint(COMPLETED_CHECK, name="completed_subject"),
     CheckConstraint("attempts >= 0", name="attempts"),
 )
 

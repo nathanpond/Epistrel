@@ -34,7 +34,8 @@ the same path as builder prompts.
    writes an ``image_prompt_rejected`` audit row (policy ids, principal, target, story).
 
 **Payloads** (FR-IMG-13) are the registry's input schemas (``extra="forbid"``): the image
-prompt, caption and alt text (and negative prompt), the policy's text, and each subject as an
+prompt, caption and alt text (and negative prompt; a subject image's consumer description and
+style too, #830: they are the consumer's prompt), the policy's text, and each subject as an
 opaque label (``subject_1`` …, ``figure_1`` …) with its true age or a figure's class and the
 prompt's own visual descriptors. No story text, beliefs or other canon, and no character name
 the texts do not contain. Logs carry counts only (invariant 3).
@@ -52,6 +53,7 @@ from epistrel.core import audit
 from epistrel.core.images.safety import (
     DeclaredSubject,
     Figure,
+    InlineSubject,
     SafetyContext,
     SafetyRequest,
     build_safety_context,
@@ -106,6 +108,8 @@ DESCRIPTOR_CHARS = 500
 MENTION_CHARS = 200
 MAX_SUBJECTS = 64
 MAX_AGE = 150
+SUBJECT_TEXTS = (("Subject description", "description"), ("Style", "style"))
+"""A subject image's consumer texts (#830), each checked under its heading."""
 
 
 # -- payloads -------------------------------------------------------------------------------
@@ -120,6 +124,9 @@ def checked_text(request: SafetyRequest) -> str:
         ("Caption", request.caption),
         ("Alt text", request.alt_text),
     ):
+        if value:
+            lines.append(f"{label}: {value}")
+    for label, value in request.consumer_texts:
         if value:
             lines.append(f"{label}: {value}")
     return "\n".join(lines)
@@ -189,6 +196,28 @@ def safety_request(check: PromptCheck) -> tuple[SafetyRequest, Position | None]:
             for s in request.depicted_subjects
         ),
     )
+    if check.kind is ImageJobKind.SUBJECT:
+        # #830: the declared subject inline, and the consumer's description and style checked
+        # with the built prompt (a prompt writer may drop what the consumer asked for).
+        origin = check.origin
+        return (
+            replace(
+                base,
+                kind="subject",
+                entry_kind="subject",
+                entry_id=str(origin["subject_id"]),
+                inline=InlineSubject(
+                    str(origin["subject_id"]), str(origin["label"]), int(origin["true_age"])
+                ),
+                rating_id=_str(check.target.get("content_rating_id")),
+                consumer_texts=tuple(
+                    (heading, str(origin[key]))
+                    for heading, key in SUBJECT_TEXTS
+                    if isinstance(origin.get(key), str) and origin[key]
+                ),
+            ),
+            None,
+        )
     if check.kind is ImageJobKind.CATALOG:
         entry_kind, entry_id = check.origin.get("entry_kind"), check.origin.get("entry_id")
         version = check.origin.get("version")
@@ -214,6 +243,10 @@ def safety_request(check: PromptCheck) -> tuple[SafetyRequest, Position | None]:
         ),
         image_position(check.origin),
     )
+
+
+def _str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def applicable(policies: Sequence[Policy], context: SafetyContext) -> tuple[Policy, ...]:

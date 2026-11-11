@@ -920,6 +920,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "reasons, predicate shape keys, confidences, verdict codes and consequences",
     "utterances": "speech acts (#150): ids, proposition ids and three labels; the beat events "
     "they point at are indexed",
+    "character_bench": "a character's bench versions (#831): ids, a bench mode, a participation "
+    "role and positions; the bench events are indexed",
     "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
     "numbers",
     "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "
@@ -956,6 +958,10 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "model_config": "model endpoints, model names, parameters and an encrypted key",
     "external_providers": "deployment configuration (#204): provider names, request templates "
     "with secret references, policies; no story content",
+    "consumer_purposes": "deployment configuration (#824): consumer purpose names, principals "
+    "and times; no story content",
+    "consumer_purpose_versions": "deployment configuration (#824): operator-authored prompt "
+    "templates, output schemas and descriptions; no story content",
     "entity_relations": "entity ids, principals and free-text relation names",
     "ownership_events": "ownership changes: entity ids, principals, relation names",
     "offboarding_jobs": "a principal's offboarding: ids, actions, counts and its report of ids",

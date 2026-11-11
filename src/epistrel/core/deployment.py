@@ -179,6 +179,7 @@ class SettingsPatch(BaseModel):
     minor_age_threshold: StrictInt | None = None
     max_characters_at_start_default: StrictInt | None = None
     max_characters_at_start_ceiling: StrictInt | None = None
+    max_story_cast: StrictInt | None = None
     # #234: the certification canary (off by default) and re-certification.
     rewrite_ambiguity_margin: StrictFloat | None = None
     rewrite_max_open_sessions: StrictInt | None = None

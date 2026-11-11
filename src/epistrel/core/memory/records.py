@@ -66,6 +66,11 @@ retrieval finds author canon. ``after_rewrite`` runs ``MEMORY_HOOKS`` for a memo
 sanitize rewrote (its vector was cleared). A memory's quarantine (``quarantined_at`` and
 the rest, #145) is read into ``Memory`` but written by ``core.mutation`` only.
 
+**Consumer purpose memories** (#827, FR-MODEL-17). ``write_purpose_memory(conn, operation,
+…)`` stores a story-bound consumer purpose call's result as its viewpoint character's memory, in
+the call's inter-turn slot operation: one ``episodic`` row of that character alone (fidelity
+``content``, channel ``self``), provenance ``consumer_purpose``, the text as the model gave it.
+
 **Seed memories** (#149). ``write_seed(conn, operation, seeds)`` writes a structured story's
 knowledge seeds at genesis, in the genesis operation's commit: provenance ``seed`` (trust tier
 ``author``), importance ``SEED_IMPORTANCE``, ``semantic`` for a seed that normalized (its
@@ -213,6 +218,7 @@ _TRUST: Mapping[RecordProvenance, MemoryTrustTier] = {
     RecordProvenance.RENDER: MemoryTrustTier.IN_WORLD,
     RecordProvenance.DIRECTOR: MemoryTrustTier.IN_WORLD,
     RecordProvenance.PLAYER: MemoryTrustTier.IN_WORLD,
+    RecordProvenance.CONSUMER_PURPOSE: MemoryTrustTier.IN_WORLD,  # #827: a character's own
 }
 
 
@@ -1005,6 +1011,73 @@ async def write_resolution(
     await insert_derived(conn, memories, [row])
     await index_records(conn, [memory_record(SimpleNamespace(**row))])
     ids = (str(row["id"]),)
+    for hook in list(MEMORY_HOOKS):
+        await hook(conn, story_id, ids)
+    return (await memories_by_id(conn, story_id, ids))[0]
+
+
+PURPOSE_FIDELITY = "content"
+PURPOSE_CHANNEL = "self"
+"""A consumer purpose memory's fidelity and channel (#827): the character's own words."""
+
+
+async def write_purpose_memory(
+    conn: AsyncConnection,
+    operation: MemoryOperation,
+    *,
+    memory_id: str,
+    holder: str,
+    text: str,
+    source_event_ids: Sequence[str],
+) -> Memory:
+    """A consumer purpose's result stored as character ``holder``'s memory (FR-MODEL-17; #827),
+    inside its inter-turn slot operation's commit: one ``episodic`` row of ``holder`` alone
+    (``characters: [holder]``, fidelity ``content``, channel ``self``), provenance
+    ``consumer_purpose`` (trust tier ``in_world``), ``text`` stored as given (no propositions,
+    ``event_type`` ``NULL``, participants ``[holder]``), importance ``NULL`` for the importance
+    job, at the slot operation's narrative position, so it follows that operation's membership
+    (a truncation to the slot's turn discards it, a fork through the slot copies it), sourced
+    from the slot's ``purpose_memory_stored`` event. The caller has checked the modules, the
+    character and the text's length. Runs the resurrection guard (the text is a model's output,
+    never exempt), the erasure index (its holder declared) and ``MEMORY_HOOKS`` (embedding,
+    importance) like every writer."""
+    from epistrel.core.visibility import private_to
+
+    story_id = operation.story_id
+    if story_id is None:
+        raise InvalidRequest("a memory belongs to a story", {"field": "operation"})
+    provenance = RecordProvenance.CONSUMER_PURPOSE
+    row: dict[str, Any] = {
+        "id": memory_id,
+        "story_id": story_id,
+        "kind": MemoryKind.EPISODIC.value,
+        "text": text,
+        "holder_character_id": holder,
+        "character_id": holder,
+        "visibility": private_to(holder).document(),
+        "provenance": provenance.value,
+        "trust_tier": trust_tier_of(provenance).value,
+        "operation_id": operation.operation_id,
+        "source_event_ids": list(source_event_ids),
+        "narrative_turn": operation.narrative_turn,
+        "turn_variant": operation.turn_variant,
+        "beat": None,
+        "proposition_ids": [],
+        "event_type": None,
+        "participants": [holder],
+        "fidelity": PURPOSE_FIDELITY,
+        "channel": PURPOSE_CHANNEL,
+    }
+    await guard.check_content(
+        conn,
+        story_id,
+        [guard.Content((text,), frozenset({holder}))],
+        base_revision=operation.base_revision,
+        path=__name__,
+    )
+    await insert_derived(conn, memories, [row])
+    await index_records(conn, [memory_record(SimpleNamespace(**row))])
+    ids = (memory_id,)
     for hook in list(MEMORY_HOOKS):
         await hook(conn, story_id, ids)
     return (await memories_by_id(conn, story_id, ids))[0]

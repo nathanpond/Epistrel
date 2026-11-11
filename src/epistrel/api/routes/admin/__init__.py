@@ -22,6 +22,7 @@ from epistrel.api.routes.admin import (
     offboarding,
     policies,
     providers,
+    purposes,
     ratings,
     reembed,
     settings,
@@ -41,6 +42,7 @@ router.include_router(settings.router)
 router.include_router(policies.router)
 router.include_router(model_config.router)
 router.include_router(providers.router)
+router.include_router(purposes.router)  # #824: consumer purposes
 router.include_router(reembed.router)
 router.include_router(offboarding.router)
 router.include_router(erasure.router)
@@ -77,6 +79,9 @@ OPERATOR_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Provider configuration and registration; a story's own bindings to its providers
     # (``/stories/{id}/providers[/{name}/binding]``, #204) are the story's, not the operator's.
     re.compile(r"^(?!/stories/[^/]+/providers(?:/|$))(?:.*/)?(?:external-)?providers?(?:/|$)"),
+    # Consumer purposes (#824) are the operator's to register; calling one
+    # (``/purposes/{name}/calls``, #825) is the consumer's.
+    re.compile(r"^(?!(?:.*/)?purposes/[^/]+/calls$)(?:.*/)?purposes(?:/|$)"),
 )
 """FR-AUTH-1's operator enumeration, including paths not built yet. A route outside ``/admin``
 whose path matches one of these is misplaced."""

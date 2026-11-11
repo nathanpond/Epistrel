@@ -4,7 +4,8 @@ server is exposed (#73, re-running #44's assertions against the full app). M3 pa
 (``test_c_02__admin_prefix``, #128): M3's operator endpoints (offboarding, erasure, feedback
 export) are under ``/admin`` and matched by #44's operator patterns. M6 part
 (``test_c_02__m6_admin``, #204): providers are registered under ``/admin/external-providers``
-and called as providers; no MCP transport."""
+and called as providers; no MCP transport. M9 part (``test_c_02__m9_purposes``, #824): consumer
+purposes are registered under ``/admin/purposes``."""
 
 from __future__ import annotations
 
@@ -331,6 +332,44 @@ def test_c_02__m7_bundles(dummy_dsn: str) -> None:
     assert [path for path in outside if not is_operator_path(path)] == []
     names = operations()
     for name in ("export_story", "export_status", "import_story", "import_status"):
+        assert name in names, name
+    assert unreachable(app) == []
+    assert unguarded_routes(app) == []
+
+
+M9_OPERATOR_PATHS = (
+    "/admin/purposes",
+    "/admin/purposes/{name}",
+    "/admin/purposes/{name}/versions",
+    "/admin/purposes/{name}/archive",
+)
+"""docs/04 C-02 [M9]'s operator endpoints: consumer purposes (#824)."""
+
+
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_c_02__m9_purposes(dummy_dsn: str) -> None:
+    """M9's consumer purposes are registered, versioned and archived under ``/admin``, each
+    path matched by the operator patterns and each route backed by an Engine operation (REST and
+    the in-process library); nothing operator-shaped is served outside ``/admin``.
+
+    Complement asserted: the same paths outside ``/admin`` would be reported as misplaced."""
+    app = full_app(dummy_dsn)
+    paths = {path for _, path, _ in served(app)}
+    assert set(M9_OPERATOR_PATHS) <= paths
+    assert [path for path in M9_OPERATOR_PATHS if not is_operator_path(path)] == []
+    misplaced = [p for p in paths if is_operator_path(p) and not p.startswith(ADMIN_PREFIX)]
+    assert misplaced == []
+    outside = [path.removeprefix(ADMIN_PREFIX) for path in M9_OPERATOR_PATHS]
+    assert [path for path in outside if not is_operator_path(path)] == []
+    names = operations()
+    for name in (
+        "register_purpose",
+        "list_purposes",
+        "get_purpose",
+        "list_purpose_versions",
+        "replace_purpose",
+        "archive_purpose",
+    ):
         assert name in names, name
     assert unreachable(app) == []
     assert unguarded_routes(app) == []

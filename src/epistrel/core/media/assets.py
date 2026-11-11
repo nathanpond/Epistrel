@@ -217,6 +217,19 @@ class DepictedSubject(BaseModel):
     id: Ulid
 
 
+class SubjectDeclaration(BaseModel):
+    """A subject image's declared subject (#830; FR-IMG-14): a consumer-described subject in no
+    story or catalog, by a per-request id, with the consumer's ``label`` and the ``true_age`` it
+    declared. Only a subject image carries one: no upload or other request declares it."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    kind: Literal["subject"]
+    id: Ulid
+    label: str
+    true_age: int
+
+
 def _parameters_bounded(value: dict[str, Any] | None) -> dict[str, Any] | None:
     if value is not None:
         size = len(json.dumps(value, separators=(",", ":"), sort_keys=True).encode())
@@ -391,7 +404,7 @@ class MediaAsset(BaseModel):
     generation_metadata: dict[str, Any] | None
     source: MediaSource
     state: MediaState
-    depicted_subjects: list[DepictedSubject]
+    depicted_subjects: list[DepictedSubject | SubjectDeclaration]
     created_at: datetime
     created_by: str
     poster_media_id: str | None
@@ -407,6 +420,13 @@ class MediaAsset(BaseModel):
         default=None,
         description="A story image's asset (FR-IMG-10; #261): what its perceivable inputs were "
         "built from (`none` for an upload: Epistrel built none); `null` for any other asset.",
+    )
+    origin: Literal["subject"] | None = Field(
+        default=None,
+        description="`subject` for an image generated for a consumer-described subject in no "
+        "story or catalog (`POST /subject-images`, FR-IMG-14): it is kept while live until it "
+        "is deleted or its owner is offboarded, and the media sweep never purges it; `null` "
+        "for any other asset.",
     )
 
 
@@ -811,6 +831,7 @@ _COLUMNS = (
     media_assets.c.check_endpoint,
     media_assets.c.policy_results,
     media_assets.c.viewpoint_basis,
+    media_assets.c.origin,
 )
 _FROM = media_assets.outerjoin(
     content_rating_versions,
@@ -1810,6 +1831,7 @@ __all__ = [
     "Probed",
     "ReferenceSource",
     "Staged",
+    "SubjectDeclaration",
     "UploadFile",
     "UploadImageCheck",
     "assert_referenceable",

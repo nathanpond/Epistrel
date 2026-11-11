@@ -13661,3 +13661,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the "Large casts" guidance is a README section placed right after "Configuration", the README's deployment-settings section. FR-MULTI-12's text in docs/03 now ends with a sentence citing it and P-11. No new FR, so the §15 row count stays at 448 and the count line at `M9 8`. FR-MULTI-12's §15 row gains `P-11 (M9)`, and the §14 overview gains "Performance P-11 §11".
   **Why:** the AC asks for the section "in the operator docs where deployment settings are described" and for FR-MULTI-12 to cite it. The planner puts it in README's deployment-settings area.
   **Issue:** #829
+- **Decision:** the results are named `perf/results/2026-11-11-casts.{json,md}`, after the runner's UTC date (measured 2026-11-11T02:25:32Z), not 2026-11-10. The P-11 statement growth (about one per co-located character) is a once-per-character `characters.is_player` read in the commit (#619's memoised `partitions.is_player`; probed at 10 and 30 characters, +20 reads and +1 other statement). It is reported, not changed: lowering the cost is out of scope (#754, M11, covers commit batching).
+  **Why:** existing result files carry the UTC date of their run, and the issue names `<date>`. The README explains the statement figure from that probe, not from a guess.
+  **Issue:** #829

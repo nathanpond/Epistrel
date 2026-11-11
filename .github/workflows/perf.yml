@@ -28,6 +28,13 @@
 # Dispatching `suite: weekly-p04` runs `weekly-structured` and `weekly-multi` alone (#587): no
 # scale suite, so `weekly-docs` (which needs its result) is skipped and the rolling PR is left
 # as it is. It exists to prove a P-04 change on a branch before it merges.
+#
+# `weekly-casts` runs P-11 (#829, FR-MULTI-12) on the same schedule: `tests/perf/test_p_11.py -m
+# perf_weekly`, casts of 10, 20, 50 and 100 characters (3 primaries, the rest silent) and a
+# 50-character reactive variant, on the stub at 0 ms. It reports and gates nothing on its
+# figures; it fails only on a failed, lost or reduced turn. It uploads `build/perf/p_11.{json,md}`
+# (artifact `perf-casts`), which the owner commits by hand as `perf/results/<date>-casts.*`; the
+# README's "Large casts" section quotes them. Dispatching `suite: casts` runs it alone.
 name: Perf
 
 on:
@@ -37,12 +44,13 @@ on:
   workflow_dispatch:
     inputs:
       suite:
-        description: nightly (P-03), weekly (the scale suite and its docs PR) or weekly-p04 (P-04's structured and multi-character workloads alone, no docs PR)
+        description: nightly (P-03), weekly (the scale suite and its docs PR), weekly-p04 (P-04's structured and multi-character workloads alone, no docs PR) or casts (P-11's large casts alone)
         type: choice
         options:
           - nightly
           - weekly
           - weekly-p04
+          - casts
         default: nightly
 
 permissions:
@@ -348,6 +356,67 @@ jobs:
         run: |
           tail_log=$(tail -20 build/perf/multi.log 2>/dev/null || true)
           body=$(printf '%s\n' "The weekly P-04 multi-character run failed (host: github-runner, not the reference host): $RUN_URL" '' '```' "$tail_log" '```' '' 'The report is in the run artifact `perf-multi`.')
+          open=$(gh issue list --state open --search 'in:title "Weekly perf run failed"' --json number --jq '.[0].number // empty')
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "Weekly perf run failed $(date -u +%F)" --label bug --label needs-triage --label performance --body "$body"
+          fi
+
+  weekly-casts:
+    if: github.event.schedule == '0 3 * * 0' || (github.event_name == 'workflow_dispatch' && (inputs.suite == 'weekly' || inputs.suite == 'casts'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    env:
+      EPISTREL_TEST_PERF_HOST: github-runner
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.2  # exact: setup-uv publishes no floating major tag past v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+          enable-cache: true
+      - run: uv sync --frozen
+      # Integration fixtures start pgvector/pgvector:pg16 through testcontainers on the runner's
+      # Docker. The test writes build/perf/p_11.json and build/perf/p_11.md.
+      - name: P-11 large casts
+        id: casts
+        run: |
+          mkdir -p build/perf
+          set -o pipefail
+          uv run pytest tests/perf/test_p_11.py -m perf_weekly -s -rA --junitxml=build/perf/casts-junit.xml 2>&1 | tee build/perf/casts.log
+      - name: Summarise
+        if: always()
+        env:
+          OUTCOME: ${{ steps.casts.outcome }}
+        run: |
+          {
+            printf '%s\n' "## P-11 large casts: $OUTCOME (host: github-runner, not the reference host; reported, not gated)" ''
+            if [ -f build/perf/p_11.md ]; then cat build/perf/p_11.md; else printf '%s\n' '(no report written)'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-casts
+          path: |
+            build/perf/p_11.json
+            build/perf/p_11.md
+            build/perf/casts.log
+          if-no-files-found: warn
+      - name: Report a red run
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=$(grep -E '^(FAILED|ERROR) ' build/perf/casts.log | head -20 || true)
+          body=$(printf '%s\n' "The weekly P-11 large-cast run failed (a failed, lost or reduced turn; host: github-runner): $RUN_URL" '' 'Failed:' '```' "$failed" '```' '' 'The log is in the run artifact `perf-casts`.')
           open=$(gh issue list --state open --search 'in:title "Weekly perf run failed"' --json number --jq '.[0].number // empty')
           if [ -n "$open" ]; then
             gh issue comment "$open" --body "$body"

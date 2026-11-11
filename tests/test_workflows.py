@@ -238,6 +238,33 @@ def test_perf_runs_nightly_and_on_dispatch_and_reports_a_red_run() -> None:
     assert "Nightly perf run failed" in report["run"]
 
 
+def test_perf_runs_p_11_weekly_and_on_its_own_dispatch() -> None:
+    """#829: P-11's large casts run every Sunday and on dispatch (``suite: weekly`` or ``casts``)
+    on the GitHub-hosted runner, labelled ``github-runner``: only ``tests/perf/test_p_11.py``'s
+    ``perf_weekly`` test, its figures uploaded as ``perf-casts`` and a red run reported.
+
+    Complement asserted: the docs job does not wait on it (its figures are committed by hand),
+    and neither the scale suite nor P-04's workloads run on ``suite: casts``."""
+    wf = _workflow("perf.yml")
+    casts = wf["jobs"]["weekly-casts"]
+    assert "'0 3 * * 0'" in casts["if"]
+    assert "inputs.suite == 'casts'" in casts["if"]
+    assert "inputs.suite == 'weekly'" in casts["if"]
+    assert casts["permissions"] == {"contents": "read", "issues": "write"}
+    assert casts["env"]["EPISTREL_TEST_PERF_HOST"] == "github-runner"
+    steps = _steps(wf, "weekly-casts")
+    run = next(s for s in steps if s.get("id") == "casts")
+    assert "tests/perf/test_p_11.py -m perf_weekly" in run["run"]
+    (upload,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+    assert upload["with"]["name"] == "perf-casts"
+    assert "build/perf/p_11.json" in upload["with"]["path"]
+    report = next(s for s in steps if s.get("name") == "Report a red run")
+    assert "Weekly perf run failed" in report["run"]
+    assert "weekly-casts" not in wf["jobs"]["weekly-docs"]["needs"]
+    for name in ("weekly", "weekly-structured", "weekly-multi"):
+        assert "'casts'" not in wf["jobs"][name]["if"], name
+
+
 def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
     """#153: the scale suite every Sunday (03:00 UTC) and on dispatch (``suite: weekly``) on the
     GitHub-hosted runner, labelled ``github-runner``, with the fixture cached by its key; only
@@ -254,6 +281,7 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         "nightly",
         "weekly",
         "weekly-p04",
+        "casts",
     ]
     weekly, docs = wf["jobs"]["weekly"], wf["jobs"]["weekly-docs"]
     assert "'0 3 * * 0'" in weekly["if"]

@@ -22,6 +22,7 @@ from epistrel.core.tables.beliefs import (
     beliefs,
     nested_belief_state,
 )
+from epistrel.core.tables.bench import character_bench
 from epistrel.core.tables.bundles import bundle_jobs
 from epistrel.core.tables.catalog import (
     character_catalog,
@@ -131,6 +132,7 @@ __all__ = [
     "bundle_jobs",
     "capability_coverage",
     "certification_runs",
+    "character_bench",
     "character_catalog",
     "character_snapshots",
     "character_versions",

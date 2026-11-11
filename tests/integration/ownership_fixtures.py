@@ -393,6 +393,18 @@ async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity
     return {"character_id": entity.ids["ada"]}
 
 
+async def _benched_character(
+    client: httpx.AsyncClient, kind: Kind, entity: Entity
+) -> dict[str, Any]:
+    """The story's Ada, benched by the owner (#831), for a reactivation."""
+    ada = entity.ids["ada"]
+    benched = await client.post(
+        kind.path(entity.id, f"/characters/{ada}/bench"), headers=headers(OWNER)
+    )
+    await ok(benched, 200)
+    return {"character_id": ada}
+
+
 PROMPT_ONLY = {"clock": {"level": "prompt_only"}, "states": {"level": "prompt_only"}}
 """#203: the Lite story's overrides for the clock, scheduled-event and State routes: the world
 clock and States in their prompt-only Lite forms (FR-LITE-5)."""
@@ -925,6 +937,9 @@ CALLS: dict[tuple[str, str], Call] = {
         200, {"weight": "minor"}, prepare=_story_character
     ),
     ("POST", f"{S}/entities/{{entity_id}}/model"): Call(201, {"true_age": 40}, prepare=_unmodeled),
+    # -- stories: a character benched and reactivated (#831)
+    ("POST", f"{S}/characters/{{character_id}}/bench"): Call(200, {}, prepare=_story_character),
+    ("POST", f"{S}/characters/{{character_id}}/reactivate"): Call(200, prepare=_benched_character),
     # -- stories: the world clock (#193): read, settings changed, and an advance, on the story
     # running the clock at prompt_only (#203: a Lite story's form)
     ("GET", f"{S}/clock"): Call(200),

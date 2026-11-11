@@ -1472,6 +1472,16 @@
       "requirement": "FR-MULTI-7"
     },
     {
+      "method": "POST",
+      "path": "/stories/{story_id}/characters/{character_id}/bench",
+      "requirement": "FR-MULTI-13"
+    },
+    {
+      "method": "POST",
+      "path": "/stories/{story_id}/characters/{character_id}/reactivate",
+      "requirement": "FR-MULTI-13"
+    },
+    {
       "method": "GET",
       "path": "/stories/{story_id}/clock",
       "requirement": "FR-CLOCK-13"

@@ -133,6 +133,7 @@ from epistrel.core.turns import (
     REPLY_BEAT,
     RecordedTurn,
     TurnInputs,
+    cast_at_turn,
     joined_input,
     read_correctable,
     read_regenerable,
@@ -147,7 +148,7 @@ from epistrel.observability.logging import get_logger
 from epistrel.observability.metrics import count_degradation
 from epistrel.orchestrator.budget import GUARDRAIL_OUTPUT, TurnBudget, plan_lite_budget
 from epistrel.orchestrator.images import auto as auto_images
-from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
+from epistrel.orchestrator.lite.cast import ResolvedCast, refuse_benched, resolve_cast
 from epistrel.orchestrator.lite.context import (
     TIME_ESTIMATE_SKIPPED,
     LiteContext,
@@ -277,7 +278,8 @@ async def respond(
 ) -> RespondResult:
     """Play one Lite turn; see the module docstring."""
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
-    story = await read_story_cast(db, story_id)
+    # #831 (FR-MULTI-13): a benched character named is 409; the rest never see one.
+    story = refuse_benched(await read_story_cast(db, story_id), request)
     cast = resolve_cast(story, request)
     if any(getattr(request, k) is not None for k in TURN_OVERRIDES):
         # #174: a Lite story renders one combined reply; there is no mode or order to override.
@@ -423,7 +425,8 @@ async def run_queued(
     was queued, and its output viewpoint was resolved then (``ctx.viewpoint``); the turn reads
     the story as the turns before it left it. ``planned``: the call cap and deadline the turn
     was planned with when it was queued (its clock starts now, when it is played)."""
-    story = await read_story_cast(db, story_id)
+    # #831 (FR-MULTI-13): a benched character named is 409; the rest never see one.
+    story = refuse_benched(await read_story_cast(db, story_id), request)
     cast = resolve_cast(story, request)
     # A pause (#118) fails a queued turn when it would start: the drainer records the error.
     await pause.refuse(db, story_id, story.status)
@@ -497,6 +500,8 @@ async def regenerate(
         recorded = await read_correctable(db, story_id, correction.turn)
     else:
         recorded = await read_regenerable(db, story_id, request.turn)
+    # #831: the cast as the turn saw it (benched before it out; its render ids kept).
+    story = await cast_at_turn(db, story, story_id, recorded.turn)
     replay = _replayed_request(
         recorded, request, None if correction is None else correction.player_input
     )

@@ -581,6 +581,32 @@ class CharacterWeightSet(EventPayload):
     previous: str
 
 
+@register("character_benched", category=EventCategory.CONTROL)
+class CharacterBenchedEvent(EventPayload):
+    """A story character was benched (FR-MULTI-13; #831's ``POST
+    /stories/{id}/characters/{cid}/bench``): its ``mode`` (``sequestered``; #832 adds
+    ``present``) and the participation role it had, which a reactivation restores. Recorded by
+    an inter-turn slot operation (``N⁺k`` after the head turn), so a truncation to N or earlier
+    un-benches the character and a fork through the slot copies the bench. Identifiers only."""
+
+    character_id: str
+    mode: str
+    previous_role: str
+    previous_fixed: bool
+
+
+@register("character_reactivated", category=EventCategory.CONTROL)
+class CharacterReactivated(EventPayload):
+    """A benched story character was reactivated (FR-MULTI-13; #831's ``…/reactivate``): the
+    ``mode`` it left and the participation role restored from its bench. Recorded by an
+    inter-turn slot operation, as the bench is. Identifiers only."""
+
+    character_id: str
+    mode: str
+    restored_role: str
+    restored_fixed: bool
+
+
 @register("character_modeled", category=EventCategory.DERIVED)
 class CharacterModeled(EventPayload):
     """A story entity became a modeled character (FR-EPI-9; #163): the trigger

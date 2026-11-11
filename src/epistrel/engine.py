@@ -369,6 +369,9 @@ CODECS: dict[str, ResultCodec[Any]] = {
     "set_character_weight": ResultCodec.of(stories.CharacterWeighted),
     # #176: a character's participation role (a story configuration write).
     "set_participation": ResultCodec.of(stories.ParticipationSet, revision_field=_CONFIG),
+    # #831: a character benched and reactivated (story-scoped inter-turn slot operations).
+    "bench_character": ResultCodec.of(stories.BenchChanged),
+    "reactivate_character": ResultCodec.of(stories.BenchChanged),
     # #193: the world clock moved forward between turns, and its settings changed.
     "advance_clock": ResultCodec.of(clock_service.ClockMoved),
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
@@ -3661,6 +3664,69 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
+        )
+
+    async def bench_character(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.BenchRequest | None = None,
+    ) -> stories.BenchChanged:
+        """Bench a story character (FR-MULTI-13; #831): it keeps its partition and memories,
+        takes no part in any turn and does not count toward ``max_story_cast``; benched
+        ``sequestered`` (the default ``mode``), it perceives nothing. An inter-turn slot
+        operation that bumps the timeline revision. 404 for an unknown story or character; 409
+        ``story_archived``; 409 ``revision_conflict``; 423 ``story_busy`` while a turn is in
+        flight; 422 ``validation_error`` (``player_not_benchable``, ``unsupported_mode``); 409
+        ``already_benched``. Answers the character as a read lists it, with its ``bench``."""
+        principal = self.require_principal(ctx)
+        body = request if request is not None else stories.BenchRequest()
+
+        async def run(ctx: RequestContext) -> stories.BenchChanged:
+            return await stories.bench_character(
+                self.db,
+                story_id,
+                character_id,
+                body,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "bench_character",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(body)},
+        )
+
+    async def reactivate_character(
+        self, ctx: RequestContext, story_id: str, character_id: str
+    ) -> stories.BenchChanged:
+        """Reactivate a benched story character (FR-MULTI-13; #831): its participation role is
+        restored from its bench. 404; 409 ``story_archived``; 409 ``revision_conflict``; 423
+        ``story_busy``; 422 ``cast_max`` when the active cast is full; 409 ``not_benched``.
+        Answers the character as a read lists it."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.BenchChanged:
+            return await stories.reactivate_character(
+                self.db,
+                story_id,
+                character_id,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+                expected_revision=ctx.expected_revision,
+            )
+
+        return await self._keyed(
+            ctx,
+            "reactivate_character",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id},
         )
 
     # -- the world clock (FR-CLOCK-1,5,13; #193) ----------------------------------------------

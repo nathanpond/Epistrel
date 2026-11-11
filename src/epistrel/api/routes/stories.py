@@ -84,6 +84,8 @@ from epistrel.core.profiles.store import VERSION_MAX
 from epistrel.core.settings_schema import DEFAULT_PLAYER_AUTHORITY, ConfigClass, StorySettings
 from epistrel.core.stories import (
     AdHocCharacter,
+    BenchChanged,
+    BenchRequest,
     CharacterView,
     CharacterWeighted,
     CharacterWeightRequest,
@@ -160,16 +162,27 @@ class ParticipationBody(BaseModel):
     fixed: bool
 
 
+class BenchBody(BaseModel):
+    """A benched character's bench (FR-MULTI-13; #831): its ``mode`` (``sequestered``: it
+    perceives nothing; ``present`` is #832's) and ``since_turn``, the head turn it was benched
+    after (0 before any turn)."""
+
+    mode: Literal["sequestered", "present"]
+    since_turn: int
+
+
 class CharacterBody(CharacterRefBody):
     """A character as a read returns it; ``is_player`` marks a player character. A story created
     from a scenario (#119) names each character's ``role_id`` and, for a catalog character, its
     ``source``; a blank story's characters carry neither. ``participation`` (#176) is every
-    non-player character's role; the player's character has none."""
+    non-player character's role; the player's character has none. ``bench`` (#831) is a benched
+    character's bench, omitted while it is not benched."""
 
     is_player: bool
     role_id: str | None = Field(default=None, exclude_if=lambda v: v is None)
     source: CatalogSourceBody | None = Field(default=None, exclude_if=lambda v: v is None)
     participation: ParticipationBody | None = Field(default=None, exclude_if=lambda v: v is None)
+    bench: BenchBody | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class ModeledAtBody(BaseModel):
@@ -207,6 +220,22 @@ class CharacterWeightedBody(MutationResponse):
         body = _character(done.character)
         assert isinstance(body, OmniscientCharacterBody)  # noqa: S101 - an omniscient item
         return cls(character=body, timeline_revision=done.timeline_revision)
+
+
+class BenchedCharacterBody(MutationResponse):
+    """A character after a bench or a reactivation (FR-MULTI-13; #831): the character as an
+    omniscient read lists it, its ``bench`` (``null`` once reactivated) and the story's
+    ``timeline_revision`` after (the operation is positional, so ``config_revision`` does not
+    move)."""
+
+    character: OmniscientCharacterBody
+    bench: BenchBody | None
+
+    @classmethod
+    def of(cls, done: BenchChanged) -> BenchedCharacterBody:
+        body = _character(done.character)
+        assert isinstance(body, OmniscientCharacterBody)  # noqa: S101 - an omniscient item
+        return cls(character=body, bench=body.bench, timeline_revision=done.timeline_revision)
 
 
 class ParticipationSetBody(MutationResponse):
@@ -404,6 +433,14 @@ class PruningBody(BaseModel):
     next_run_at: str | None
 
 
+class StoryCastBody(BaseModel):
+    """#831: the story's cast counts: ``active`` (the full characters FR-MULTI-12's limit
+    counts: weight ``major``, not benched) and ``benched``."""
+
+    active: int
+    benched: int
+
+
 class StoryBody(StorySummaryBody):
     """One story: the summary, its cast (true ages only for an omniscient read), its settings,
     its engine profile and the version it runs on (#113; ``GET /stories/{id}/effective-config``
@@ -427,6 +464,9 @@ class StoryBody(StorySummaryBody):
     pruning: PruningBody | None = None
     """#703 (FR-STORE-32): the story's ``prune_policy`` (``null``: off), its latest pruning and,
     while the policy is on, the daily run's next time."""
+    cast: StoryCastBody | None = None
+    """#831 (FR-MULTI-13): ``{active, benched}``: the full characters ``max_story_cast``
+    counts (weight ``major``, not benched) and the benched characters."""
     amendment_checks_pending: AmendmentChecksBody | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
@@ -459,6 +499,7 @@ class StoryBody(StorySummaryBody):
             if story.scenario is None
             else ScenarioOriginBody(id=story.scenario.id, version=story.scenario.version),
             pruning=None if story.pruning is None else PruningBody.model_validate(story.pruning),
+            cast=None if story.cast is None else StoryCastBody.model_validate(story.cast),
         )
 
 
@@ -789,6 +830,7 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
             promoted_to=list(character.promoted_to or ()),
             weight="minor" if character.weight == "minor" else "major",
             participation=_participation(character),
+            bench=_bench(character),
             modeled_at=None
             if character.modeled_at is None
             else ModeledAtBody(
@@ -806,7 +848,12 @@ def _character(character: CharacterView) -> OmniscientCharacterBody | CharacterB
         role_id=character.role_id,
         source=source,
         participation=_participation(character),
+        bench=_bench(character),
     )
+
+
+def _bench(character: CharacterView) -> BenchBody | None:
+    return None if character.bench is None else BenchBody.model_validate(character.bench)
 
 
 def _participation(character: CharacterView) -> ParticipationBody | None:
@@ -1208,8 +1255,8 @@ async def promote_character(
         '`{cap: "cast_max", limit, actual}`; a `major` one set `major` again never is. '
         "A control operation: it bumps the "
         "story's revision and records `character_weight_set`; 409 `story_archived`, 423 "
-        "`story_busy` while a turn is in flight. Answers the character as an omniscient read "
-        "lists it."
+        "`story_busy` while a turn is in flight, 409 `character_benched` for a benched "
+        "character (FR-MULTI-13). Answers the character as an omniscient read lists it."
     ),
 )
 async def set_character_weight(
@@ -1241,8 +1288,9 @@ async def set_character_weight(
         "prospective story configuration write: it moves the story's `config_revision` and "
         "records a `config_changes` row (`participation:<character id>`); a turn already "
         "running keeps its roles. The player's character has no role (422 `is_player`); 404 "
-        "for a character the story does not have; 409 `story_archived`. Setting the role it has "
-        "changes nothing. Answers the character as a read lists it."
+        "for a character the story does not have; 409 `story_archived`; 409 `character_benched` "
+        "for a benched character (FR-MULTI-13; reactivation restores the role it had). Setting "
+        "the role it has changes nothing. Answers the character as a read lists it."
     ),
 )
 async def set_participation(
@@ -1255,6 +1303,82 @@ async def set_participation(
 ) -> ParticipationSetBody:
     done = await engine.set_participation(ctx, story_id, character_id, body)
     return answered(ParticipationSetBody.of(done), ctx, response, replayed=done.replayed)
+
+
+_BENCH_RULES = (
+    "Benching is positional (FR-MULTI-13): an inter-turn slot operation after the head turn that "
+    "records an event and bumps the story's `timeline_revision` (no `config_changes` row). A "
+    "truncation to before it undoes it, an untruncation re-applies it, a swap to another variant "
+    "of that turn drops it, and a fork after it keeps it. "
+)
+
+
+@router.post(
+    "/{story_id}/characters/{character_id}/bench",
+    response_model=BenchedCharacterBody,
+    operation_id="bench_character",
+    summary="Bench a story character",
+    description=(
+        "Bench a character (FR-MULTI-13). It keeps its partition and memories, but takes no "
+        "part in any turn: it is never rendered, has no participation role, is in no other "
+        "character's cast in a prompt, and does not count toward the deployment's "
+        "`max_story_cast`. A turn request naming it (its actor, a render target, a "
+        "`character:<id>` output viewpoint, a whisper target, `characters_present` or a role "
+        "override) is 409 `character_benched`, and so are participation and weight writes on "
+        "it. A purpose call from its viewpoint (with `store_as_memory`) and the operator's "
+        "belief, fact and memory writes still reach it. `mode` is `sequestered` (the default): "
+        "while benched the character perceives nothing, whatever its location, and receives no "
+        "exposure, belief or perceived memory. On a Lite story there is no per-character "
+        "perception: benching takes the character out of the cast and the rendering only, so "
+        "a reactivated character's prompts include the transcript from its time away. "
+        + _BENCH_RULES
+        + "404 for an unknown story or character; 409 `story_archived`; 423 `story_busy` while "
+        "a turn is in flight; 422 `validation_error` for the player's character "
+        "(`reason: player_not_benchable`) or a mode not supported yet (`present`: "
+        "`reason: unsupported_mode`); 409 `already_benched` `{character_id, mode, since_turn}` "
+        "for a benched character, in any mode. Answers the character as an omniscient read "
+        "lists it, with its `bench` `{mode, since_turn}`."
+    ),
+)
+async def bench_character(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+    body: Annotated[BenchRequest | None, Body()] = None,
+) -> BenchedCharacterBody:
+    done = await engine.bench_character(ctx, story_id, character_id, body)
+    return answered(BenchedCharacterBody.of(done), ctx, response, replayed=done.replayed)
+
+
+@router.post(
+    "/{story_id}/characters/{character_id}/reactivate",
+    response_model=BenchedCharacterBody,
+    operation_id="reactivate_character",
+    summary="Reactivate a benched story character",
+    description=(
+        "Bring a benched character back (FR-MULTI-13): it takes part in turns again, with the "
+        "participation role it had when it was benched, and counts toward `max_story_cast` "
+        "again. It keeps every memory it held; a `sequestered` character learned nothing while "
+        "benched (on a Lite story its prompts include the transcript from its time away). "
+        + _BENCH_RULES
+        + "The body is empty. 404 for an unknown story or character; 409 `story_archived`; 423 "
+        "`story_busy` while a turn is in flight; 422 `validation_error` with "
+        '`{cap: "cast_max", limit, actual}` when the active cast is full (a `minor` character '
+        "never counts); 409 `not_benched` for a character that is not benched. Answers the "
+        "character as an omniscient read lists it, with `bench: null`."
+    ),
+)
+async def reactivate_character(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> BenchedCharacterBody:
+    done = await engine.reactivate_character(ctx, story_id, character_id)
+    return answered(BenchedCharacterBody.of(done), ctx, response, replayed=done.replayed)
 
 
 @router.post(

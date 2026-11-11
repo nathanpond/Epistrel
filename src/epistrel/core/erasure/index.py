@@ -920,6 +920,8 @@ EXEMPT_TABLES: Mapping[str, str] = {
     "reasons, predicate shape keys, confidences, verdict codes and consequences",
     "utterances": "speech acts (#150): ids, proposition ids and three labels; the beat events "
     "they point at are indexed",
+    "character_bench": "a character's bench versions (#831): ids, a bench mode, a participation "
+    "role and positions; the bench events are indexed",
     "overflow_episodes": "the hot set's overflow episodes (#147): scope kinds, ids and turn "
     "numbers",
     "relationships": "a projection of facts, which are erased; refolded by erasure's rebuilt "

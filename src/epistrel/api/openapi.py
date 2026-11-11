@@ -317,6 +317,10 @@ ERROR_STATUS: dict[str, int] = {
     "model_output_invalid": 502,
     "memory_text_empty": 422,
     "memory_text_too_long": 422,
+    # Benched characters (#831).
+    "character_benched": 409,
+    "already_benched": 409,
+    "not_benched": 409,
     "provider_in_use": 409,
     "length_required": 411,
     "draft_too_large": 413,
@@ -590,6 +594,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
         # #608: a multi-primary override (``interaction_mode``, ``sequence_order``,
         # ``simultaneous_tie_break``) on a ``combined`` or Lite story (``multi.refuse_override``).
         "module_off",
+        # #831: a request naming a benched character.
+        "character_benched",
     ),
     "regenerate": (
         *_GATED,
@@ -796,9 +802,12 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     ),
     "promote_character": ("rating_retired", "seed_memory_invalid", "erased_subject_referenced"),
     # #163: an author's weight change and modeling directive (control operations).
-    "set_character_weight": ("story_archived", "story_paused", "story_busy"),
+    "set_character_weight": ("story_archived", "story_paused", "story_busy", "character_benched"),
     # #176: a character's participation role (a story configuration write).
-    "set_participation": ("story_archived",),
+    "set_participation": ("story_archived", "character_benched"),
+    # #831: a character benched and reactivated (inter-turn slot operations).
+    "bench_character": ("story_archived", "story_paused", "story_busy", "already_benched"),
+    "reactivate_character": ("story_archived", "story_paused", "story_busy", "not_benched"),
     "model_entity": (
         "story_archived",
         "story_paused",

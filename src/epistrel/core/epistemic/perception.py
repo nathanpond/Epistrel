@@ -230,6 +230,10 @@ class SceneState:
     they perceive nothing while it holds."""
     entity_of: Mapping[str, str] = field(default_factory=dict)
     """Each character's entity id, by character id (a claim names the entity)."""
+    absent: frozenset[str] = frozenset()
+    """#831 (FR-MULTI-13): the benched characters the scene leaves out (``sequestered``,
+    ``core.bench.absent_from_scene``): never placed, never moved in, never co-located, and
+    never a perceiver of anything (``route_perception``)."""
 
     def at(self, character_id: str | None) -> str | None:
         return None if character_id is None else self.placements.get(character_id)
@@ -238,7 +242,9 @@ class SceneState:
         """The characters authoritatively at ``location`` (none for ``None``)."""
         if location is None:
             return frozenset()
-        return frozenset(c for c, where in self.placements.items() if where == location)
+        return frozenset(
+            c for c, where in self.placements.items() if where == location and c not in self.absent
+        )
 
     def barrier(self, a: str, b: str) -> str | None:
         """The barrier between two adjoining places; ``None`` when they do not adjoin."""
@@ -266,6 +272,8 @@ class SceneState:
         """The state after ``moves`` (a character to a location; ``None``: unplaced)."""
         placements = dict(self.placements)
         for character_id, location in moves:
+            if character_id in self.absent:
+                continue  # #831: a sequestered character never enters the scene
             if location is None:
                 placements.pop(character_id, None)
             else:
@@ -617,6 +625,9 @@ def route_perception(
     here). #200 (FR-CLOCK-15): an unconscious character (``SceneState.unconscious``) perceives
     nothing but its own ``think``. Pure: the same inputs always give the same answer."""
     found = _route(beat, scene_state, qualifiers, level)
+    if scene_state.absent:
+        # #831 (FR-MULTI-13): a sequestered benched character perceives nothing at all.
+        found = [p for p in found if p.character_id not in scene_state.absent]
     if not scene_state.unconscious or beat.kind == "think":
         return found
     return [p for p in found if p.character_id not in scene_state.unconscious]

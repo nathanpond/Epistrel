@@ -2191,3 +2191,30 @@ class ModelOutputInvalid(EpistrelError):
 
     code = "model_output_invalid"
     http_status = 502
+
+
+class CharacterBenched(EpistrelError):
+    """The request names a benched story character (FR-MULTI-13; #831): a turn naming it (its
+    actor, a render target, the output viewpoint, a whisper target, ``characters_present`` or a
+    participation override), or a participation or weight write on it. Nothing is written.
+    ``details``: ``character_id``."""
+
+    code = "character_benched"
+    http_status = 409
+
+
+class AlreadyBenched(EpistrelError):
+    """A bench of a story character that is benched already, in any mode (FR-MULTI-13; #831).
+    Nothing is written. ``details``: ``character_id``, ``mode`` and ``since_turn`` (the bench in
+    force)."""
+
+    code = "already_benched"
+    http_status = 409
+
+
+class NotBenched(EpistrelError):
+    """A reactivation of a story character that is not benched (FR-MULTI-13; #831). Nothing is
+    written. ``details``: ``character_id``."""
+
+    code = "not_benched"
+    http_status = 409

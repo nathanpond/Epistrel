@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 if TYPE_CHECKING:
     from epistrel.core.events import Operation
 
+from epistrel.core.bench import absent_from_scene
 from epistrel.core.epistemic.perception import (
     CO_LOCATION,
     FULL,
@@ -167,6 +168,12 @@ async def load_scene(
     from epistrel.core.membership import Position
 
     by_entity, cast = await _cast(conn, story_id)
+    # #831 (FR-MULTI-13): a sequestered benched character is out of the scene: not placed, on
+    # no channel, never a perceiver.
+    absent = await absent_from_scene(conn, story_id, turn)
+    if absent:
+        by_entity = {e: c for e, c in by_entity.items() if c not in absent}
+        cast = {c: row for c, row in cast.items() if c not in absent}
     now = await world_clock.story_time_at(conn, story_id, Position(turn))
     start = (turn - 1, START_SLOT)
     rows = [
@@ -288,6 +295,7 @@ async def load_scene(
         places=places,
         unconscious=unconscious & frozenset(cast),
         entity_of={c: e for e, c in by_entity.items()},
+        absent=absent,
     )
     return scene, {beat: tuple(found) for beat, found in moves.items()}
 

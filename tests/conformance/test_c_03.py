@@ -165,6 +165,7 @@ from epistrel.api.routes.states import (
     StateWrittenBody,
 )
 from epistrel.api.routes.stories import (
+    BenchedCharacterBody,
     CharacterWeightedBody,
     IngestResponse,
     ParticipationSetBody,
@@ -262,6 +263,7 @@ from epistrel.core.states.api import StateDefineRequest, StateSetRequest
 from epistrel.core.states.proposals import StateProposalApproveRequest
 from epistrel.core.stories import (
     AdHocCharacter,
+    BenchRequest,
     CharacterWeightRequest,
     ModelEntityRequest,
     ParticipationSpec,
@@ -1980,6 +1982,19 @@ def _steps() -> list[Step]:
                     CTX, ids["story"], ids["dale"], ParticipationSpec(role="primary", fixed=True)
                 )
             ),
+        ),
+        # #831: the added character benched, then reactivated (its role restored).
+        Step(
+            "bench_character",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/bench", {"mode": "sequestered"}),
+            lambda e, ids: _benched(
+                e.bench_character(CTX, ids["story"], ids["dale"], BenchRequest(mode="sequestered"))
+            ),
+        ),
+        Step(
+            "reactivate_character",
+            lambda ids: Rest("POST", f"{s}/characters/{{dale}}/reactivate"),
+            lambda e, ids: _benched(e.reactivate_character(CTX, ids["story"], ids["dale"])),
         ),
         # #193: the world clock read, its settings changed, and an advance, on the Lite story
         # running the clock and States at prompt_only from here on (#203).
@@ -4172,6 +4187,10 @@ async def _weighted(call: Awaitable[Any]) -> dict[str, Any]:
     return dump(CharacterWeightedBody.of(await call))
 
 
+async def _benched(call: Awaitable[Any]) -> dict[str, Any]:
+    return dump(BenchedCharacterBody.of(await call))
+
+
 async def _modelable(engine: Engine, ids: Ids) -> None:
     """An unmodeled person of the story (#163's author directive models it)."""
     async with engine.db.begin() as conn:
@@ -5049,6 +5068,8 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         ("add_story_character", 201),
         ("promote_character", 201),
         ("set_character_weight", 200),
+        ("bench_character", 200),
+        ("reactivate_character", 200),
         ("create_character_draft", 201),
         ("save_character_draft", 200),
         ("save_character_draft", 409),

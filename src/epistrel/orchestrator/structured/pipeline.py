@@ -288,6 +288,7 @@ from epistrel.core.turns import (
     RecordedTurn,
     StoryCast,
     TurnInputs,
+    cast_at_turn,
     joined_input,
     read_correctable,
     read_regenerable,
@@ -363,7 +364,7 @@ from epistrel.orchestrator.compose import compose as composing
 from epistrel.orchestrator.epistemic import adjudicate, speech
 from epistrel.orchestrator.images import auto as auto_images
 from epistrel.orchestrator.lite import pipeline as lite
-from epistrel.orchestrator.lite.cast import ResolvedCast, resolve_cast
+from epistrel.orchestrator.lite.cast import ResolvedCast, refuse_benched, resolve_cast
 from epistrel.orchestrator.lite.prompt import prompt_hash
 from epistrel.orchestrator.lite.schemas import (
     BudgetReport,
@@ -614,7 +615,8 @@ async def _respond(
     providers: InProcessRegistry | None = None,
 ) -> RespondResult:
     started = ctx.received_at if ctx.received_at is not None else time.monotonic()
-    story = await read_story_cast(db, story_id)
+    # #831 (FR-MULTI-13): a benched character named is 409; the rest never see one.
+    story = refuse_benched(await read_story_cast(db, story_id), request)
     concurrency = await turn_gate.read_concurrency(db, story_id)
     resolved_cast = resolve_structured_cast(
         story, request, lite._captured(concurrency).settings, story_id
@@ -733,7 +735,7 @@ async def run_queued(
     providers: InProcessRegistry | None = None,
 ) -> RespondResult:
     """Play a queued structured turn (#63's drainer took the slot for it); see Lite's."""
-    story = await read_story_cast(db, story_id)
+    story = refuse_benched(await read_story_cast(db, story_id), request)
     resolved_cast = resolve_structured_cast(
         story, request, lite._captured(concurrency).settings, story_id
     )
@@ -820,6 +822,8 @@ async def regenerate(
         recorded = await read_correctable(db, story_id, correction.turn)
     else:
         recorded = await read_regenerable(db, story_id, request.turn)
+    # #831: the cast as the turn saw it (benched before it out; its render ids kept).
+    story = await cast_at_turn(db, story, story_id, recorded.turn)
     replay = lite._replayed_request(
         recorded, request, None if correction is None else correction.player_input
     )

@@ -1,0 +1,292 @@
+{
+  "casts": [
+    {
+      "calls_per_turn": {
+        "max": 11.0,
+        "mean": 11
+      },
+      "commit_statements": {
+        "max": 66.0,
+        "mean": 66
+      },
+      "others_role": "silent",
+      "primary_render": {
+        "chars": 5562,
+        "tokens": 1390
+      },
+      "samples_ms": [
+        1109.0,
+        1051.4,
+        862.8,
+        863.6,
+        845.2,
+        902.9,
+        1279.4,
+        949.6,
+        1051.3,
+        936.3,
+        891.5,
+        917.0,
+        1308.6,
+        959.8,
+        1066.5,
+        921.4,
+        925.2,
+        903.8,
+        1360.0,
+        896.7
+      ],
+      "size": 10,
+      "turn_ms": {
+        "p50": 925.2,
+        "p95": 1308.6
+      },
+      "turn_prompt": {
+        "chars": 29211,
+        "tokens": 7298
+      },
+      "turns": 20
+    },
+    {
+      "calls_per_turn": {
+        "max": 11.0,
+        "mean": 11
+      },
+      "commit_statements": {
+        "max": 76.0,
+        "mean": 76
+      },
+      "others_role": "silent",
+      "primary_render": {
+        "chars": 5895,
+        "tokens": 1473
+      },
+      "samples_ms": [
+        946.7,
+        1434.3,
+        1035.2,
+        1171.5,
+        962.3,
+        981.4,
+        1134.0,
+        1492.9,
+        1022.0,
+        1088.0,
+        979.2,
+        978.4,
+        975.3,
+        1398.9,
+        1035.9,
+        1102.3,
+        1001.1,
+        994.7,
+        1067.0,
+        1500.4
+      ],
+      "size": 20,
+      "turn_ms": {
+        "p50": 1035.2,
+        "p95": 1492.9
+      },
+      "turn_prompt": {
+        "chars": 31192,
+        "tokens": 7793
+      },
+      "turns": 20
+    },
+    {
+      "calls_per_turn": {
+        "max": 11.0,
+        "mean": 11
+      },
+      "commit_statements": {
+        "max": 108.0,
+        "mean": 108
+      },
+      "others_role": "silent",
+      "primary_render": {
+        "chars": 6741,
+        "tokens": 1685
+      },
+      "samples_ms": [
+        1589.0,
+        1375.4,
+        1223.4,
+        1285.2,
+        1221.7,
+        1853.2,
+        1426.4,
+        1243.5,
+        1200.2,
+        1662.5,
+        1444.9,
+        1226.9,
+        1217.5,
+        1277.8,
+        1815.3,
+        1408.4,
+        1281.5,
+        1306.9,
+        1683.7,
+        1447.5
+      ],
+      "size": 50,
+      "turn_ms": {
+        "p50": 1306.9,
+        "p95": 1815.3
+      },
+      "turn_prompt": {
+        "chars": 36445,
+        "tokens": 9107
+      },
+      "turns": 20
+    },
+    {
+      "calls_per_turn": {
+        "max": 11.0,
+        "mean": 11
+      },
+      "commit_statements": {
+        "max": 162.0,
+        "mean": 162
+      },
+      "others_role": "silent",
+      "primary_render": {
+        "chars": 8276,
+        "tokens": 2069
+      },
+      "samples_ms": [
+        1743.4,
+        2186.7,
+        1900.5,
+        1730.0,
+        2106.1,
+        1918.9,
+        1777.3,
+        1786.2,
+        2173.1,
+        1863.8,
+        1779.1,
+        2152.8,
+        1953.5,
+        1843.1,
+        2161.3,
+        1959.9,
+        1849.4,
+        2230.2,
+        1993.7,
+        1822.4
+      ],
+      "size": 100,
+      "turn_ms": {
+        "p50": 1900.5,
+        "p95": 2186.7
+      },
+      "turn_prompt": {
+        "chars": 45711,
+        "tokens": 11425
+      },
+      "turns": 20
+    },
+    {
+      "calls_per_turn": {
+        "max": 11.0,
+        "mean": 11
+      },
+      "commit_statements": {
+        "max": 108.0,
+        "mean": 108
+      },
+      "others_role": "reactive",
+      "primary_render": {
+        "chars": 9115,
+        "tokens": 2278
+      },
+      "samples_ms": [
+        1273.5,
+        1233.4,
+        1840.7,
+        1384.2,
+        1271.9,
+        1282.9,
+        1663.3,
+        1402.7,
+        1299.7,
+        1381.3,
+        1309.8,
+        1654.6,
+        1425.2,
+        1262.7,
+        1254.1,
+        1670.9,
+        1526.3,
+        1262.2,
+        1265.1,
+        1235.8
+      ],
+      "size": 50,
+      "turn_ms": {
+        "p50": 1299.7,
+        "p95": 1670.9
+      },
+      "turn_prompt": {
+        "chars": 43566,
+        "tokens": 10887
+      },
+      "turns": 20
+    }
+  ],
+  "fit": {
+    "commit_statements_mean": {
+      "at_200": 268.8,
+      "intercept": 54.9,
+      "per_character": 1.069
+    },
+    "primary_render_tokens": {
+      "at_200": 2816.6,
+      "intercept": 1316.8,
+      "per_character": 7.499
+    },
+    "turn_ms_p50": {
+      "at_200": 2962.2,
+      "intercept": 807.1,
+      "per_character": 10.776
+    },
+    "turn_ms_p95": {
+      "at_200": 3163.0,
+      "intercept": 1276.4,
+      "per_character": 9.433
+    },
+    "turn_prompt_tokens": {
+      "at_200": 15980.6,
+      "intercept": 6851.8,
+      "per_character": 45.644
+    }
+  },
+  "host": {
+    "host": "github-runner",
+    "machine": "x86_64",
+    "maintenance_work_mem": "64MB",
+    "pgvector": "0.8.7",
+    "platform": "Linux-7.0.0-1019-azure-x86_64-with-glibc2.43",
+    "postgres": "16.15 (Debian 16.15-1.pgdg12+2)",
+    "ram_gb": 15.6,
+    "runner_image": "ubuntu26 20261101.186.1",
+    "sha": "ef2a8f013b1ee3b4b6cfa76829568cbc107d3b42",
+    "shared_buffers": "128MB",
+    "vcpus": 4
+  },
+  "measured_at": "2026-11-11T02:25:32Z",
+  "scenario": "P-11 large casts (#829)",
+  "setup": {
+    "measured_turns": 20,
+    "model_calls_budget": 50,
+    "partitions": true,
+    "perception": "co_location",
+    "primaries": 3,
+    "renders": "per_character",
+    "stub_latency_ms": 0,
+    "testimony": "defaulted",
+    "warmup_turns": 3
+  }
+}

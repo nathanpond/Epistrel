@@ -58,7 +58,8 @@ from tests.minors_support import recognise, subject_checks
 from tests.model_support import restored_model_config
 from tests.policy_support import rated_policy_rating, words
 from tests.profile_support import nest
-from tests.respond_support import new_story, respond_client
+from tests.respond_support import body as turn_body
+from tests.respond_support import new_story, respond, respond_client
 from tests.story_support import WRITE, character, create, override
 
 OPERATOR = {**bearer(), "X-Epistrel-Principal": "p-operator"}
@@ -294,6 +295,14 @@ def _nested(depth: int) -> dict[str, Any]:
     return _schema(inner=node)
 
 
+def _nested_answer(depth: int) -> dict[str, Any]:
+    """A value valid against ``_nested(depth)``."""
+    value: dict[str, Any] = {"inner": "deep"}
+    for _ in range(depth - 1):
+        value = {"inner": value}
+    return value
+
+
 REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
     ("pattern", {"name": "Vote-Reason"}, "name_invalid", "body.name"),
     ("too_short", {"name": "ab"}, "name_invalid", "body.name"),
@@ -476,6 +485,140 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
         "template_invalid",
         "body.template",
     ),
+    # #852: a string key or a filter's attribute name that reaches a method reading by name.
+    (
+        "key_format",
+        {"template": "{{ '{0[_y]}'['format'](inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "key_format_map",
+        {"template": "{{ '{_y}'['format_map'](inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "key_get",
+        {"template": "{{ inputs['get']('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "key_get_taken",
+        {"template": "{% set g = inputs['get'] %}{{ g('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_attribute_get",
+        {"template": "{{ ([inputs]|map(attribute='get')|first)('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_attribute_format",
+        {"template": "{{ (['{0[_y]}']|map(attribute='format')|first)(inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "nested_key_format",
+        {"template": "{{ inputs.ffmt['format'](inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "key_format_dunder",
+        {"template": "{{ '{0.__class__}'['format'](inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "groupby_get",
+        {"template": "{{ (inputs.list|groupby('get')|first).grouper('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "dotted_attribute_get",
+        {"template": "{{ inputs.list|map(attribute='a.get')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    # #853: what would fail at render, refused at save.
+    (
+        "unknown_test",
+        {"template": "{% if inputs.voter is nosuchtest %}x{% endif %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "select_unknown_test",
+        {"template": "{{ inputs.list|select('nosuchtest')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "selectattr_unknown_test",
+        {"template": "{{ inputs.list|selectattr('name', 'nosuchtest')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "select_computed_test",
+        {"template": "{{ inputs.list|select(inputs.t)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_select_unknown_test",
+        {"template": "{{ inputs.list|map('select', 'nosuchtest')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "super",
+        {"template": "{% block b %}{{ super() }}{% endblock %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "setdefault",
+        {"template": "{{ inputs.setdefault('a', 1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "pop",
+        {"template": "{{ inputs.pop('a') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "key_pop",
+        {"template": "{{ inputs['pop']('a') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "append",
+        {"template": "{{ inputs.list.append(1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "pop_taken",
+        {"template": "{{ inputs.pop }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "computed_slice",
+        {"template": "{{ inputs.list[inputs.voter:] }}"},
+        "template_invalid",
+        "body.template",
+    ),
     ("global_cycler", {"template": "{{ cycler }}"}, "template_invalid", "body.template"),
     ("global_joiner", {"template": "{{ joiner() }}"}, "template_invalid", "body.template"),
     ("global_namespace", {"template": "{{ namespace() }}"}, "template_invalid", "body.template"),
@@ -608,12 +751,54 @@ async def test_i_29__m9_refusals(
         assert found.status_code == 404, found.text
 
 
+REPLACE_REFUSALS: list[str] = [
+    "{{ '{0[_y]}'['format'](inputs) }}",
+    "{{ inputs['get']('_y') }}",
+    "{{ ([inputs]|map(attribute='get')|first)('_y') }}",
+]
+"""#852's routes, refused on ``PUT`` as on ``POST``."""
+
+
 @pytest.mark.integration
 @pytest.mark.part("M9", "FR-MODEL-14")
-async def test_i_29__m9_valid_edges(registered: tuple[Register, list[str]]) -> None:
+async def test_i_29__m9_replace_refusals(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """A replacement is checked like a registration: each of #852's templates is refused on
+    ``PUT /admin/purposes/{name}`` with 422 ``template_invalid``, and the purpose stays at
+    version 1.
+
+    Complement asserted: a valid replacement then writes version 2."""
+    client, _ = served
+    register, _ = registered
+    name = unique("replaced")
+    assert (await register(purpose_body(name))).status_code == 201
+    for template in REPLACE_REFUSALS:
+        refused = await client.put(
+            f"/admin/purposes/{name}", json=replace_body(1, template=template), headers=OPERATOR
+        )
+        status, code, details = reason_of(refused)
+        assert (status, code, details["reason"]) == (422, "validation_error", "template_invalid")
+        assert details["field"] == "body.template", template
+    found = await client.get(f"/admin/purposes/{name}", headers=bearer())
+    assert found.json()["version"] == 1, found.text
+    replaced = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1, template="{{ inputs['get']('voter') }}"),
+        headers=OPERATOR,
+    )
+    assert (replaced.status_code, replaced.json()["version"]) == (200, 2), replaced.text
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+async def test_i_29__m9_valid_edges(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
     """The edges the refusals sit beside are accepted: a schema exactly 6 levels deep, a
     template using ``viewpoint``, ``story`` and built-in filters, a ``system_template``, and
-    ``const``/``pattern``/``minItems`` keywords.
+    ``const``/``pattern``/``minItems`` keywords. #853: the template also renders, on a call
+    with no story, to the text its edges give.
 
     #847: the scan checks each attribute-reading filter's name argument at the position
     Jinja's own signature gives it; the positions are pinned here so a Jinja upgrade that moves
@@ -629,30 +814,54 @@ async def test_i_29__m9_valid_edges(registered: tuple[Register, list[str]]) -> N
         "max": 1,
         "sort": 2,
     }
+    client, lib = served
     register, _ = registered
+    name = unique("edges")
     body = purpose_body(
-        unique("edges"),
+        name,
         template=(
-            "{% for t in inputs.items %}{{ t | upper }}{% endfor %}"
+            "{% for t in inputs.names %}{{ t | upper }}{% endfor %}|"
             # #837: constant keys, a slice and a constant attribute name stay accepted.
-            "{{ inputs['voter'] }}{{ inputs.items[0] }}{{ inputs.items[1:] | join(',') }}"
-            "{{ inputs.items | map(attribute='name') | list }}"
-            # #848: a negative constant index is a constant key.
-            "{{ inputs.items[-1] }}{{ inputs.items[-1]['name'] }}"
+            "{{ inputs['voter'] }}|{{ inputs.list[0].name }}|"
+            "{{ inputs.list[1:] | join(',', 'name') }}|"
+            "{{ inputs.list | map(attribute='name') | join(',') }}|"
+            # #848: a negative constant index is a constant key; #853: constant slice bounds.
+            "{{ inputs.list[-1].name }}|{{ inputs.list[-1]['name'] }}|"
+            "{{ inputs.names[-2:-1] | join }}|{{ inputs.names[::2] | join }}|"
             # #847: the same routes with constant, public names stay accepted.
-            "{{ inputs.items | sum('votes') }}{{ inputs.items | sort(false, false, 'name') }}"
-            "{{ inputs.items | join(', ', 'name') }}{{ inputs.items | map('upper') | list }}"
-            "{{ inputs.get('voter') }}{{ inputs.get('voter', '') }}{{ '%(voter)s' % inputs }}"
-            "{{ '%s and %%(_y)s' % inputs.voter }}"
-            "{% for t in inputs.items %}{{ loop.index % 2 }}{% endfor %}"
-            "{% if viewpoint is defined %}{{ viewpoint.name }}{% endif %}"
-            "{% if story is defined %}{{ story.title | default('') }}{% endif %}"
+            "{{ inputs.list | sum('votes') }}|"
+            "{{ inputs.list | sort(false, false, 'name') | map(attribute='name') | join }}|"
+            "{{ inputs.list | join(', ', 'name') }}|{{ inputs.names | map('upper') | join }}|"
+            "{{ inputs.get('voter') }}|{{ inputs.get('missing', '-') }}|{{ '%(voter)s' % inputs }}|"
+            "{{ '%s and %%(_y)s' % inputs.voter }}|"
+            "{% for t in inputs.names %}{{ loop.index % 2 }}{% endfor %}|"
+            # #852: a constant key naming 'get' is held to .get's rule, not refused.
+            "{{ inputs['get']('voter') }}|"
+            # #853: built-in tests, by name and through select/selectattr; a key that is read.
+            "{{ inputs.names | select('string') | join }}|"
+            "{{ inputs.list | selectattr('votes', 'odd') | map(attribute='name') | join }}|"
+            "{% if inputs.voter is string %}s{% endif %}|{{ inputs['sort'] }}|"
+            "{% if viewpoint %}{{ viewpoint.name }}{% endif %}"
+            "{% if story %}{{ story.title | default('') }}{% endif %}"
         ),
         system_template="Answer as {{ inputs.voter }}.",
         output_schema=_nested(6),
     )
     made = await register(body)
     assert made.status_code == 201, made.text
+    lib.models.stub.script(name, [json.dumps(_nested_answer(6))])
+    inputs = {
+        "voter": "Ash",
+        "names": ["ab", "cd", "ef"],
+        "list": [{"name": "x", "votes": 1}, {"name": "y", "votes": 2}],
+        "sort": "kept",
+    }
+    called = await call(client, name, {"inputs": inputs})
+    assert called.status_code == 200, called.text
+    assert lib.models.stub.calls[-1].messages[1].content == (
+        "ABCDEF|Ash|x|y|x,y|y|y|cd|abef|3|xy|x, y|ABCDEF|Ash|-|Ash|Ash and %(_y)s|101|Ash|"
+        "abcdef|x|s|kept|"
+    )
     keywords = _schema(
         kind={"type": "string", "const": "vote", "title": "Kind"},
         code={"type": "string", "pattern": "^[A-Z]{3}$", "minLength": 3},
@@ -1542,8 +1751,15 @@ async def test_i_29__m9_story_read_only(
     (held inside its model call), a call answers 200, and the story's timeline and config
     revisions and its event count are what they were before it; the turn then commits.
 
-    Complement asserted: the held turn itself moves the revision once it commits, so the
-    measure would see a write."""
+    #854: the call takes no story lock. While the story's real turn slot is held
+    (``turn_gate.acquire``, as a queued turn's drainer holds it), a call still answers 200 with
+    nothing changed, and the slot is still its holder's afterwards.
+
+    Complements asserted: the held turn itself moves the revision once it commits, so the
+    measure would see a write; and a write under the same held slot is 423 ``story_busy``
+    (``test_i_29__m9_memory_refusals``)."""
+    from epistrel.core import turn_gate
+
     client, lib = served
     register, _ = registered
     name = unique("read_only")
@@ -1562,6 +1778,69 @@ async def test_i_29__m9_story_read_only(
         await held.release()
         await held.task
     assert (await unchanged(engine, story))[2] > before[2]
+
+    before = await unchanged(engine, story)
+    holder = new_ulid()
+    assert await turn_gate.acquire(engine, story, holder, lease_s=60) is None
+    try:
+        lib.models.stub.script(name, [answer()])
+        called = await story_call(client, story, name)
+        assert called.status_code == 200, called.text
+        assert called.json()["timeline_revision"] == before[0]
+        assert await unchanged(engine, story) == before
+        assert await turn_gate.acquire(engine, story, new_ulid(), lease_s=60) is not None
+    finally:
+        await turn_gate.release_now(engine, story, holder)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_version_and_paused(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    engine: AsyncEngine,
+) -> None:
+    """#855: a story-bound call takes the optional ``version`` as a story-less one does. With
+    none it answers the latest version, and a pinned one answers that version with its
+    template; a version the purpose never had is 404 ``version_not_found``. A paused
+    story is still read (FR-MODEL-16): the call answers 200 and the revisions and event count
+    are unchanged.
+
+    Complement asserted: a turn of the paused story is 409 ``story_paused``, so the pause is
+    real."""
+    client, lib = served
+    register, _ = registered
+    name = unique("story_pinned")
+    assert (await register(purpose_body(name))).status_code == 201
+    replaced = await client.put(
+        f"/admin/purposes/{name}",
+        json=replace_body(1, template="Name {{ inputs.target }} only."),
+        headers=OPERATOR,
+    )
+    assert replaced.status_code == 200, replaced.text
+    story, ids = await new_story(client, "Ash", "Briar")
+
+    lib.models.stub.script(name, [answer(), answer()])
+    latest = await story_call(client, story, name)
+    assert (latest.status_code, latest.json()["version"]) == (200, 2), latest.text
+    assert prompt_of(lib, name) == "Name Briar only."
+    pinned = await story_call(client, story, name, {**CALL, "version": 1})
+    assert (pinned.status_code, pinned.json()["version"]) == (200, 1), pinned.text
+    assert prompt_of(lib, name) == "Explain why Ash voted for Briar."
+    missing = await story_call(client, story, name, {**CALL, "version": 9})
+    assert reason_of(missing)[:2] == (404, "version_not_found")
+
+    # What a tightening's history check leaves while it runs (``core.pause``).
+    async with engine.begin() as conn:
+        await conn.execute(text("UPDATE stories SET status = 'paused' WHERE id = :s"), {"s": story})
+    before = await unchanged(engine, story)
+    lib.models.stub.script(name, [answer()])
+    paused = await story_call(client, story, name)
+    assert paused.status_code == 200, paused.text
+    assert await unchanged(engine, story) == before
+    turn = await respond(client, story, turn_body(ids["Ash"]))
+    assert reason_of(turn)[:2] == (409, "story_paused")
+    assert await unchanged(engine, story) == before
 
 
 @pytest.mark.integration

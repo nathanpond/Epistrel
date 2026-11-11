@@ -13728,3 +13728,42 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   Each fails it.
   **Why:** one policy on both targets proves the input and output boundaries with one setup. The output-only mutant fails at the reason check, because the refused output's retry returns the stub default; that is why the test asserts the output text.
   **Issue:** #850
+
+## /n8-exec M9 fix pass 3 — 2026-11-11
+
+- **Decision:** the pass runs on `milestone/m9-fix-pass-3` in the sibling worktree `../Epistrel-Engine-m9fix3`, off `origin/main` at ec24e7e, and covers #852 and #854 (sev:high) plus #853 and #855. The local gate is ruff, format, mypy, lint-imports, and I-29 (M9), I-31 (M9), the registry, the Lite prompt and `tests/gates`: 774 passed. CI's sharded run on the PR is the full-suite gate, as in the earlier M9 passes.
+  **Why:** the main checkout holds the owner's `m8-e11-evidence` branch and uncommitted `.idea` edits. The full local suite takes about 10 hours.
+  **Issue:** M9 (#14)
+- **Decision:** one commit carries all four `Refs`.
+  **Why:** #852 and #853 change the same scan function, and all four change `tests/integration/test_i_29_m9.py`. Splitting the hunks needs an interactive add, which this environment does not support.
+  **Issue:** #852, #853, #854, #855
+- **Decision:** the plan comments on #852 and #853 were posted after the scan change was drafted, which repeats fix pass 2's slip. The comments on #854 and #855 came before their code.
+  **Why:** a process slip, recorded here.
+  **Issue:** #852, #853
+- **Decision (Rule 1):** a constant string key is checked as the attribute Jinja may fall back to:
+  - `['format']` and `['format_map']` are refused outright, as `.format` is. This also refuses an input key literally named `format`, and that is accepted because `.format` was already refused.
+  - `['get']` is held to `.get`'s rule (called, with a constant public key), so `inputs['get']('voter')` still saves and renders.
+  - A filter's attribute name (keyword or positional, any dotted or comma segment) may not be `format`, `format_map` or `get` (`READING_METHODS`). This closes `groupby('get')` too, whose `grouper` is the bound method. The issue did not list that route; a probe found it.
+  **Why:** the issue's suggested "any method of str/dict/list" rule would refuse ordinary input keys such as `['title']`, `['count']` and `['items']`, which Jinja reads as items when they are present. Only the read-by-name methods give access to `_` keys.
+  **Issue:** #852
+- **Decision (Rule 1):** each shape #853 lists is refused at save, so none needs an owner decision:
+  - a test (`is …`, or the name argument of `select`/`reject` at position 0 and `selectattr`/`rejectattr` at position 1) must be a constant built-in test;
+  - `super` is refused by name;
+  - slice bounds must be constant integers.
+  Mutating methods come from the sandbox's own `modifies_known_mutable` over list, dict, set and deque (`MUTATING_METHODS`). A call of one is refused, and so is taking a dict's (`pop`, `update`, `setdefault`, `popitem`, `clear`), which the sandbox always refuses on a mapping.
+  **Why:** a name such as `sort`, `add` or `remove` is a legitimate dict key when it is read and not called (`inputs.sort`, `inputs['pop']`), because Jinja's attribute lookup on a dict falls back to the item. Refusing every mutating name outright would refuse valid templates. A called one never works: a JSON value is not callable, and the method is refused.
+  **Issue:** #853
+- **Decision:** `test_i_29__m9_valid_edges` now uses `inputs.list` and `inputs.names` instead of `inputs.items`, which is the dict method. It also makes a story-less call and asserts the exact rendered prompt. `viewpoint is defined`/`story is defined` became `{% if viewpoint %}`/`{% if story %}`, because a story-less call passes `None`, which is defined.
+  **Why:** #853's AC is "the valid-edges template both saves and renders".
+  **Issue:** #853
+- **Decision:** fail-first evidence:
+  - All 22 new `REFUSALS` cases are accepted by the ec24e7e scan, checked by importing the old module from `git show`.
+  - Three out-of-tree pytest plugins wrap `orchestrator.purposes.story.call_story_purpose`. The first takes the turn slot and answers 423, and only `story_read_only` fails, at the new held-slot phase. The second refuses a paused story, and the third drops a pinned version; each fails only `story_version_and_paused`, at the paused call and at the pinned call respectively.
+  **Why:** the verify rules require a complement to fail under a mutant. Out-of-tree plugins avoid the shared-worktree clobbering an earlier verify hit.
+  **Issue:** #852, #853, #854, #855
+- **Decision:** #855's test pauses the story with `UPDATE stories SET status = 'paused'`, the state a tightening's history check leaves (`core.pause`). Its complement is that a turn of the same story is then 409 `story_paused`. A version the purpose never had answers `version_not_found`, the code the story-less call already uses; #855 called it `purpose_version_not_found`.
+  **Why:** no public route pauses a story directly; a real rating check would make the test depend on the check job's timing.
+  **Issue:** #855
+- **Decision:** #855's doc nit (#826's must-haves name `call.py` where the `build_context` link is `orchestrator/purposes/story.py::_viewpoint`) is noted on the issue only, with no plan text edited.
+  **Why:** #826 is closed, and the nit changes no behaviour.
+  **Issue:** #855

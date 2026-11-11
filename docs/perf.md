@@ -8,9 +8,9 @@
 
 | Test | Requirement | Budget | Measured p95 | Result | Host |
 |---|---|---|---|---|---|
-| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 261.9 ms | **over budget** | github-runner (not the reference host) |
-| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 74.8 ms | **over budget** | github-runner (not the reference host) |
-| P-02 could_have_known | NFR-PERF-2 | p95 ≤ 50 ms | 140.9 ms | **over budget** | github-runner (not the reference host) |
+| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 290.3 ms | **over budget** | github-runner (not the reference host) |
+| P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 18.7 ms | within budget | github-runner (not the reference host) |
+| P-02 could_have_known | NFR-PERF-2 | p95 ≤ 50 ms | 24.4 ms | within budget | github-runner (not the reference host) |
 
 ## P-01: retrieval latency by stage (NFR-PERF-1)
 
@@ -18,15 +18,15 @@
 
 | Stage | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|---|
-| assemble | 12.7 | 17.0 | 18.2 | 222.3 |
+| assemble | 8.4 | 11.5 | 101.8 | 118.5 |
 | beliefs | 0.0 | 0.0 | 0.0 | 0.0 |
-| fuse | 7.9 | 9.3 | 12.4 | 245.6 |
-| lexical | 60.0 | 116.2 | 122.5 | 228.5 |
-| occasion | 0.0 | 14.5 | 16.3 | 20.8 |
-| profiles | 15.1 | 163.5 | 205.0 | 391.0 |
-| resolve | 19.6 | 24.5 | 28.4 | 39.3 |
-| total | 166.0 | 261.9 | 402.5 | 502.1 |
-| vector | 10.8 | 12.2 | 12.8 | 15.9 |
+| fuse | 5.1 | 5.8 | 9.0 | 34.7 |
+| lexical | 57.5 | 108.2 | 142.5 | 194.4 |
+| occasion | 0.0 | 10.1 | 39.5 | 102.2 |
+| profiles | 6.3 | 73.9 | 115.2 | 188.5 |
+| resolve | 17.0 | 20.8 | 31.5 | 54.3 |
+| total | 229.1 | 290.3 | 343.1 | 404.8 |
+| vector | 103.3 | 113.5 | 144.7 | 167.6 |
 
 ## P-02: deterministic verify latency (NFR-PERF-2)
 
@@ -34,7 +34,7 @@
 
 | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|
-| 48.7 | 74.8 | 77.3 | 317.8 |
+| 8.0 | 18.7 | 23.6 | 464.2 |
 
 Verdicts (built → found): contradicted->contradicted 600, novel->novel 400, supported->supported 800, uncertain->uncertain 200.
 
@@ -44,11 +44,11 @@ Verdicts (built → found): contradicted->contradicted 600, novel->novel 400, su
 
 | Path | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |
 |---|---|---|---|---|
-| all | 53.7 | 140.9 | 148.4 | 378.9 |
-| believed | 25.4 | 28.1 | 29.3 | 29.8 |
-| canon | 46.5 | 49.9 | 52.2 | 284.2 |
-| exposed | 131.1 | 144.3 | 148.9 | 378.9 |
-| no_path | 55.5 | 58.3 | 60.2 | 285.8 |
+| all | 6.7 | 24.4 | 38.5 | 195.2 |
+| believed | 3.7 | 4.0 | 4.4 | 4.5 |
+| canon | 5.2 | 6.5 | 10.0 | 17.1 |
+| exposed | 22.9 | 36.4 | 118.8 | 195.2 |
+| no_path | 7.5 | 8.6 | 10.5 | 11.8 |
 
 ## The forced-retirement spike (#147, FR-MEM-8)
 
@@ -56,15 +56,57 @@ This is the commit in which an overflow episode reaches its deadline. It ranks e
 
 | Vectors ranked | Ranking (ms) | Forced run (ms) | Retired | vs 250 ms | vs 2 s |
 |---|---|---|---|---|---|
-| 49,760 | 197.6 | 277.5 | {"covered": 177, "floor": 323} | over | under |
+| 49,760 | 123.0 | 169.9 | {"covered": 177, "floor": 323} | under | under |
 
 ## P-04: the structured reference workload (NFR-PERF-4, M4)
 
-*not measured in this run*
+**FAIL** on host class `ci` (reported, not gated): Linux x86_64, 4 CPUs, 16 GB RAM, engine `8c648ba9898f`, started 2026-11-11 15:47 UTC. 10 structured stories of 10,000 memories and 20,000 events, one single-character turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
+
+| Criterion | Measured | Bound | Result |
+|---|---|---|---|
+| turn commit p95 (server commit stage) | 47.0% of 281 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | **FAIL** |
+| failed requests | 0 | 0 | PASS |
+| lost or duplicated turns | 0 lost, 0 duplicated | 0 | PASS |
+| retrieval p95 (server retrieve stage) | 0.0% of 281 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
+| deterministic verify p95 (server verify stage) | 98.2% of 56 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | PASS |
+
+Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 10 of 10 stories pass.
+
+| Stage | Observations | p50 | p95 | p99 |
+|---|---|---|---|---|
+| commit | 281 | ≤ 500 ms | ≤ 500 ms | ≤ 500 ms |
+| retrieve | 281 | ≤ 500 ms | ≤ 500 ms | ≤ 1000 ms |
+| verify | 56 | ≤ 20 ms | ≤ 50 ms | ≤ 500 ms |
+| front_to_first_call | 281 | ≤ 500 ms | ≤ 500 ms | ≤ 500 ms |
 
 ## P-04: the multi-character reference workload (NFR-PERF-4, M5)
 
-*not measured in this run*
+**FAIL** on host class `ci` (reported, not gated): Linux x86_64, 4 CPUs, 16 GB RAM, engine `8c648ba9898f`, started 2026-11-11 17:23 UTC. 10 structured stories with per-character knowledge of 10,000 memories and 20,000 events, one two-character sequential turn every 60 s each for 30 minutes, open loop, `turn_concurrency = queue`, the stub at 2 s per call with 10% contradicted and 10% novel claims. The full report is committed under `perf/results/`.
+
+| Criterion | Measured | Bound | Result |
+|---|---|---|---|
+| turn commit p95 (server commit stage) | 0.0% of 281 commits ≤ 250 ms | ≥ 95% ≤ 250 ms | **FAIL** |
+| failed requests | 0 | 0 | PASS |
+| lost or duplicated turns | 0 lost, 0 duplicated | 0 | PASS |
+| retrieval p95 (server retrieve stage) | 0.0% of 562 retrievals ≤ 150 ms | ≥ 95% ≤ 150 ms | **FAIL** |
+| deterministic verify p95 (server verify stage) | 8.9% of 561 claims checked ≤ 50 ms | ≥ 95% ≤ 50 ms | **FAIL** |
+| both primaries' beats in every committed turn | 281/281 in the results, 0 incomplete in history | all | PASS |
+| reduced, deferred or escalation-deferred characters | reduced_characters 0, deferred_characters 0, escalation_deferred 0 | 0 | PASS |
+| per-character stages observed (context_ms, compose_ms) | both | both | PASS |
+| degradation steps beyond the stub's composition fallback | lazy_resolution_capped 10, testimony_defaulted 10 | none (gated on the reference host only) | PASS |
+
+Per story (queue keeps up, waits within one interval, front to first call p95 ≤ 1 s): 0 of 10 stories pass.
+
+| Stage | Observations | p50 | p95 | p99 |
+|---|---|---|---|---|
+| commit | 281 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
+| retrieve | 562 | ≤ 1000 ms | ≤ 2000 ms | ≤ 2000 ms |
+| verify | 561 | ≤ 100 ms | ≤ 250 ms | ≤ 500 ms |
+| context | 562 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
+| compose | 281 | ≤ 5000 ms | ≤ 10000 ms | ≤ 10000 ms |
+| front_to_first_call | 281 | ≤ 2000 ms | ≤ 5000 ms | ≤ 10000 ms |
+
+Profile `Full v4`, perception `full`. Degradation steps: `lazy_resolution_capped` 10, `testimony_defaulted` 10.
 
 ## History
 
@@ -77,4 +119,5 @@ One row per run, oldest first.
 | 2026-10-19 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 542.3 | 41.4 | 181.4 |
 | 2026-10-20 | - | local-mac-loaded (not the reference host) | macOS-27.0.1-arm64-arm-64bit-Mach-O | 16.15 | 0.8.7 | 16 / 128.0 GB | 119.0 | 37.5 | 185.6 |
 | 2026-10-27 | ad7368b1a209 | github-runner (not the reference host) | ubuntu24 20261023.334.3 | 16.15 | 0.8.7 | 4 / 15.6 GB | 261.9 | 74.8 | 277.5 |
+| 2026-11-11 | 8c648ba9898f | github-runner (not the reference host) | ubuntu26 20261101.186.1 | 16.15 | 0.8.7 | 4 / 15.6 GB | 290.3 | 18.7 | 169.9 |
 <!-- history:end -->

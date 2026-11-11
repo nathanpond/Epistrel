@@ -677,6 +677,41 @@ async def test_i_31__m9_lite(served: tuple[httpx.AsyncClient, Engine]) -> None:
     assert "AMBER-AWAY" in sent
 
 
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_all_benched(
+    served: tuple[httpx.AsyncClient, Engine],
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#841 (the owner's call, option B): with every character but the player benched, a turn
+    runs as one whose story holds only the player. On a structured story that is 422
+    ``validation_error`` (``player_has_no_context``: the player is never rendered), with no
+    model call and nothing written. Complement: on a Lite story the same turn is 200 and
+    renders the player's own character."""
+    client, lib = served
+    stub = lib.models.stub
+    story, ids, _ = await ts.room(client, engine, "Wren", "Ada", "Bo")
+    for name in ("Ada", "Bo"):
+        assert (await bench(client, story, ids[name])).status_code == 200
+    before = await revisions(engine, story)
+    stub.reset()
+    refused = await respond(client, story, body(ids["Wren"], "Anyone?"))
+    status, code, details = refusal(refused)
+    assert (status, code, details["reason"]) == (422, "validation_error", "player_has_no_context")
+    assert stub.calls == []
+    assert await revisions(engine, story) == before
+
+    lite, lite_ids = await new_story(client, "Wren", "Ada", "Bo")
+    for name in ("Ada", "Bo"):
+        assert (await bench(client, lite, lite_ids[name])).status_code == 200
+    stub.reset()
+    stub.script("generation", ["Wren: Only me, then."])
+    alone = await respond(client, lite, body(lite_ids["Wren"], "Anyone?"))
+    assert alone.status_code == 200, alone.text
+    replies = [b for b in alone.json()["beats"] if b["kind"] == "message_rendered"]
+    assert [b["render_character_ids"] for b in replies] == [[lite_ids["Wren"]]]
+
+
 # -- the library ------------------------------------------------------------------------------
 
 

@@ -460,12 +460,15 @@ async def test_i_31__m9_sequestered(
     text. No exposure row, no belief and no routed memory is written for him (the absence of
     the rows, not only of a prompt line). After his reactivation, a render of Bobby asked about
     it holds nothing of it. Complement: the same scenario without the bench leaves Bobby an
-    exposure and a routed memory, and his later context says he heard Jenni say it."""
+    exposure, a ``sent`` belief and a routed memory, and his later context says he heard Jenni
+    say it. #840: lazy resolution is off, so the turn resolves the belief it would write; under
+    lazy resolution no belief is written even for an unbenched character, and the benched
+    half's "no belief" would hold whether or not the bench worked."""
     client, lib = served
 
-    async def scene(benched: bool) -> tuple[str, dict[str, str], str, str]:
+    async def scene(benched: bool) -> tuple[str, dict[str, str], int, str]:
         story, ids, things = await ts.room(client, engine, "Wren", "Jenni", "Bobby")
-        await ts.enable_testimony(engine, story, "defaulted", salience="rules")
+        await ts.enable_testimony(engine, story, "defaulted", salience="rules", lazy=False)
         bobby = ids["Bobby"]
         if benched:
             assert (await bench(client, story, bobby)).status_code == 200
@@ -489,14 +492,13 @@ async def test_i_31__m9_sequestered(
             client, story, body(ids["Wren"], "What happened?", render_character_ids=[ids["Jenni"]])
         )
         assert told.status_code == 200, told.text
+        sent = [
+            b for b in await ts.beliefs_of(engine, story, bobby) if b.predicate_id == things["sent"]
+        ]
         if benched:
             assert await exposures_of(engine, story, bobby) == 0
             assert await heard_by(engine, story, bobby, "Olivia") == []
-            assert [
-                b
-                for b in await ts.beliefs_of(engine, story, bobby)
-                if b.predicate_id == things["sent"]
-            ] == []
+            assert sent == []
             assert (await reactivate(client, story, bobby)).status_code == 200
         stub.reset()
         stub.script("generation", [render(beat("do", "Bobby shrugs."))])
@@ -509,13 +511,14 @@ async def test_i_31__m9_sequestered(
         assert asked.status_code == 200, asked.text
         (call,) = schema_calls(stub, "CharacterRender")
         prompt = "\n".join(m.content for m in call.messages)
-        return story, ids, things["sent"], prompt
+        return story, ids, len(sent), prompt
 
     _, _, _, benched_prompt = await scene(benched=True)
     assert "you heard Jenni say Olivia sent the text" not in benched_prompt
     assert ts.CLAIM_LINE not in benched_prompt
 
-    story, ids, _, prompt = await scene(benched=False)
+    story, ids, beliefs, prompt = await scene(benched=False)
+    assert beliefs >= 1
     assert await exposures_of(engine, story, ids["Bobby"]) >= 1
     assert await heard_by(engine, story, ids["Bobby"], "Olivia") != []
     assert "you heard Jenni say Olivia sent the text" in prompt
@@ -672,6 +675,41 @@ async def test_i_31__m9_lite(served: tuple[httpx.AsyncClient, Engine]) -> None:
     sent = "\n".join(m.content for call in stub.calls for m in call.messages)
     assert "### Author notes: Ada" in sent
     assert "AMBER-AWAY" in sent
+
+
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_all_benched(
+    served: tuple[httpx.AsyncClient, Engine],
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#841 (the owner's call, option B): with every character but the player benched, a turn
+    runs as one whose story holds only the player. On a structured story that is 422
+    ``validation_error`` (``player_has_no_context``: the player is never rendered), with no
+    model call and nothing written. Complement: on a Lite story the same turn is 200 and
+    renders the player's own character."""
+    client, lib = served
+    stub = lib.models.stub
+    story, ids, _ = await ts.room(client, engine, "Wren", "Ada", "Bo")
+    for name in ("Ada", "Bo"):
+        assert (await bench(client, story, ids[name])).status_code == 200
+    before = await revisions(engine, story)
+    stub.reset()
+    refused = await respond(client, story, body(ids["Wren"], "Anyone?"))
+    status, code, details = refusal(refused)
+    assert (status, code, details["reason"]) == (422, "validation_error", "player_has_no_context")
+    assert stub.calls == []
+    assert await revisions(engine, story) == before
+
+    lite, lite_ids = await new_story(client, "Wren", "Ada", "Bo")
+    for name in ("Ada", "Bo"):
+        assert (await bench(client, lite, lite_ids[name])).status_code == 200
+    stub.reset()
+    stub.script("generation", ["Wren: Only me, then."])
+    alone = await respond(client, lite, body(lite_ids["Wren"], "Anyone?"))
+    assert alone.status_code == 200, alone.text
+    replies = [b for b in alone.json()["beats"] if b["kind"] == "message_rendered"]
+    assert [b["render_character_ids"] for b in replies] == [[lite_ids["Wren"]]]
 
 
 # -- the library ------------------------------------------------------------------------------

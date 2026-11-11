@@ -13664,3 +13664,26 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the results are named `perf/results/2026-11-11-casts.{json,md}`, after the runner's UTC date (measured 2026-11-11T02:25:32Z), not 2026-11-10. The P-11 statement growth (about one per co-located character) is a once-per-character `characters.is_player` read in the commit (#619's memoised `partitions.is_player`; probed at 10 and 30 characters, +20 reads and +1 other statement). It is reported, not changed: lowering the cost is out of scope (#754, M11, covers commit batching).
   **Why:** existing result files carry the UTC date of their run, and the issue names `<date>`. The README explains the statement figure from that probe, not from a guess.
   **Issue:** #829
+
+## /n8-exec M9 fix pass — 2026-11-10
+
+- **Decision:** the fix pass runs on `milestone/m9-verify-fixes` in the worktree `.claude/worktrees/m9fix`, off `origin/main` at 522cd68. The four stories are small, so they ran in this session, not one background agent each. Each was checked locally with ruff, format, mypy, lint-imports and the touched modules' tests (702 passed); the full-suite gate is CI's sharded run on the PR, as in the M9 run.
+  **Why:** the main checkout holds the owner's `m8-e11-evidence` branch and uncommitted `.idea` edits, which the run must not touch.
+  **Issue:** M9 (#14)
+- **Decision (Rule 1):** a consumer template's item keys must be constants (a slice is allowed). `inputs['_' ~ '_class__']` and `inputs[inputs.k]` are refused at save, not only those whose computed key happens to start with `_`.
+  **Why:** FR-MODEL-14 refuses "an item whose name starts with `_`" at save, never at call time. A computed key's name is unknowable at save, so the requirement can only hold if computed keys are refused.
+  **Issue:** #837
+- **Decision (Rule 1):** the `attr` filter is refused outright. The other built-in filters that read attributes by a name (`map`, `selectattr`, `rejectattr`, `sort`, `groupby`, `sum`, `unique`, `min`, `max`) need a constant name with no `_`-prefixed dotted or comma-separated segment, and no `*args`/`**kwargs`.
+  **Why:** #837 named `attr` only, but `map(attribute='__class__')` reads the same attribute by the same route. The rule is the requirement's "reads an attribute whose name starts with `_`", wherever the name is written.
+  **Issue:** #837
+- **Decision (Rule 1):** the consumer-template environment has no Jinja globals, so `range`, `cycler`, `lipsum`, `dict`, `joiner` and `namespace` are refused at save as undeclared variables, and render as undefined.
+  **Why:** FR-MODEL-14 allows only the top-level variables `inputs`, `viewpoint` and `story`. Clearing the globals keeps the check and the renderer in step through one environment.
+  **Issue:** #837
+- **Decision:** #838, #839 and #840 are test-only. Product behaviour was already correct (the verification probes), so each issue closes with the complement test that guards it. #837, #838 and #839 share one commit because all three edit `tests/integration/test_i_29_m9.py`.
+  **Why:** these are the fixes the issues name.
+  **Issue:** #838, #839, #840
+- **Blocker:** #841. When every non-player is benched, a structured turn gives 422 `player_has_no_context`; the Executor simulation's call is "all-benched turns still run". Running it means a narrator-only structured turn (no render), a new turn path (Rule 4 territory). Keeping the 422 means correcting the planner line and docs. The options and a recommendation (B: keep the 422 and document it) are on the issue, which is labelled `blocked` + `needs-owner-action`. Nothing else in the pass depends on it.
+  **Issue:** #841
+- **Decision (owner, 2026-11-10):** #841 takes option B. A structured turn with every non-player benched stays 422 `validation_error` (`player_has_no_context`), as in a structured story whose only character is the player. FR-MULTI-13 (docs/03) now states the all-benched rule for both profiles: Lite renders the player, structured gives 422. docs/04's I-31 gains the case and its Lite complement. `test_i_31__m9_all_benched` asserts both, with no model call and nothing written on the refusal. No product code changed. The Executor simulation's "all-benched turns still run" and #831's "it is not an error" are superseded for structured stories.
+  **Why:** the owner's answer on the blocker. Option A would have needed a narrator-only structured turn path.
+  **Issue:** #841

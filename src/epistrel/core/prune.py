@@ -45,6 +45,7 @@ from epistrel.core.tables import (
     amendment_parts,
     belief_transitions,
     beliefs,
+    character_bench,
     client_events,
     dependency_edges,
     divergences,
@@ -89,6 +90,8 @@ PRUNABLE_TABLES: tuple[Table, ...] = (
     facts,
     state_changes,
     scheduled_events,
+    # #831 (FR-MULTI-13): a pruned slot operation's bench versions (a discarded bench).
+    character_bench,
     # #261 (FR-STORE-32): a pruned operation's story images; their assets fall to the media
     # sweep once no row references them.
     story_images,

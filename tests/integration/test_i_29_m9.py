@@ -42,7 +42,7 @@ from epistrel.core.errors import (
 from epistrel.core.ids import new_ulid
 from epistrel.core.purposes.output import output_model, output_of
 from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
-from epistrel.core.purposes.validation import PURPOSE_LIMIT, PurposeRefused
+from epistrel.core.purposes.validation import ATTRIBUTE_POSITIONS, PURPOSE_LIMIT, PurposeRefused
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.adapter import Message, UnknownPurpose
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, validate_purpose
@@ -53,6 +53,7 @@ from tests import seeded_partitions_support as sp
 from tests.auth_support import auth_settings, bearer
 from tests.concurrency_support import start_turn
 from tests.event_support import rows as engine_rows
+from tests.gate_support import input_policies as gate_input_policies
 from tests.minors_support import recognise, subject_checks
 from tests.model_support import restored_model_config
 from tests.policy_support import rated_policy_rating, words
@@ -354,7 +355,131 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
         "template_invalid",
         "body.template",
     ),
+    # #847: an attribute or item named at render time by any other route.
+    (
+        "positional_sum",
+        {"template": "{{ inputs.items|sum('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "positional_sort",
+        {"template": "{{ inputs.items|sort(false, false, '_y')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "positional_unique",
+        {"template": "{{ inputs.items|unique(false, '_y')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "positional_min",
+        {"template": "{{ inputs.items|min(false, '__class__') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "positional_max",
+        {"template": "{{ inputs.items|max(false, '_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "positional_join",
+        {"template": "{{ inputs.items|join(',', '_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_attr",
+        {"template": "{{ inputs.items|map('attr', '__class__')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_nested",
+        {"template": "{{ inputs.items|map('sum', '_y')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_computed",
+        {"template": "{{ inputs.items|map(inputs.f)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "str_format",
+        {"template": "{{ '{0.__class__}'.format(inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "format_map",
+        {"template": "{{ '{_y}'.format_map(inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "format_taken",
+        {"template": "{% set f = inputs.s.format %}{{ f(inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "get_private",
+        {"template": "{{ inputs.get('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "get_computed",
+        {"template": "{{ inputs.get(inputs.k) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "get_taken",
+        {"template": "{% set g = inputs.get %}{{ g('_y') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "printf_private",
+        {"template": "{{ '%(_y)s' % inputs }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "printf_computed",
+        {"template": "{{ inputs.f % inputs }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "format_filter_kwargs",
+        {"template": "{{ '%(_y)s'|format(**inputs) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "self",
+        {"template": "{{ self }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "self_block",
+        {"template": "{% block b %}x{% endblock %}{{ self.b() }}"},
+        "template_invalid",
+        "body.template",
+    ),
     ("global_cycler", {"template": "{{ cycler }}"}, "template_invalid", "body.template"),
+    ("global_joiner", {"template": "{{ joiner() }}"}, "template_invalid", "body.template"),
+    ("global_namespace", {"template": "{{ namespace() }}"}, "template_invalid", "body.template"),
+    ("global_dict", {"template": "{{ dict(a=1) }}"}, "template_invalid", "body.template"),
     ("global_lipsum", {"template": "{{ lipsum() }}"}, "template_invalid", "body.template"),
     ("global_range", {"template": "{{ range(3) }}"}, "template_invalid", "body.template"),
     ("undeclared", {"template": "{{ secret }}"}, "template_invalid", "body.template"),
@@ -488,7 +613,22 @@ async def test_i_29__m9_refusals(
 async def test_i_29__m9_valid_edges(registered: tuple[Register, list[str]]) -> None:
     """The edges the refusals sit beside are accepted: a schema exactly 6 levels deep, a
     template using ``viewpoint``, ``story`` and built-in filters, a ``system_template``, and
-    ``const``/``pattern``/``minItems`` keywords."""
+    ``const``/``pattern``/``minItems`` keywords.
+
+    #847: the scan checks each attribute-reading filter's name argument at the position
+    Jinja's own signature gives it; the positions are pinned here so a Jinja upgrade that moves
+    one fails this test rather than opening a gap."""
+    assert dict(ATTRIBUTE_POSITIONS) == {
+        "selectattr": 0,
+        "rejectattr": 0,
+        "groupby": 0,
+        "sum": 0,
+        "join": 1,
+        "unique": 1,
+        "min": 1,
+        "max": 1,
+        "sort": 2,
+    }
     register, _ = registered
     body = purpose_body(
         unique("edges"),
@@ -497,6 +637,14 @@ async def test_i_29__m9_valid_edges(registered: tuple[Register, list[str]]) -> N
             # #837: constant keys, a slice and a constant attribute name stay accepted.
             "{{ inputs['voter'] }}{{ inputs.items[0] }}{{ inputs.items[1:] | join(',') }}"
             "{{ inputs.items | map(attribute='name') | list }}"
+            # #848: a negative constant index is a constant key.
+            "{{ inputs.items[-1] }}{{ inputs.items[-1]['name'] }}"
+            # #847: the same routes with constant, public names stay accepted.
+            "{{ inputs.items | sum('votes') }}{{ inputs.items | sort(false, false, 'name') }}"
+            "{{ inputs.items | join(', ', 'name') }}{{ inputs.items | map('upper') | list }}"
+            "{{ inputs.get('voter') }}{{ inputs.get('voter', '') }}{{ '%(voter)s' % inputs }}"
+            "{{ '%s and %%(_y)s' % inputs.voter }}"
+            "{% for t in inputs.items %}{{ loop.index % 2 }}{% endfor %}"
             "{% if viewpoint is defined %}{{ viewpoint.name }}{% endif %}"
             "{% if story is defined %}{{ story.title | default('') }}{% endif %}"
         ),
@@ -1530,6 +1678,65 @@ async def test_i_29__m9_story_erased(pg_url: str, engine: AsyncEngine) -> None:
             assert archived.status_code == 200, archived.text
 
 
+SCOPED = "marzipanbanned"
+"""A word only a character-scoped policy (Briar's) refuses (#850)."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-16")
+async def test_i_29__m9_story_character_policy(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """A character-scoped policy applies only for the viewpoint character (#850). With a
+    policy scoped to Briar on text input and output, an input carrying its word is 422
+    ``guardrail_violation`` naming that policy, with zero calls to the purpose's model, when
+    Briar is the viewpoint; an output carrying it twice is 422 ``output_policy_violation``.
+
+    Complements asserted: the same input and the same output pass with Cato as the viewpoint
+    and with no viewpoint, so the policy is neither the whole cast's nor the story's."""
+    client, lib = served
+    register, _ = registered
+    name = unique("scoped")
+    assert (await register(purpose_body(name))).status_code == 201
+    story, ids = await partitioned_story(client)
+    briar, cato = ids["Briar"], ids["Cato"]
+    (policy,) = await gate_input_policies(
+        lib,
+        story,
+        {
+            "scope": "character",
+            "scope_id": briar,
+            "applies_to": ["text_input", "text_output"],
+            "rule": words(SCOPED),
+        },
+    )
+    said = {"inputs": {"voter": "Ash", "target": "Briar", "notes": [f"some {SCOPED}"]}}
+
+    own_before = own_calls(lib, name)
+    refused = await story_call(client, story, name, {**said, "viewpoint_character_id": briar})
+    status, code, details = reason_of(refused)
+    assert (status, code) == (422, "guardrail_violation"), refused.text
+    assert [v["policy_id"] for v in details["violations"]] == [policy.id]
+    assert own_calls(lib, name) == own_before
+    for viewpoint in (cato, None):
+        lib.models.stub.script(name, [answer()])
+        body = said if viewpoint is None else {**said, "viewpoint_character_id": viewpoint}
+        passed = await story_call(client, story, name, body)
+        assert passed.status_code == 200, (viewpoint, passed.text)
+
+    bad = answer(f"said {SCOPED}")
+    lib.models.stub.script(name, [bad, bad])
+    out = await story_call(client, story, name, {**CALL, "viewpoint_character_id": briar})
+    assert reason_of(out)[:2] == (422, "output_policy_violation"), out.text
+    assert SCOPED not in out.text
+    for viewpoint in (cato, None):
+        lib.models.stub.script(name, [bad])
+        body = CALL if viewpoint is None else {**CALL, "viewpoint_character_id": viewpoint}
+        passed = await story_call(client, story, name, body)
+        assert passed.status_code == 200, (viewpoint, passed.text)
+        assert passed.json()["output"]["reason"] == f"said {SCOPED}"
+
+
 # -- a purpose result stored as the viewpoint character's memory (FR-MODEL-17; #827) ---------
 
 MEMORY_SCHEMA: dict[str, Any] = {
@@ -1552,6 +1759,11 @@ not one)."""
 MEMORY_TEMPLATE = "Why did {{ viewpoint.name }} vote for {{ inputs.target }}?"
 REMEMBERED = "PELICAN-827"
 """A unique word the stored memory carries; it must never reach a log line."""
+RECALL_TEMPLATE = "{{ viewpoint.name }}\n{{ viewpoint.text }}\n{{ inputs.question }}"
+"""A viewpoint call that shows the character's context (#849): it renders ``viewpoint.text``,
+which ``MEMORY_TEMPLATE`` does not."""
+RECALL = {"inputs": {"question": "Who did you vote for, and why?"}}
+"""A question that does not carry ``REMEMBERED``, so only the viewpoint can put it in a prompt."""
 STORE = {"text_field": "memory"}
 
 
@@ -1615,6 +1827,7 @@ async def memory_purpose(registered: tuple[Register, list[str]]) -> str:
 @pytest.mark.part("M9", "FR-MODEL-17")
 async def test_i_29__m9_memory_isolation(
     served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
     memory_purpose: str,
     engine: AsyncEngine,
     drained_embedding_jobs: None,
@@ -1626,18 +1839,31 @@ async def test_i_29__m9_memory_isolation(
     text as given, no propositions, no event type, participants ``[Briar]`` and no importance
     yet. It is written by an ``inter_turn`` slot operation at ``N⁺1`` that records one
     ``purpose_memory_stored`` event holding identifiers only, and the call answers the memory's
-    id and the revision the write left (one more). Only that character remembers: Briar's
-    context (built by ``build_context``, through a viewpoint call) holds the memory, Cato's does
-    not. The memory's text never reaches a log.
+    id and the revision the write left (one more). Only that character remembers: a later
+    viewpoint call whose template renders ``viewpoint.text`` (built by ``build_context``) and
+    whose question does not name the memory sends Briar's context holding it, and Cato's
+    without it. The memory's text never reaches a log.
 
-    Complement asserted: the same call without ``store_as_memory`` stores nothing, answers
-    ``memory_id: null`` and leaves the revision where it was."""
+    Complements asserted: the same call without ``store_as_memory`` stores nothing, answers
+    ``memory_id: null`` and leaves the revision where it was; before the write, Briar's context
+    does not hold the memory either (#849: so the later check is the memory's doing, and a
+    viewpoint that leaked it to every character, or held no memories, fails this test)."""
     client, lib = served
     name = memory_purpose
     caplog.set_level(logging.DEBUG)
     story, ids = await partitioned_story(client)
     briar, cato = ids["Briar"], ids["Cato"]
     before = await revision_of(engine, story)
+    register, _ = registered
+    recall = unique("recall")
+    made = await register(
+        purpose_body(recall, template=RECALL_TEMPLATE, output_schema=MEMORY_SCHEMA)
+    )
+    assert made.status_code == 201, made.text
+    lib.models.stub.script(recall, [remembered("Not yet.")])
+    unaware = await story_call(client, story, recall, {**RECALL, "viewpoint_character_id": briar})
+    assert unaware.status_code == 200, unaware.text
+    assert REMEMBERED not in prompt_of(lib, recall, everything=True)
 
     lib.models.stub.script(name, [remembered()])
     plain = await story_call(client, story, name, {**store_body(briar), "store_as_memory": None})
@@ -1684,15 +1910,17 @@ async def test_i_29__m9_memory_isolation(
     }
     assert row.source_event_ids == [event.id]
 
-    question = {"inputs": {"target": f"the {REMEMBERED} pact"}}
-    lib.models.stub.script(name, [remembered("Again."), remembered("Again.")])
-    own = await story_call(client, story, name, {**question, "viewpoint_character_id": briar})
+    # #849: the question does not carry the marker, so it reaches a prompt only through the
+    # viewpoint's own context.
+    lib.models.stub.script(recall, [remembered("Again."), remembered("Again.")])
+    own = await story_call(client, story, recall, {**RECALL, "viewpoint_character_id": briar})
     assert own.status_code == 200, own.text
-    assert REMEMBERED in prompt_of(lib, name)
-    other = await story_call(client, story, name, {**question, "viewpoint_character_id": cato})
+    assert f"{REMEMBERED} pact." in prompt_of(lib, recall)
+    other = await story_call(client, story, recall, {**RECALL, "viewpoint_character_id": cato})
     assert other.status_code == 200, other.text
-    assert f"{REMEMBERED} pact." not in prompt_of(lib, name)
-    assert "voted for Briar" not in prompt_of(lib, name, everything=True)
+    assert prompt_of(lib, recall).startswith("Cato\n")
+    assert REMEMBERED not in prompt_of(lib, recall, everything=True)
+    assert "voted for Briar" not in prompt_of(lib, recall, everything=True)
     assert REMEMBERED not in caplog.text
 
 

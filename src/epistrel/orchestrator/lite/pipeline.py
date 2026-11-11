@@ -103,6 +103,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, summary, summary_rebuild, turn_gate
+from epistrel.core.bench import PRESENT, bench_states
 from epistrel.core.concurrency import LiteReadSet, check_expected_revision, run_with_revalidation
 from epistrel.core.context import RequestContext
 from epistrel.core.enums import OperationKind, StoryStatus
@@ -634,6 +635,10 @@ async def _play(
     steering: list[str] = []
     """#244: the nudges the turn carries, consumed when it commits."""
 
+    present_benched: list[tuple[str, ...]] = [()]
+    """#832 (FR-MULTI-14): the names of the characters benched ``present`` as the turn starts:
+    Lite's one effect of the mode is the prompt line that names them (never their dialogue)."""
+
     async def begin(conn: AsyncConnection) -> tuple[TurnInputs, ResolvedGeneration]:
         reading = time.perf_counter()
         inputs = await read_turn_inputs(
@@ -641,6 +646,11 @@ async def _play(
         )
         inputs = await _with_author_notes(conn, story_id, inputs, before_turn, steering)
         lite_context[0] = await read_lite_context(conn, story_id, before_turn=before_turn)
+        benched = await bench_states(conn, story_id, before_turn=before_turn)
+        named = {c.id: c.name for c in inputs.cast}
+        present_benched[0] = tuple(
+            sorted(named[c] for c, b in benched.items() if b.mode == PRESENT and c in named)
+        )
         timing.assemble_s += time.perf_counter() - reading
         resolved = resolve_generation(inputs.generation, request.prompt_params)
         # The configuration's fingerprint (FR-PROF-16), from the captured configuration and
@@ -704,6 +714,7 @@ async def _play(
                 constraints=constraints,
                 context=lite_context[0],
                 illustrate=illustration.instructs,
+                present_benched=present_benched[0],
             )
             settings = resolved.model_copy(
                 update={"temperature": raised_temperature(resolved.temperature, attempt)}

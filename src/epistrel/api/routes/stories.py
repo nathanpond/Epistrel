@@ -85,6 +85,7 @@ from epistrel.core.settings_schema import DEFAULT_PLAYER_AUTHORITY, ConfigClass,
 from epistrel.core.stories import (
     AdHocCharacter,
     BenchChanged,
+    BenchModeRequest,
     BenchRequest,
     CharacterView,
     CharacterWeighted,
@@ -164,8 +165,8 @@ class ParticipationBody(BaseModel):
 
 class BenchBody(BaseModel):
     """A benched character's bench (FR-MULTI-13; #831): its ``mode`` (``sequestered``: it
-    perceives nothing; ``present`` is #832's) and ``since_turn``, the head turn it was benched
-    after (0 before any turn)."""
+    perceives nothing; ``present``, FR-MULTI-14: it perceives what happens where it is, but never
+    speaks) and ``since_turn``, the head turn it was benched after (0 before any turn)."""
 
     mode: Literal["sequestered", "present"]
     since_turn: int
@@ -1328,16 +1329,19 @@ _BENCH_RULES = (
         "it. A purpose call from its viewpoint (with `store_as_memory`) and the operator's "
         "belief, fact and memory writes still reach it. `mode` is `sequestered` (the default): "
         "while benched the character perceives nothing, whatever its location, and receives no "
-        "exposure, belief or perceived memory. On a Lite story there is no per-character "
+        "exposure, belief or perceived memory. `mode: present` (FR-MULTI-14) keeps it in the "
+        "scene: it perceives what happens where it is under the normal presence and location "
+        "rules, the scene read and the other characters' scene line name it, and narration may "
+        "describe what it does, but it is still never rendered and never given speech, thoughts "
+        "or decisions. On a Lite story there is no per-character "
         "perception: benching takes the character out of the cast and the rendering only, so "
         "a reactivated character's prompts include the transcript from its time away. "
         + _BENCH_RULES
         + "404 for an unknown story or character; 409 `story_archived`; 423 `story_busy` while "
         "a turn is in flight; 422 `validation_error` for the player's character "
-        "(`reason: player_not_benchable`) or a mode not supported yet (`present`: "
-        "`reason: unsupported_mode`); 409 `already_benched` `{character_id, mode, since_turn}` "
-        "for a benched character, in any mode. Answers the character as an omniscient read "
-        "lists it, with its `bench` `{mode, since_turn}`."
+        "(`reason: player_not_benchable`); 409 `already_benched` "
+        "`{character_id, mode, since_turn}` for a benched character, in any mode. Answers "
+        "the character as an omniscient read lists it, with its `bench` `{mode, since_turn}`."
     ),
 )
 async def bench_character(
@@ -1349,6 +1353,35 @@ async def bench_character(
     body: Annotated[BenchRequest | None, Body()] = None,
 ) -> BenchedCharacterBody:
     done = await engine.bench_character(ctx, story_id, character_id, body)
+    return answered(BenchedCharacterBody.of(done), ctx, response, replayed=done.replayed)
+
+
+@router.patch(
+    "/{story_id}/characters/{character_id}/bench",
+    response_model=BenchedCharacterBody,
+    operation_id="set_bench_mode",
+    summary="Switch a benched character's mode",
+    description=(
+        "Switch a benched character between `sequestered` and `present` (FR-MULTI-14). The "
+        "switch takes effect from the next turn; each earlier turn keeps the mode it had. A "
+        "switch to the mode the character has is a no-op: 200 with no event and no revision "
+        "change. "
+        + _BENCH_RULES
+        + "`Idempotency-Key` is honoured; there is no `If-Match`. 404 for an unknown story or "
+        "character; 409 `story_archived`; 423 `story_busy` while a turn is in flight; 422 "
+        "`validation_error` for an unknown mode; 409 `not_benched` for a character that is not "
+        "benched. Answers the character as an omniscient read lists it, with its `bench`."
+    ),
+)
+async def set_bench_mode(
+    story_id: StoryId,
+    character_id: StoryCharacterId,
+    body: BenchModeRequest,
+    response: Response,
+    ctx: ContextDep,
+    engine: EngineDep,
+) -> BenchedCharacterBody:
+    done = await engine.set_bench_mode(ctx, story_id, character_id, body)
     return answered(BenchedCharacterBody.of(done), ctx, response, replayed=done.replayed)
 
 

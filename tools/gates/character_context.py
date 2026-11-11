@@ -104,6 +104,7 @@ SECTIONS: dict[str, str] = {
     "belief_steps": TURN,
     "clock_contract": TURN,
     "others_present": TURN,
+    "present_benched": TURN,
     "interjections": TURN,
     "player_requests": TURN,
     "pinned_memories": UNSCOPED,

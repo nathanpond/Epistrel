@@ -105,6 +105,7 @@ from epistrel.core.events.registry import EventPayload
 from epistrel.core.events.types import (
     CastMember,
     CharacterBenchedEvent,
+    CharacterBenchModeChanged,
     CharacterDefined,
     CharacterReactivated,
     CharacterWeightSet,
@@ -1604,8 +1605,9 @@ async def refuse_benched(conn: AsyncConnection, story_id: str, character_id: str
 
 class BenchRequest(BaseModel):
     """``POST /stories/{id}/characters/{cid}/bench``: the bench's ``mode`` (FR-MULTI-13).
-    ``sequestered`` (the default): the benched character perceives nothing. ``present`` is
-    #832's and is refused until it ships (422 ``unsupported_mode``)."""
+    ``sequestered`` (the default): the benched character perceives nothing. ``present``
+    (FR-MULTI-14; #832): it stays in the scene and perceives what happens where it is, but is
+    never rendered and never speaks."""
 
     model_config = ConfigDict(
         extra="forbid", frozen=True, json_schema_extra={"examples": [{"mode": "sequestered"}]}
@@ -1772,8 +1774,8 @@ async def bench_character(
     """Bench a story character (FR-MULTI-13; see ``core.bench``). Refusals, in order: 404 for an
     unknown story or character; 409 ``story_archived`` (and a paused story's refusal); 409
     ``revision_conflict``; 423 ``story_busy`` while a turn is in flight; 422
-    ``validation_error`` for the player's character (``player_not_benchable``) and for a mode
-    not yet supported (``unsupported_mode``); 409 ``already_benched`` (in any mode)."""
+    ``validation_error`` for the player's character (``player_not_benchable``); 409
+    ``already_benched`` (in any mode)."""
     view = await _bench_prechecks(db, story_id, character_id, expected_revision)
 
     async def check(conn: AsyncConnection) -> EventPayload:
@@ -1781,11 +1783,6 @@ async def bench_character(
             raise InvalidRequest(
                 "the player's character cannot be benched",
                 {"field": "character_id", "reason": "player_not_benchable"},
-            )
-        if request.mode not in benches.SUPPORTED_MODES:
-            raise InvalidRequest(
-                f"bench mode {request.mode!r} is not supported yet",
-                {"field": "mode", "reason": "unsupported_mode"},
             )
         found = await benches.bench_of(conn, story_id, character_id)
         if found is not None:
@@ -1882,6 +1879,77 @@ async def reactivate_character(
         check=check,
         write=write,
         event_type="character_reactivated",
+    )
+
+
+class BenchModeRequest(BaseModel):
+    """``PATCH /stories/{id}/characters/{cid}/bench``: the benched character's new ``mode``
+    (FR-MULTI-14; #832)."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, json_schema_extra={"examples": [{"mode": "present"}]}
+    )
+
+    mode: Literal["sequestered", "present"]
+
+
+async def set_bench_mode(
+    db: AsyncEngine,
+    story_id: str,
+    character_id: str,
+    request: BenchModeRequest,
+    *,
+    principal: str,
+    idempotency_key: str | None = None,
+) -> BenchChanged:
+    """Switch a benched character's mode (FR-MULTI-14; #832): an inter-turn slot operation
+    recording ``character_bench_mode_changed`` and one more ``benched`` version in the new mode,
+    so the switch takes effect from the next turn and each earlier turn keeps the mode it had.
+    The bench's ``previous_role`` carries over, so a reactivation still restores it. A switch to
+    the mode it has is a 200 no-op: no event, no revision change. Refusals, in order: 404; 409
+    ``story_archived`` (and a paused story's refusal); 423 ``story_busy`` while a turn is in
+    flight; 409 ``not_benched``."""
+    view = await _bench_prechecks(db, story_id, character_id, None)
+    if view.bench is not None and view.bench["mode"] == request.mode:
+        async with db.connect() as conn:
+            revision = await conn.scalar(
+                select(stories.c.timeline_revision).where(stories.c.id == story_id)
+            )
+        return BenchChanged(character=view, timeline_revision=int(revision or 0))
+
+    async def check(conn: AsyncConnection) -> EventPayload:
+        found = await benches.bench_of(conn, story_id, character_id)
+        if found is None:
+            raise _not_benched(character_id)
+        return CharacterBenchModeChanged(
+            character_id=character_id, mode=request.mode, previous_mode=found.mode
+        )
+
+    async def write(
+        conn: AsyncConnection, op: Operation, payload: EventPayload, source: str
+    ) -> None:
+        assert isinstance(payload, CharacterBenchModeChanged)  # noqa: S101 - check's own payload
+        found = await benches.bench_of(conn, story_id, character_id)
+        assert found is not None  # noqa: S101 - check refused an unbenched character
+        await _write_version(
+            conn,
+            op,
+            character_id=character_id,
+            mode=payload.mode,
+            benched=True,
+            source_event_id=source,
+            previous={"role": found.previous_role, "fixed": found.previous_fixed},
+        )
+
+    return await _bench_change(
+        db,
+        story_id,
+        character_id,
+        principal=principal,
+        idempotency_key=idempotency_key,
+        check=check,
+        write=write,
+        event_type="character_bench_mode_changed",
     )
 
 

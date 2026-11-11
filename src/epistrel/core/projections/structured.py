@@ -799,6 +799,11 @@ class SceneView:
     location: EntityRef | None
     present: tuple[EntityRef, ...]
     viewpoint: str
+    bench: Mapping[str, str] = field(default_factory=dict)
+    """#832 (FR-MULTI-14): the bench mode of each entity of ``present`` whose character is
+    benched ``present`` (by entity id). A ``sequestered`` character is never in ``present``."""
+    benched_characters: Mapping[str, str] = field(default_factory=dict)
+    """#832: the character of each entity ``bench`` lists (entity id → character id)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,16 +981,46 @@ async def scene_view(
             ctx.now,
             _visible(ctx.viewpoint),
         )
+    present, bench, benched_characters = await _benched_presence(
+        conn, story_id, turn, found.present
+    )
     refs = await _refs(
-        conn, story_id, [*found.present, *([found.location_id] if found.location_id else [])]
+        conn, story_id, [*present, *([found.location_id] if found.location_id else [])]
     )
     return SceneView(
         turn=turn,
         variant=variant,
         location=None if found.location_id is None else _ref(refs, found.location_id),
-        present=tuple(_ref(refs, i) for i in found.present),
+        present=tuple(_ref(refs, i) for i in present),
         viewpoint=ctx.viewpoint,
+        bench=bench,
+        benched_characters=benched_characters,
     )
+
+
+async def _benched_presence(
+    conn: AsyncConnection, story_id: str, turn: int, present: Sequence[str]
+) -> tuple[list[str], dict[str, str], dict[str, str]]:
+    """``present`` as the bench leaves it after turn ``turn`` (FR-MULTI-13,14; #831, #832): a
+    ``sequestered`` character's entity out (it is out of the scene, as ``load_scene`` leaves it),
+    a ``present`` one's kept and marked with its mode. One presence set with perception: the
+    scene line, a character's ``## Scene`` and a purpose's ``story.present`` read it."""
+    from epistrel.core.bench import ABSENT_MODES, bench_states
+
+    benched = await bench_states(conn, story_id, before_turn=turn + 1)
+    if not benched or not present:
+        return list(present), {}, {}
+    rows = await conn.execute(
+        select(entities.c.id, entities.c.character_id).where(
+            entities.c.story_id == story_id,
+            entities.c.character_id.in_(sorted(benched)),
+        )
+    )
+    character = {str(r.id): str(r.character_id) for r in rows}
+    mode = {e: benched[c].mode for e, c in character.items()}
+    kept = [e for e in present if mode.get(e) not in ABSENT_MODES]
+    marked = [e for e in kept if e in mode]
+    return kept, {e: mode[e] for e in marked}, {e: character[e] for e in marked}
 
 
 async def _within(

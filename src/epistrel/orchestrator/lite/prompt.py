@@ -72,6 +72,7 @@ def assemble(
     constraints: Sequence[str] = (),
     context: LiteContext | None = None,
     illustrate: bool = False,
+    present_benched: Sequence[str] = (),
 ) -> GenerationInputs:
     """The ``generation`` inputs of one Lite turn, every section from the Engine's records.
 
@@ -79,7 +80,8 @@ def assemble(
     definitions are the ones read in the turn's snapshot (``inputs.cast``). ``constraints``
     are the output gate's lines on a guardrail regeneration (#68); ``context`` the prompt-only
     clock and States (#203); ``illustrate`` asks for #265's illustrate tag (the story is
-    ``auto``, an image adapter is configured and its cap is above 0)."""
+    ``auto``, an image adapter is configured and its cap is above 0); ``present_benched`` the
+    names of the characters benched ``present`` (#832, FR-MULTI-14: their one prompt line)."""
     names = {c.id: c.name for c in inputs.cast}
     current = {c.id: c for c in inputs.cast}
     return GenerationInputs(
@@ -103,6 +105,7 @@ def assemble(
         lite_time=list(context.time_lines) if context is not None else [],
         tracked_values=list(context.tracked_values) if context is not None else [],
         illustrate_instruction=LITE_ILLUSTRATE_INSTRUCTION if illustrate else "",
+        present_benched=list(present_benched),
     )
 
 

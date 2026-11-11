@@ -396,12 +396,14 @@ async def _story_character(client: httpx.AsyncClient, kind: Kind, entity: Entity
 async def _benched_character(
     client: httpx.AsyncClient, kind: Kind, entity: Entity
 ) -> dict[str, Any]:
-    """The story's Ada, benched by the owner (#831), for a reactivation."""
+    """The story's Ada, benched by the owner (#831), for a reactivation or (#832) a mode switch;
+    a bench already in force (an earlier call's) is kept."""
     ada = entity.ids["ada"]
     benched = await client.post(
         kind.path(entity.id, f"/characters/{ada}/bench"), headers=headers(OWNER)
     )
-    await ok(benched, 200)
+    if benched.status_code != 409 or benched.json()["error"]["code"] != "already_benched":
+        await ok(benched, 200)
     return {"character_id": ada}
 
 
@@ -940,6 +942,10 @@ CALLS: dict[tuple[str, str], Call] = {
     # -- stories: a character benched and reactivated (#831)
     ("POST", f"{S}/characters/{{character_id}}/bench"): Call(200, {}, prepare=_story_character),
     ("POST", f"{S}/characters/{{character_id}}/reactivate"): Call(200, prepare=_benched_character),
+    # -- stories: a benched character's mode switched (#832)
+    ("PATCH", f"{S}/characters/{{character_id}}/bench"): Call(
+        200, {"mode": "present"}, prepare=_benched_character
+    ),
     # -- stories: the world clock (#193): read, settings changed, and an advance, on the story
     # running the clock at prompt_only (#203: a Lite story's form)
     ("GET", f"{S}/clock"): Call(200),

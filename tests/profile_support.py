@@ -256,7 +256,7 @@ STRUCTURED_DOCUMENT: dict[str, Any] = {"pipeline": "structured"}
 GROUP = re.compile(r"(?:FR|NFR)-[A-Z]+(?:-\d+(?:\.\.\d+)?(?:,\d+(?:\.\.\d+)?)*)?")
 FAMILY = re.compile(r"^(?:FR|NFR)-[A-Z]+$")
 FLOOR_POINTERS = frozenset(
-    {"FR-CONC", "FR-GUARD", "FR-CONC-4", "FR-LITE-5", "FR-MULTI-12", "FR-MULTI-13"}
+    {"FR-CONC", "FR-GUARD", "FR-CONC-4", "FR-LITE-5", "FR-MULTI-12", "FR-MULTI-13", "FR-MULTI-14"}
 )
 """What FR-PROF-13's listed clauses name without listing it: the families whose listed parts
 follow in parentheses, the Lite read set and the story cast limit (FR-MULTI-12, #828) it calls

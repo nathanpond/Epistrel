@@ -395,6 +395,10 @@ class GenerationInputs(InputSchema):
     narrate in ``reactions``."""
     interjections: Annotated[bool, C.CONSTRAINT] = False
     """#176: whether the ``## Others present`` rule allows a brief interjection."""
+    present_benched: Annotated[list[str], C.SCENE] = Field(default_factory=list, max_length=200)
+    """#832 (FR-MULTI-14): the names of the characters benched ``present`` in the scene (Lite:
+    in the story), for the one line "Present but not taking part: <names>; never give them
+    dialogue" of the narrator's, a primary's and the Lite prompt. Empty: no line."""
     retrieved_memories: Annotated[list[str], C.RETRIEVED_MEMORIES] = Field(default_factory=list)
     """A structured render's ``## Retrieved``: #141's assembled context."""
     canon_facts: Annotated[list[str], C.CANON_FACTS] = Field(default_factory=list)

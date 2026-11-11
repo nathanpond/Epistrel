@@ -607,6 +607,18 @@ class CharacterReactivated(EventPayload):
     restored_fixed: bool
 
 
+@register("character_bench_mode_changed", category=EventCategory.CONTROL)
+class CharacterBenchModeChanged(EventPayload):
+    """A benched story character's bench mode was switched (FR-MULTI-14; #832's ``PATCH
+    /stories/{id}/characters/{cid}/bench``): the ``mode`` it now has and the ``previous_mode``.
+    Recorded by an inter-turn slot operation, as the bench is, so the switch takes effect from
+    the next turn and a truncation before it restores the previous mode. Identifiers only."""
+
+    character_id: str
+    mode: str
+    previous_mode: str
+
+
 @register("character_modeled", category=EventCategory.DERIVED)
 class CharacterModeled(EventPayload):
     """A story entity became a modeled character (FR-EPI-9; #163): the trigger

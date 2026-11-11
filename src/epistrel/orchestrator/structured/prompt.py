@@ -118,6 +118,9 @@ class RenderSections:
     clock_now: str = ""
     """#200: the narrator's objective time as the turn starts; never a character's
     (``character_inputs`` passes it nowhere: a character gets its own ``time_belief``)."""
+    present_benched: tuple[str, ...] = ()
+    """#832 (FR-MULTI-14): the names of the characters benched ``present`` in the scene, for the
+    narrator's and each primary's "Present but not taking part" line (never their dialogue)."""
     pending_outcomes: tuple[str, ...] = ()
     """#209: the narrator's ``## Awaiting the game``, the changes the last turns asked of the
     consumer with no outcome yet (``effects.pending_outcomes``): counted against the cap, never
@@ -267,6 +270,7 @@ def character_inputs(
         working_memory=list(s.working_memory),
         just_now=list(s.just_now),
         others_present=list(others_present),
+        present_benched=list(s.present_benched),
         interjections=interjections,
         player_requests=list(player_requests),
         tracked_values=list(s.tracked),
@@ -303,6 +307,7 @@ def narrator_inputs(
         retrieved_memories=list(s.retrieved),
         canon_facts=list(s.canon),
         open_references=list(open_references),
+        present_benched=list(s.present_benched),
         tracked_values=list(s.tracked),
         tracked_syntax=s.tracked_syntax,
         external_data=list(s.external),

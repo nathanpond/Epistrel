@@ -280,11 +280,11 @@ async def test_i_31__m9_refusals(
     served: tuple[httpx.AsyncClient, Engine], engine: AsyncEngine
 ) -> None:
     """Each refusal and its body, nothing written by any: 404 for an unknown story or
-    character; 422 ``player_not_benchable`` (``field: character_id``); 422 ``unsupported_mode``
-    for ``present`` (``field: mode``) until #832; 409 ``already_benched`` ``{character_id, mode,
-    since_turn}``; 409 ``not_benched``; 409 ``character_benched`` for a participation or weight
-    write on a benched character; 423 ``story_busy`` while a turn holds the story's turn slot;
-    409 ``story_archived`` before the 422 on an archived story (the precedence)."""
+    character; 422 ``player_not_benchable`` (``field: character_id``); 409 ``already_benched``
+    ``{character_id, mode, since_turn}``; 409 ``not_benched``; 409 ``character_benched`` for a
+    participation or weight write on a benched character; 423 ``story_busy`` while a turn holds
+    the story's turn slot; 409 ``story_archived`` before the 422 on an archived story (the
+    precedence)."""
     client, _ = served
     story, ids = await structured_story(client, "Wren", "Ada", "Bo")
     wren, ada, bo = ids["Wren"], ids["Ada"], ids["Bo"]
@@ -300,11 +300,6 @@ async def test_i_31__m9_refusals(
         422,
         "validation_error",
         {"field": "character_id", "reason": "player_not_benchable"},
-    )
-    assert refusal(await bench(client, story, ada, {"mode": "present"})) == (
-        422,
-        "validation_error",
-        {"field": "mode", "reason": "unsupported_mode"},
     )
     assert refusal(await reactivate(client, story, bo)) == (
         409,

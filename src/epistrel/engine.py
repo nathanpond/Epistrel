@@ -372,6 +372,8 @@ CODECS: dict[str, ResultCodec[Any]] = {
     # #831: a character benched and reactivated (story-scoped inter-turn slot operations).
     "bench_character": ResultCodec.of(stories.BenchChanged),
     "reactivate_character": ResultCodec.of(stories.BenchChanged),
+    # #832: a benched character's mode switched (an inter-turn slot operation).
+    "set_bench_mode": ResultCodec.of(stories.BenchChanged),
     # #193: the world clock moved forward between turns, and its settings changed.
     "advance_clock": ResultCodec.of(clock_service.ClockMoved),
     "update_clock": ResultCodec.of(clock_service.ClockSettingsWrite, revision_field=_CONFIG),
@@ -3678,8 +3680,10 @@ class Engine:
         ``sequestered`` (the default ``mode``), it perceives nothing. An inter-turn slot
         operation that bumps the timeline revision. 404 for an unknown story or character; 409
         ``story_archived``; 409 ``revision_conflict``; 423 ``story_busy`` while a turn is in
-        flight; 422 ``validation_error`` (``player_not_benchable``, ``unsupported_mode``); 409
-        ``already_benched``. Answers the character as a read lists it, with its ``bench``."""
+        flight; 422 ``validation_error`` (``player_not_benchable``); 409
+        ``already_benched``. Benched ``present`` (FR-MULTI-14; #832), it stays in the scene and
+        perceives what happens where it is, but never speaks. Answers the character as a read
+        lists it, with its ``bench``."""
         principal = self.require_principal(ctx)
         body = request if request is not None else stories.BenchRequest()
 
@@ -3700,6 +3704,38 @@ class Engine:
             run,
             story_id=story_id,
             material={"story_id": story_id, "character_id": character_id, "body": _body(body)},
+        )
+
+    async def set_bench_mode(
+        self,
+        ctx: RequestContext,
+        story_id: str,
+        character_id: str,
+        request: stories.BenchModeRequest,
+    ) -> stories.BenchChanged:
+        """Switch a benched character's mode between ``sequestered`` and ``present``
+        (FR-MULTI-14; #832), from the next turn on: an inter-turn slot operation recording
+        ``character_bench_mode_changed``. The mode it has already is a no-op (no event, no
+        revision change). 404; 409 ``story_archived``; 423 ``story_busy``; 409 ``not_benched``.
+        Answers the character as a read lists it, with its ``bench``."""
+        principal = self.require_principal(ctx)
+
+        async def run(ctx: RequestContext) -> stories.BenchChanged:
+            return await stories.set_bench_mode(
+                self.db,
+                story_id,
+                character_id,
+                request,
+                principal=principal,
+                idempotency_key=ctx.idempotency_key,
+            )
+
+        return await self._keyed(
+            ctx,
+            "set_bench_mode",
+            run,
+            story_id=story_id,
+            material={"story_id": story_id, "character_id": character_id, "body": _body(request)},
         )
 
     async def reactivate_character(

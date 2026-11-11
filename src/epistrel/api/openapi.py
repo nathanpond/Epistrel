@@ -808,6 +808,8 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     # #831: a character benched and reactivated (inter-turn slot operations).
     "bench_character": ("story_archived", "story_paused", "story_busy", "already_benched"),
     "reactivate_character": ("story_archived", "story_paused", "story_busy", "not_benched"),
+    # #832: a benched character's mode switched (an inter-turn slot operation).
+    "set_bench_mode": ("story_archived", "story_paused", "story_busy", "not_benched"),
     "model_entity": (
         "story_archived",
         "story_paused",

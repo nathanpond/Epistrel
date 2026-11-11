@@ -1477,6 +1477,11 @@
       "requirement": "FR-MULTI-13"
     },
     {
+      "method": "PATCH",
+      "path": "/stories/{story_id}/characters/{character_id}/bench",
+      "requirement": "FR-MULTI-14"
+    },
+    {
       "method": "POST",
       "path": "/stories/{story_id}/characters/{character_id}/reactivate",
       "requirement": "FR-MULTI-13"

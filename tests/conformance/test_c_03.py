@@ -263,6 +263,7 @@ from epistrel.core.states.api import StateDefineRequest, StateSetRequest
 from epistrel.core.states.proposals import StateProposalApproveRequest
 from epistrel.core.stories import (
     AdHocCharacter,
+    BenchModeRequest,
     BenchRequest,
     CharacterWeightRequest,
     ModelEntityRequest,
@@ -1989,6 +1990,14 @@ def _steps() -> list[Step]:
             lambda ids: Rest("POST", f"{s}/characters/{{dale}}/bench", {"mode": "sequestered"}),
             lambda e, ids: _benched(
                 e.bench_character(CTX, ids["story"], ids["dale"], BenchRequest(mode="sequestered"))
+            ),
+        ),
+        # #832: the benched character switched to ``present``.
+        Step(
+            "set_bench_mode",
+            lambda ids: Rest("PATCH", f"{s}/characters/{{dale}}/bench", {"mode": "present"}),
+            lambda e, ids: _benched(
+                e.set_bench_mode(CTX, ids["story"], ids["dale"], BenchModeRequest(mode="present"))
             ),
         ),
         Step(
@@ -5058,6 +5067,12 @@ async def test_c_03(surfaces: tuple[Settings, Settings], dummy_dsn: str) -> None
         for step, (status, _) in zip(steps, rest, strict=True)
         if step.group == MUTATION_GROUP
     ] == MUTATION_ANSWERS
+    # #832: the bench mode switch answered on both surfaces.
+    assert [
+        status
+        for step, (status, _) in zip(steps, rest, strict=True)
+        if step.operation == "set_bench_mode"
+    ] == [200]
     # The character steps (#103) answered what they were written to answer, on both surfaces.
     answered = [
         (step.operation, status)

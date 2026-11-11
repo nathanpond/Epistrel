@@ -172,6 +172,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.core import idempotency, pause, turn_gate, turn_memo, world_clock
 from epistrel.core import outbox as core_outbox
+from epistrel.core.bench import PRESENT
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.canon.canonize import CanonRequest, canonize_all
 from epistrel.core.commit import boundary, hidden, lifecycle, matching
@@ -927,6 +928,12 @@ class TurnRead:
     allow_new_arrivals: bool
     present_ids: tuple[str, ...] = ()
     """The entities authoritatively present (#170: the character's ``## Scene`` card)."""
+    present_benched: tuple[str, ...] = ()
+    """#832 (FR-MULTI-14): the names of the present entities whose characters are benched
+    ``present`` (sorted): in the scene line, never rendered; the narrator's and each primary's
+    "Present but not taking part" line."""
+    present_benched_ids: tuple[str, ...] = ()
+    """#832: their character ids, in the same order (``turn_report.bench.present``)."""
     location_name: str | None = None
     deferred: bool = False
     """#154 (FR-COMMIT-11): an open thunk an earlier turn introduced is in the context, so the
@@ -1032,6 +1039,18 @@ def _addresses(text: str, names: Sequence[str]) -> bool:
     return any(f" {n.casefold()} " in folded or f" {n.casefold()}," in folded for n in names)
 
 
+def _present_benched(scene: Any) -> list[tuple[str, str]]:
+    """#832 (FR-MULTI-14): the scene's characters benched ``present``, as (name, character id),
+    sorted by name."""
+    if scene is None:
+        return []
+    return sorted(
+        (e.name, scene.benched_characters[e.entity_id])
+        for e in scene.present
+        if scene.bench.get(e.entity_id) == PRESENT
+    )
+
+
 async def _scene(lookup: KeyedLookup, story_id: str, as_of: int) -> tuple[str | None, Any]:
     if as_of < 0:
         return None, None
@@ -1134,6 +1153,8 @@ async def read_turn(
         triggers=tuple(triggers),
         allow_new_arrivals=story.settings.allow_new_arrivals,
         present_ids=tuple(e.entity_id for e in scene.present) if scene is not None else (),
+        present_benched=tuple(name for name, _ in _present_benched(scene)),
+        present_benched_ids=tuple(cid for _, cid in _present_benched(scene)),
         location_name=None if scene is None or scene.location is None else str(scene.location.name),
         deferred=lifecycle.commitment_enabled(settings) and await _deferred(conn, story_id, turn),
         flagged=lifecycle.commitment_enabled(settings) and await _flagged(conn, story_id, turn),
@@ -5262,6 +5283,8 @@ async def play(
             pins=read.inputs.pins,
             segments=read.inputs.segments,
             scene=read.scene,
+            # #832 (FR-MULTI-14): who is there but never speaks.
+            present_benched=read.present_benched,
             resolution_steering=_steering(read),
             length_target=length_line(read.resolved.max_tokens),
             # #168: the step contract, for a character that keeps its own beliefs.
@@ -6892,7 +6915,9 @@ async def play(
             return
         fixed["raw_render_event_ids"] = await _raw_render_ids(conn, op.operation_id, ids, checked)
         clock.add("commit", time.perf_counter() - committing)
-        await write_report(conn, rendered, checked, op_turn=read.turn)
+        await write_report(
+            conn, rendered, checked, op_turn=read.turn, benched=read.present_benched_ids
+        )
 
     async def illustrate(
         conn: AsyncConnection, *, points: list[auto_images.IllustrationPoint]
@@ -6902,7 +6927,12 @@ async def play(
         )
 
     async def write_report(
-        conn: AsyncConnection, rendered: Rendered, checked: Checked, *, op_turn: int
+        conn: AsyncConnection,
+        rendered: Rendered,
+        checked: Checked,
+        *,
+        op_turn: int,
+        benched: tuple[str, ...] = (),
     ) -> None:
         fixed["elapsed_ms"] = budget.elapsed_ms()
         report = lite.turn_report(
@@ -6946,6 +6976,9 @@ async def play(
         if roles_state:
             # #176: the turn's roles and what reactive narration made of them.
             report["roles"] = roles_state[0].report()
+        if benched:
+            # #832 (FR-MULTI-14): the characters benched present: perceiving, never rendered.
+            report["bench"] = {"present": list(benched)}
         if authority and authority[0].active:
             # #180: the player's input about other characters.
             report["player_authority"] = authority[0].report()

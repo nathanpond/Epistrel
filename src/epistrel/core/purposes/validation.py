@@ -36,6 +36,20 @@ the undeclared-variable check does not see, is refused by name.
 
 #848: a constant key may be negative (``[-1]``): ``-``/``+`` of a numeric constant is a constant.
 
+#852: Jinja's item lookup falls back to the attribute, so a constant string key is checked as the
+attribute it may name: ``['format']`` and ``['format_map']`` are refused like ``.format``, and
+``['get']`` is held to ``.get``'s rule. A filter's attribute name is a dotted path Jinja looks up
+the same way, so no segment of it may name ``format``, ``format_map`` or ``get``
+(``READING_METHODS``).
+
+#853: what the scan can see would fail at render is refused too. A test (``is …``, or the name
+``select``, ``reject``, ``selectattr`` and ``rejectattr`` take) is a constant naming a Jinja
+built-in. ``super`` is refused by name, like ``self``. A call of a method the immutable sandbox
+refuses (``MUTATING_METHODS``: ``pop``, ``append``, ``update`` and the rest, on a list, dict, set
+or deque) is refused, as is taking a dict's (``.pop``, ``.update``, ``.setdefault``,
+``.popitem``, ``.clear``), which the sandbox always refuses on a mapping; any of these names stays
+accepted as a key that is read and not called. A slice's bounds are constant integers.
+
 **Output schemas** are the JSON Schema subset the strict structured path (#761) can send as it
 is: an object root; each node a single-string ``type`` among string, number, integer, boolean,
 array and object; ``properties``, ``required`` (listing every property, as strict decoding
@@ -58,12 +72,14 @@ from __future__ import annotations
 import inspect
 import json
 import re
+from collections import deque
 from collections.abc import Collection, Mapping
 from typing import Any, Final, cast
 
 from jinja2 import StrictUndefined, Template, TemplateError, meta, nodes
 from jinja2.filters import FILTERS
-from jinja2.sandbox import ImmutableSandboxedEnvironment
+from jinja2.sandbox import ImmutableSandboxedEnvironment, modifies_known_mutable
+from jinja2.tests import TESTS
 
 from epistrel.core.errors import InvalidRequest
 
@@ -106,6 +122,28 @@ ATTRIBUTE_POSITIONS: Final[Mapping[str, int]] = _attribute_positions()
 (#837, #847)."""
 FORMAT_METHODS: Final = frozenset({"format", "format_map"})
 """String methods whose format fields read attributes and items by name (#847)."""
+READING_METHODS: Final = FORMAT_METHODS | {"get"}
+"""Methods that read attributes or items by a name they are given (#847, #852)."""
+TEST_POSITIONS: Final[Mapping[str, int]] = {
+    "select": 0,
+    "reject": 0,
+    "selectattr": 1,
+    "rejectattr": 1,
+}
+"""Filters that apply a test named by an argument, and that argument's position (#853)."""
+
+
+def _mutating(*values: object) -> frozenset[str]:
+    """The method names the immutable sandbox refuses on ``values`` (#853)."""
+    return frozenset(
+        name for value in values for name in dir(value) if modifies_known_mutable(value, name)
+    )
+
+
+MUTATING_METHODS: Final = _mutating([], {}, set(), deque())
+"""Methods the immutable sandbox refuses on a list, dict, set or deque (#853)."""
+MAPPING_MUTATING_METHODS: Final = _mutating({})
+"""The dict's own: a mapping always has them, so Jinja never falls back to an item (#853)."""
 _PRINTF_KEY = re.compile(r"%\(([^)]*)\)")
 
 _NAME = re.compile(NAME_PATTERN)
@@ -189,25 +227,53 @@ def _private(name: object) -> bool:
     return isinstance(name, str) and name.startswith("_")
 
 
-def _constant_key(arg: nodes.Expr) -> bool:
-    """A constant item key: a constant, a slice, or ``-``/``+`` of a numeric constant (#848)."""
+def _number(arg: nodes.Expr | None, kinds: type | tuple[type, ...]) -> bool:
+    """A constant of ``kinds``, or ``-``/``+`` of one (#848); never a bool."""
     if isinstance(arg, (nodes.Neg, nodes.Pos)):
-        return (
-            isinstance(arg.node, nodes.Const)
-            and isinstance(arg.node.value, int | float)
-            and not isinstance(arg.node.value, bool)
+        arg = arg.node
+    return (
+        isinstance(arg, nodes.Const)
+        and isinstance(arg.value, kinds)
+        and not isinstance(arg.value, bool)
+    )
+
+
+def _constant_key(arg: nodes.Expr) -> bool:
+    """A constant item key: a constant, ``-``/``+`` of a numeric constant (#848), or a slice
+    whose bounds are constant integers (#853)."""
+    if isinstance(arg, nodes.Slice):
+        return all(
+            bound is None or _number(bound, int) for bound in (arg.start, arg.stop, arg.step)
         )
-    return isinstance(arg, (nodes.Const, nodes.Slice))
+    if isinstance(arg, (nodes.Neg, nodes.Pos)):
+        return _number(arg, (int, float))
+    return isinstance(arg, nodes.Const)
+
+
+def _member(node: nodes.Node) -> str | None:
+    """The name ``node`` looks up: an attribute's, or a constant string key's, which Jinja
+    looks up as an attribute when the item is missing (#852)."""
+    if isinstance(node, nodes.Getattr):
+        return node.attr
+    if (
+        isinstance(node, nodes.Getitem)
+        and isinstance(node.arg, nodes.Const)
+        and isinstance(node.arg.value, str)
+    ):
+        return node.arg.value
+    return None
 
 
 def _safe_attribute(arg: nodes.Expr) -> bool:
-    """A constant attribute name (Jinja's dotted path or an index) with no ``_`` segment."""
+    """A constant attribute name (Jinja's dotted path or an index) with no segment that starts
+    with ``_`` or names one of ``READING_METHODS`` (#852)."""
     if not isinstance(arg, nodes.Const):
         return False
     if isinstance(arg.value, int):
         return True
     return isinstance(arg.value, str) and not any(
-        _private(part.strip()) for part in re.split(r"[.,]", arg.value)
+        _private(part) or part in READING_METHODS
+        for part in (raw.strip() for raw in re.split(r"[.,]", arg.value))
     )
 
 
@@ -233,7 +299,15 @@ def _filter_problem(
         if position is not None and len(args) > position:
             named.append(args[position])
         if not all(_safe_attribute(arg) for arg in named):
-            return f"the filter {name!r} names an attribute that is computed or starts with '_'"
+            return (
+                f"the filter {name!r} names an attribute that is computed, starts with '_' or "
+                "names a method that reads by name"
+            )
+    position = TEST_POSITIONS.get(name)
+    if position is not None and len(args) > position:
+        test = args[position]
+        if not (isinstance(test, nodes.Const) and test.value in TESTS):
+            return f"the filter {name!r} names a test that is computed or not a Jinja built-in"
     if name == "format":
         if any(_private(kw.key) for kw in kwargs):
             return "the filter 'format' names a field that starts with '_'"
@@ -273,38 +347,43 @@ def _get_problem(node: nodes.Call) -> str | None:
 
 def _scan(tree: nodes.Template) -> str | None:
     """The first construct the scan refuses, described; ``None`` when there is none."""
-    # A ``.get`` is checked where it is called; one taken without a call could be called with
-    # any key later.
-    gets = {
-        id(call.node): call
-        for call in tree.find_all(nodes.Call)
-        if isinstance(call.node, nodes.Getattr) and call.node.attr == "get"
-    }
+    # A ``.get`` (or ``['get']``, #852) is checked where it is called; one taken without a
+    # call could be called with any key later.
+    calls = {id(call.node): call for call in tree.find_all(nodes.Call)}
     for node in tree.find_all(nodes.Node):
         refused = REFUSED_STATEMENTS.get(type(node))
         if refused is not None:
             return f"the template uses {{% {refused} %}}, which consumer templates may not"
-        if isinstance(node, nodes.Getattr):
-            if _private(node.attr):
-                return "the template reads an attribute whose name starts with '_'"
-            if node.attr in FORMAT_METHODS:
-                return f"the template uses {node.attr!r}, which consumer templates may not"
-            if node.attr == "get":
-                call = gets.get(id(node))
-                problem = (
-                    _get_problem(call)
-                    if call is not None
-                    else "the template takes 'get' without calling it"
-                )
-                if problem is not None:
-                    return problem
+        if isinstance(node, nodes.Getattr) and _private(node.attr):
+            return "the template reads an attribute whose name starts with '_'"
         if isinstance(node, nodes.Getitem):
             if isinstance(node.arg, nodes.Const) and _private(node.arg.value):
                 return "the template reads an item whose name starts with '_'"
+            if isinstance(node.arg, nodes.Slice) and not _constant_key(node.arg):
+                return "the template slices by a computed bound; slice bounds are constant integers"
             if not _constant_key(node.arg):
                 return "the template reads an item by a computed key; item keys are constants"
-        if isinstance(node, nodes.Name) and node.name == "self":
-            return "the template references 'self', which consumer templates may not"
+        member = _member(node)
+        if member in FORMAT_METHODS:
+            return f"the template uses {member!r}, which consumer templates may not"
+        call = calls.get(id(node))
+        if member == "get":
+            problem = (
+                _get_problem(call)
+                if call is not None
+                else "the template takes 'get' without calling it"
+            )
+            if problem is not None:
+                return problem
+        if member in MUTATING_METHODS and (
+            call is not None
+            or (isinstance(node, nodes.Getattr) and member in MAPPING_MUTATING_METHODS)
+        ):
+            return f"the template uses {member!r}, a method that changes its value"
+        if isinstance(node, nodes.Name) and node.name in ("self", "super"):
+            return f"the template references {node.name!r}, which consumer templates may not"
+        if isinstance(node, nodes.Test) and node.name not in TESTS:
+            return f"the template uses the test {node.name!r}, which is not a Jinja built-in"
         if isinstance(node, (nodes.Filter, nodes.Test, nodes.Call)) and (
             node.dyn_args is not None or node.dyn_kwargs is not None
         ):
@@ -505,17 +584,21 @@ __all__ = [
     "ATTRIBUTE_POSITIONS",
     "DESCRIPTION_MAX",
     "FORMAT_METHODS",
+    "MAPPING_MUTATING_METHODS",
+    "MUTATING_METHODS",
     "NAME_INVALID",
     "NAME_PATTERN",
     "NAME_TAKEN",
     "PURPOSE_LIMIT",
     "PURPOSE_LIMIT_REACHED",
+    "READING_METHODS",
     "SCHEMA_INVALID",
     "SCHEMA_MAX_BYTES",
     "SCHEMA_MAX_DEPTH",
     "TEMPLATE_INVALID",
     "TEMPLATE_MAX_BYTES",
     "TEMPLATE_VARIABLES",
+    "TEST_POSITIONS",
     "PurposeRefused",
     "canonical_json",
     "check_name",

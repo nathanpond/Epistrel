@@ -23,6 +23,19 @@ takes each name as a constant with no ``_``-prefixed segment. The environment ha
 (``range``, ``cycler``, ``lipsum``, ``dict``, ``joiner``, ``namespace``), so the undeclared-variable
 check names them like any other variable.
 
+#847 closes the rest of that class. A filter's attribute name is checked wherever Jinja takes it:
+the ``attribute`` keyword, or its position in the filter's own signature (``sum`` first,
+``unique``/``min``/``max``/``join`` second, ``sort`` third; ``selectattr``, ``rejectattr`` and
+``groupby`` first). ``map('<filter>', …)`` is checked as that filter with the remaining arguments,
+so ``map('attr', …)`` is ``attr``, and the filter's name is a constant. No filter, test or call
+takes ``*args`` or ``**kwargs``. ``str.format`` and ``format_map`` are refused (a format field
+reads attributes and items by name), as is a ``.get`` whose key is computed or starts with ``_``.
+A ``%`` whose left side may be a printf format and whose right side may be a mapping is refused
+unless the format is a constant whose ``%(name)`` keys do not start with ``_``. ``self``, which
+the undeclared-variable check does not see, is refused by name.
+
+#848: a constant key may be negative (``[-1]``): ``-``/``+`` of a numeric constant is a constant.
+
 **Output schemas** are the JSON Schema subset the strict structured path (#761) can send as it
 is: an object root; each node a single-string ``type`` among string, number, integer, boolean,
 array and object; ``properties``, ``required`` (listing every property, as strict decoding
@@ -42,10 +55,11 @@ the live-purpose limit (``PURPOSE_LIMIT``, checked by the store in the create tr
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from collections.abc import Collection, Mapping
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from jinja2 import StrictUndefined, Template, TemplateError, meta, nodes
 from jinja2.filters import FILTERS
@@ -69,12 +83,30 @@ TEMPLATE_INVALID: Final = "template_invalid"
 SCHEMA_INVALID: Final = "schema_invalid"
 PURPOSE_LIMIT_REACHED: Final = "purpose_limit"
 
-ATTRIBUTE_FILTERS: Final = frozenset(
-    {"map", "selectattr", "rejectattr", "sort", "groupby", "sum", "unique", "min", "max"}
-)
-"""Built-in filters that read attributes by a name argument (#837)."""
-POSITIONAL_ATTRIBUTE_FILTERS: Final = frozenset({"selectattr", "rejectattr", "groupby"})
-"""Of those, the ones whose first argument is the attribute's name."""
+_PASSED: Final = frozenset({"environment", "eval_ctx", "context"})
+"""Parameters Jinja passes a filter itself (``pass_environment`` and the like)."""
+
+
+def _attribute_positions() -> dict[str, int]:
+    """Each built-in filter that reads an attribute by name, mapped to the index of that name
+    among the arguments a template passes it (#847): from the filter's own signature where it
+    has an ``attribute`` parameter, and the first argument for ``selectattr``/``rejectattr``."""
+    positions = {"selectattr": 0, "rejectattr": 0}
+    for name, function in FILTERS.items():
+        parameters = [p for p in inspect.signature(function).parameters if p not in _PASSED]
+        if "attribute" in parameters:
+            # The first remaining parameter is the filtered value, which the template does
+            # not pass as an argument.
+            positions[name] = parameters.index("attribute") - 1
+    return positions
+
+
+ATTRIBUTE_POSITIONS: Final[Mapping[str, int]] = _attribute_positions()
+"""Built-in filters that read attributes by a name argument, and that argument's position
+(#837, #847)."""
+FORMAT_METHODS: Final = frozenset({"format", "format_map"})
+"""String methods whose format fields read attributes and items by name (#847)."""
+_PRINTF_KEY = re.compile(r"%\(([^)]*)\)")
 
 _NAME = re.compile(NAME_PATTERN)
 _PROPERTY = re.compile(PROPERTY_NAME_PATTERN)
@@ -157,12 +189,15 @@ def _private(name: object) -> bool:
     return isinstance(name, str) and name.startswith("_")
 
 
-def _attribute_names(node: nodes.Filter) -> list[nodes.Expr]:
-    """The arguments of an ``ATTRIBUTE_FILTERS`` filter that name an attribute."""
-    named = [kw.value for kw in node.kwargs if kw.key == "attribute"]
-    if node.name in POSITIONAL_ATTRIBUTE_FILTERS and node.args:
-        named.append(node.args[0])
-    return named
+def _constant_key(arg: nodes.Expr) -> bool:
+    """A constant item key: a constant, a slice, or ``-``/``+`` of a numeric constant (#848)."""
+    if isinstance(arg, (nodes.Neg, nodes.Pos)):
+        return (
+            isinstance(arg.node, nodes.Const)
+            and isinstance(arg.node.value, int | float)
+            and not isinstance(arg.node.value, bool)
+        )
+    return isinstance(arg, (nodes.Const, nodes.Slice))
 
 
 def _safe_attribute(arg: nodes.Expr) -> bool:
@@ -176,33 +211,114 @@ def _safe_attribute(arg: nodes.Expr) -> bool:
     )
 
 
+def _filter_problem(
+    name: str, args: list[nodes.Expr], kwargs: list[nodes.Keyword], value: nodes.Expr | None
+) -> str | None:
+    """What is refused about filter ``name`` applied to ``value`` (``None`` when ``map``
+    applies it to each item) with ``args`` and ``kwargs``; ``None`` when nothing is."""
+    if name not in FILTERS:
+        return f"the template uses the filter {name!r}, which is not a Jinja built-in"
+    if name == "attr":
+        return "the template uses the filter 'attr', which consumer templates may not"
+    if name == "map" and args:
+        # ``map('<filter>', …)`` applies that filter to each item with the remaining arguments.
+        first = args[0]
+        if not (isinstance(first, nodes.Const) and isinstance(first.value, str)):
+            return "the filter 'map' names a filter that is computed"
+        return _filter_problem(first.value, args[1:], kwargs, None)
+    if name in ATTRIBUTE_POSITIONS or name == "map":
+        # ``map(attribute=…)`` with no filter name reads the attribute itself.
+        named = [kw.value for kw in kwargs if kw.key == "attribute"]
+        position = ATTRIBUTE_POSITIONS.get(name)
+        if position is not None and len(args) > position:
+            named.append(args[position])
+        if not all(_safe_attribute(arg) for arg in named):
+            return f"the filter {name!r} names an attribute that is computed or starts with '_'"
+    if name == "format":
+        if any(_private(kw.key) for kw in kwargs):
+            return "the filter 'format' names a field that starts with '_'"
+        if isinstance(value, nodes.Const) and _private_printf(value.value):
+            return "the filter 'format' formats a field whose name starts with '_'"
+    return None
+
+
+def _private_printf(text: object) -> bool:
+    """A string whose printf ``%(name)`` fields include a name starting with ``_``."""
+    return isinstance(text, str) and any(
+        _private(key) for key in _PRINTF_KEY.findall(text.replace("%%", ""))
+    )
+
+
+def _printf_problem(node: nodes.Mod) -> str | None:
+    """A ``%`` that may read a mapping's item by a name the scan cannot see (#847)."""
+    if isinstance(node.left, nodes.Const):
+        if _private_printf(node.left.value):
+            return "the template formats a field whose name starts with '_'"
+        return None
+    # The format is computed: safe only when the right side cannot be a mapping.
+    if isinstance(node.right, (nodes.Const, nodes.Tuple, nodes.List)):
+        return None
+    return "the template formats with a computed format string and a computed value"
+
+
+def _get_problem(node: nodes.Call) -> str | None:
+    """A ``.get(key, …)`` whose key is computed or starts with ``_``."""
+    key = node.args[0] if node.args else None
+    if not isinstance(key, nodes.Const):
+        return "the template reads an item by a computed key; item keys are constants"
+    if _private(key.value):
+        return "the template reads an item whose name starts with '_'"
+    return None
+
+
 def _scan(tree: nodes.Template) -> str | None:
     """The first construct the scan refuses, described; ``None`` when there is none."""
+    # A ``.get`` is checked where it is called; one taken without a call could be called with
+    # any key later.
+    gets = {
+        id(call.node): call
+        for call in tree.find_all(nodes.Call)
+        if isinstance(call.node, nodes.Getattr) and call.node.attr == "get"
+    }
     for node in tree.find_all(nodes.Node):
         refused = REFUSED_STATEMENTS.get(type(node))
         if refused is not None:
             return f"the template uses {{% {refused} %}}, which consumer templates may not"
-        if isinstance(node, nodes.Getattr) and _private(node.attr):
-            return "the template reads an attribute whose name starts with '_'"
+        if isinstance(node, nodes.Getattr):
+            if _private(node.attr):
+                return "the template reads an attribute whose name starts with '_'"
+            if node.attr in FORMAT_METHODS:
+                return f"the template uses {node.attr!r}, which consumer templates may not"
+            if node.attr == "get":
+                call = gets.get(id(node))
+                problem = (
+                    _get_problem(call)
+                    if call is not None
+                    else "the template takes 'get' without calling it"
+                )
+                if problem is not None:
+                    return problem
         if isinstance(node, nodes.Getitem):
             if isinstance(node.arg, nodes.Const) and _private(node.arg.value):
                 return "the template reads an item whose name starts with '_'"
-            if not isinstance(node.arg, (nodes.Const, nodes.Slice)):
+            if not _constant_key(node.arg):
                 return "the template reads an item by a computed key; item keys are constants"
+        if isinstance(node, nodes.Name) and node.name == "self":
+            return "the template references 'self', which consumer templates may not"
+        if isinstance(node, (nodes.Filter, nodes.Test, nodes.Call)) and (
+            node.dyn_args is not None or node.dyn_kwargs is not None
+        ):
+            return "the template passes *args or **kwargs, which consumer templates may not"
         if isinstance(node, nodes.Filter):
-            if node.name not in FILTERS:
-                return f"the template uses the filter {node.name!r}, which is not a Jinja built-in"
-            if node.name == "attr":
-                return "the template uses the filter 'attr', which consumer templates may not"
-            if node.name in ATTRIBUTE_FILTERS and (
-                node.dyn_args is not None
-                or node.dyn_kwargs is not None
-                or not all(_safe_attribute(arg) for arg in _attribute_names(node))
-            ):
-                return (
-                    f"the filter {node.name!r} names an attribute that is computed or "
-                    "starts with '_'"
-                )
+            # Jinja annotates a filter's kwargs as `Pair`s, but the parser builds `Keyword`s.
+            kwargs = cast(list[nodes.Keyword], node.kwargs)
+            problem = _filter_problem(node.name, node.args, kwargs, node.node)
+            if problem is not None:
+                return problem
+        if isinstance(node, nodes.Mod):
+            problem = _printf_problem(node)
+            if problem is not None:
+                return problem
     undeclared = sorted(meta.find_undeclared_variables(tree) - TEMPLATE_VARIABLES)
     if undeclared:
         names = ", ".join(repr(name) for name in undeclared)
@@ -386,7 +502,9 @@ def check_schema(schema: Any, field: str = "body.output_schema") -> dict[str, An
 
 
 __all__ = [
+    "ATTRIBUTE_POSITIONS",
     "DESCRIPTION_MAX",
+    "FORMAT_METHODS",
     "NAME_INVALID",
     "NAME_PATTERN",
     "NAME_TAKEN",

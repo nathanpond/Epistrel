@@ -13687,3 +13687,44 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (owner, 2026-11-10):** #841 takes option B. A structured turn with every non-player benched stays 422 `validation_error` (`player_has_no_context`), as in a structured story whose only character is the player. FR-MULTI-13 (docs/03) now states the all-benched rule for both profiles: Lite renders the player, structured gives 422. docs/04's I-31 gains the case and its Lite complement. `test_i_31__m9_all_benched` asserts both, with no model call and nothing written on the refusal. No product code changed. The Executor simulation's "all-benched turns still run" and #831's "it is not an error" are superseded for structured stories.
   **Why:** the owner's answer on the blocker. Option A would have needed a narrator-only structured turn path.
   **Issue:** #841
+
+## /n8-exec M9 fix pass 2 — 2026-11-11
+
+- **Decision:** the pass runs on `milestone/m9-verify-fixes-2` in the worktree `.claude/worktrees/m9fix2`, off `origin/main` at 7e7083c, in this session (four small issues). The local check was ruff, format, mypy, lint-imports and the touched modules' tests: `tests/gates`, I-29 (M9), C-02, C-03, the registry, the Lite prompt, terminology and S-erasure-boundary, 764 passed. CI's sharded run on the PR is the full-suite gate, as in the earlier M9 runs.
+  **Why:** the main checkout holds the owner's `m8-e11-evidence` branch and uncommitted `.idea` edits. The full local suite takes about 10 hours.
+  **Issue:** M9 (#14)
+- **Decision:** the plan comments on #847–#850 were posted after the code was written, not before it. Their content is what was built.
+  **Why:** a process slip, recorded here.
+  **Issue:** #847, #848, #849, #850
+- **Decision (Rule 1):** the scan takes each attribute-reading filter's name position from Jinja's own signature (`ATTRIBUTE_POSITIONS`, derived with `inspect` at import: every built-in filter with an `attribute` parameter, plus `selectattr`/`rejectattr` at 0). `test_i_29__m9_valid_edges` pins the derived map, so a Jinja upgrade that moves a position fails a test.
+  **Why:** the derivation found `join(d, attribute)`, which #837's hand list and #847 both missed: `join(',', '_y')` read a `_` key at render. A derived map cannot drift from the filters the environment actually runs.
+  **Issue:** #847
+- **Decision (Rule 1):** beyond the shapes #847 lists, the scan now refuses the rest of the same class, each found by a probe on 7e7083c that read a `_` key at render. These are:
+  - `.format`/`.format_map` wherever named, a bound one taken without a call included;
+  - `.get` with a `_` or computed key, or taken without a call;
+  - a `%` whose left side is a constant with a `_`-prefixed `%(name)` field, or a computed format with a right side that could be a mapping (`x % 2`, `'%s' % x` and `'%(voter)s' % inputs` stay accepted);
+  - the `format` filter with a `_` keyword;
+  - `*args`/`**kwargs` on any filter, test or call (before, only on the attribute filters);
+  - `map('<filter>', …)`, checked as that filter with the remaining arguments, so nested `map('map', 'attr', …)` and `map('sum', '_y')` are caught; a computed filter name is refused.
+  **Why:** FR-MODEL-14's rule is "reads an attribute or item whose name starts with `_`", checked at save. #837's lesson was that each route left open gets reported one verify at a time.
+  **Issue:** #847
+- **Decision:** dumping a whole mapping (`tojson`, `items`, `dictsort`, `pprint`, `xmlattr`, iteration) stays accepted, though it shows `_` keys of the caller's inputs.
+  **Why:** none of these names an attribute or item. FR-MODEL-14 refuses reading by a `_` name, and the inputs are the caller's own data.
+  **Issue:** #847
+- **Decision:** `orchestrator/models/consumer.py` still re-runs `check_template` when it resolves a stored version. A version saved before this pass that uses a newly refused form now fails at call time.
+  **Why:** the re-check is the existing safety net, and no release has shipped since M7, so only local data is affected (as #848 noted for #837).
+  **Issue:** #847
+- **Decision:** #849's fail-first mutants are out-of-tree pytest plugins on `orchestrator.purposes.story.render_viewpoint`:
+  - a leak to every viewpoint;
+  - a leak to Cato only;
+  - a viewpoint with its private, retrieved and working memories emptied.
+  Each fails the new test, and the old test passes under all three. The test gains a complement: Briar's context lacks the marker before the write.
+  **Why:** the first leak mutant trips the new pre-write complement before Cato's check, so the Cato-only one shows that Cato's assertion bites on its own. My first pair of mutants returned a string where `render_viewpoint` returns a `Viewpoint`, and they failed for that reason. They were rewritten, and their results were not counted.
+  **Issue:** #849
+- **Decision:** #850's case is a new test, `test_i_29__m9_story_character_policy`, with one policy scoped to Briar on both `text_input` and `text_output`. Its mutants patch `story.prepare_story`:
+  - whole cast as render targets, with the scoped character as actor;
+  - whole cast on output only;
+  - no actor.
+  Each fails it.
+  **Why:** one policy on both targets proves the input and output boundaries with one setup. The output-only mutant fails at the reason check, because the refused output's retry returns the stub default; that is why the test asserts the output text.
+  **Issue:** #850

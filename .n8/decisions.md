@@ -14324,3 +14324,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the inline scenario of `test_i_28__m9_scenario` is now the helper `three_roles`. Two small helpers join it: `story_rows` (the `stories` and `characters` counts for an id) and `full_count`. No `src`/`tools` file changed, so the local gate is this module, `tests/gates` (610 passed) and the static script.
   **Why:** planner line (extract the scenario into a helper).
   **Issue:** #843
+- **Decision:** stale references corrected: the retire route is `DELETE /admin/content-ratings/{id}` (router prefix `/content-ratings`, api/routes/admin/ratings.py:173-180), not `/admin/ratings/{id}`. The minors-policy test sits at test_i_30_m9.py:311-363, `applicable` at safety_checks.py:252-263 and the retired check at targets/subject.py:188-194, all as planned. C-22's rating setup is now at test_c_22.py:334-366, and test_i_24.py's figures block at :284-298.
+  **Why:** the plan named the route by its module name.
+  **Issue:** #844
+- **Decision:** AC1's principal-scoped case is declined. No principal scope exists: `Scope` is global/rating/story/character (core/policies/model.py:41-47), and `PolicyFields.scope` accepts global|rating. The test's docstring says so.
+  **Why:** planner line.
+  **Issue:** #844
+- **Decision:** three tests join test_i_30_m9.py after `test_i_30__m9_minor_refused`, each `@part("M9", "FR-IMG-14")`: `_policy_scopes` (AC1), `_figures` (AC2) and `_retired_rating` (AC3). Policies come from `tests.policy_support.global_policy` and `rated_policy_rating`, the library path C-22 uses (`policies_create`, then `update_rating` to list the policy), with `applies_to=["image_prompt"]` and a unique `word_of(...)` word each. The global policy is retired with `policies_retire` in a `finally`. No `src` file changed.
+  **Why:** planner lines. The helpers are C-22's `_rating_with_image_policy` in shared form.
+  **Issue:** #844
+- **Decision:** AC3 asserts `field`, `reason` and `rating_id` as a subset of `details`, because the 422 also carries an `errors` list. The retired-rating check has no mutant: it is not a policy scope, and the SQL check is inline in the rating lookup.
+  **Why:** the test plan's mutant clause is about policy scopes.
+  **Issue:** #844
+- **Decision:** the mutant is an out-of-tree plugin (`MUT844=global|rating|figures PYTHONPATH=<scratch> pytest -p mut844`) that wraps `safety_checks.applicable`. It drops global or rating policies, or drops age-conditioned policies unless a declared (non-figure) subject is a minor. Under each mode, the matching test failed with `assert 202 == 422` at its refusal. Without it, the module and `tests/gates` passed (619 passed).
+  **Why:** planner line and the mutant convention.
+  **Issue:** #844

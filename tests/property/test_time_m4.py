@@ -70,6 +70,7 @@ from epistrel.core.membership import (
     valid_time_of,
 )
 from epistrel.core.memory import records as memory_records
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.core.stories import STORY_TABLES
 from epistrel.core.tables import operations
 from epistrel.core.tables.base import ulid_type
@@ -117,9 +118,10 @@ async def schema_findings(conn: AsyncConnection) -> list[str]:
     indexes are not the standard ones."""
     found = await conn.execute(
         text(
-            "SELECT table_schema, table_name, column_name, data_type, udt_name, is_nullable "
+            "SELECT table_schema, table_name, column_name, data_type, udt_name, is_nullable "  # noqa: S608 - a fixed catalog predicate
             "FROM information_schema.columns "
-            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema')"
+            "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') "
+            f"AND {not_a_partition()}"
         )
     )
     tables: dict[str, dict[str, tuple[str, str, str]]] = {}

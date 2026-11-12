@@ -533,13 +533,14 @@ async def _crowd(db: AsyncEngine, story_id: str) -> int:
 async def test_vector_arm_finds_sole_vector_past_scan_cap(
     pg_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#706: the HNSW index is global, so the iterative scan reads every other story's nearer
-    vectors before it reaches a story's own. In one database, another story plants ``CROWD``
+    """#706: when the HNSW index was global, the iterative scan read every other story's nearer
+    vectors before it reached a story's own. In one database, another story plants ``CROWD``
     vectors nearer the query than a story's only one. With the scan capped below the crowd
     (``CAP``, as pgvector's default 20,000 is below a large deployment's), the vector arm
-    misses it: the miss #706 suspected, made deterministic. At the engine's
-    ``HNSW_MAX_SCAN_TUPLES`` it comes back from the vector arm alone. Complement: a story with
-    no stamped vector gets no vector hit at either cap.
+    missed it. #784 (ADR-187): each story's memories are a partition of their own with its own
+    HNSW graph, so the crowd is never scanned and the sole vector comes back from the vector
+    arm alone at the cap below the crowd and at the engine's ``HNSW_MAX_SCAN_TUPLES``.
+    Complement: a story with no stamped vector gets no vector hit at either cap.
 
     The database is the test's own: the module's holds the 5,000-turn fixture's identical
     vectors, and past those the scan misses the sole vector at any cap (#784)."""
@@ -568,7 +569,8 @@ async def _past_the_cap(db: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> Non
         return {m.id: m.arms for m in found.memories if "vector" in m.arms}
 
     monkeypatch.setattr(pipeline, "HNSW_MAX_SCAN_TUPLES", CAP)
-    assert sole not in await vector_hits(story)  # the repro: capped below the crowd, missed
+    # #784: the crowd is in another story's partition, so the capped scan never reads it.
+    assert await vector_hits(story) == {sole: ("vector",)}
     assert await vector_hits(bare) == {}
     monkeypatch.undo()
     assert await vector_hits(story) == {sole: ("vector",)}
@@ -615,7 +617,7 @@ async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story:
     plans = [await r.plan_of(db, sql, params) for sql, params in reads]
     for (sql, _), plan in zip(reads, plans, strict=True):
         assert "Seq Scan on memories" not in plan, (sql, plan)
-    assert "ix_memories_embedding_hnsw" in "\n".join(plans)
+    assert await r.uses_index(db, "\n".join(plans), "ix_memories_embedding_hnsw")
     # The lexical, alias and occasion arms' operators are served by their GIN indexes (on this
     # small table the planner reaches the story's rows by its b-tree first; at 50k memories a
     # story the GIN indexes are what narrows them).
@@ -628,7 +630,7 @@ async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story:
         ("SELECT id FROM memories WHERE participants && ARRAY[%(p)s]::char(26)[]", "participants"),
     ):
         plan = await r.plan_of(db, sql, {"p": long_story.people["Bobby"]})
-        assert f"ix_memories_{index}" in plan, plan
+        assert await r.uses_index(db, plan, f"ix_memories_{index}"), plan
 
 
 def _index_conditions(plan: str) -> str:
@@ -701,10 +703,10 @@ async def test_the_pins_source_reads_the_pinned_index(
         return "\n".join(str(row[0]) for row in rows)
 
     plan = await plan_of(sql)
-    assert "ix_memories_pinned" in plan, plan
+    assert await r.uses_index(db, plan, "ix_memories_pinned"), plan
     is_true = sql.replace("memories.pinned AND", "memories.pinned IS true AND")
     assert is_true != sql
-    assert "ix_memories_pinned" not in await plan_of(is_true)
+    assert not await r.uses_index(db, await plan_of(is_true), "ix_memories_pinned")
 
 
 async def test_the_debugging_read_is_omniscient_only(scratch: Scratch) -> None:
@@ -1256,4 +1258,4 @@ async def test_the_vector_arm_runs_on_its_index(
         await cursor.execute("EXPLAIN " + vector_sql, params)
         plan = "\n".join(str(row[0]) for row in await cursor.fetchall())
         await conn.rollback()
-    assert "ix_memories_embedding_hnsw" in plan, plan
+    assert await r.uses_index(db, plan, "ix_memories_embedding_hnsw"), plan

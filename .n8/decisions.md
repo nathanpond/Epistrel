@@ -13827,3 +13827,57 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `current_milestone = 8` in `pyproject.toml`, though M9 closed, is filed as #872 (needs-triage), not changed here. At 9, all four gates pass (check-assignment, check-parts, check-lexicon, check-traceability).
   **Why:** no M10 story covers it. M10 adds no requirements, so the stale value does not affect any M10 gate.
   **Issue:** #872
+- **Decision:** Migration 0151 moves stories in batches of 50, not the planner's 200.
+  **Why:** one 200-partition batch held 8,240 locks (measured with `pg_locks` on pg16), above the default shared lock table of 6,400 slots (`max_locks_per_transaction` 64 × `max_connections` 100). About 41 locks per partition puts 50 near 2,000.
+  **Issue:** #784
+- **Decision:** Migration 0151 builds the parent with `LIKE memories_old INCLUDING ALL EXCLUDING INDEXES` and re-creates the indexes, the foreign key and the triggers from the old table's catalog definitions (`pg_get_indexdef`, `pg_get_constraintdef`, `pg_get_triggerdef`). It does not call `read_section`/`retype`. The downgrade does the same from the parent.
+  **Why:** the parent keeps the old column order and types (`vector(d)` stays typed where pinned), and the HNSW index comes back exactly where `retype` built it, with the `m`/`ef_construction` it was built with. The round trip restores a schema identical to 0150 (`pg_dump -s` diff empty on a seeded database).
+  **Issue:** #784
+- **Decision:** Migration 0151 creates each partition without indexes, fills it, then attaches it, so `ATTACH` bulk-builds the partition's indexes. It partitions every `stories` row and every story id the old table holds. A run resumes from the table's state: a partitioned `memories` skips the rename, a batch skips stories that already have a partition, and `memories_old` is dropped only once every story id in it has one. The downgrade copies and drops partitions in batches and resumes the same way.
+  **Why:** a bulk HNSW build is faster than per-row inserts into an indexed partition. The upgrade is offline (ADR-187) and must survive a crash part-way.
+  **Issue:** #784
+- **Decision:** `fork._map_primary_keys` maps the id only for a two-column key that ends in `story_id`. It does not drop `story_id` from every composite key.
+  **Why:** the planner's general rule would newly remap `client_events.client_event_id` and other `(story_id, x)` keys whose fork copies keep their values today. `memories` is the only table whose key is `(id, story_id)`.
+  **Issue:** #784
+- **Decision:** `prune._pk` keeps its first-primary-key-column rule, with a docstring that names `memories`' `(id, story_id)` key. A new test proves that only the doomed memories go.
+  **Why:** `id` is first in the composite key, as the planner prescribed, so the rule already means `id`. Run with `_pk` returning `story_id`, the test fails: the guard refuses deleting the kept memory.
+  **Issue:** #784
+- **Decision:** `story_partitions.story_partition(db, story_id)` is the creators' wrapper. Given an engine, a connection of its own holds the session advisory lock. Given a connection outside a transaction, that connection holds it. Given a connection inside a transaction, the partition is made in that transaction under its transaction lock. The advisory key is `(0x4D454D50 "MEMP", hashtext(story_id))`.
+  **Why:** `create_story_from` accepts either an engine or a connection (`Database`). A session lock must stay on one connection until the story's transaction ends, and a connection that might still hold it is invalidated, never returned to the pool.
+  **Issue:** #784
+- **Decision:** A resumed import attempt runs `story_partition` before `_reset`'s transaction (an idempotent no-op when the partition is there). A first attempt does not.
+  **Why:** the AC lists `_reset`'s re-insert as a creating path. The planner notes that `purge_story_rows` keeps the partition, so the call costs one catalog read and only covers a partition that has gone missing.
+  **Issue:** #784
+- **Decision:** A fork of a missing story still creates the fork id's empty partition before `_copy` raises 404. No pre-check was added.
+  **Why:** the planner fixes the order (id and partition before the retry loop) and leaves failed creations' empty partitions to #865's sweep.
+  **Issue:** #784
+- **Decision:** No test-support partition helper was added for the planner's list of tests that insert `stories` rows directly (test_migrations.py:134, test_effective_config.py:1669, test_engine_profiles.py:1832, test_two_stage.py:837).
+  **Why:** each one inserts at a revision before 0151 and writes no memory at head. Upgrading through 0151 gives those stories partitions. Added instead: `tests/memory_support.partitions_of` (`tableoid`) and `tests/retrieval_support.index_names`/`uses_index` (`pg_partition_tree`, whole-name match, so `…_idx` never matches `…_idx1`).
+  **Issue:** #784
+- **Decision:** Rule 3: `test_vector_arm_finds_sole_vector_past_scan_cap`'s repro assertion (the sole vector is missed when the scan is capped below the crowd) now asserts that the vector is found at that cap.
+  **Why:** with a partition per story, the crowd sits in another story's graph, so the old miss can no longer happen and the test failed as written. #867 owns the full sole-vector proof.
+  **Issue:** #784
+- **Decision:** Rule 1: `testing/fixtures/scale.rebuild_index` reports the HNSW size as the sum over `pg_partition_tree`.
+  **Why:** `pg_relation_size` of a partitioned index is 0, so P-06 would have published a zero index size.
+  **Issue:** #784
+- **Decision:** `test_a_touch_is_a_heap_only_update` reads the fillfactor and the HOT-update counts from the story's partition. `test_the_table_is_guarded` adds UPDATE, DELETE and a direct `TRUNCATE` on the partition.
+  **Why:** a partitioned parent has no reloptions and no `pg_stat_xact_user_tables` row. The per-partition `TRUNCATE` trigger exists because the parent's statement trigger does not fire for a direct `TRUNCATE` of a partition.
+  **Issue:** #784
+- **Decision:** ADR-187 cites FR-MEM-8, FR-STORE-16 and NFR-SCALE-1. Its rows were added by hand to both indexes of `docs/05-adr-log.md`.
+  **Why:** the repo has no generator for the indexes. ADR-186's rows were added the same way.
+  **Issue:** #784
+- **Decision:** Filed #873: a prune deletes every `client_events` row of the story, because `_pk` keys that table on `story_id`. It was not fixed here.
+  **Why:** the bug is outside #784's scope. It was found while checking `_pk` for the composite memories key.
+  **Issue:** #873
+- **Decision:** A creation given an engine (every API path) holds one extra pooled connection for the session advisory lock, from the partition's creation until the story's transaction ends. Running the story's own work on that connection was not done.
+  **Why:** `genesis`, `fork` and `Operation` open their own connections from the engine, so moving them onto one connection would change how every creation runs. The cost is that a creation now needs two pooled connections at once. About 15 simultaneous creations (SQLAlchemy's default `pool_size` 5 + `max_overflow` 10) could each hold one and wait out the pool timeout for the second. No test creates stories that concurrently. #865, which owns the sweep that honours the lock, may revisit this.
+  **Issue:** #784
+- **Decision:** Rule 1: every catalog scan that enumerates tables through `information_schema` now excludes partitions with `story_partitions.not_a_partition()`. In the engine that is `core/erasure/verify.py` (the erasure residue scan), `evals/runner.py` (the story-row census) and `testing/determinism.py`; in tests, `fork_support`, `replay_support`, `story_support`, `lite_genesis_support`, `erasure_support`, `test_s_delete`, `test_subject_index` and `property/test_time_m4`.
+  **Why:** a partition is a base table of its own in `information_schema`. Unfiltered, these scans read every story's memories twice (through the parent and through each partition) and once per story table, and the deletion and subject-index completeness checks failed on `memories_p_*`.
+  **Issue:** #784
+- **Decision:** Rule 1: docs/OPERATIONS.md's restore step now restores into an empty database (`dropdb`/`createdb`, then `pg_restore`) instead of using `pg_restore --clean --if-exists` over the existing one. `tests/ledger_support.Server.restore` does the same, and ADR-187's Consequences say so.
+  **Why:** with a partition per story, `--clean` emits `DROP CONSTRAINT` for each partition's inherited primary key, and PostgreSQL 16 refuses it ("cannot drop inherited constraint"). That is one error per story and a failing exit status, although the data restores intact (checked by checksum on a 450-story database).
+  **Issue:** #784
+- **Decision:** Rule 3: `test_a_fork_retries_when_an_erasure_commits_under_it` asserts that both attempts copy into the same fork id (`calls == [fork_id, fork_id]`). It used to assert a fresh id per attempt.
+  **Why:** the planner prescribes one fork id, generated before the snapshot retries, so its partition exists before the copy. The first attempt's rows still roll back.
+  **Issue:** #784

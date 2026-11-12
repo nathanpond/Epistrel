@@ -982,6 +982,9 @@ async def run_policy(db: AsyncEngine, now: datetime) -> dict[str, int]:
 
 
 def _pk(table: Table) -> str:
+    """The row key a prune deletes by: the primary key's first column. ``memories``' key is
+    ``(id, story_id)`` with ``id`` first (#784, ADR-187), so it is keyed on ``id``; keying on
+    the partition key would delete every memory of the story."""
     return next(iter(table.primary_key.columns)).name
 
 

@@ -1070,3 +1070,184 @@ def test_the_escalation_tables(scratch_database: str) -> None:
         assert tables() == set()
     finally:
         engine.dispose()
+
+
+MEMORY_STORIES = {
+    "01HZZZZZZZZZZZZZZZZZZZZZS1": 4,  # vectors on every other memory
+    "01HZZZZZZZZZZZZZZZZZZZZZS2": 3,
+    "01HZZZZZZZZZZZZZZZZZZZZZS3": 5,
+    "01HZZZZZZZZZZZZZZZZZZZZZS4": 0,  # a story with no memory still gets its partition
+}
+
+
+def _memory_digests(conn: Any) -> dict[str, tuple[int, str]]:
+    """Per story: its memories' count and the MD5 of every column of every row, in id order."""
+    return {
+        str(r.story_id).rstrip(): (int(r.n), str(r.digest))
+        for r in conn.execute(
+            text(
+                "SELECT story_id, count(*) AS n, "
+                "md5(string_agg(m::text, '|' ORDER BY m.id)) AS digest "
+                "FROM memories m GROUP BY story_id"
+            )
+        )
+    }
+
+
+def test_memories_are_partitioned_by_story(scratch_database: str) -> None:
+    """0151 (#784, ADR-187): over a pinned deployment's memories (three stories with memories,
+    vectors on some, and one story with none), every story gets its own LIST partition of
+    ``memories`` and each story's memories land in it with every column unchanged (per-story
+    count and checksum); the parent's primary key is ``(id, story_id)``, it has no default
+    partition, its indexes are the old names (the HNSW index included) and each partition
+    carries ``fillfactor = 70``. The downgrade rebuilds the unpartitioned table, with the same
+    rows, its ``(id)`` primary key, its indexes, triggers and ``fillfactor``."""
+    from epistrel.core.memory.story_partitions import partition_name
+
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "0150")
+    engine = make_sync_engine(scratch_database)
+
+    def scalar(sql: str, **params: Any) -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text(sql), params)
+
+    def indexes() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(text("SELECT indexname FROM pg_indexes WHERE tablename = 'memories'"))
+            )
+
+    def triggers() -> set[str]:
+        with engine.connect() as conn:
+            return set(
+                conn.scalars(
+                    text(
+                        "SELECT tgname FROM pg_trigger WHERE tgrelid = 'memories'::regclass "
+                        "AND NOT tgisinternal"
+                    )
+                )
+            )
+
+    def primary_key() -> str:
+        return str(
+            scalar(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'memories'::regclass AND contype = 'p'"
+            )
+        )
+
+    try:
+        with engine.begin() as conn:
+            # The pin's retype (``core.embeddings.retype``) at 4 dimensions.
+            conn.execute(text("ALTER TABLE memories ALTER COLUMN embedding TYPE vector(4)"))
+            conn.execute(
+                text(
+                    "CREATE INDEX ix_memories_embedding_hnsw ON memories USING hnsw "
+                    "(embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)"
+                )
+            )
+            profile = conn.scalar(text("SELECT id FROM engine_profiles ORDER BY id LIMIT 1"))
+            for ordinal, (story, count) in enumerate(MEMORY_STORIES.items()):
+                operation = f"{story[:-2]}O{ordinal}"
+                conn.execute(
+                    text(
+                        "INSERT INTO stories (id, owner_principal, engine_profile_id) "
+                        "VALUES (:s, 'p-1', :p)"
+                    ),
+                    {"s": story, "p": profile},
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO operations (operation_id, story_id, kind, principal, status, "
+                        "membership_tx) VALUES (:o, :s, 'genesis', 'p-1', 'committed', now())"
+                    ),
+                    {"o": operation, "s": story},
+                )
+                for n in range(count):
+                    conn.execute(
+                        text(
+                            "INSERT INTO memories (id, story_id, kind, text, provenance, "
+                            "trust_tier, operation_id, membership_tx, importance, embedding, "
+                            "participants) VALUES (:i, :s, 'episodic', :t, 'render', 'in_world', "
+                            ":o, now(), :imp, CAST(:v AS vector), ARRAY[:s]::char(26)[])"
+                        ),
+                        {
+                            "i": new_ulid(),
+                            "s": story,
+                            "t": f"Memory {n} of story {ordinal}.",
+                            "o": operation,
+                            "imp": n / 10,
+                            "v": None if n % 2 else f"[{n + 1}, {ordinal}, 0.5, 0.25]",
+                        },
+                    )
+        with engine.connect() as conn:
+            before = _memory_digests(conn)
+        assert {s: n for s, (n, _) in before.items()} == {
+            s: n for s, n in MEMORY_STORIES.items() if n
+        }
+        flat_indexes = indexes()
+        assert "ix_memories_embedding_hnsw" in flat_indexes
+        assert primary_key() == "PRIMARY KEY (id)"
+
+        command.upgrade(cfg, "0151")
+        with engine.connect() as conn:
+            assert _memory_digests(conn) == before
+            landed = {
+                (str(r.story_id).rstrip(), str(r.partition))
+                for r in conn.execute(
+                    text("SELECT DISTINCT story_id, tableoid::regclass AS partition FROM memories")
+                )
+            }
+            partitions = set(
+                conn.scalars(
+                    text(
+                        "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = "
+                        "i.inhrelid WHERE i.inhparent = 'memories'::regclass"
+                    )
+                )
+            )
+            fillfactors = set(
+                conn.scalars(
+                    text(
+                        "SELECT array_to_string(c.reloptions, ',') FROM pg_inherits i "
+                        "JOIN pg_class c ON c.oid = i.inhrelid "
+                        "WHERE i.inhparent = 'memories'::regclass"
+                    )
+                )
+            )
+        assert landed == {(s, partition_name(s)) for s, n in MEMORY_STORIES.items() if n}
+        assert partitions == {partition_name(s) for s in MEMORY_STORIES}
+        assert fillfactors == {"fillfactor=70"}
+        assert scalar("SELECT relkind FROM pg_class WHERE relname = 'memories'") == "p"
+        assert scalar("SELECT pg_get_partkeydef(CAST('memories' AS regclass))") == "LIST (story_id)"
+        assert scalar("SELECT partdefid FROM pg_partitioned_table") == 0  # no default
+        assert scalar("SELECT to_regclass('memories_old')") is None
+        assert primary_key() == "PRIMARY KEY (id, story_id)"
+        assert indexes() == flat_indexes
+        assert triggers() == {"memories_guard", "memories_no_truncate"}
+        assert (
+            scalar(
+                "SELECT count(*) FROM pg_trigger WHERE tgname = 'memories_no_truncate' "
+                "AND tgrelid = CAST(:p AS regclass)",
+                p=partition_name(next(iter(MEMORY_STORIES))),
+            )
+            == 1
+        )
+
+        command.downgrade(cfg, "0150")
+        with engine.connect() as conn:
+            assert _memory_digests(conn) == before
+        assert scalar("SELECT relkind FROM pg_class WHERE relname = 'memories'") == "r"
+        assert scalar("SELECT reloptions FROM pg_class WHERE relname = 'memories'") == [
+            "fillfactor=70"
+        ]
+        assert scalar("SELECT count(*) FROM pg_class WHERE relname LIKE 'memories_p_%'") == 0
+        assert primary_key() == "PRIMARY KEY (id)"
+        assert indexes() == flat_indexes
+        assert triggers() == {"memories_guard", "memories_no_truncate"}
+        assert "hnsw" in str(
+            scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_memories_embedding_hnsw'")
+        )
+    finally:
+        engine.dispose()

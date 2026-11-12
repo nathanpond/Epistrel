@@ -49,6 +49,7 @@ import asyncio
 import hashlib
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -71,6 +72,7 @@ from epistrel.core.errors import (
     UnsupportedFormatVersion,
 )
 from epistrel.core.ids import new_ulid
+from epistrel.core.memory.story_partitions import story_partition
 from epistrel.core.tables import bundle_jobs, stories
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.observability.logging import get_logger
@@ -446,7 +448,8 @@ async def start_import(
     owner = metadata.owner or principal
     name = metadata.name or (story_row or {}).get("name") or None
     try:
-        async with db.begin() as conn:
+        # #784: the story's memories partition first, in a short transaction of its own.
+        async with story_partition(db, story_id), db.begin() as conn:
             await conn.execute(
                 insert(stories).values(
                     id=story_id,
@@ -589,7 +592,12 @@ async def run_import(db: AsyncEngine, job_id: str) -> dict[str, Any]:
     story_id = str(row.story_id)
     request = dict(row.request or {})
     resumed = int(row.attempts or 0) > 0
-    async with db.begin() as conn:
+    # #784: ``_reset`` keeps the story's memories partition (``purge_story_rows`` deletes rows
+    # only); a resumed attempt makes it all the same when missing, before its transaction.
+    partition: AbstractAsyncContextManager[None] = (
+        story_partition(db, story_id) if resumed else nullcontext()
+    )
+    async with partition, db.begin() as conn:
         await conn.execute(
             update(bundle_jobs)
             .where(bundle_jobs.c.id == job_id)

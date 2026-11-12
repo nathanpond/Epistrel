@@ -33,6 +33,7 @@ from starlette.routing import compile_path
 
 from epistrel.api.deps import MUTATING_EXTRA
 from epistrel.core.context import RequestContext
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.core.tables.ownership import EntityType
 from tests.media_support import files, png
 
@@ -111,10 +112,10 @@ REPEAT_IGNORED = {
 suggestion's model calls are timed again (their request ids and outcomes must match)."""
 
 TABLES = text(
-    "SELECT table_schema, table_name FROM information_schema.tables "
+    "SELECT table_schema, table_name FROM information_schema.tables "  # noqa: S608 - a fixed catalog predicate
     "WHERE table_type = 'BASE TABLE' "
     "AND table_schema NOT IN ('pg_catalog', 'information_schema') "
-    "AND table_name <> 'alembic_version' ORDER BY 1, 2"
+    f"AND table_name <> 'alembic_version' AND {not_a_partition()} ORDER BY 1, 2"
 )
 
 

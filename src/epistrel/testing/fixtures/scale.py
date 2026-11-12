@@ -857,8 +857,13 @@ async def rebuild_index(
         await embeddings.retype(conn, dimension)
     build_s = time.perf_counter() - started
     async with db.connect() as conn:
+        # #784: the index is partitioned by story; its size is its partitions' indexes'.
         size = await conn.scalar(
-            text("SELECT pg_relation_size(CAST(:i AS regclass))"), {"i": embeddings.HNSW_INDEX}
+            text(
+                "SELECT coalesce(sum(pg_relation_size(relid)), 0) "
+                "FROM pg_partition_tree(CAST(:i AS regclass))"
+            ),
+            {"i": embeddings.HNSW_INDEX},
         )
         vectors = await conn.scalar(
             text("SELECT count(*) FROM memories WHERE embedding IS NOT NULL")

@@ -120,6 +120,7 @@ from epistrel.core.idempotency import Scope
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.membership import Position
+from epistrel.core.memory.story_partitions import story_partition
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
@@ -793,9 +794,17 @@ async def create_story_from(
 ) -> CreatedStory:
     """Create a story from ``spec`` atomically: the story row, its cast and its genesis
     operation (``story_created``) exist together or not at all. A cast larger than the
-    deployment's ``max_story_cast`` is 422 ``cast_max`` (FR-MULTI-12)."""
+    deployment's ``max_story_cast`` is 422 ``cast_max`` (FR-MULTI-12). The story's memories
+    partition is made first, in a short transaction of its own (#784, ADR-187)."""
     _check_unique_names(spec.characters)
     story_id = story_id or new_ulid()
+    async with story_partition(db, story_id):
+        return await _create_story_from(db, spec, principal=principal, story_id=story_id)
+
+
+async def _create_story_from(
+    db: Database, spec: StorySpec, *, principal: str, story_id: str
+) -> CreatedStory:
     cast = [(new_ulid(), character) for character in spec.characters]
     settings = _stored_settings(spec, cast)
     document, columns = split_settings(settings)

@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.core import fork as forking
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.core.stories import STORY_ID_EXCEPTIONS
 from epistrel.core.variants import ChainRef
 from epistrel.core.views import corrected_history
@@ -41,8 +42,9 @@ async def owned_rows(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     async with engine.connect() as conn:
         scoped = await conn.scalars(
             text(
-                "SELECT table_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                f"AND {not_a_partition()}"
             )
         )
         for table in sorted(set(scoped) - STORY_ID_EXCEPTIONS):

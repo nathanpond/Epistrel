@@ -24,6 +24,7 @@ from epistrel.core.feedback import FeedbackRequest
 from epistrel.core.ids import new_ulid
 from epistrel.core.ingest import IngestRequest
 from epistrel.core.membership import Position
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.core.propositions import registry as predicate_registry
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
@@ -595,8 +596,9 @@ async def _rows_of(engine: AsyncEngine, story_id: str) -> dict[str, set[str]]:
     async with engine.connect() as conn:
         scoped = await conn.scalars(
             text(
-                "SELECT table_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                f"AND {not_a_partition()}"
             )
         )
         for table in sorted(set(scoped) - STORY_ID_EXCEPTIONS):
@@ -774,8 +776,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         with_story_id = set(
             await conn.scalars(
                 text(
-                    "SELECT table_name FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                    "SELECT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                    "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                    f"AND {not_a_partition()}"
                 )
             )
         )

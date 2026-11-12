@@ -17,9 +17,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | Area | Spec | ADRs |
 |---|---|---|
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175 |
+| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175, 187 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
-| FR-MEM | §4 | 070, 071, 072, 075, 169 |
+| FR-MEM | §4 | 070, 071, 072, 075, 169, 187 |
 | FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 043, 169, 170 |
@@ -48,7 +48,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137, 175 |
+| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
@@ -249,6 +249,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Current | — |
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
+| 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Current | — |
 
 ---
 
@@ -1991,6 +1992,24 @@ Tuning and its exit certification come after every milestone that may change a p
 - docs/03 FR-MEDIA-2 gains an *[amended by ADR-186]* marker and the exemption; FR-IMG-14 is assigned to M9 in §22. docs/04 I-30 tests the exemption beside a purged upload in the same sweep.
 - A deployment's storage now grows with subject images until consumers delete them or their owners are offboarded; nothing expires them. Operators see them in `GET /media` and in a principal's owned media.
 - `MediaAsset` reads carry `origin`, and `depicted_subjects` admits the `{kind: subject, id, label, true_age}` declaration only on a subject image; the declaration is not a subject an erasure can name, so it is not indexed.
+
+---
+
+### ADR-187 — Memories are partitioned by story: each story has its own table and HNSW graph
+**Status:** Accepted.
+**Context:** `memories` had one HNSW index over every story's vectors. A story's vector search walked that shared graph and filtered to its own rows, so other stories' vectors decided what it found. Identical texts embed identically (a repeated "Hello."), and thousands of identical vectors build a poor graph: beside them, the iterative scan could return none of a small story's vectors at any `hnsw.max_scan_tuples` (#784, the likely cause of #706's flake). Raising the scan cap (#706) bounded the miss without removing it, and made a small story's search read up to the cap. The owner decided at `/n8-plan M10` round one (2026-11-11) to partition `memories` by story: "There's never a reason to reach into another story's memories."
+**Decision:** The owner's decision, applied by #784 (migration 0151).
+- `memories` is LIST-partitioned by `story_id`, one partition per story (`memories_p_<story id>`), with **no default partition**. Every path that creates a story (a blank or inline-cast story, a story from a scenario, a fork, a bundle import) creates its partition first, in a short transaction of its own; a memory written for a story with no partition fails (SQLSTATE 23514), which is a bug, never a user error.
+- Every index, the HNSW index included, is declared on the parent, so each partition has its own: **each story's vector search walks a graph of its own vectors only**, which no other story's vectors can crowd. The HNSW index is still created by the first pin and rebuilt by a dimension change (FR-MEM-8; `core.embeddings.retype`), now across the partitions.
+- The primary key is `(id, story_id)`, because Postgres cannot enforce a partitioned table's uniqueness without the partition key. **Memory ids stay globally unique by ULID generation**, as every other record's are; a fork copies memories under new ids.
+- Each partition carries the table's `fillfactor = 70` and a `TRUNCATE` refusal of its own; the row guard and the `operations` foreign key are cloned to it on attach.
+**Alternatives considered:** Keeping the global index and making test fixtures stamp distinct vectors removes the test flake but not the production miss for a story of repeated lines. An exact search fallback, or deduplicating vectors, amends the fixed statement count of a retrieval and still searches a shared graph. A partial HNSW index per story on the shared table needs the same per-story DDL and leaves the planner choosing among thousands of indexes on one table. Hash partitioning into a fixed number of buckets keeps other stories' vectors in each graph.
+**Consequences:**
+- The scale assumption is thousands of stories per deployment, where Postgres plans and locks a partition per story well (a query that names its story prunes to its partition). A deployment expected to hold hundreds of thousands of stories would need another layout (hash buckets with per-bucket graphs, or partitions by story group), and that would be a new decision. Statements that do not name a story read every partition; #866 makes every hot query name it, and #865 drops a story's partition when the story is deleted (FR-STORE-16).
+- A database is restored into an empty database (docs/OPERATIONS.md): `pg_restore --clean` over an existing one reports an error for each partition's inherited primary key.
+- Upgrading runs migration 0151 with the engine stopped. It copies every memory into its story's partition and builds each partition's indexes, in time proportional to the deployment's memory count, in batches of stories so a crashed run resumes. The downgrade rebuilds the unpartitioned table.
+- A story's vector arm no longer depends on other stories' vectors or on `hnsw.max_scan_tuples` to find a story's own vectors; the cap remains a cost bound (NFR-SCALE-1).
+- No older ADR states the single global index, so none gains a marker; docs/02 describes the partitioned table.
 
 ---
 

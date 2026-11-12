@@ -18,6 +18,7 @@ from epistrel.core.memory import consolidation
 from epistrel.core.memory.consolidation import Scope
 from tests.auth_support import auth_settings
 from tests.respond_support import respond_client
+from tests.retrieval_support import uses_index
 from tests.structured_turn_support import structured_story
 
 pytestmark = pytest.mark.integration
@@ -57,7 +58,7 @@ async def test_the_scheduling_reads_use_their_indexes(
         for statement, params in (window, covered):
             raw = await conn.exec_driver_sql(f"EXPLAIN {statement}", params)
             plans.append("\n".join(r[0] for r in raw))
-    assert "ix_memories_shared_episodic_turn" in plans[0], plans[0]
+    assert await uses_index(engine, plans[0], "ix_memories_shared_episodic_turn"), plans[0]
     assert "Sort" not in plans[0], plans[0]
     assert "ix_operations_consolidation_turn" in plans[1], plans[1]
     assert "Sort" not in plans[1], plans[1]

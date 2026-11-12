@@ -24,6 +24,7 @@ the module.
 from __future__ import annotations
 
 import random
+import re
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -322,6 +323,27 @@ async def plan_of(db: AsyncEngine, sql: str, params: Any) -> str:
     return "\n".join(str(r[0]) for r in rows)
 
 
+async def index_names(db: AsyncEngine, index: str) -> frozenset[str]:
+    """``index`` (a partitioned ``memories`` index) and every partition's index attached to it,
+    through ``pg_partition_tree`` (#784): a plan over a story's partition names the
+    partition's index, never the parent's."""
+    async with db.connect() as conn:
+        found = await conn.scalars(
+            text(
+                "SELECT c.relname FROM pg_partition_tree(CAST(:i AS regclass)) t "
+                "JOIN pg_class c ON c.oid = t.relid"
+            ),
+            {"i": index},
+        )
+        return frozenset(str(n) for n in found)
+
+
+async def uses_index(db: AsyncEngine, plan: str, index: str) -> bool:
+    """Whether ``plan`` reads ``index`` or one of its partitions' indexes (``index_names``);
+    whole names only, so a partition's ``…_idx`` never matches its ``…_idx1``."""
+    return any(re.search(rf"\b{re.escape(name)}\b", plan) for name in await index_names(db, index))
+
+
 __all__ = [
     "DIMENSION",
     "MONTH_AGO",
@@ -331,10 +353,12 @@ __all__ = [
     "Story",
     "access_and_tiers",
     "build_story",
+    "index_names",
     "memory",
     "operation_count",
     "pin",
     "plan_of",
     "set_vectors",
     "statements",
+    "uses_index",
 ]

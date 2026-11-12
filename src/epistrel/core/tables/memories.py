@@ -74,6 +74,11 @@ erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is r
 guard fires after the row is written (migration 0067, #452), and the table keeps 30 % of each page
 free (``fillfactor = 70``), so a retrieval's ``last_accessed_at`` touch is a heap-only update that
 writes no index entry.
+**Partitioned by story** (#784, migration 0151; ADR-187): LIST partitions on ``story_id``, one
+per story (``memories_p_<story>``, ``core.memory.story_partitions``), no default partition, so
+a story's rows, indexes and HNSW graph are its own. The primary key is ``(id, story_id)``; each
+partition carries the ``fillfactor`` and a ``TRUNCATE`` refusal of its own. Every path that
+creates a story creates its partition first: a memory for a story with none fails (23514).
 ``core.memory.records`` is the only writer of rows; ``core.mutation``, ``core.memory.retirement``
 and ``core.memory.pins`` update them.
 """
@@ -207,7 +212,9 @@ memories = Table(
     "memories",
     metadata,
     Column("id", ulid_type(), primary_key=True),
-    Column("story_id", ulid_type(), nullable=False),
+    # #784 (migration 0151, ADR-187): the partition key is part of the primary key, after
+    # ``id`` (Postgres cannot enforce ``id`` alone across partitions; ULIDs keep it unique).
+    Column("story_id", ulid_type(), primary_key=True),
     Column("kind", pg_enum(MemoryKind, "memory_kind"), nullable=False),
     Column("text", Text, nullable=False),
     Column("holder_character_id", ulid_type(), nullable=True),
@@ -307,6 +314,7 @@ memories = Table(
     ),
     *derived_indexes("memories"),
     Index("ix_memories_story_membership_tier", "story_id", "membership", "retrieval_tier"),
+    postgresql_partition_by="LIST (story_id)",
 )
 Index("ix_memories_story_holder", memories.c.story_id, memories.c.holder_character_id)
 Index("ix_memories_source_event_ids", memories.c.source_event_ids, postgresql_using="gin")

@@ -18,9 +18,11 @@ from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.epistemic.roles import DEFAULT_ROLE
 from epistrel.core.errors import StoryArchived, StoryBusy
 from epistrel.core.events import Operation
+from epistrel.core.memory.story_partitions import has_partition, partition_name
 from epistrel.core.stories import STORY_TABLES, StorySpec
 from tests.conftest import REPO_ROOT
 from tests.event_support import STORY_SETUP_KIND, play_turn, rows
+from tests.memory_support import derived_memory, partitions_of
 from tests.story_support import READ, WRITE, character, count, create, rest, story_body
 
 AUTHOR = RequestContext(principal="p-author")
@@ -640,6 +642,9 @@ async def test_i_10__m7_import_round_trip(
         assert await _rows_left(engine, story) == before
         await play_turn(engine, imported, "One more.", principal="p-import")
         assert await _rows_left(engine, story) == before
+        # #784: the import made its story's memories partition before the story row.
+        await derived_memory(engine, imported, "Imported, then remembered.", [])
+        assert await partitions_of(engine, imported) == {partition_name(imported)}
         async with engine.begin() as conn:
             await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
 
@@ -1592,6 +1597,9 @@ async def test_i_10__m7_crash_resume(pg_url: str, tmp_path: Any) -> None:
                         imported,
                         2,
                     ), done
+                    # #784: the reclaimed attempt's reset kept the story's partition.
+                    async with db.connect() as conn:
+                        assert await has_partition(conn, imported)
                     assert (
                         await count(db, "SELECT count(*) FROM stories WHERE id = :s", s=imported)
                         == 1

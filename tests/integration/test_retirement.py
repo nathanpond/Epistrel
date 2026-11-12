@@ -1000,10 +1000,10 @@ async def test_the_hot_set_cost_does_not_grow_with_the_story(s: Scratch) -> None
     assert len(await commit_statements(small)) == len(await commit_statements(large))
     params = {"story": large.story_id}
     holders = await r.plan_of(db, _driver(retirement._COUNT_BY_HOLDER), params)
-    assert "ix_memories_hot_unpinned" in holders
+    assert await r.uses_index(db, holders, "ix_memories_hot_unpinned")
     assert "Seq Scan on memories" not in holders
     vectors_plan = await r.plan_of(db, _driver(retirement._COUNT_VECTORS), params)
-    assert "ix_memories_hot_vectors" in vectors_plan
+    assert await r.uses_index(db, vectors_plan, "ix_memories_hot_vectors")
     due = await r.plan_of(
         db,
         "SELECT id FROM overflow_episodes WHERE story_id = %(story)s AND closed_turn IS NULL "

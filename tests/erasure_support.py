@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core.memory.story_partitions import not_a_partition
 from tests import character_support as characters
 from tests import genesis_support as g
 from tests import scenario_support as scenarios
@@ -110,10 +111,11 @@ async def story_text_tables(engine: AsyncEngine) -> dict[str, list[str]]:
     async with engine.connect() as conn:
         found = await conn.execute(
             text(
-                "SELECT c.table_name, c.column_name FROM information_schema.columns c "
+                "SELECT c.table_name, c.column_name FROM information_schema.columns c "  # noqa: S608 - a fixed catalog predicate
                 "JOIN information_schema.tables t "
                 "ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
                 "WHERE t.table_type = 'BASE TABLE' AND c.table_schema = 'public' "
+                f"AND {not_a_partition('c.table_name', 'c.table_schema')} "
                 "AND c.data_type = ANY(CAST(:types AS text[])) AND EXISTS ("
                 "SELECT 1 FROM information_schema.columns s WHERE s.table_schema = 'public' "
                 "AND s.table_name = c.table_name AND s.column_name = 'story_id') "
@@ -261,9 +263,10 @@ async def dump_all(engine: AsyncEngine) -> dict[str, set[str]]:
     async with engine.connect() as conn:
         tables = await conn.execute(
             text(
-                "SELECT table_schema, table_name FROM information_schema.tables "
+                "SELECT table_schema, table_name FROM information_schema.tables "  # noqa: S608 - a fixed catalog predicate
                 "WHERE table_schema IN ('public', 'catalog') AND table_type = 'BASE TABLE' "
-                "AND table_name <> 'alembic_version' ORDER BY table_schema, table_name"
+                f"AND table_name <> 'alembic_version' AND {not_a_partition()} "
+                "ORDER BY table_schema, table_name"
             )
         )
         for schema, table in tables.all():

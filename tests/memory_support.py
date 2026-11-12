@@ -223,6 +223,18 @@ async def run_importance(
     return outcomes
 
 
+async def partitions_of(engine: AsyncEngine, story_id: str) -> set[str]:
+    """The ``memories`` partitions the story's rows are stored in (``tableoid``; #784): exactly
+    ``{story_partitions.partition_name(story_id)}`` once it has a memory."""
+    found = await rows(
+        engine,
+        "SELECT DISTINCT CAST(tableoid::regclass AS text) AS partition FROM memories "
+        "WHERE story_id = :s",
+        s=story_id,
+    )
+    return {str(r.partition) for r in found}
+
+
 __all__ = [
     "PRINCIPAL",
     "derived_memory",
@@ -230,6 +242,7 @@ __all__ = [
     "event_ids",
     "importance_jobs",
     "memory_rows",
+    "partitions_of",
     "run_importance",
     "turn",
     "use_structured",

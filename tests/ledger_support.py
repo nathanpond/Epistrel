@@ -99,12 +99,15 @@ class Server:
         return target
 
     def restore(self, url: str, dump: Path) -> None:
-        """``pg_restore --clean --if-exists`` of ``dump`` over ``url``'s database."""
+        """``dump`` restored as ``url``'s database, the way docs/OPERATIONS.md restores: the
+        database dropped and created empty, then ``pg_restore`` into it (#784: ``--clean`` over
+        a partitioned ``memories`` reports an error per story partition's inherited key)."""
+        name = _name(url)
+        self.psql(f'DROP DATABASE "{name}" WITH (FORCE)', database=self.container.dbname)
+        self.psql(f'CREATE DATABASE "{name}"', database=self.container.dbname)
         with dump.open("rb") as archive:
             done = self._exec(
                 "pg_restore",
-                "--clean",
-                "--if-exists",
                 "--no-owner",
                 "-U",
                 self.container.username,

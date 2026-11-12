@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
 from epistrel.config import Settings
+from epistrel.core.memory.story_partitions import not_a_partition
 from tests.auth_support import bearer
 
 WRITE = {**bearer(), "X-Epistrel-Principal": "p-author"}
@@ -71,9 +72,10 @@ async def public_tables(engine: AsyncEngine) -> list[str]:
     async with engine.connect() as conn:
         found = await conn.scalars(
             text(
-                "SELECT table_name FROM information_schema.tables "
+                "SELECT table_name FROM information_schema.tables "  # noqa: S608 - a fixed catalog predicate
                 "WHERE table_schema = 'public' AND table_type = 'BASE TABLE' "
-                "AND table_name <> 'alembic_version' ORDER BY table_name"
+                f"AND table_name <> 'alembic_version' AND {not_a_partition()} "
+                "ORDER BY table_name"
             )
         )
         return list(found)

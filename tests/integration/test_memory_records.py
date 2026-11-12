@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import prune, timeline
 from epistrel.core.enums import (
     MemoryKind,
     MemoryTrustTier,
@@ -27,8 +28,11 @@ from epistrel.core.enums import (
     RecordProvenance,
 )
 from epistrel.core.errors import ErasedSubjectReferenced
+from epistrel.core.ids import new_ulid
 from epistrel.core.membership import DERIVED_TABLES
-from epistrel.core.memory import records
+from epistrel.core.memory import records, story_partitions
+from epistrel.core.memory.story_partitions import partition_name
+from epistrel.core.stories import create_story
 from epistrel.core.tables.memories import MUTABLE_MEMORY_COLUMNS
 from epistrel.orchestrator.jobs import queue
 from epistrel.orchestrator.jobs.handlers import importance
@@ -40,12 +44,14 @@ from tests.auth_support import auth_settings
 from tests.canon_support import world
 from tests.event_support import execute_in_tx, new_story, play_turn, rows, sqlstate
 from tests.fork_support import fork
+from tests.memory_support import PRINCIPAL as MEMORY_PRINCIPAL
 from tests.memory_support import (
     derived_memory,
     embed_all,
     event_ids,
     importance_jobs,
     memory_rows,
+    partitions_of,
     run_importance,
     turn,
     use_structured,
@@ -344,9 +350,11 @@ async def test_the_e_04_fixture_ranks_pivotal_over_trivial_after_decay(
 async def test_the_table_is_guarded(engine: AsyncEngine) -> None:
     """Only the importance, access, tier, embedding and membership columns may change; the
     text changes only under an erasure; a DELETE and a TRUNCATE are refused outside erasure and
-    story deletion."""
+    story deletion. #784: the guard holds on the story's partition too, a direct ``TRUNCATE``
+    of it included (the parent's statement trigger does not fire for it)."""
     w = await _structured_world(engine)
     _, (memory, *_) = await turn(engine, w.story_id, actor=w.characters["Cal"])
+    partition = partition_name(w.story_id)
     assert set(MUTABLE_MEMORY_COLUMNS) >= {"importance", "embedding", "membership"}
     await execute_in_tx(
         engine,
@@ -361,6 +369,9 @@ async def test_the_table_is_guarded(engine: AsyncEngine) -> None:
         "UPDATE memories SET provenance = 'author' WHERE id = :m",
         "DELETE FROM memories WHERE id = :m",
         "TRUNCATE memories",
+        f"UPDATE {partition} SET text = 'rewritten' WHERE id = :m",  # noqa: S608
+        f"DELETE FROM {partition} WHERE id = :m",  # noqa: S608
+        f"TRUNCATE {partition}",
     ):
         with pytest.raises(DBAPIError) as raised:
             await execute_in_tx(engine, (statement, {"m": memory.id}))
@@ -376,8 +387,11 @@ async def test_the_table_is_guarded(engine: AsyncEngine) -> None:
 async def test_a_touch_is_a_heap_only_update(engine: AsyncEngine) -> None:
     """#452: a retrieval's ``last_accessed_at`` touch on a memory with a full-size (toasted)
     embedding writes no index entry. A ``BEFORE`` guard returned a detoasted ``NEW``, so the
-    indexed ``embedding`` looked changed and every touch inserted into every index."""
+    indexed ``embedding`` looked changed and every touch inserted into every index. #784: the
+    story's partition carries the fillfactor (a partitioned parent carries none) and counts the
+    touch."""
     w = await _structured_world(engine)
+    partition = partition_name(w.story_id)
     _, (memory, *_) = await turn(engine, w.story_id, actor=w.characters["Cal"])
     vector = "[" + ",".join(f"{(i * 7919 % 1000) / 1000 - 0.5:.6f}" for i in range(768)) + "]"
     await execute_in_tx(
@@ -390,11 +404,13 @@ async def test_a_touch_is_a_heap_only_update(engine: AsyncEngine) -> None:
     counts = text(
         # The session's not-yet-flushed earlier transactions count here too (PG >= 15), so the
         # touch is the difference.
-        "SELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_xact_user_tables WHERE relname = 'memories'"
-    )
+        "SELECT n_tup_upd, n_tup_hot_upd FROM pg_stat_xact_user_tables WHERE relname = :p"
+    ).bindparams(p=partition)
     async with engine.begin() as conn:
         assert (
-            await conn.scalar(text("SELECT reloptions FROM pg_class WHERE relname = 'memories'"))
+            await conn.scalar(
+                text("SELECT reloptions FROM pg_class WHERE relname = :p"), {"p": partition}
+            )
         ) == ["fillfactor=70"]
         before = (await conn.execute(counts)).one()
         await conn.execute(
@@ -501,6 +517,77 @@ async def test_a_fork_copies_memories_with_their_vectors(engine: AsyncEngine) ->
         for r in await rows(engine, "SELECT id FROM events WHERE story_id = :s", s=forked.story_id)
     }
     assert set(row.source_event_ids) <= fork_events
+
+
+async def test_each_story_writes_into_its_own_partition(engine: AsyncEngine) -> None:
+    """#784 (ADR-187): ``create_story_from`` makes the story's ``memories`` partition before
+    the story, so its first memory lands there (``tableoid``), and so does one written for a
+    story created on a caller's connection; a fork's copied and new memories land in the fork's
+    own partition under new ids; making a partition again is a no-op. Complement: a raw memory
+    for a story with no partition fails with 23514 and nothing is written."""
+    w = await _structured_world(engine)
+    story = w.story_id
+    await turn(engine, story, actor=w.characters["Cal"], say="One.", reply=None)
+    assert await partitions_of(engine, story) == {partition_name(story)}
+
+    forked = await fork(engine, story, at_turn=1)
+    assert await partitions_of(engine, forked.story_id) == {partition_name(forked.story_id)}
+    copied = await memory_rows(engine, forked.story_id)
+    assert len(copied) == 1
+    # The copy has an id of its own: ids stay unique across partitions (the fork maps ``id``
+    # out of the ``(id, story_id)`` key).
+    assert not set(copied) & set(await memory_rows(engine, story))
+    await derived_memory(engine, forked.story_id, "The fork's own.", [])
+    assert len(await memory_rows(engine, forked.story_id)) == 2
+    assert await partitions_of(engine, forked.story_id) == {partition_name(forked.story_id)}
+
+    async with engine.connect() as conn:
+        own = await create_story(conn, principal=MEMORY_PRINCIPAL)
+    await derived_memory(engine, own, "A connection's story.", [])
+    assert await partitions_of(engine, own) == {partition_name(own)}
+    async with engine.begin() as conn:
+        assert await story_partitions.create_partition(conn, story) is False
+
+    (operation,) = await rows(
+        engine,
+        "SELECT operation_id FROM operations WHERE story_id = :s AND kind = 'genesis'",
+        s=story,
+    )
+    nowhere = new_ulid()
+    with pytest.raises(DBAPIError) as raised:
+        await execute_in_tx(
+            engine,
+            (
+                "INSERT INTO memories (id, story_id, kind, text, provenance, trust_tier, "
+                "operation_id, membership_tx) VALUES (:i, :s, 'episodic', 'Nowhere.', "
+                "'render', 'in_world', :o, now())",
+                {"i": new_ulid(), "s": nowhere, "o": operation.operation_id},
+            ),
+        )
+    assert sqlstate(raised.value) == "23514"
+    assert await memory_rows(engine, nowhere) == {}
+
+
+async def test_a_prune_deletes_only_the_doomed_memories(engine: AsyncEngine) -> None:
+    """#784: a prune deletes memories by ``id``, the first column of their ``(id, story_id)``
+    key, so a discarded turn's memory goes and the kept turn's stays (keyed on ``story_id``, it
+    would delete every memory of the story)."""
+    w = await _structured_world(engine)
+    story, cal = w.story_id, w.characters["Cal"]
+    _, kept = await turn(engine, story, actor=cal, say="One.", reply=None)
+    _, doomed = await turn(engine, story, actor=cal, say="Two.", reply=None)
+    assert kept
+    assert doomed
+    await timeline.truncate(
+        engine, story, timeline.TruncateRequest(to_turn=1), principal=MEMORY_PRINCIPAL
+    )
+    outcome = await prune.prune(
+        engine, story, prune.PruneRequest(ignore_warnings=True), principal=MEMORY_PRINCIPAL
+    )
+    assert outcome.applied
+    assert outcome.result is not None
+    assert outcome.result.deleted["rows_by_table"]["memories"] == len(doomed)
+    assert set(await memory_rows(engine, story)) == {m.id for m in kept}
 
 
 @pytest.mark.part("M4", "FR-TURN-4")

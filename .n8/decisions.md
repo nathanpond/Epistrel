@@ -14534,3 +14534,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the test is `test_meta_step_emits_annotations_at_manifest_and_index_level` in `tests/test_workflows.py`, parametrized over both workflows, no part marker like its neighbours. It finds the step by `id: meta` and asserts the exact string. Against HEAD's workflow files it failed both cases with `KeyError: 'env'`. The post-merge check of the `edge` index's annotations is left to /n8-verify.
   **Why:** AC2 and the engine-wide test rule.
   **Issue:** #100
+- **Decision:** RELEASING.md's *Cutting a release* step 2 gained one sentence after the admin-only sentence: the refusal can't be tested on a single-admin repo, because repository admins (the ruleset's only bypass actor, RepositoryRole 5) bypass it, and the test is a Write-role collaborator attempting to create, update and delete a `v*` tag, each rejected by the ruleset. The anchor the planner cites (:42-44) was :44-46 at HEAD, after #101's text. The sentence does not repeat the ruleset path, which the preceding sentence already names.
+  **Why:** planner lines and AC1. "create, update and delete" match the ruleset's three rule types.
+  **Issue:** #95

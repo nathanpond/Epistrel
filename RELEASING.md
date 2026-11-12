@@ -44,6 +44,9 @@ Versions are `0.x` until the engine is feature-complete; `-rc.N` is the only pre
    per concurrency group (see Production rollback). Only repository admins can create, move or
    delete `v*` tags — the `release-tags` tag ruleset (`.github/rulesets/release-tags.json`, created
    with `gh api -X POST repos/nathanpond/Epistrel/rulesets --input .github/rulesets/release-tags.json`).
+   The refusal can't be tested on a single-admin repo, because repository admins (the ruleset's only
+   bypass actor, RepositoryRole 5) bypass it: to test it, a Write-role collaborator attempts to
+   create, update and delete a `v*` tag, and the ruleset rejects each attempt.
 3. `release.yml` validates the tag (must match `pyproject.toml`'s version, must be on `main`, an rc of
    an already-released stable version is refused), runs the gate, pushes the image and creates the
    GitHub release with notes generated from merged PR titles (categories in `.github/release.yml`),

@@ -50,6 +50,18 @@ or deque) is refused, as is taking a dict's (``.pop``, ``.update``, ``.setdefaul
 ``.popitem``, ``.clear``), which the sandbox always refuses on a mapping; any of these names stays
 accepted as a key that is read and not called. A slice's bounds are constant integers.
 
+#857: a consumer's ``inputs`` are JSON, and a JSON value is never callable, so a call of a
+mutating-name access can never render: whatever it reaches is either a refused method or a JSON
+value. Besides the direct call (#853: ``inputs.list.append(1)``), the scan refuses a call whose
+callee is a simple name that ``{% set %}`` or ``{% with %}`` bound earlier in the template to such
+an access (``{% set p = inputs['pop'] %}{{ p('voter') }}``), and a call whose callee is a filter
+chain (through filters and constant integer indexes) in which ``map(attribute=…)`` or another
+filter's attribute name (``ATTRIBUTE_POSITIONS``, positional or keyword) names one of
+``MUTATING_METHODS`` in any segment (``([inputs]|map(attribute='pop')|first)('voter')``). Binding
+or mapping such a name without calling it stays accepted, because it reads the key when the key
+exists. The alias is one level deep: an alias of an alias or a macro argument is not followed,
+and such a call fails cleanly when it is made.
+
 **Output schemas** are the JSON Schema subset the strict structured path (#761) can send as it
 is: an object root; each node a single-string ``type`` among string, number, integer, boolean,
 array and object; ``properties``, ``required`` (listing every property, as strict decoding
@@ -264,6 +276,33 @@ def _member(node: nodes.Node) -> str | None:
     return None
 
 
+def _segments(name: str) -> list[str]:
+    """The names in a filter's attribute argument: Jinja's dotted path, or ``sort``'s and
+    ``unique``'s comma-separated list."""
+    return [raw.strip() for raw in re.split(r"[.,]", name)]
+
+
+def _attribute_args(
+    name: str, args: list[nodes.Expr], kwargs: list[nodes.Keyword]
+) -> list[nodes.Expr]:
+    """The arguments that filter ``name`` reads as attribute names (#837, #847): the
+    ``attribute`` keyword and the position ``ATTRIBUTE_POSITIONS`` gives. ``map('<filter>', …)``
+    is that filter with the remaining arguments; ``map(attribute=…)`` reads the attribute
+    itself."""
+    if name == "map" and args:
+        first = args[0]
+        if isinstance(first, nodes.Const) and isinstance(first.value, str):
+            return _attribute_args(first.value, args[1:], kwargs)
+        return []
+    if name not in ATTRIBUTE_POSITIONS and name != "map":
+        return []
+    named = [kw.value for kw in kwargs if kw.key == "attribute"]
+    position = ATTRIBUTE_POSITIONS.get(name)
+    if position is not None and len(args) > position:
+        named.append(args[position])
+    return named
+
+
 def _safe_attribute(arg: nodes.Expr) -> bool:
     """A constant attribute name (Jinja's dotted path or an index) with no segment that starts
     with ``_`` or names one of ``READING_METHODS`` (#852)."""
@@ -272,9 +311,55 @@ def _safe_attribute(arg: nodes.Expr) -> bool:
     if isinstance(arg.value, int):
         return True
     return isinstance(arg.value, str) and not any(
-        _private(part) or part in READING_METHODS
-        for part in (raw.strip() for raw in re.split(r"[.,]", arg.value))
+        _private(part) or part in READING_METHODS for part in _segments(arg.value)
     )
+
+
+def _mutating_attribute(node: nodes.Filter) -> str | None:
+    """The ``MUTATING_METHODS`` name a segment of filter ``node``'s attribute argument names
+    (#857); ``None`` when there is none."""
+    # Jinja annotates a filter's kwargs as `Pair`s, but the parser builds `Keyword`s.
+    kwargs = cast(list[nodes.Keyword], node.kwargs)
+    for arg in _attribute_args(node.name, node.args, kwargs):
+        if isinstance(arg, nodes.Const) and isinstance(arg.value, str):
+            for part in _segments(arg.value):
+                if part in MUTATING_METHODS:
+                    return part
+    return None
+
+
+def _mutating_access(expr: nodes.Node) -> str | None:
+    """The ``MUTATING_METHODS`` name ``expr`` reaches (#857): an attribute or constant key
+    naming one, or a filter chain (through filters and constant integer indexes) with a filter
+    whose attribute argument names one. A JSON value is never callable, so a call of what this
+    names never renders. ``None`` when ``expr`` reaches none."""
+    member = _member(expr)
+    if member in MUTATING_METHODS:
+        return member
+    node: nodes.Node | None = expr
+    while node is not None:
+        if isinstance(node, nodes.Filter):
+            found = _mutating_attribute(node)
+            if found is not None:
+                return found
+            node = node.node
+        elif isinstance(node, nodes.Getitem) and _number(node.arg, int):
+            node = node.node
+        else:
+            return None
+    return None
+
+
+def _bind(aliases: dict[str, str], target: nodes.Node, value: nodes.Node) -> None:
+    """Record (or clear) simple name ``target`` as an alias of a mutating-name access (#857).
+    One level: a name bound to another alias is not followed."""
+    if not isinstance(target, nodes.Name):
+        return
+    found = _mutating_access(value)
+    if found is None:
+        aliases.pop(target.name, None)
+    else:
+        aliases[target.name] = found
 
 
 def _filter_problem(
@@ -292,17 +377,11 @@ def _filter_problem(
         if not (isinstance(first, nodes.Const) and isinstance(first.value, str)):
             return "the filter 'map' names a filter that is computed"
         return _filter_problem(first.value, args[1:], kwargs, None)
-    if name in ATTRIBUTE_POSITIONS or name == "map":
-        # ``map(attribute=…)`` with no filter name reads the attribute itself.
-        named = [kw.value for kw in kwargs if kw.key == "attribute"]
-        position = ATTRIBUTE_POSITIONS.get(name)
-        if position is not None and len(args) > position:
-            named.append(args[position])
-        if not all(_safe_attribute(arg) for arg in named):
-            return (
-                f"the filter {name!r} names an attribute that is computed, starts with '_' or "
-                "names a method that reads by name"
-            )
+    if not all(_safe_attribute(arg) for arg in _attribute_args(name, args, kwargs)):
+        return (
+            f"the filter {name!r} names an attribute that is computed, starts with '_' or "
+            "names a method that reads by name"
+        )
     position = TEST_POSITIONS.get(name)
     if position is not None and len(args) > position:
         test = args[position]
@@ -350,7 +429,24 @@ def _scan(tree: nodes.Template) -> str | None:
     # A ``.get`` (or ``['get']``, #852) is checked where it is called; one taken without a
     # call could be called with any key later.
     calls = {id(call.node): call for call in tree.find_all(nodes.Call)}
+    # #857: names a `{% set %}` or `{% with %}` bound to a mutating-name access, in document
+    # order, each mapped to the method's name.
+    aliases: dict[str, str] = {}
     for node in tree.find_all(nodes.Node):
+        if isinstance(node, nodes.Assign):
+            _bind(aliases, node.target, node.node)
+        if isinstance(node, nodes.With):
+            for target, value in zip(node.targets, node.values, strict=False):
+                _bind(aliases, target, value)
+        if isinstance(node, nodes.Call):
+            callee = node.node
+            called = (
+                aliases.get(callee.name)
+                if isinstance(callee, nodes.Name)
+                else _mutating_access(callee)
+            )
+            if called is not None:
+                return f"the template uses {called!r}, a method that changes its value"
         refused = REFUSED_STATEMENTS.get(type(node))
         if refused is not None:
             return f"the template uses {{% {refused} %}}, which consumer templates may not"

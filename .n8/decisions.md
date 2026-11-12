@@ -14201,3 +14201,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the local gate ran test_presets_m7, test_u_18, test_config_changes, test_config_revalidation and test_openapi_declared (35 passed). Other modules that import `core.deployment` were skipped: C-01, C-03, X-07, E-11, test_respond, test_idempotency, test_story_texts, test_i_28_m9, test_scenario_validation and S-SELFPOLICE.
   **Why:** behaviour did not change. Only descriptions changed, and `NULLABLE`'s members are the same.
   **Issue:** #780
+- **Decision:** the scan refuses a call whose callee is a simple name bound by `{% set %}`/`{% with %}` to a `MUTATING_METHODS` attribute or constant key, or a call whose callee is a filter chain in which an attribute argument (`map(attribute=…)`, `map('<filter>', attribute=…)`, or an `ATTRIBUTE_POSITIONS` filter's positional or keyword argument) names a `MUTATING_METHODS` name in any dotted or comma segment. The message is #853's: "the template uses '<name>', a method that changes its value". This follows the owner-approved rewrite, not the earlier "refuse any mutating name in `map(attribute=)`" line.
+  **Why:** a JSON value is never callable, so only the call can never render; binding or mapping the name reads the key (`{% set p = inputs['pop'] %}{{ p }}` renders `P`).
+  **Issue:** #857
+- **Decision:** the chain walk descends through filters and constant integer indexes (`(…|list)[0]()`), and not through a string key or attribute. A `{% set %}` alias may also be bound to such a chain.
+  **Why:** an integer index of a mapped list is still the mapped value. A string attribute of a list can be a callable reading method: `(inputs.rows|map(attribute='pop')|list).count(1)` renders, and it stays accepted (a `READ_NOT_CALLED` row).
+  **Issue:** #857
+- **Decision:** aliases are tracked in document order, and a later binding of the same name to something else clears it, so `{% set p = inputs['pop'] %}{% set p = inputs.list.count %}{{ p(1) }}` is accepted. The `{% with %}` scope end and loop order are not modelled.
+  **Why:** a false refusal of a valid template is worse than a call that fails cleanly at call time (422 `template_render_error`); the planner line keeps alias tracking to one level.
+  **Issue:** #857
+- **Decision:** the attribute-argument lookup moved out of `_filter_problem` into `_attribute_args`, which both the `_`/reading-method check and the new mutating check use. `_filter_problem`'s behaviour is unchanged.
+  **Why:** one source for the positions Jinja reads attribute names from, so the two checks cannot drift.
+  **Issue:** #857
+- **Decision:** the direct `check_template` test is a new function in the existing module, `test_i_29__m9_mutating_calls` (`@part("M9", "FR-MODEL-14")`, integration marker like its neighbours), with `MUTATING_CALLS` (13 refusals naming the method) and `READ_NOT_CALLED` (7 accepted templates with their rendered text). `REFUSALS` gained 12 rows (POST), `REPLACE_REFUSALS` the issue's 4 repros (PUT), and `valid_edges` the AC's bound/mapped/read rows. Fail-first: with an out-of-tree plugin that swaps in df3f376's `_scan`, the direct test failed with `Failed: DID NOT RAISE PurposeRefused`, and all 12 new `REFUSALS` cases and `replace_refusals` failed with `KeyError: 'error'` (the save answered 201/200).
+  **Why:** the planner line names these tables; the I-29 M9 file is the one file for this test ID and milestone.
+  **Issue:** #857
+- **Decision:** the local gate ran test_i_29_m9, test_i_31_m9, C-02 and C-03 (149 passed), the modules that register purposes. No other test imports `core.purposes.validation`.
+  **Why:** the change is in the save-time scan only.
+  **Issue:** #857

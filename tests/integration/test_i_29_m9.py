@@ -42,7 +42,12 @@ from epistrel.core.errors import (
 from epistrel.core.ids import new_ulid
 from epistrel.core.purposes.output import output_model, output_of
 from epistrel.core.purposes.store import PurposeCreate, PurposeReplace
-from epistrel.core.purposes.validation import ATTRIBUTE_POSITIONS, PURPOSE_LIMIT, PurposeRefused
+from epistrel.core.purposes.validation import (
+    ATTRIBUTE_POSITIONS,
+    PURPOSE_LIMIT,
+    PurposeRefused,
+    check_template,
+)
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.adapter import Message, UnknownPurpose
 from epistrel.orchestrator.models.registry import DELIVERED, PORTS, validate_purpose
@@ -607,6 +612,80 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
         "template_invalid",
         "body.template",
     ),
+    # #857: a call of a mutating name reached through a `{% set %}`/`{% with %}` alias, or
+    # through a filter's attribute name.
+    (
+        "map_pop_called",
+        {"template": "{{ ([inputs]|map(attribute='pop')|first)('voter') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_append_called",
+        {"template": "{{ ([inputs.list]|map(attribute='append')|first)(1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_append_called",
+        {"template": "{% set p = inputs.list.append %}{{ p(1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_key_pop_called",
+        {"template": "{% set p = inputs['pop'] %}{{ p('voter') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "with_setdefault_called",
+        {"template": "{% with p = inputs['setdefault'] %}{{ p('a', 1) }}{% endwith %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_setdefault_called",
+        {"template": "{{ ([inputs]|map(attribute='setdefault')|first)('a', 1) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_extend_called",
+        {"template": "{% set p = inputs.list.extend %}{{ p([1]) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "sum_extend_called",
+        {"template": "{{ ([inputs.list]|sum(attribute='extend'))([1]) }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "with_key_clear_called",
+        {"template": "{% with c = inputs['clear'] %}{{ c() }}{% endwith %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_dotted_clear_called",
+        {"template": "{{ ([inputs]|map(attribute='list.clear')|list)[0]() }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "groupby_positional_clear_called",
+        {"template": "{{ (inputs.list|groupby('clear')|first)[0]() }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_map_pop_called",
+        {"template": "{% set p = [inputs]|map(attribute='pop')|first %}{{ p('voter') }}"},
+        "template_invalid",
+        "body.template",
+    ),
     (
         "pop_taken",
         {"template": "{{ inputs.pop }}"},
@@ -755,8 +834,12 @@ REPLACE_REFUSALS: list[str] = [
     "{{ '{0[_y]}'['format'](inputs) }}",
     "{{ inputs['get']('_y') }}",
     "{{ ([inputs]|map(attribute='get')|first)('_y') }}",
+    "{{ ([inputs]|map(attribute='pop')|first)('voter') }}",
+    "{{ ([inputs.list]|map(attribute='append')|first)(1) }}",
+    "{% set p = inputs.list.append %}{{ p(1) }}",
+    "{% set p = inputs['pop'] %}{{ p('voter') }}",
 ]
-"""#852's routes, refused on ``PUT`` as on ``POST``."""
+"""#852's and #857's routes, refused on ``PUT`` as on ``POST``."""
 
 
 @pytest.mark.integration
@@ -764,9 +847,9 @@ REPLACE_REFUSALS: list[str] = [
 async def test_i_29__m9_replace_refusals(
     served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
 ) -> None:
-    """A replacement is checked like a registration: each of #852's templates is refused on
-    ``PUT /admin/purposes/{name}`` with 422 ``template_invalid``, and the purpose stays at
-    version 1.
+    """A replacement is checked like a registration: each of #852's and #857's templates is
+    refused on ``PUT /admin/purposes/{name}`` with 422 ``template_invalid``, and the purpose
+    stays at version 1.
 
     Complement asserted: a valid replacement then writes version 2."""
     client, _ = served
@@ -788,6 +871,68 @@ async def test_i_29__m9_replace_refusals(
         headers=OPERATOR,
     )
     assert (replaced.status_code, replaced.json()["version"]) == (200, 2), replaced.text
+
+
+MUTATING_CALLS: list[tuple[str, str]] = [
+    ("{{ ([inputs]|map(attribute='pop')|first)('voter') }}", "pop"),
+    ("{{ ([inputs.list]|map(attribute='append')|first)(1) }}", "append"),
+    ("{% set p = inputs.list.append %}{{ p(1) }}", "append"),
+    ("{% set p = inputs['pop'] %}{{ p('voter') }}", "pop"),
+    ("{% with p = inputs['setdefault'] %}{{ p('a', 1) }}{% endwith %}", "setdefault"),
+    ("{{ ([inputs]|map(attribute='setdefault')|first)('a', 1) }}", "setdefault"),
+    ("{% set p = inputs.list.extend %}{{ p([1]) }}", "extend"),
+    ("{{ ([inputs.list]|sum(attribute='extend'))([1]) }}", "extend"),
+    ("{{ ([inputs]|map('sum', attribute='extend')|first)([1]) }}", "extend"),
+    ("{% with c = inputs['clear'] %}{{ c() }}{% endwith %}", "clear"),
+    ("{{ ([inputs]|map(attribute='list.clear')|list)[0]() }}", "clear"),
+    ("{{ (inputs.list|groupby('clear')|first)[0]() }}", "clear"),
+    ("{% set p = [inputs]|map(attribute='pop')|first %}{{ p('voter') }}", "pop"),
+]
+"""#857: calls of a mutating name reached through an alias or a filter's attribute name."""
+
+READ_NOT_CALLED: list[tuple[str, str]] = [
+    ("{% set p = inputs['pop'] %}{{ p }}", "P"),
+    ("{{ ([inputs]|map(attribute='pop')|first) }}", "P"),
+    ("{{ inputs['sort'] }}", "S"),
+    ("{{ inputs.add }}", "A"),
+    ("{% set x = inputs.append_text %}{{ x }}", "T"),
+    # A rebinding clears the alias; a reading method of a mapped list is still callable.
+    ("{% set p = inputs['pop'] %}{% set p = inputs.list.count %}{{ p(1) }}", "1"),
+    ("{{ (inputs.rows|map(attribute='pop')|list).count(1) }}", "1"),
+]
+"""#857's complement: a mutating name bound or mapped and not called reads the key."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_i_29__m9_mutating_calls() -> None:
+    """#857: ``check_template`` refuses a call of a mutating method reached through a
+    ``{% set %}``/``{% with %}`` alias or a filter's attribute name, naming the method, as it
+    refuses the direct call (#853). Each would fail at render: the sandbox refuses the method,
+    and a JSON value is not callable.
+
+    Complement asserted: the same names bound or mapped without a call are accepted and render
+    the key's value."""
+    inputs = {
+        "voter": "Ash",
+        "list": [1, 2, 3],
+        "pop": "P",
+        "sort": "S",
+        "add": "A",
+        "append_text": "T",
+        "rows": [{"pop": 1}],
+    }
+    for template, method in MUTATING_CALLS:
+        with pytest.raises(PurposeRefused) as refused:
+            check_template(template, "body.template")
+        details = refused.value.details
+        assert (details["reason"], details["field"], details["message"]) == (
+            "template_invalid",
+            "body.template",
+            f"the template uses {method!r}, a method that changes its value",
+        ), template
+    for template, rendered in READ_NOT_CALLED:
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered
 
 
 @pytest.mark.integration
@@ -841,6 +986,9 @@ async def test_i_29__m9_valid_edges(
             "{{ inputs.names | select('string') | join }}|"
             "{{ inputs.list | selectattr('votes', 'odd') | map(attribute='name') | join }}|"
             "{% if inputs.voter is string %}s{% endif %}|{{ inputs['sort'] }}|"
+            # #857: a mutating name that is bound or mapped and not called reads the key.
+            "{% set p = inputs['pop'] %}{{ p }}|{{ ([inputs]|map(attribute='pop')|first) }}|"
+            "{{ inputs.add }}|{% set x = inputs.append_text %}{{ x }}|"
             "{% if viewpoint %}{{ viewpoint.name }}{% endif %}"
             "{% if story %}{{ story.title | default('') }}{% endif %}"
         ),
@@ -855,12 +1003,15 @@ async def test_i_29__m9_valid_edges(
         "names": ["ab", "cd", "ef"],
         "list": [{"name": "x", "votes": 1}, {"name": "y", "votes": 2}],
         "sort": "kept",
+        "pop": "P",
+        "add": "A",
+        "append_text": "T",
     }
     called = await call(client, name, {"inputs": inputs})
     assert called.status_code == 200, called.text
     assert lib.models.stub.calls[-1].messages[1].content == (
         "ABCDEF|Ash|x|y|x,y|y|y|cd|abef|3|xy|x, y|ABCDEF|Ash|-|Ash|Ash and %(_y)s|101|Ash|"
-        "abcdef|x|s|kept|"
+        "abcdef|x|s|kept|P|P|A|T|"
     )
     keywords = _schema(
         kind={"type": "string", "const": "vote", "title": "Kind"},

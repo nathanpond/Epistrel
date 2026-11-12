@@ -18,6 +18,9 @@ figures go to ``build/perf/p_01.json`` and from there to ``docs/perf.md``.
 with no timing bound, because a timing bound in the PR gate fails under host load (#430,
 #432). ``test_p_01__gate_bites`` is the complement: with the vector arm slowed by 200 ms, the
 gate refuses the run. Slowing only adds time, so the run cannot pass by luck on a busy host.
+``test_p_01__own_graph`` (#866; ADR-187) runs one retrieval on a database of three 1k
+stories and checks the vector arm's plan: an index scan of the story's own partition's HNSW
+index, with no other story's partition in it.
 """
 
 from __future__ import annotations
@@ -27,12 +30,16 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
+from epistrel.core.embeddings import HNSW_INDEX
+from epistrel.core.memory.story_partitions import partition_name as memories_table_of
 from epistrel.core.retrieval import pipeline
 from epistrel.core.retrieval.pipeline import STAGES
 from epistrel.core.retrieval.search import vector_search
 from epistrel.testing.fixtures import scale
 from tests.perf.scale_support import (
+    VIEWPOINT,
     Retrievals,
     ScaleRun,
     gate,
@@ -43,6 +50,7 @@ from tests.perf.scale_support import (
     server_info,
     stage_percentiles,
 )
+from tests.retrieval_support import index_names, statements
 
 QUERIES = 500
 WARMUP = 20
@@ -146,3 +154,57 @@ async def test_p_01__gate_bites(scale_1k: ScaleRun, monkeypatch: pytest.MonkeyPa
     assert min(t["vector"] for t in found.timings) >= SLOWED_S * 1000
     assert gate(BUDGET_MS, BUDGET_MS) == []
     assert gate(BUDGET_MS + 0.1, BUDGET_MS)
+
+
+async def _arm_plan(run: ScaleRun, settings: Sequence[str], sql: str, params: Any) -> str:
+    """``EXPLAIN`` of the vector arm's statement under the settings the arm ran with (the
+    pipeline's ``SET LOCAL hnsw.*`` and the arm's ``enable_sort = off``)."""
+    async with run.db.connect() as conn, conn.begin() as tx:
+        for setting in settings:
+            await conn.execute(text(setting))
+        await conn.execute(text("SET LOCAL enable_sort = off"))
+        raw = await conn.get_raw_connection()
+        cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+        await cursor.execute("EXPLAIN " + sql, params)
+        found = await cursor.fetchall()
+        await tx.rollback()
+    return "\n".join(str(r[0]) for r in found)
+
+
+@pytest.mark.perf_smoke
+@pytest.mark.part("M4", "NFR-PERF-1")
+async def test_p_01__own_graph(scale_1k_stories: ScaleRun) -> None:
+    """On a database of three 1k stories, a retrieval's vector arm is an index scan of the
+    HNSW index of the story's own memories table (#866; ADR-187): no other story's table, and
+    no "Seq Scan", is in its plan.
+
+    Complement asserted: the other stories hold vectors of the same space (their tables' HNSW
+    indexes exist), so the plan leaves them out because it names its story, not because they
+    are empty."""
+    run = scale_1k_stories
+    assert len(run.others) >= 2
+    story = run.fixture.story.story_id
+    with statements(run.db) as seen:
+        await run.lib.retrieve(run.ctx, story, q=_queries(run, 1)[0], viewpoint=VIEWPOINT)
+    arms = [(sql, p) for sql, p in seen.statements if "<=>" in sql]
+    assert len(arms) == 1, [sql for sql, _ in arms]
+    settings = [sql for sql, _ in seen.statements if sql.startswith("SET LOCAL hnsw.")]
+    plan = await _arm_plan(run, settings, *arms[0])
+
+    own = memories_table_of(story)
+    async with run.db.connect() as conn:
+        found = await conn.execute(
+            text(
+                "SELECT c.relname AS index, t.relname AS tbl FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_class t ON t.oid = i.indrelid "
+                "WHERE c.relname = ANY(:names)"
+            ),
+            {"names": sorted(await index_names(run.db, HNSW_INDEX))},
+        )
+        hnsw = {str(r.tbl): str(r.index) for r in found}
+    others = [memories_table_of(o.story.story_id) for o in run.others]
+    assert own in hnsw, hnsw
+    assert all(o in hnsw for o in others), hnsw
+    assert f"Index Scan using {hnsw[own]} on {own}" in plan, plan
+    assert "Seq Scan" not in plan, plan
+    assert not [o for o in others if o in plan], plan

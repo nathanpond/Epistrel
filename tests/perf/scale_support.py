@@ -70,6 +70,8 @@ class ScaleRun:
     restored: bool
     prepare_s: float
     ctx: RequestContext = field(default_factory=lambda: RequestContext(principal=scale.PRINCIPAL))
+    others: tuple[scale.ScaleFixture, ...] = ()
+    """The other stories of a several-story database (``scale_database(stories=…)``)."""
 
 
 def cache_dir() -> Path | None:
@@ -79,9 +81,11 @@ def cache_dir() -> Path | None:
 
 @asynccontextmanager
 async def scale_database(
-    pg_url: str, spec: scale.ScaleSpec, *, log: Any = None
+    pg_url: str, spec: scale.ScaleSpec, *, stories: int = 1, log: Any = None
 ) -> AsyncIterator[ScaleRun]:
-    """The fixture for ``spec`` in a fresh database (see the module docstring)."""
+    """The fixture for ``spec`` in a fresh database (see the module docstring). With
+    ``stories`` above one, that many stories of ``spec`` (``scale.build_scale_stories``, never
+    cached): the first is the run's fixture and the rest its ``others``."""
     name = f"epistrel_scale_{secrets.token_hex(4)}"
     admin = make_sync_engine(pg_url, isolation_level="AUTOCOMMIT")
     drop = text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
@@ -95,8 +99,9 @@ async def scale_database(
             conn.execute(text(f'CREATE DATABASE "{name}"'))
         forget_ledger(url)
         started = time.perf_counter()
-        directory = cache_dir()
+        directory = cache_dir() if stories == 1 else None
         cached = scale.read_cached(directory, spec)
+        others: tuple[scale.ScaleFixture, ...] = ()
         settings = auth_settings(
             url,
             model_adapter="stub",
@@ -110,7 +115,11 @@ async def scale_database(
             command.upgrade(alembic_config(url), "head")
             builder = make_engine(settings)
             try:
-                fixture = await scale.build_scale_fixture(builder, spec, log=log)
+                if stories == 1:
+                    fixture = await scale.build_scale_fixture(builder, spec, log=log)
+                else:
+                    first, *rest = await scale.build_scale_stories(builder, spec, stories, log=log)
+                    fixture, others = first, tuple(rest)
             finally:
                 await builder.dispose()
             if directory is not None:
@@ -118,7 +127,9 @@ async def scale_database(
         prepare_s = time.perf_counter() - started
         db = make_engine(settings)
         lib = Engine(settings, db=db)
-        yield ScaleRun(url, settings, db, lib, fixture, cached is not None, prepare_s)
+        yield ScaleRun(
+            url, settings, db, lib, fixture, cached is not None, prepare_s, others=others
+        )
     finally:
         reembed_job.bind(before)
         if lib is not None:

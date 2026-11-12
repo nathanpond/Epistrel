@@ -13982,3 +13982,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #876, #784
 - **Hold:** PR #874. The owner chooses between options (a)–(d) on #784 (issuecomment-6819284394): partition-per-story makes operator actions that touch every partition (embedding-model change, a migration on `memories`, `pg_dump`) need `max_locks_per_transaction` sized to the story count (ADR-188). The run recommends (a): ship the setting in `docker-compose.yml` and the test Postgres. Work dependent on #784 continues on the current design. **Lifts when:** the owner answers on #784, or in the session.
   **Issue:** #784
+- **Decision (Rule 1):** retirement's ranking (`retirement.ranked`) names the story in its `_covered` subquery, which looks up the covering output by id. Before, that subquery correlated only on `covered_by` and planned over every story's partition. The capture test failed on it before the fix with "[retirement] 3 other partition(s)".
+  **Why:** it runs on every retirement run, which is a hot path.
+  **Issue:** #866
+- **Decision:** stale plan lines in #866's AC2 are corrected. `retirement.stories_with_memories` no longer reads `memories`: since 471cf06 it lists stories, and `needs_reconcile` asks each story inside its own partition. The operator lookups of one memory by id (`amendments/store.py`, `orchestrator/rewrite/apply.py` `_text_of`, `core/mutation.py`'s re-reads) also name their story since 471cf06. None of these is on ADR-187's exemption list. `test_hot_statements_stay_in_the_story_s_partition` checks the reconcile fan-out, and `test_story_named_paths_stay_in_the_story_s_partition` checks the lookups. The exemption list is `change_model`'s `UPDATE`s and story-ordering `SELECT`, `retype`, the re-embed status page's counts, and the legacy `memories:<id>` input key.
+  **Why:** #784's fix found that these statements failed outright past about a thousand stories, so it made them name their story.
+  **Issue:** #866
+- **Decision:** the parts of AC1 and AC2 that 471cf06 already met are shown by a test, not just claimed. `test_story_named_paths_stay_in_the_story_s_partition` runs a prune, an erasure, a fork after an amendment, an amendment record part, a quarantine, a sanitize and the rewrite's text read on a database of three stories. It `EXPLAIN`s every captured `memories` statement and checks that the expected statement shapes were captured: prune's `operation_id IN` and chunk delete, the erasure's deletes and updates, and the fork's `amendment_parts` subquery. A mutant plugin outside the tree strips the story predicate from `memories` statements, and against it every path fails (prune 4, erasure 6, fork 3, amendment 5, quarantine 5, sanitize 6, rewrite 1 statements).
+  **Why:** the orchestrator asked for a test wherever an AC was already met.
+  **Issue:** #866
+- **Decision:** the capture's `EXPLAIN` sets up a fork's temporary id map and functions (`fork._SETUP`) before explaining a statement that reads them. The audit skips a new story's partition DDL and the parent `ONLY` no-op of `settle` (`OWN_PARTITION`) when they name no other story's partition.
+  **Why:** a fork's statements read `pg_temp` objects that exist only in its own transaction, and making a partition is DDL that `EXPLAIN` cannot plan.
+  **Issue:** #866
+- **Decision:** the re-embed status page's per-story counts stay exempt and are not split per story. ADR-187 says why: the page answers only during a re-embed run, and that run starts with a model change that already needs ADR-188's lock sizing.
+  **Why:** the AC lists the page as exempt. Splitting it would change an operator read that no hot path reaches.
+  **Issue:** #866
+- **Decision:** ADR-187 is amended in place with the hot-statement registry and the exemption list, as the planner line allows for the unmerged ADR. ADR-188's last consequence (also unmerged) gains a pointer to that list.
+  **Why:** ADR-188 sends the remaining unpruned lookups to #866, and the list now lives in ADR-187.
+  **Issue:** #866
+- **Decision:** `test_p_01__own_graph` joins P-01 with its `part("M4", "NFR-PERF-1")` marker. It runs on a new session fixture `scale_1k_stories`, which is three 1k stories built by `scale.build_scale_stories` and never cached. Its body says `memories_table_of` (an alias of `partition_name`) and `tbl` because `check-lexicon` refuses the M5 term "partition" in an M4 part.
+  **Why:** the engine-wide test rule puts the check in the existing test ID. The lexicon gate counts code words in a part's body.
+  **Issue:** #866
+- **Decision:** the generic-plan test asserts `plan_cache_mode = force_custom_plan` on a pooled connection, and that no prepared hot statement was planned generically. A mutant that sets `plan_cache_mode=auto` fails it on the mode. With three partitions, Postgres still chose custom plans under `auto`, so the mode assertion is the one that catches the mutant.
+  **Why:** the cost-based choice between custom and generic plans depends on the partition count, so the plan counts alone cannot show the setting is in force.
+  **Issue:** #866

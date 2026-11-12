@@ -554,10 +554,13 @@ class Candidate:
         return (0 if self.retirable else 1, self.decayed, self.accessed, self.id)
 
 
-def _covered(m: Any) -> Any:
+def _covered(m: Any, story_id: str) -> Any:
+    # The covering output is the story's own (#866: the story names the partition the subquery
+    # reads; a correlated ``m.story_id`` would plan over every partition).
     o = memories.alias("covering")
     return exists(
         select(o.c.id).where(
+            o.c.story_id == story_id,
             o.c.id == any_(m.covered_by),
             active_only(o),
             o.c.retrieval_tier == RetrievalTier.HOT.value,
@@ -605,7 +608,7 @@ async def ranked(
             m.embedding.is_not(None).label("has_vector"),
             decayed.label("decayed"),
             func.coalesce(m.last_accessed_at, m.created_at).label("accessed"),
-            _covered(m).label("covered"),
+            _covered(m, story_id).label("covered"),
         )
         .where(*where)
         .subquery("candidates")

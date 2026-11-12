@@ -566,10 +566,16 @@ async def _current_overlapping(
 
 
 def _conflicts(predicate: Predicate, stored: Proposition, current: Fact) -> bool:
-    """Whether ``current`` cannot stay current beside ``stored`` over overlapping time: the
-    same proposition (either polarity), or for a functional predicate, an affirmed other object
-    under the same uniqueness key."""
-    other = current.proposition
+    """Whether ``current`` cannot stay current beside ``stored`` over overlapping time
+    (``_clashes``)."""
+    return _clashes(predicate, stored, current.proposition)
+
+
+def _clashes(predicate: Predicate, stored: Proposition, other: Proposition) -> bool:
+    """Whether a current version of ``other`` cannot stay current beside ``stored`` over
+    overlapping time: the same proposition (either polarity), or for a functional predicate, an
+    affirmed other object under the same uniqueness key. The scale fixture's bulk builder
+    (#490) plans its supersede chains with it."""
     if other.normalized_key() == stored.normalized_key():
         return True
     return (
@@ -620,30 +626,13 @@ async def _append_event(
 ) -> str:
     """Append the write's ``derived`` event to its operation, after the operation's own events
     (the caller holds the story lock: a commit step)."""
-    model = validate(type_, payload)
-    body = model.model_dump(mode="json")
+    body = validate(type_, payload).model_dump(mode="json")
     last = await conn.scalar(
         select(func.coalesce(func.max(events.c.seq), 0)).where(events.c.story_id == w.story_id)
     )
     event_id = new_ulid()
     await conn.execute(
-        insert(events).values(
-            id=event_id,
-            story_id=w.story_id,
-            seq=int(last or 0) + 1,
-            operation_id=w.operation.operation_id,
-            category=EventCategory.DERIVED.value,
-            narrative_turn=w.operation.narrative_turn,
-            turn_variant=w.operation.turn_variant,
-            beat=w.beat,
-            step=step_of(w.beat, w.operation.operation_id),
-            slot_k=w.slot_k,
-            principal=w.operation.principal,
-            type=type_,
-            payload=body,
-            provenance=_event_provenance(w.operation).value,
-            authority=Authority.AUTHORITATIVE.value,
-        )
+        insert(events).values(**_event_row(w, event_id, int(last or 0) + 1, type_, body))
     )
     await index_records(
         conn,
@@ -654,6 +643,30 @@ async def _append_event(
         ],
     )
     return event_id
+
+
+def _event_row(
+    w: _Write, event_id: str, seq: int, type_: str, body: dict[str, Any]
+) -> dict[str, Any]:
+    """The ``events`` row of the write's ``derived`` event (``_append_event``; the scale
+    fixture's bulk builder writes the same rows, #490)."""
+    return {
+        "id": event_id,
+        "story_id": w.story_id,
+        "seq": seq,
+        "operation_id": w.operation.operation_id,
+        "category": EventCategory.DERIVED.value,
+        "narrative_turn": w.operation.narrative_turn,
+        "turn_variant": w.operation.turn_variant,
+        "beat": w.beat,
+        "step": step_of(w.beat, w.operation.operation_id),
+        "slot_k": w.slot_k,
+        "principal": w.operation.principal,
+        "type": type_,
+        "payload": body,
+        "provenance": _event_provenance(w.operation).value,
+        "authority": Authority.AUTHORITATIVE.value,
+    }
 
 
 async def _validate(conn: AsyncConnection, w: _Write) -> None:

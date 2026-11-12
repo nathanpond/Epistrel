@@ -122,14 +122,18 @@ async def fold(
     return folded
 
 
-async def replace_with_fold(conn: AsyncConnection, story_id: str) -> dict[str, int]:
-    """Delete the story's projection rows and insert the fold; returns rows per table.
+async def replace_with_fold(
+    conn: AsyncConnection, story_id: str, only: Sequence[Projection] | None = None
+) -> dict[str, int]:
+    """Delete the story's projection rows (or ``only`` these projections') and insert the fold;
+    returns rows per table.
 
     The caller holds the story lock (``rebuild`` runs this as an operation commit step).
     """
-    folded = await fold(conn, story_id)
+    chosen = list(registered_projections()) if only is None else list(only)
+    folded = await fold(conn, story_id, chosen)
     counts: dict[str, int] = {}
-    for projection in registered_projections():
+    for projection in chosen:
         table = projection.table
         await conn.execute(delete(table).where(table.c.story_id == story_id))
         rows = folded[projection.name]

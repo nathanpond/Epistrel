@@ -1042,32 +1042,39 @@ async def record_change(
     if stamped is None:
         return
     await conn.execute(
-        insert(proposition_changes),
-        [
-            {
-                "id": new_ulid(),
-                "story_id": story_id,
-                "timeline_revision": int(stamped),
-                "proposition_id": c.proposition_id,
-                "subject_id": c.proposition.subject_id,
-                "predicate_id": c.proposition.predicate_id,
-                "object_id": c.proposition.object_id,
-                "literal_hash": None
-                if c.proposition.literal is None
-                else literal_hash(c.proposition.literal),
-                "object_set": None
-                if c.proposition.object_set is None
-                else list(c.proposition.object_set),
-                "holder": c.holder_kind(),
-                "speaker_id": c.speaker_id,
-                "visibility": c.visibility,
-                "valid_window": Range(c.valid_window[0], c.valid_window[1], bounds="[)"),
-                "change": c.change,
-                "operation_id": operation_id,
-            }
-            for c in changes
-        ],
+        insert(proposition_changes), change_rows(story_id, int(stamped), operation_id, changes)
     )
+
+
+def change_rows(
+    story_id: str, revision: int, operation_id: str, changes: Sequence[Change]
+) -> list[dict[str, Any]]:
+    """The ``proposition_changes`` rows of ``changes``, stamped ``revision`` (``record_change``;
+    the scale fixture's bulk builder writes the same rows, #490)."""
+    return [
+        {
+            "id": new_ulid(),
+            "story_id": story_id,
+            "timeline_revision": revision,
+            "proposition_id": c.proposition_id,
+            "subject_id": c.proposition.subject_id,
+            "predicate_id": c.proposition.predicate_id,
+            "object_id": c.proposition.object_id,
+            "literal_hash": None
+            if c.proposition.literal is None
+            else literal_hash(c.proposition.literal),
+            "object_set": None
+            if c.proposition.object_set is None
+            else list(c.proposition.object_set),
+            "holder": c.holder_kind(),
+            "speaker_id": c.speaker_id,
+            "visibility": c.visibility,
+            "valid_window": Range(c.valid_window[0], c.valid_window[1], bounds="[)"),
+            "change": c.change,
+            "operation_id": operation_id,
+        }
+        for c in changes
+    ]
 
 
 async def record_fact_change(conn: AsyncConnection, change: FactChange) -> None:
@@ -1192,6 +1199,7 @@ __all__ = [
     "RebaseCheck",
     "Retrieved",
     "StructuredReadSet",
+    "change_rows",
     "holder_of",
     "literal_hash",
     "read_set_counts",

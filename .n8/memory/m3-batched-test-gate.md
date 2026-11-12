@@ -1,5 +1,7 @@
 # M3 batched test gate (trial) — plan and metrics
 
+> Historical (M3/M6 only). Superseded in n8SDLC 0.9.0 by `exec.full_suite` (`pipelined`); no milestone uses a batched gate.
+
 Owner decision 2026-10-12 (see the `## Ad-hoc — 2026-10-12` entry in `.n8/decisions.md`). M3 only. Afterwards the owner decides from these metrics whether to send it upstream via `/n8-feedback` as a batched-gate option for `/n8-exec`.
 
 ## How `/n8-exec M3` departs from the skill

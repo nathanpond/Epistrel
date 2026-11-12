@@ -1,5 +1,7 @@
 # M6 batched test gate for the pre-story group: rules
 
+> Historical (M3/M6 only). Superseded in n8SDLC 0.9.0 by `exec.full_suite` (`pipelined`); no milestone uses a batched gate.
+
 Owner decision 2026-10-30 (see the `## Ad-hoc — 2026-10-30 (M6 test gate)` entry in `.n8/decisions.md`). It applies to M6's **24 pre-story issues only**. Every M6 feature story (#185 onward) keeps the per-story full-suite gate.
 
 ## Batches (in order; each is a hard barrier)

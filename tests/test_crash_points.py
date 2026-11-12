@@ -111,6 +111,34 @@ def test_without_kind_every_hit_of_the_point_counts() -> None:
     assert done.stdout.splitlines()[-1] == "EPISTREL-FAULT crash before_commit control"
 
 
+def test_a_counting_process_appends_every_hit_to_its_file(tmp_path: Path) -> None:
+    """#834: ``count_env`` makes every hit (crash plan or not) a line of the file, which
+    ``read_hits`` counts per point over every kind; without ``EPISTREL_TEST_FAULTS=1`` nothing is
+    counted, and a crash plan still fires on its own count."""
+    path = str(tmp_path / "hits")
+    done = _run(crash.count_env(path))
+    assert done.returncode == 0, done.stderr
+    assert Path(path).read_text().splitlines() == [
+        *["before_commit turn"] * 3,
+        "before_commit control",
+    ]
+    assert crash.read_hits(path) == {"before_commit": 4}
+    unset = str(tmp_path / "unset")
+    done = _run({"EPISTREL_TEST_CRASH_COUNT_HITS": unset})
+    assert done.returncode == 0, done.stderr
+    assert crash.read_hits(unset) == {}
+    planned = str(tmp_path / "planned")
+    done = _run({**faults.crash_at("before_commit", 2, "turn").env(), **crash.count_env(planned)})
+    assert done.returncode == crash.EXIT_STATUS
+    assert crash.read_hits(planned) == {"before_commit": 2}
+    child = faults.EngineProcess("postgresql+psycopg://u:p@127.0.0.1:1/x", "c" * 40)
+    assert "EPISTREL_TEST_CRASH_COUNT_HITS" not in child.child_env()
+    child.count_hits = path
+    assert child.child_env()["EPISTREL_TEST_CRASH_COUNT_HITS"] == path
+    assert child.child_env()["EPISTREL_TEST_FAULTS"] == "1"
+    assert (*faults.COMMIT_POINTS, *faults.STAGED_POINTS) == faults.STAGED_PURCHASE_POINTS
+
+
 def test_hits_are_no_ops_in_the_test_process() -> None:
     crash.reset()
     assert crash.armed() is None

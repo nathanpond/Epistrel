@@ -852,7 +852,12 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
     provider:** a crash after the claim moves the row to ``unknown``, listed for
     reconciliation, never re-sent (the server's count stays at its pre-crash value), and the turn
     completes narrating the purchase as still pending. Complement: a crash in an ordinary turn
-    leaves no partial turn, and its retry commits one."""
+    leaves no partial turn, and its retry commits one.
+
+    The non-deduplicating case runs on a child of its own in ``api`` mode (#834): no job worker
+    races the request's claim. In ``all`` mode the child's dispatcher could lock the row first;
+    the request's claim then skipped it, the crash rolled the worker's claim back, and the row
+    stayed ``intended``, never claimed or sent (correct, but not the case under test)."""
     with migrated_database(pg_url, f"epistrel_sec_{secrets.token_hex(4)}") as url:
         settings = auth_settings(url, model_adapter="stub")
         db = make_engine(settings)
@@ -862,7 +867,12 @@ async def test_s_effect_crash(pg_url: str, engine: AsyncEngine, states_delivered
                 await child.start()
                 await _deduped_cases(db, child)
                 await _render_failing(db, child)
-                await _non_deduplicating(db, child)
+                await child.kill()
+                async with EngineProcess(
+                    url, CREDENTIAL_A, lease_s=LEASE_S, mode="api", deliver=["states"]
+                ) as alone:
+                    await _non_deduplicating(db, alone)
+                await child.start()
                 await _ordinary_turn(db, child)
         finally:
             await child.kill()

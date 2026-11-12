@@ -41,6 +41,8 @@ The points:
   story and enqueued its partition's drop (#865); its transaction has not committed yet.
 - ``memories.partition.detached``: a memories partition's drop (#865) has detached the partition
   (``DETACH … CONCURRENTLY``, or ``FINALIZE``); it has not dropped the table yet.
+- ``memories.partition.attached``: a memories partition's creation (#784) has created and
+  attached the partition; its transaction has not committed yet (#876).
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -67,6 +69,7 @@ BUNDLE_EXPORT_BEFORE_SCAN = "bundles.export.before_scan"
 BUNDLE_IMPORT_BEFORE_READY = "bundles.import.before_ready"
 STORY_DELETE_BEFORE_COMMIT = "stories.delete.before_commit"
 MEMORY_PARTITION_DETACHED = "memories.partition.detached"
+MEMORY_PARTITION_ATTACHED = "memories.partition.attached"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -84,6 +87,7 @@ POINTS = (
     BUNDLE_IMPORT_BEFORE_READY,
     STORY_DELETE_BEFORE_COMMIT,
     MEMORY_PARTITION_DETACHED,
+    MEMORY_PARTITION_ATTACHED,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -155,6 +159,7 @@ __all__ = [
     "MEDIA_COMPLETE_LOCKED",
     "MEDIA_SWEEP_BEFORE_PURGE",
     "MEDIA_UPLOAD_BEFORE_COMMIT",
+    "MEMORY_PARTITION_ATTACHED",
     "MEMORY_PARTITION_DETACHED",
     "OWNERSHIP_ADD_FOUND",
     "POINTS",

@@ -109,7 +109,7 @@ from epistrel.core.events.registry import validate
 from epistrel.core.events.types import CastMember, Fork, ForkedFrom, StoryCreated
 from epistrel.core.ids import new_ulid
 from epistrel.core.membership import DERIVED_TABLES, POSITION_MAX
-from epistrel.core.memory.story_partitions import story_partition
+from epistrel.core.memory.story_partitions import claim, story_partition
 from epistrel.core.ownership import Owner
 from epistrel.core.projections.heads import head_row
 from epistrel.core.stories import (
@@ -388,6 +388,7 @@ async def _copy(
 ) -> Forked:
     """The whole copy, inside ``conn``'s transaction (REPEATABLE READ from its first read)."""
     await conn.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    await claim(conn, fork_id)  # #875: the fork's key, held to this commit
     # The key the copy binds at its end is locked first, so this call's own lease renewal
     # cannot commit under the snapshot and fail the bind (#637).
     call = idempotency.current_call()

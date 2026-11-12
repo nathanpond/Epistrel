@@ -15,8 +15,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+import psycopg
 import pytest
-from sqlalchemy import text
+from sqlalchemy import make_url, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -40,6 +41,7 @@ from epistrel.orchestrator.jobs.handlers import importance
 from epistrel.orchestrator.jobs.recurring import registered_tasks
 from epistrel.orchestrator.models.access import ModelAccessLayer
 from epistrel.orchestrator.models.stub import digest_score
+from epistrel.testing import pauses
 from tests import erasure_support as e
 from tests.auth_support import auth_settings
 from tests.canon_support import world
@@ -600,6 +602,142 @@ async def test_neighbouring_stories_create_their_partitions_at_once(engine: Asyn
     async with engine.connect() as conn:
         assert [await story_partitions.has_partition(conn, s) for s in ids] == [True] * len(ids)
     for story_id in ids:  # no story row: the drop goes through
+        assert await story_partitions.drop_partition(engine, story_id) == story_partitions.DROPPED
+
+
+async def test_a_creation_holds_one_connection_and_its_claim_keeps_the_partition(
+    engine: AsyncEngine,
+) -> None:
+    """#875: ``story_partition`` returns its connection before the story's work, so a creation
+    holds one pooled connection at a time (it held a second one for a session advisory lock,
+    and P-04's seed opened 14 connections where its pool keeps 9). The story's transaction
+    starts with ``claim``: the story's key is locked to its commit, so a sweep skips the
+    partition meanwhile (``busy``). Complement: a partition a sweep dropped in the gap before
+    the claim (no story row yet) is made again inside the story's transaction."""
+    story = new_ulid()
+    async with story_partitions.story_partition(engine, story):
+        pool = engine.sync_engine.pool
+        assert pool.checkedout() == 0  # type: ignore[attr-defined]
+        async with engine.begin() as conn:
+            await story_partitions.claim(conn, story)
+            counts = await story_partitions.sweep_orphans(engine)
+            assert counts["busy"] >= 1
+            assert await story_partitions.has_partition(conn, story)
+        assert await story_partitions.drop_partition(engine, story) == story_partitions.DROPPED
+        async with engine.begin() as conn:
+            await story_partitions.claim(conn, story)
+        async with engine.connect() as conn:
+            assert await story_partitions.has_partition(conn, story)
+    assert await story_partitions.drop_partition(engine, story) == story_partitions.DROPPED
+
+
+async def _until(mon: psycopg.AsyncConnection[Any], sql: str, **params: object) -> None:
+    """Poll ``sql`` (a count) on ``mon`` until it is non-zero, for up to 10 s."""
+    async with asyncio.timeout(10):
+        while True:
+            row = await (await mon.execute(sql, params)).fetchone()
+            if row is not None and row[0]:
+                return
+            await asyncio.sleep(0.02)
+
+
+async def test_a_backend_building_its_descriptor_during_an_attach_sees_the_partition(
+    engine: AsyncEngine, pg_url: str
+) -> None:
+    """#876: Postgres builds ``memories``' partition descriptor from a ``pg_inherits`` read, and
+    a backend that absorbs a concurrent attach's invalidation partway through the build (its
+    first ``pg_class`` lock of the transaction, for a partition it has not looked up) stores the
+    descriptor without that partition, with nothing left to clear it: its later transactions
+    could not insert the new story's memories (23514; 4 of 6 local zero-leak runs) and read
+    none of them. Forced here: backend B's descriptor is unset, a session holding ``pg_class``
+    parks B's build at that lock, and story X's partition commits meanwhile. The creation now
+    waits for B's transaction and invalidates ``memories`` again (``story_partitions.settle``),
+    so B's next transaction routes to X's partition. Complement: X's insert then fails only on
+    its missing operation (23503), not for want of a partition."""
+    url = make_url(pg_url)
+    monitor = url.set(drivername="postgresql", database="postgres").render_as_string(False)
+    earlier, first, story = new_ulid(), new_ulid(), new_ulid()
+    async with story_partitions.story_partition(engine, earlier):
+        pass
+    async with (
+        engine.connect() as b,
+        engine.connect() as holder,
+        await psycopg.AsyncConnection.connect(monitor, autocommit=True) as mon,
+    ):
+        read = text("SELECT count(*) FROM memories WHERE story_id = :s")
+        ids = (
+            await b.execute(
+                text(
+                    "SELECT pg_backend_pid(), CAST(CAST(:p AS regclass) AS oid), "
+                    "(SELECT oid FROM pg_database WHERE datname = current_database())"
+                ),
+                {"p": "memories"},
+            )
+        ).one()
+        await b.execute(read, {"s": earlier})  # B's caches are warm
+        await b.commit()
+        async with story_partitions.story_partition(engine, first):  # B never looks it up
+            pass
+        await b.execute(  # B rebuilds memories' relcache entries, not its descriptor
+            text(
+                "SELECT pg_relation_size(c) FROM unnest(CAST(:p AS regclass) || ARRAY(SELECT "
+                "CAST(indexrelid AS regclass) FROM pg_index WHERE indrelid = CAST(:p AS regclass))"
+                ") c"
+            ),
+            {"p": "memories"},
+        )
+        await b.commit()
+
+        async def create() -> None:
+            async with story_partitions.story_partition(engine, story):
+                pass
+
+        with pauses.held(pauses.MEMORY_PARTITION_ATTACHED) as hold:
+            creating = asyncio.create_task(create())
+            await hold.arrived()
+            await holder.execute(text("SET lock_timeout = '5s'"))
+            await holder.execute(text("LOCK TABLE pg_class IN ACCESS EXCLUSIVE MODE"))
+            building = asyncio.create_task(b.execute(read, {"s": earlier}))
+            await _until(  # B holds memories and waits for pg_class, inside its build
+                mon,
+                "SELECT count(*) FROM pg_locks WHERE pid = %(b)s AND NOT granted "
+                "AND relation = 'pg_class'::regclass",
+                b=ids[0],
+            )
+            hold.release()
+            await _until(  # X's partition has committed (its ATTACH's lock is gone)
+                mon,
+                "SELECT CAST(count(*) = 0 AS int) FROM pg_locks WHERE database = %(d)s "
+                "AND relation = %(m)s AND mode = 'ShareUpdateExclusiveLock'",
+                d=ids[2],
+                m=ids[1],
+            )
+            await holder.rollback()
+            await building
+            await b.commit()
+            await creating
+
+        with pytest.raises(DBAPIError) as raised:
+            async with b.begin():
+                await b.execute(
+                    text(
+                        "INSERT INTO memories (id, story_id, kind, text, provenance, trust_tier, "
+                        "operation_id, membership_tx) VALUES (:i, :s, 'episodic', 'First.', "
+                        "'render', 'in_world', :o, now())"
+                    ),
+                    {"i": new_ulid(), "s": story, "o": new_ulid()},
+                )
+        assert sqlstate(raised.value) == "23503"
+        plan = "\n".join(
+            str(line)
+            for line in await b.scalars(
+                text("EXPLAIN (COSTS OFF) SELECT 1 FROM memories WHERE story_id = :s"),
+                {"s": story},
+            )
+        )
+        await b.rollback()
+        assert partition_name(story) in plan, plan
+    for story_id in (earlier, first, story):
         assert await story_partitions.drop_partition(engine, story_id) == story_partitions.DROPPED
 
 

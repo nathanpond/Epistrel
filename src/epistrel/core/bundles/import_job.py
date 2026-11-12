@@ -72,7 +72,7 @@ from epistrel.core.errors import (
     UnsupportedFormatVersion,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.memory.story_partitions import story_partition
+from epistrel.core.memory.story_partitions import claim, story_partition
 from epistrel.core.tables import bundle_jobs, stories
 from epistrel.core.tables.audit_log import AuditKind
 from epistrel.observability.logging import get_logger
@@ -450,6 +450,7 @@ async def start_import(
     try:
         # #784: the story's memories partition first, in a short transaction of its own.
         async with story_partition(db, story_id), db.begin() as conn:
+            await claim(conn, story_id)  # #875: the story's key, held to this commit
             await conn.execute(
                 insert(stories).values(
                     id=story_id,

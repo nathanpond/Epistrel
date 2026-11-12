@@ -217,7 +217,7 @@ from epistrel.core.genesis.settings_map import (
     is_used,
 )
 from epistrel.core.ids import new_ulid
-from epistrel.core.memory.story_partitions import story_partition
+from epistrel.core.memory.story_partitions import claim, story_partition
 from epistrel.core.policies.model import Target
 from epistrel.core.ports import Ports
 from epistrel.core.profiles import effective
@@ -1760,6 +1760,7 @@ async def genesis(
     try:
         # #784: the story's memories partition first, in a short transaction of its own.
         async with story_partition(db, story_id), db.begin() as conn:
+            await claim(conn, story_id)  # #875: the story's key, held to this commit
             await _locked_catalog(conn, found)
             # FR-MULTI-12 (#828): the limit in force now, which may have been lowered since
             # the plan (a held creation is applied later).

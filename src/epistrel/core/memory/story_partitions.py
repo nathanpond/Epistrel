@@ -22,10 +22,29 @@ path that creates a story creates its partition first.
 - ``story_partition``: what a creating path wraps the story's transaction in. It creates the
   partition in a short transaction of its own, before the story's (``CREATE TABLE … PARTITION``
   DDL inside a long fork or import transaction would hold its locks until that commit), with
-  ``lock_timeout`` 5 s and up to ``ATTEMPTS`` attempts, and holds a session advisory lock on
-  the story id until the story's transaction is done, so a sweep of empty partitions with no
-  story row (#865) never drops one a creation is about to fill. A failed creation leaves the
-  empty partition behind for that sweep.
+  ``lock_timeout`` 5 s and up to ``ATTEMPTS`` attempts, and settles it (#876, below), on one
+  pooled connection that it returns before the story's work begins, so a creation holds no more
+  than one connection at a time (#875). A failed creation leaves the empty partition behind for
+  the sweep.
+- ``claim``: the first statement of the transaction that writes the story's row. It takes the
+  story's transaction advisory lock until that commit, so a drop or sweep (#865) skips the
+  partition while the story's row is being written, and it makes the partition again in that
+  transaction in the rare case a sweep dropped it between ``story_partition`` and the claim
+  (it had no story row then). Until #875, a session advisory lock on a connection of its own
+  covered that gap, and every creation held two pooled connections.
+- ``settle``: Postgres can leave another backend routing ``memories`` with a partition
+  descriptor that lacks a just-attached partition. The backend builds the descriptor from a
+  ``pg_inherits`` read made before the attach committed, and absorbs the attach's
+  invalidation in the middle of the build (at its first ``pg_class`` lock of the transaction, for
+  a partition it had not looked up yet). It then stores the stale descriptor with no
+  invalidation left to clear it, so its later transactions fail to insert the story's memories
+  (``no partition of relation "memories" found for row``, 23514), and its reads of them prune
+  to nothing, until the next attach. Only a transaction that held a lock on ``memories`` when
+  the attach committed can have made that read. So the creator waits, up to
+  ``SETTLE_TIMEOUT_S``, for every such transaction to end, then invalidates ``memories``'
+  relcache entry once more with a no-op ``ALTER TABLE ONLY memories ALTER COLUMN story_id SET
+  STATISTICS`` (its current value; SHARE UPDATE EXCLUSIVE, as ``ATTACH`` takes). Each backend
+  drops any stale descriptor at its next transaction, before the story's row exists.
 - ``drop_partition`` (#865): drops a deleted story's partition, after the deletion commits (the
   ``memory_partition_drop`` job ``core.stories.delete_story`` enqueues through
   ``schedule_drop``). Detaching or dropping a partition inside a transaction would hold
@@ -33,7 +52,7 @@ path that creates a story creates its partition first.
   runs on an autocommit connection, with ``lock_timeout`` 5 s: ``ALTER TABLE memories DETACH
   PARTITION … CONCURRENTLY`` (``… FINALIZE`` when an earlier detach was interrupted), then
   ``DROP TABLE``. It holds the story's session advisory lock throughout and does nothing while
-  the story has a ``stories`` row or another session holds that lock (a creation in flight).
+  the story has a ``stories`` row or another session holds that lock (a creation's ``claim``).
   The detach's second phase waits for every transaction already open in the database: one
   open past the lock timeout fails the attempt and leaves the detach pending, and the next
   attempt (or the sweep) finalizes it. ``memories`` holds one pending detach at a time, so a
@@ -43,14 +62,15 @@ path that creates a story creates its partition first.
   whose bound (``pg_get_expr(relpartbound)``: a hashed name cannot be reversed) names no
   ``stories`` row, finalizing a detach-pending one, and every detached ``memories_p_*`` table
   a crash between the detach and the drop left behind (unless its name is a live story's).
-  A story whose session advisory lock is held is skipped. A live story's partition is never
-  dropped.
+  A story whose advisory lock is held (a creation's ``claim``) is skipped. A live story's
+  partition is never dropped.
 
 Logs carry identifiers only (invariant 3).
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -81,6 +101,10 @@ ATTEMPTS = 3
 LOCK_NOT_AVAILABLE = "55P03"
 SWEEP_LOCK = (0x4D454D53, 0)
 """The sweep's global advisory lock ("MEMS", 0): one sweep runs at a time across processes."""
+SETTLE_TIMEOUT_S = 5.0
+"""How long a creation waits for the transactions that held a lock on ``memories`` at its
+attach to end (#876); past it, the creation logs a warning and invalidates all the same."""
+SETTLE_POLL_S = 0.02
 CREATE_LOCK = (0x4D454D43, 0)
 """The creations' global transaction advisory lock ("MEMC", 0), taken before ``CREATE TABLE``:
 Postgres names a partition's indexes after the partition's name cut to 63 bytes, so two stories
@@ -187,6 +211,11 @@ async def create_partition(conn: AsyncConnection, story_id: str) -> bool:
     await conn.execute(select(func.pg_advisory_xact_lock(*_lock_key(story_id))))
     if await has_partition(conn, story_id):
         return False
+    await _create_attached(conn, story_id)
+    return True
+
+
+async def _create_attached(conn: AsyncConnection, story_id: str) -> None:
     await conn.execute(select(func.pg_advisory_xact_lock(*CREATE_LOCK)))
     name = _ident(partition_name(story_id))
     await conn.execute(
@@ -204,7 +233,26 @@ async def create_partition(conn: AsyncConnection, story_id: str) -> bool:
             "FOR EACH STATEMENT EXECUTE FUNCTION epistrel_memories_guard()"
         )
     )
-    return True
+    await pauses.pause(pauses.MEMORY_PARTITION_ATTACHED)
+
+
+async def claim(conn: AsyncConnection, story_id: str) -> None:
+    """The first statement of the transaction that writes ``story_id``'s row (see the module
+    docstring): lock the story's key until that commit, and make the partition again in this
+    transaction when a sweep dropped it after ``story_partition`` made it. The check reads the
+    catalog (``pg_partition_root``), not the transaction's snapshot, which a REPEATABLE READ
+    transaction (a fork's) took before the lock was granted."""
+    await conn.execute(select(func.pg_advisory_xact_lock(*_lock_key(story_id))))
+    attached = await conn.scalar(
+        text(
+            "SELECT to_regclass(:c) IS NOT NULL "
+            "AND pg_partition_root(to_regclass(:c)) = CAST(:p AS regclass)"
+        ),
+        {"c": _ident(partition_name(story_id)), "p": PARENT},
+    )
+    if not attached:
+        logger.warning("memories partition of %s: gone before its story; made again", story_id)
+        await _create_attached(conn, story_id)
 
 
 def _lock_timed_out(error: BaseException) -> bool:
@@ -212,55 +260,102 @@ def _lock_timed_out(error: BaseException) -> bool:
     return isinstance(error, DBAPIError) and sqlstate == LOCK_NOT_AVAILABLE
 
 
-async def _create_in_own_transaction(conn: AsyncConnection, story_id: str) -> None:
+async def _in_own_transaction(
+    conn: AsyncConnection, story_id: str, step: Callable[[AsyncConnection], Awaitable[bool]]
+) -> bool:
+    """``step`` in a transaction of its own with ``lock_timeout`` set, up to ``ATTEMPTS``
+    attempts on a lock timeout; its answer."""
     for attempt in range(1, ATTEMPTS + 1):
         try:
             async with conn.begin():
                 await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
-                await create_partition(conn, story_id)
-            return
+                return await step(conn)
         except DBAPIError as exc:
             if not _lock_timed_out(exc) or attempt == ATTEMPTS:
                 raise
             logger.warning("memories partition of %s: lock timeout (attempt %d)", story_id, attempt)
+    raise AssertionError("unreachable")  # pragma: no cover - the last attempt raises
+
+
+_LOCKERS = text(
+    # The other transactions holding (or awaiting) a lock on ``memories``, by virtual
+    # transaction id; ``pg_locks`` lists fast-path locks too.
+    "SELECT DISTINCT l.virtualtransaction FROM pg_locks l "
+    "WHERE l.locktype = 'relation' AND l.relation = CAST(:p AS regclass) "
+    "AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+    "AND l.pid IS DISTINCT FROM pg_backend_pid()"
+)
+
+
+async def _lockers(conn: AsyncConnection) -> set[str]:
+    async with conn.begin():
+        return {str(v) for v in await conn.scalars(_LOCKERS, {"p": PARENT})}
+
+
+async def _invalidate(conn: AsyncConnection) -> bool:
+    """A no-op ``ALTER`` of ``memories`` (its ``story_id`` statistics target, set to what it
+    is): every backend rebuilds ``memories``' relcache entry, partition descriptor included."""
+    target = await conn.scalar(
+        text(
+            "SELECT attstattarget FROM pg_attribute "
+            "WHERE attrelid = CAST(:p AS regclass) AND attname = 'story_id'"
+        ),
+        {"p": PARENT},
+    )
+    value = -1 if target is None else int(target)
+    await conn.execute(
+        text(f"ALTER TABLE ONLY {PARENT} ALTER COLUMN story_id SET STATISTICS {value}")
+    )
+    return True
+
+
+async def settle(conn: AsyncConnection, story_id: str) -> None:
+    """Settle ``story_id``'s just-committed partition (see the module docstring): wait for the
+    transactions holding a lock on ``memories`` to end, then invalidate ``memories`` once more.
+    ``conn`` is outside a transaction."""
+    waiting = await _lockers(conn)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SETTLE_TIMEOUT_S
+    while waiting:
+        if loop.time() >= deadline:
+            logger.warning(
+                "memories partition of %s: %d transaction(s) still open after %.0f s",
+                story_id,
+                len(waiting),
+                SETTLE_TIMEOUT_S,
+            )
+            break
+        await asyncio.sleep(SETTLE_POLL_S)
+        waiting &= await _lockers(conn)
+    await _in_own_transaction(conn, story_id, _invalidate)
+
+
+async def _create_in_own_transaction(conn: AsyncConnection, story_id: str) -> None:
+    async def create(c: AsyncConnection) -> bool:
+        return await create_partition(c, story_id)
+
+    if await _in_own_transaction(conn, story_id, create):
+        await settle(conn, story_id)
 
 
 @asynccontextmanager
 async def story_partition(db: AsyncEngine | AsyncConnection, story_id: str) -> AsyncIterator[None]:
-    """Create ``story_id``'s partition before the story's transaction (see the module
-    docstring) and hold the creator's session advisory lock until the block ends.
+    """Create and settle ``story_id``'s partition before the story's transaction (see the
+    module docstring); the story's transaction starts with ``claim``.
 
-    ``db`` an engine: a connection of its own holds the lock. ``db`` a connection outside a
-    transaction: that connection does. ``db`` a connection inside a transaction: the partition
-    is created in that transaction, whose advisory lock is held to its commit."""
+    ``db`` an engine: a connection of its own, returned to the pool before the block runs.
+    ``db`` a connection outside a transaction: that connection. ``db`` a connection inside a
+    transaction: the partition is created in that transaction (not settled)."""
     if isinstance(db, AsyncConnection) and db.in_transaction():
         await create_partition(db, story_id)
         yield
         return
     if isinstance(db, AsyncConnection):
-        async with _held(db, story_id):
-            yield
-        return
-    async with db.connect() as conn, _held(conn, story_id):
-        yield
-
-
-@asynccontextmanager
-async def _held(conn: AsyncConnection, story_id: str) -> AsyncIterator[None]:
-    await conn.execute(select(func.pg_advisory_lock(*_lock_key(story_id))))
-    await conn.commit()
-    try:
-        await _create_in_own_transaction(conn, story_id)
-        yield
-    finally:
-        try:
-            if conn.in_transaction():
-                await conn.rollback()
-            await conn.execute(select(func.pg_advisory_unlock(*_lock_key(story_id))))
-            await conn.commit()
-        except Exception:
-            # A connection that may still hold the session lock never goes back to the pool.
-            await conn.invalidate()
+        await _create_in_own_transaction(db, story_id)
+    else:
+        async with db.connect() as conn:
+            await _create_in_own_transaction(conn, story_id)
+    yield
 
 
 # -- dropping (#865) --------------------------------------------------------------------------
@@ -450,9 +545,11 @@ __all__ = [
     "LOCK_NAMESPACE",
     "PARTITIONS_PER_TRANSACTION",
     "PREFIX",
+    "SETTLE_TIMEOUT_S",
     "SWEEP_LOCK",
     "DropScheduler",
     "attached",
+    "claim",
     "count_rows",
     "create_partition",
     "drop_partition",
@@ -461,6 +558,7 @@ __all__ = [
     "partition_name",
     "schedule_drop",
     "set_drop_scheduler",
+    "settle",
     "story_partition",
     "sweep_orphans",
 ]

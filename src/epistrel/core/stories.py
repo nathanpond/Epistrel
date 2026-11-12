@@ -120,7 +120,7 @@ from epistrel.core.idempotency import Scope
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.membership import Position
-from epistrel.core.memory.story_partitions import schedule_drop, story_partition
+from epistrel.core.memory.story_partitions import claim, schedule_drop, story_partition
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
@@ -810,6 +810,7 @@ async def _create_story_from(
     settings = _stored_settings(spec, cast)
     document, columns = split_settings(settings)
     async with _transaction(db) as conn:
+        await claim(conn, story_id)  # #875: the story's key, held to this commit
         # FR-MULTI-12 (#828): the cast against the deployment's limit in force now, after the
         # duplicate names and before the rating and the bindings.
         limit = await story_cast_limit(conn)

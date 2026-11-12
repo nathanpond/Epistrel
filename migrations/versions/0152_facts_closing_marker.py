@@ -120,6 +120,42 @@ WHERE f.story_id = c.story_id AND f.id = c.closed
 """
 
 
+PRUNE_CLAUSE = """
+    -- epistrel prune exemption (0126)
+    IF TG_OP = 'DELETE'
+       AND OLD.story_id IS NOT NULL
+       AND current_setting('epistrel.allow_prune', true) = OLD.story_id::text
+       AND EXISTS (
+           SELECT 1 FROM operations o
+           WHERE o.operation_id = OLD.operation_id AND o.membership::text = 'pruned'
+       ) THEN
+        RETURN OLD;
+    END IF;
+    -- epistrel prune exemption (0126) end
+"""
+"""0126's pruning exemption, frozen here. ``GUARD`` replaces the whole function, so the clause
+0126 spliced in at the head of its body has to be spliced in again, the same way, or a pruning
+could no longer delete a fact and the round trip (I-08) would not give back 0126's function."""
+
+REINJECT = """
+DO $do$
+DECLARE
+    body text := pg_get_functiondef('epistrel_facts_append_only()'::regprocedure);
+BEGIN
+    IF strpos(body, '(0126)') = 0 THEN
+        EXECUTE regexp_replace(body, E'\\nBEGIN\\n', E'\\nBEGIN\\n' || {clause}, '');
+    END IF;
+END
+$do$;
+"""
+
+
+def replace_guard(*, current: bool) -> None:
+    """Replace the guard with 0152's (``current``) or 0060's, keeping 0126's prune exemption."""
+    op.execute(guard(current=current))
+    op.execute(REINJECT.replace("{clause}", "'" + PRUNE_CLAUSE.replace("'", "''") + "'"))
+
+
 def upgrade() -> None:
     op.add_column(
         "facts",
@@ -127,12 +163,12 @@ def upgrade() -> None:
             "closed_by", postgresql.ARRAY(ULID), server_default=sa.text("'{}'"), nullable=False
         ),
     )
-    op.execute(guard(current=True))
+    replace_guard(current=True)
     op.execute(BACKFILL)
     op.drop_index("ix_facts_supersedes", table_name="facts", postgresql_using="gin")
 
 
 def downgrade() -> None:
     op.create_index("ix_facts_supersedes", "facts", ["supersedes"], postgresql_using="gin")
-    op.execute(guard(current=False))
+    replace_guard(current=False)
     op.drop_column("facts", "closed_by")

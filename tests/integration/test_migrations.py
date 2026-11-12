@@ -1369,3 +1369,47 @@ def test_facts_closing_marker_backfill(scratch_database: str) -> None:
             )
     finally:
         engine.dispose()
+
+
+_STORY_DELETE_GUARDS = """
+SELECT DISTINCT c.relname::text, p.proname::text, pg_get_functiondef(p.oid) LIKE '%(0126)%'
+FROM pg_trigger t
+JOIN pg_class c ON c.oid = t.tgrelid
+JOIN pg_proc p ON p.oid = t.tgfoid
+WHERE NOT t.tgisinternal
+  AND p.prokind = 'f'
+  AND (p.proname LIKE '%append_only' OR p.proname LIKE '%_guard')
+  AND c.relname::text = ANY(:tables)
+  AND pg_get_functiondef(p.oid) LIKE '%allow_story_delete%'
+"""
+
+
+def test_every_prunable_guard_keeps_the_prune_exemption(scratch_database: str) -> None:
+    """0126 splices pruning's exemption into the guard of every table a pruning deletes from. A
+    later migration that replaces such a guard whole (0152's facts guard, #471) must splice it
+    in again, at head and after stepping back down past it, or a pruning can no longer delete
+    those rows.
+
+    Complement asserted: the facts guard is among the guards checked, at both revisions."""
+    from epistrel.core.prune import PRUNABLE_TABLES
+
+    cfg = alembic_config(scratch_database)
+    engine = make_sync_engine(scratch_database)
+    tables = [t.name for t in PRUNABLE_TABLES]
+
+    def guards() -> dict[tuple[str, str], bool]:
+        with engine.connect() as conn:
+            rows = conn.execute(text(_STORY_DELETE_GUARDS), {"tables": tables}).all()
+        return {(r[0], r[1]): r[2] for r in rows}
+
+    try:
+        for target in ("head", "0151"):
+            command.upgrade(cfg, "head")
+            if target != "head":
+                command.downgrade(cfg, target)
+            found = guards()
+            assert ("facts", "epistrel_facts_append_only") in found, target
+            missing = sorted(k for k, has in found.items() if not has)
+            assert not missing, f"{target}: guards without 0126's prune exemption: {missing}"
+    finally:
+        engine.dispose()

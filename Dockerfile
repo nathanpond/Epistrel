@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build: uv resolves and installs into /app/.venv, the runtime stage copies only that.
 
-FROM python:3.14-slim AS builder
+FROM python:3.15-slim AS builder
 # uv is pinned to an exact release (resolved 2026-10-08); Dependabot's docker ecosystem bumps it.
 COPY --from=ghcr.io/astral-sh/uv:0.12.23 /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1 \
@@ -18,7 +18,7 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
-FROM python:3.14-slim AS runtime
+FROM python:3.15-slim AS runtime
 # EPISTREL_MEDIA_ROOT: the local blob store (#105). Compose mounts the `media` volume there; the
 # directory is created owned by the runtime user, so a fresh named volume inherits that owner.
 # EPISTREL_ERASURE_LEDGER_DIR: the erasure ledger's file, outside the database and its backups

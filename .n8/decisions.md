@@ -14528,3 +14528,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the RELEASING.md lines the planner cites (:59-60) were :60-62 at HEAD. The re-run paragraph and a new "Re-promotion" subsection replace and extend them.
   **Why:** stale line reference.
   **Issue:** #96
+- **Decision:** the `meta` step in `publish-edge.yml` and `release.yml` sets `env: DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index`, with a YAML comment giving the reason. The value was checked against docker/metadata-action's README at the pinned `v6` tag (dc80280): the Environment variables table lists it as a comma-separated list of levels (default `manifest`), and its annotations example uses `manifest,index`. The build steps already passed `steps.meta.outputs.annotations` and are unchanged. No action version changed, and both "GitHub Actions lessons" grep lines printed nothing.
+  **Why:** planner lines. The issue's original suggestion (`index` alone) would drop the manifest-level annotations the images carry now.
+  **Issue:** #100
+- **Decision:** the test is `test_meta_step_emits_annotations_at_manifest_and_index_level` in `tests/test_workflows.py`, parametrized over both workflows, no part marker like its neighbours. It finds the step by `id: meta` and asserts the exact string. Against HEAD's workflow files it failed both cases with `KeyError: 'env'`. The post-merge check of the `edge` index's annotations is left to /n8-verify.
+  **Why:** AC2 and the engine-wide test rule.
+  **Issue:** #100

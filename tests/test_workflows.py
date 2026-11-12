@@ -110,6 +110,16 @@ def test_release_triggers_only_on_v_tags_and_withholds_latest_by_flavor() -> Non
     )
 
 
+@pytest.mark.parametrize(
+    ("name", "job"), [("publish-edge.yml", "publish"), ("release.yml", "publish")]
+)
+def test_meta_step_emits_annotations_at_manifest_and_index_level(name: str, job: str) -> None:
+    """#100: metadata-action defaults to `manifest`-level annotations only, which leaves the pushed
+    image index with `annotations: {}`; the build steps already pass the annotations output."""
+    meta = next(s for s in _steps(_workflow(name), job) if s.get("id") == "meta")
+    assert meta["env"]["DOCKER_METADATA_ANNOTATIONS_LEVELS"] == "manifest,index"
+
+
 def test_rollback_is_dispatch_only_with_the_right_inputs() -> None:
     wf = _workflow("rollback.yml")
     inputs = _on(wf)["workflow_dispatch"]["inputs"]

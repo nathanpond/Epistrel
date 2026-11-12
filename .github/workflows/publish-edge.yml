@@ -163,6 +163,9 @@ jobs:
           password: ${{ github.token }}
       - id: meta
         uses: docker/metadata-action@v6
+        env:
+          # Index level too: the default (`manifest`) leaves the pushed index's annotations empty (#100).
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ${{ env.IMAGE }}
           # A dispatch (rollback) moves only `edge`; the sha tag already exists from the original push.

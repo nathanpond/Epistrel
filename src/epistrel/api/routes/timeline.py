@@ -519,13 +519,17 @@ async def swap(
         "respond body plus `previous_variant`. While another turn of the story runs the "
         "regenerate is 423 `story_busy` (it is never queued); queued turns fail with "
         "`timeline_changed`. `Idempotency-Key` and `X-Epistrel-Expected-Revision` are optional. "
-        "`directive` (#241, FR-COMMIT-12: structured stories; a Lite story is 409 `module_off`) "
-        'directs the outcome ("the knocker is George"): it is checked by the input policies, '
-        "and a binding of an open question is reconciled with recorded history before anything "
-        "commits. Without a conflict the regeneration commits steered to the author's decision. "
-        "With one, the author's choice proceeds as a `directed_resolution` amendment under "
-        "`resolution_mode` and `preview`: 202 with the session, nothing committed until it is "
-        "applied (the regenerated reply and the amendment then commit together)."
+        "`directive` is checked by the input policies. On a structured story (#241, "
+        'FR-COMMIT-12) it directs the outcome ("the knocker is George"): a binding of an open '
+        "question is reconciled with recorded history before anything commits. Without a "
+        "conflict the regeneration commits steered to the author's decision. With one, the "
+        "author's choice proceeds as a `directed_resolution` amendment under `resolution_mode` "
+        "and `preview`: 202 with the session, nothing committed until it is applied (the "
+        "regenerated reply and the amendment then commit together). On a Lite story (#699, "
+        "FR-LITE-8) the directive is a nudge for this regenerated reply only, answered 200: it "
+        "is never 202, opens no `directed_resolution` session and runs no `directive_parse`. "
+        "A Lite story has no reconciliation, so sending `resolution_mode` or `preview` adds a "
+        "`warnings[]` entry of kind `lite_no_reconciliation`."
     ),
 )
 async def regenerate(

@@ -14177,3 +14177,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the local gate ran `tests/test_openapi_declared.py`, all of `tests/integration/test_i_10.py`, `tests/conformance/test_c_24.py`, `tests/docs/test_operations_import.py`, the two `docs/openapi.json` tests in `test_erasure_ledger.py`, and `test_c_01` for the two bundle routes through an out-of-tree item filter. The rest of `test_erasure_ledger.py` and of C-01 were skipped.
   **Why:** they name the openapi module but exercise neither bundle route nor the error map.
   **Issue:** #786
+- **Decision:** regenerate's description now keeps the structured-story wording (#241, FR-COMMIT-12) and adds a Lite sentence (#699, FR-LITE-8): the directive is a nudge for that regenerated reply only, answered 200, never 202, with no `directed_resolution` session and no `directive_parse`; `resolution_mode` or `preview` adds a `warnings[]` entry of kind `lite_no_reconciliation`. The "checked by the input policies" clause now leads, because it holds for both modes. `docs/openapi.json` was regenerated and `openapi --check` passes.
+  **Why:** the code is the intended behaviour (planner line). The input gate runs before the mode branch (engine.py:3253-3257), so the clause applies to both.
+  **Issue:** #778
+- **Decision:** the planner's engine.py reference moved: the Lite branch is at engine.py:3258-3275 (not :3255-3268). timeline.py:522 and `LITE_NO_RECONCILIATION` at engine.py:837 were still right.
+  **Why:** the code moved since the plan was written.
+  **Issue:** #778
+- **Decision:** the description test is `test_s_lite_directive__regeneration_described`, a no-argument function in `tests/scenario/test_s_lite_directive.py` marked `("M7", "FR-LITE-8; FR-DIRECT-1,2")`. It reads the committed `docs/openapi.json` and asserts "nudge" and `lite_no_reconciliation` are present and `module_off` is absent. It does not refuse every "409", so a future structured-story 409 would not break it. The module's `pytestmark` still applies its integration marker and `drained_embedding_jobs`.
+  **Why:** the planner line names the module, the markers and a plain function; the committed document is what the Console reads. On cfd1835 it failed with `AssertionError: assert 'nudge' in 'Play the latest turn again: ...'`.
+  **Issue:** #778
+- **Decision:** the local gate ran `tests/scenario/test_s_lite_directive.py` (4 passed) and test_openapi_declared, test_route_guard, test_route_flags, test_trust_boundary, C-24, S-DIRECT-GEORGE, S-REBASE-VS-REGEN and test_commitments (66 passed). `tests/integration/test_respond.py` and the other modules that name `timeline` were skipped.
+  **Why:** only the description text changed; no behaviour moved.
+  **Issue:** #778

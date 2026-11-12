@@ -14546,3 +14546,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** filed #889 (needs-triage, area:docs): docs/05's header and Indexes preamble say the indexes are generated, but no generator exists. The header is unedited.
   **Why:** planner line.
   **Issue:** #420
+- **Decision:** `preset_row` gives a stale row the newest record's `generation` model through a new helper `_model`, which the certified row uses too, so both are backticked the same way. A record with no `generation` model, and a preset with no record, give `—`. The module docstring's Certification and Model bullets say so. The planner's line references (:173, :197-198, :224-227, :12-16) matched HEAD.
+  **Why:** AC1 and AC2. One helper keeps the two rows' Model cells from drifting apart.
+  **Issue:** #782
+- **Decision:** the test is `test_a_stale_row_keeps_its_model` in `tests/evals/test_certify_presets.py`, with no part marker (the module carries none). It copies the committed Standard record with an all-zero fingerprint and gives it two different generation models, then one with no generation model, and also builds a preset with no record. It asserts the Model cell and that every other cell after the status is `—`. Against HEAD's `preset_row` (out-of-tree plugin `mut782`) it failed with `AssertionError: assert '—' == '`model-a`'`.
+  **Why:** test plan. The stub certification test beside the stale-row assertion is an integration run (about 8 minutes), so a unit test is the cheaper home for the stale case.
+  **Issue:** #782
+- **Decision:** `epistrel evals index` regenerated docs/evals/INDEX.md. Only the Standard, Full and Max rows changed, each now showing `claude-haiku-5-5` in Model. There was no other drift.
+  **Why:** AC3.
+  **Issue:** #782

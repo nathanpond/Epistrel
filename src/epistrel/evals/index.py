@@ -12,7 +12,8 @@ certify``) and the preset constants (#227, ``evals.presets.PRESETS``):
 - **Certification**: the row's newest record (by ``run_at``) whose fingerprint is that one, or
   ``uncertified``. When the row has records but none matches (its constants, or a prompt
   template, changed since), ``uncertified (preset changed since certification <id>)`` names the
-  newest. The published claim never outlives the configuration it was measured on: the
+  newest, and the row keeps that record's model so per-model rows stay apart (#782). The
+  published claim never outlives the configuration it was measured on: the
   committed ``INDEX.md`` then differs from what the records regenerate, and ``evals index
   --check`` (and ``evals --check``) fail until it is regenerated.
 - **Floors** per NFR-QUAL id (``NFR-QUAL-1.false_support`` counts for ``NFR-QUAL-1``; a suite's
@@ -20,6 +21,8 @@ certify``) and the preset constants (#227, ``evals.presets.PRESETS``):
   decided passed, insufficient when none was decided.
 - **Interventions** covered and insufficient (E-12, NFR-QUAL-14), or ``judge uncalibrated``.
 - The record's model (``generation``'s), seeds, date (UTC) and a relative link to its report.
+  An ``uncertified`` row has only its model (``—`` with no record, or a record that names no
+  ``generation`` model) and ``—`` in every other cell.
 
 A record that does not parse is left out (the start-up loader logs it; ``evals --check`` lists
 it).
@@ -170,6 +173,12 @@ def _row(cells: Sequence[str]) -> str:
     return "| " + " | ".join(cells) + " |"
 
 
+def _model(record: CertificationRecord) -> str:
+    """The Model cell: ``record``'s ``generation`` model, backticked, or ``—``."""
+    named = record.models.get("generation", {}).get("id")
+    return f"`{named}`" if named else EM_DASH
+
+
 def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) -> str:
     """``preset``'s row (see the module docstring)."""
     mine = sorted(
@@ -183,11 +192,15 @@ def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) 
     matching = next((c for c in mine if c.record.fingerprint == current), None)
     if matching is None:
         status = NOT_CERTIFIED.get(preset, "uncertified")
+        model = EM_DASH
         if newest is not None:
             status = (
                 f"uncertified (preset changed since certification {newest.record.certification_id})"
             )
-        return _row([PRESETS[preset].label, digest, status, *([EM_DASH] * 9)])
+            model = _model(newest.record)
+        return _row(
+            [PRESETS[preset].label, digest, status, *([EM_DASH] * 5), model, *([EM_DASH] * 3)]
+        )
     record = matching.record
     passed, failed, insufficient = floor_cells(record)
     if record.judge_calibrated:
@@ -195,8 +208,6 @@ def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) 
         lacking = _ids(record.intervention_types_insufficient)
     else:
         covered = lacking = "judge uncalibrated"
-    named = record.models.get("generation", {}).get("id")
-    model = f"`{named}`" if named else EM_DASH
     return _row(
         [
             PRESETS[preset].label,
@@ -207,7 +218,7 @@ def preset_row(preset: PresetName, found: Sequence[Committed], index_dir: Path) 
             insufficient,
             covered,
             lacking,
-            model,
+            _model(record),
             str(record.seed_count),
             (
                 record.run_at if record.run_at.tzinfo is None else record.run_at.astimezone(UTC)

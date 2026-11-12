@@ -13767,3 +13767,48 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #855's doc nit (#826's must-haves name `call.py` where the `build_context` link is `orchestrator/purposes/story.py::_viewpoint`) is noted on the issue only, with no plan text edited.
   **Why:** #826 is closed, and the nit changes no behaviour.
   **Issue:** #855
+
+## /n8-exec M9 fix pass 3 (late note) — 2026-11-11
+
+- **Decision:** PR #856's CI was waited on for about 60 minutes, past `/n8-exec`'s 30-minute budget, instead of being declared a blocker.
+  **Why:** the evals-zero-leak shards took 48–60 minutes on slow runners, and a 40-minute CI run is normal for this project. The budget assumes a far shorter suite.
+  **Issue:** PR #856
+
+## /n8-plan M10 — 2026-11-11
+
+- **Decision:** M10 was planned as four new epics (#860 API contract, #861 test reliability, #862 retrieval and fixture performance, #863 release and docs hygiene) over 37 stories: 31 existing issues extended in place (original report kept, plan appended under "M10 plan") and 6 new (#864, #865, #866, #867, #868, #869).
+  **Why:** M10 was a bucket of triaged bugs with no stories, epics or acceptance criteria; extending the issues keeps their history and Console cross-links.
+  **Issue:** #860–#869
+- **Decision:** The open M9 carry-overs #842–#845, #857 and #858 moved into M10; `needs-triage` dropped from #471 and #490, both made M10 stories.
+  **Why:** owner's round-one triage ("put it in M10" for #490; #471 was already the owner's 2026-10-20 call).
+  **Issue:** #842–#845, #857, #858, #471, #490
+- **Decision:** `memories` is partitioned by story, one LIST partition per story (#784, with #865, #866, #867), replacing the single global HNSW index.
+  **Why:** owner, round one Q3: "Can't we index this so it always only ever searches memories from the same story? There's never a reason to reach into other story's memories" → "yes, partition by story". It removes the cross-story starvation behind #706's flake instead of adding an exact-search fallback. It is a schema change (ADR-187 expected), decided by the owner, so not a Rule 4 blocker at execution.
+  **Issue:** #784
+- **Decision:** Owner answers. #783: `progress` always carries `done`/`total`, plus the backfill members as optional extras. #793: runner budgets are reported, not gated, and a separate story (#868) brings P-01 to ≤ 200 ms p95 on the runner. #96: a bare re-promotion re-points every floating tag the good version heads, and a release re-run never undoes a rollback. #502: run 1M at M10's tail and recommend on 5M. "Harden the test suites" = the filed issues plus a flake sweep (#864).
+  **Why:** round one Q1 (a), Q2 (c), Q4 (a), Q5, Q6, Q7 ("It's both"); round two Q1 (b), Q2 (a).
+  **Issue:** #783, #793, #868, #96, #502, #864
+- **Decision:** Planner calls shown at the gate and not objected to:
+  - #778's description follows the code.
+  - #845 checks 422 before 409.
+  - #857 refuses only *calling* a mutating method through an alias or `map(attribute=)`. Binding one without calling it is a valid key read.
+  - #858 refuses the statically certain constructs only, and FR-MODEL-14 is not amended.
+  - #844's principal-scoped case is declined, because no such scope exists.
+  - A story deletion drops its partition in the background.
+  - Creating a story can briefly wait on the `operations` FK lock.
+  - #868 makes no `ef_search` changes.
+  - The other gate items are listed in M10's milestone description.
+  **Why:** owner replied "go" to the approval gate that listed them.
+  **Issue:** see the M10 milestone description
+- **Decision:** Executor simulation ran grouped: 7 fresh subagents per pass, each applying the brief to every story of one epic independently, instead of one subagent per story.
+  **Why:** 37 stories × 2 passes would have been 74 agents. Grouping kept the brief and the fresh context per group, and both passes are posted in the milestone description.
+  **Issue:** M10
+- **Decision:** Existing issues kept their titles. Only bodies, labels, milestone and parent changed.
+  **Why:** the go covered bodies, and the titles are referenced from Console issues and earlier ledger entries.
+  **Issue:** M10
+- **Decision:** Sub-issues were attached with `gh issue edit <epic> --add-sub-issue`, because gh 2.101 has no `--add-parent` (it has `--parent` and `--add-sub-issue`).
+  **Why:** the plugin's github.md names `--add-parent`, which errors as "unknown flag".
+  **Issue:** M10
+- **Decision:** Audit (M12) emphases gained a provisional M10 entry: the partitioning's data integrity and isolation, canon marker equivalence, schema strictness against OpenAPI, the template save scan, release flag consistency, and honest runner perf reporting.
+  **Why:** /n8-plan §4; it is provisional because M11 is still unplanned.
+  **Issue:** M12 milestone

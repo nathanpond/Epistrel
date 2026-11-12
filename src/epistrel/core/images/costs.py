@@ -43,7 +43,7 @@ statuses and the accounting only (invariant 3): ``image_cost_recorded``, ``image
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
@@ -586,21 +586,43 @@ def _true() -> ColumnElement[bool]:
     return image_reservations.c.job_id.is_not(None)
 
 
-async def check_range(
-    conn: AsyncConnection, from_date: date | None, to_date: date | None
-) -> tuple[date, date]:
-    """A report's range: local ISO dates, both inclusive, by default the last 30 days through
-    today; 422 ``invalid_range`` when ``from`` is after ``to`` or the range is longer than 366
-    days."""
-    today = await _today(conn)
+def default_range(today: date, from_date: date | None, to_date: date | None) -> tuple[date, date]:
+    """A report's range from ``today`` and the caller's ``from``/``to``: local ISO dates, both
+    inclusive, by default the last 30 days through today. ``InvalidRange`` when ``from`` is
+    after ``to``, the range is longer than 366 days, or ``from`` is omitted and the default
+    range would start before 0001-01-01 (``to`` before 0001-01-30; refused, not clamped: a
+    report starting at year 1 is never what a caller means; #836). Never ``OverflowError``."""
     to_date = to_date or (today if from_date is None or from_date <= today else from_date)
-    from_date = from_date or to_date - timedelta(days=RANGE_DEFAULT_DAYS - 1)
+    if from_date is None:
+        if (to_date - date.min).days < RANGE_DEFAULT_DAYS - 1:
+            raise InvalidRange(
+                f"the default {RANGE_DEFAULT_DAYS}-day range would start before 0001-01-01; "
+                "send from",
+                {"to": to_date.isoformat(), "field": "to"},
+            )
+        from_date = to_date - timedelta(days=RANGE_DEFAULT_DAYS - 1)
     details = {"from": from_date.isoformat(), "to": to_date.isoformat()}
     if from_date > to_date:
         raise InvalidRange("from is after to", details)
     if (to_date - from_date).days + 1 > RANGE_MAX_DAYS:
         raise InvalidRange(f"a range covers at most {RANGE_MAX_DAYS} days", details)
     return from_date, to_date
+
+
+def range_days(start: date, end: date) -> Iterator[date]:
+    """Every day from ``start`` through ``end``, ascending (none when ``start`` is after
+    ``end``); it never steps past ``end``, so a range ending at ``date.max`` does not overflow
+    (#836)."""
+    for offset in range((end - start).days + 1):
+        yield start + timedelta(days=offset)
+
+
+async def check_range(
+    conn: AsyncConnection, from_date: date | None, to_date: date | None
+) -> tuple[date, date]:
+    """A report's range (``default_range``) from the deployment's local today; 422
+    ``invalid_range`` on its refusals."""
+    return default_range(await _today(conn), from_date, to_date)
 
 
 async def retained_from(conn: AsyncConnection) -> date:
@@ -620,11 +642,9 @@ async def deployment_usage(
         await _ambiguous_days(conn, _true()),
         await _cost_days(conn, image_costs.c.id.is_not(None)),
     )
-    days: list[UsageDay] = []
-    day = max(start, kept)
-    while day <= end:
-        days.append(UsageDay(day, found.get(day, UsageTotals())))
-        day += timedelta(days=1)
+    days = [
+        UsageDay(day, found.get(day, UsageTotals())) for day in range_days(max(start, kept), end)
+    ]
     return DeploymentUsage(start, end, kept, tuple(days), total_of(d.totals for d in days))
 
 
@@ -802,6 +822,7 @@ __all__ = [
     "UsageTotals",
     "attempt_costs",
     "check_range",
+    "default_range",
     "deployment_usage",
     "detach_story",
     "entry_usage",
@@ -810,6 +831,7 @@ __all__ = [
     "money",
     "of_error",
     "purge",
+    "range_days",
     "record_attempt",
     "record_late_unaccounted",
     "record_unknown_if_sent",

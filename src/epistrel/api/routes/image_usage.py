@@ -49,7 +49,8 @@ RANGE = (
     "`from` and `to` are local dates in `deployment_time_zone`, both inclusive; by default the "
     f"last {image_costs.RANGE_DEFAULT_DAYS} days through today, at most "
     f"{image_costs.RANGE_MAX_DAYS} days; "
-    "422 `invalid_range` when `from` is after `to` or the range is longer."
+    "422 `invalid_range` when `from` is after `to`, the range is longer, or `from` is omitted "
+    "and the default range would start before 0001-01-01 (a `to` before 0001-01-30)."
 )
 
 

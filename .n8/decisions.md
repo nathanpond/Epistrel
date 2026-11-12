@@ -14084,3 +14084,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the pre-fix run used `git archive` of fcb6e7d in the scratchpad with this change's test file over it, its 409 key assertions dropped. Both backfill tests failed at `GET /stories/{id}` with `ValidationError ... progress.done Field required` and the request log `status: 500`.
   **Why:** the test plan asks for the read to be seen answering 500 on the old code. The old code fails the new 409 assertions first, so they were dropped from that copy only.
   **Issue:** #783
+- **Decision:** `costs.default_range(today, from_date, to_date)` holds all of `check_range`'s arithmetic and both existing refusals, and `check_range` only reads today and calls it. The underflow refusal tests `(to - date.min).days < RANGE_DEFAULT_DAYS - 1` before subtracting, with details `{to, field: "to"}`.
+  **Why:** the planner line names the pure helper; checking before the subtraction means the arithmetic can never reach `OverflowError`. `check_range` actually spans costs.py:587-601 at 02425e3, not 589-603.
+  **Issue:** #836
+- **Decision:** the deployment report's day loop is a pure `costs.range_days(start, end)` that yields `start + timedelta(days=n)` for `n` in `range((end - start).days + 1)`, not a `while` loop with an end guard.
+  **Why:** it never computes a day past `end`, so `date.max` cannot overflow, and the planner line asks for its own property test, which a pure helper allows.
+  **Issue:** #836
+- **Decision:** the tests join `tests/integration/test_image_usage.py` with no part marker: `test_usage_range_edges` (the four routes' 422 and the two `date.max` 200s, complement `to=0001-01-30`), and hypothesis properties `test_default_range_never_overflows` and `test_range_days_stops_at_end`, each with explicit boundary `@example`s.
+  **Why:** the planner line names the file and notes its tests carry no marker. The explicit examples keep the boundary cases deterministic under the CI profile's `derandomize`.
+  **Issue:** #836
+- **Decision:** `docs/OPERATIONS.md`'s image usage paragraph names the new 422 cause beside the `from` after `to` one (Rule 2).
+  **Why:** it lists the range refusals for operators, and leaving the new one out would make it stale. The AC names only the docstring and the `RANGE` description.
+  **Issue:** #836
+- **Decision:** the fail-first run used a pytest plugin in the scratchpad that put back the old `check_range` arithmetic and `while` loop on `costs.default_range` and `costs.range_days`. All three new tests failed with `OverflowError: date value out of range`.
+  **Why:** the engine-wide planner line requires an out-of-tree mutant or the pre-fix commit.
+  **Issue:** #836
+- **Decision:** the C-01 tally ran `test_c_01` for the four usage routes 20 times, with `.hypothesis` moved to the scratchpad and deleted before each run. All 20 runs gave "4 passed" (20/20). The database was restored afterwards.
+  **Why:** the AC asks for 20 consecutive runs with no saved examples, so each run explores afresh.
+  **Issue:** #836

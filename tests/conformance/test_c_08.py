@@ -42,6 +42,7 @@ from epistrel.engine import operations
 from tests.conformance.canary_scenario import CANARIES
 from tests.conformance.conftest import migrated_database
 from tests.conformance.telemetry_canary import CONTENT_DEBUG_VAR, OUT_VAR
+from tests.conftest import NO_DOCKER_MESSAGE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = "tests.conformance.telemetry_canary"
@@ -53,6 +54,10 @@ C08_SHARDS = 4
 """Parallel inner runs (the CI runner has four cores); ``EPISTREL_TEST_C08_SHARDS`` overrides."""
 SHARDS_VAR = "EPISTREL_TEST_C08_SHARDS"
 OVERRIDE_VAR = "EPISTREL_TEST_DATABASE_URL"
+OVERRIDE_TARGET = "tests/integration/test_two_stage.py"
+"""A module whose tests need only ``pg_url`` (and ``scratch_database``), no other container."""
+NO_DOCKER_HOST = "unix:///nonexistent/docker.sock"
+OVERRIDE_TIMEOUT_S = 120
 
 ENUM = re.compile(r"^[a-z_]+$")
 ULID = re.compile(ULID_PATTERN)
@@ -106,15 +111,21 @@ def shards(paths: tuple[str, ...], count: int) -> list[list[str]]:
     return [[str(f.relative_to(REPO_ROOT)) for f in group] for group in groups if group]
 
 
-def run_suite(pg_url: str, paths: tuple[str, ...], *, content_debug: bool) -> Telemetry:
-    """Run ``paths`` under the capture plugin, split into parallel shards (``shards``), each
-    on a fresh database; every shard must pass, and their telemetry is merged."""
-    groups = shards(paths, int(os.environ.get(SHARDS_VAR, str(C08_SHARDS))))
-    base = {
+def child_env() -> dict[str, str]:
+    """This process's environment for an inner pytest run, without the variables that would
+    steer it (``EPISTREL_*``, coverage's ``COV_CORE_*`` and ``PYTEST_*``)."""
+    return {
         key: value
         for key, value in os.environ.items()
         if not key.upper().startswith(("EPISTREL_", "COV_CORE_", "PYTEST_"))
     }
+
+
+def run_suite(pg_url: str, paths: tuple[str, ...], *, content_debug: bool) -> Telemetry:
+    """Run ``paths`` under the capture plugin, split into parallel shards (``shards``), each
+    on a fresh database; every shard must pass, and their telemetry is merged."""
+    groups = shards(paths, int(os.environ.get(SHARDS_VAR, str(C08_SHARDS))))
+    base = child_env()
     if content_debug:
         base[CONTENT_DEBUG_VAR] = "1"
     (REPO_ROOT / "build").mkdir(exist_ok=True)
@@ -267,6 +278,39 @@ def test_c_08(scanned: Telemetry, pg_url: str) -> None:
     assert any(line.get("content_logging") for line in debug.logs)
     found = leaks(debug)
     assert set(found) & set(debug.harvest), "the harvest scan found no content in debug logs"
+
+
+def _run_child(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", OVERRIDE_TARGET]
+    return subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=OVERRIDE_TIMEOUT_S,
+        check=False,
+    )
+
+
+@pytest.mark.part("M2", "FR-OBS-1; NFR-SEC-4")
+def test_c_08__override_starts_no_container(scratch_database: str) -> None:
+    """#99: with ``EPISTREL_TEST_DATABASE_URL`` set, the ``pg_url`` fixture uses that server and
+    starts no container. A child run of ``OVERRIDE_TARGET`` points the override at a scratch
+    database and Docker at a socket that does not exist, so any testcontainers start would fail
+    the run; the child passes. No container is started, so there is none to tear down.
+
+    Complement asserted: the same child without the override fails at fixture setup with
+    ``NO_DOCKER_MESSAGE`` (the bogus Docker host does stop a container from starting)."""
+    env = {**child_env(), "DOCKER_HOST": NO_DOCKER_HOST}
+    used = _run_child({**env, OVERRIDE_VAR: scratch_database})
+    assert used.returncode == 0, used.stdout[-8000:]
+    assert re.search(r"\b\d+ passed\b", used.stdout), used.stdout[-2000:]
+
+    refused = _run_child(env)
+    assert refused.returncode != 0, refused.stdout[-2000:]
+    assert NO_DOCKER_MESSAGE in refused.stdout, refused.stdout[-8000:]
 
 
 def test_metrics_labels(scanned: Telemetry) -> None:

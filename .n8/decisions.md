@@ -14366,3 +14366,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the kept-card docstring now cites `boundary.KEPT_CARD` and paraphrases it in one sentence (labels, public description and structural fields stay; name redacted; images and content rating emptied). The #390/#393/#400 sentences are folded into it, and #381 and the complements paragraph are unchanged. The docstring is at test_i_27.py:505-518 (the phrase was at :508, as the plan said).
   **Why:** planner line (merge, don't append).
   **Issue:** #421
+- **Decision:** `test_c_08__override_starts_no_container` (C-08's `@part("M2", "FR-OBS-1; NFR-SEC-4")`) runs a child pytest of `tests/integration/test_two_stage.py`, the planner's target. It uses only `pg_url` and `scratch_database` (no `minio`). The child gets `EPISTREL_TEST_DATABASE_URL` set to the outer `scratch_database` and `DOCKER_HOST=unix:///nonexistent/docker.sock`. It must exit 0 with a passing count. The complement drops the override and expects a non-zero exit with `NO_DOCKER_MESSAGE` in the output. Both runs have a 120 s timeout. The child took about 27 s locally.
+  **Why:** planner lines.
+  **Issue:** #99
+- **Decision:** `run_suite`'s env stripping moved into a `child_env()` helper that both `run_suite` and the new test call. Its behaviour is unchanged. `test_c_08` and `test_metrics_labels` were not re-run locally (the whole scenario suite in shards), because the refactor is a pure extraction that mypy and ruff check.
+  **Why:** planner line ("reuse run_suite's env stripping"), and the brief's bound on local runs.
+  **Issue:** #99
+- **Decision:** the original report's "container is torn down" half is dropped. With the override set, no container is ever started: the unreachable Docker host would fail any testcontainers start, and the complement shows that it does. So there is nothing to tear down.
+  **Why:** planner AC3.
+  **Issue:** #99
+- **Decision:** the fail-first used an out-of-tree `sitecustomize.py` on `PYTHONPATH` that pops the override in any process whose `DOCKER_HOST` is the bogus socket. This mimics a `pg_url` that ignores the override. The child inherits `PYTHONPATH`, so the new test failed at `assert used.returncode == 0` with `Error while fetching server API version: ('Connection aborted.', FileNotFoundError(2, ...))`. A `-p` plugin in the outer process cannot reach the child.
+  **Why:** mutant convention, applied to a subprocess.
+  **Issue:** #99

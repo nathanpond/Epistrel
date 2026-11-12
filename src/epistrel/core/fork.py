@@ -706,6 +706,13 @@ OVERRIDES: dict[str, dict[str, str]] = {
             f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
             "ORDER BY s.n) AS char(26)[])"
         ),
+        # #471 (ADR-189): the stored inverse of ``supersedes`` keeps the copied closers only,
+        # so a version closed only after N reads open in the fork, as above.
+        "closed_by": (
+            f"CAST(ARRAY(SELECT m.new_id FROM unnest(t.closed_by) "  # noqa: S608
+            f"WITH ORDINALITY AS s(id, n) JOIN {_MAP} m ON m.old_id = s.id::text "
+            "ORDER BY s.n) AS char(26)[])"
+        ),
     },
     # Commitments (#146): a thunk's resolution and an entry's discharge name the fork's copies;
     # one made after N is not copied, so the thunk is open and the entry undischarged there (the

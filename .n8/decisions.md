@@ -14030,3 +14030,39 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** stale references in #867's body were corrected while implementing. `test_retrieval_cost_is_fixed_and_indexed` was at test_retrieval.py:596 (the body says :594), `test_vector_arm_finds_sole_vector_past_scan_cap` at :533 (the body says :575), and `retype` at `core/embeddings.py:165-195` (the body says :164-193). docs/02:328 already said the scan is per story since #784, so only the remaining-case sentence was added.
   **Why:** line numbers moved with #784 and #866.
   **Issue:** #867
+- **Decision:** the stored marker is a new `facts.closed_by char(26)[]` column, the inverse of `supersedes`. `_write` appends the new version's id and its remainders' ids to every version it closes, in the `UPDATE` that already set `tx_to`/`superseded_by`. `_closed_by` keeps its signature and finds closers with `closer.id = ANY(f.closed_by)`, so every caller changes with it, the write path's `_load` and `_current_overlapping` included. Membership, `excluding`, position and record-time are still tested on the closer row. ADR-189 records the design.
+  **Why:** `superseded_by` cannot hold a second closer (one truncated away, a later one active). A copy of the closer's coordinates would need rewriting on every membership flip, fork and erasure. A primary-key join to the closer is what the planner line allows.
+  **Issue:** #471
+- **Decision:** an erasure that deletes a closer leaves its id in `closed_by`, and the guard lets `closed_by` only grow (`NEW.closed_by @> OLD.closed_by`). The equivalence test checks that every id beyond the inverse of `supersedes` is an erased one.
+  **Why:** the dangling id matches no row, which is what the anti-join found. `supersedes` and `superseded_by` already keep erased ids, and a grow-only rule is the closest fit to the table's append-only guard.
+  **Issue:** #471
+- **Decision:** migration 0152 drops `ix_facts_supersedes`.
+  **Why:** after the change, no read or write searches `supersedes` by containment. Fork maps it row by row with `unnest`, and the index cost a GIN update on every fact insert.
+  **Issue:** #471
+- **Decision:** the ADR is ADR-189 and the migration is 0152, not the ADR-188 the story body names.
+  **Why:** #784 took ADR-187 and ADR-188 (its fix), and 0151. These are the next free numbers.
+  **Issue:** #471
+- **Decision (Rule 2):** `closed_by` is left out of story bundles (`bundles.COLUMNS_NOT_EXPORTED["facts"]`), and the import rebuilds it from `supersedes` (`canon.facts.rebuild_closers`, called by `importing.insert_bundle` when the bundle has facts). `test_rebuild_closers_sets_an_imported_story_s_markers` covers it. `docs/openapi.json` is unchanged.
+  **Why:** the bundle importer is a second writer of `facts` rows. A bundle exported before 0152 has no `closed_by`, so its closed versions would have read open. Leaving the column out also keeps the published bundle schema as it was.
+  **Issue:** #471
+- **Decision:** the import's rebuild is tested directly, with rows copied in without `closed_by`, not through an export round trip. Story export fails on any story with facts (`valid_span`'s `Range` is not JSON-serializable), filed as #877.
+  **Why:** the round trip cannot reach the import with facts until #877 is fixed. Fixing the export is a separate problem.
+  **Issue:** #471, #877
+- **Decision:** the two BITEMP parts (`test_bitemp__closing_marker`, `test_bitemp__reads_find_closers_by_key`) live in `tests/property/test_bitemp.py`. They are thin calls into `tests/closing_marker_support.py`, which keeps the old `_closed_by` as `oracle_closed_by`. The plan test and the import-rebuild test live in `tests/integration/test_canon_closing_marker.py` with no part. This deviates from the planner line that puts the equivalence test in `tests/integration`.
+  **Why:** `check-traceability` takes one file per test ID and milestone ("duplicate part BITEMP (M4)"). `test_bitemp.py` is already a Postgres-backed integration test, and the engine-wide rule puts a test in the module that owns its ID.
+  **Issue:** #471
+- **Decision:** the equivalence test simulates an erasure by deleting a fact row under `SET LOCAL epistrel.erasure = 'on'`. Erasures are drawn from all rows or only from closers. It runs the reads with the oracle by swapping `canon._closed_by` for the duration of a read. After every step it checks the marker invariant and the current reads. At the end it checks `canon`, `canon_at` (4 story-times), `canon_as_recorded` at every step's record-time and `_load`'s current flag, at every turn position, with no exclusion and with each of up to four closing operations excluded. A fork switches the rest of the history to the fork. It runs 200 examples with no deadline, as the planner line says.
+  **Why:** the erasure route deletes rows the same way and drags in the whole HTTP pipeline. A full check after every step would be roughly 10x slower, and the per-step check already catches marker drift at the step that causes it.
+  **Issue:** #471
+- **Decision:** mutants outside the tree, each a `-p` plugin in the run's scratchpad: `_closers` answering none (no marker write) and the fork's `closed_by` override removed (no mapping) each fail `test_bitemp__closing_marker` on the marker check. Canon reads switched back to the anti-join fail `test_bitemp__reads_find_closers_by_key` ("AssertionError: now") and the plan test, whose plan shows `Join Filter: (closer.supersedes @> ARRAY[f.id])`.
+  **Why:** the AC asks for the test to be shown failing with a maintenance path's marker write removed.
+  **Issue:** #471
+- **Decision:** the stale references in the body were corrected. `_closed_by` is at core/canon/facts.py:462-478 (now :465-487), `_open`'s callers are at :1179, :1580 and :1777, `MUTABLE_FACT_COLUMNS` is at tables/facts.py:69, and fork's facts overrides are at fork.py:696-708. The planner's "test_migrations.py" is `tests/integration/test_migrations.py`.
+  **Why:** the lines moved with later work.
+  **Issue:** #471
+- **Decision:** P-01 at 50k was measured locally twice on one fixture build. "After" is this change. "Before" uses a plugin outside the tree that switches canon reads back to the anti-join and recreates `ix_facts_supersedes` on the restored fixture. Stage p95 (p99), before → after: profiles 92.3 (101.7) → 91.1 (104.1) ms, occasion 10.4 (11.8) → 10.3 (12.7) ms, total 268.3 → 260.4 ms. Both runs fail P-01's 150 ms total budget, before and after alike. Most of the total is `vector` (about 103 ms p95) and `lexical` (65 to 70 ms p95), which this change does not touch.
+  **Why:** the AC asks for profiles/occasion p95 before and after. The difference this change makes is within noise on this fixture. The plan test is what shows the per-row probe gone. The over-budget total is not this change's: it is the same with the old read.
+  **Issue:** #471
+- **Decision:** the local gate's one failure, `test_erasure_resurrection.py::test_a_fork_carries_the_story_ledger`, is order-dependent and predates this change. It fails after `test_i_10.py` on a `git archive` of 25848f6 too, and passes alone. Filed as #884, not fixed here.
+  **Why:** it counts every story's pending ledger rows. Nothing in it reads `closed_by`.
+  **Issue:** #471, #884

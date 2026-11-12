@@ -645,6 +645,10 @@ async def insert_bundle(
             await conn.execute(insert(table).values(rows[start : start + BATCH]))
         counts[table.name] = len(rows)
         crash.hit("bundles.import.mid_records")
+    if "facts" in counts:
+        from epistrel.core.canon.facts import rebuild_closers
+
+        await rebuild_closers(conn, story_id)  # #471: ``closed_by`` does not travel
     operation_id = await _import_operation(
         conn,
         story_id,

@@ -13,7 +13,9 @@ One row is one **version** of a fact: a proposition (``propositions``, #131) wra
   when it was first closed (``NULL`` while open), ``[tx_from, tx_to)``. Superseding closes a
   version (``tx_to``, ``superseded_by``) and never deletes it (FR-BITEMP-2). ``lineage_id`` is
   the first version's id, shared by every later version of the fact; ``supersedes`` lists the
-  versions the row closed when it was written.
+  versions the row closed when it was written, and ``closed_by`` (#471, ADR-189) is its
+  inverse: every row whose ``supersedes`` names this version, appended in that row's
+  transaction. A canon read finds a version's closers by primary key through ``closed_by``.
 - **narrative position and membership**: the derived-record columns (``core.membership``,
   #130): the producing operation, the source events, ``narrative_turn``/``turn_variant`` (from
   the operation, never from ``seq``), plus ``beat`` and ``slot_k``; ``membership`` follows the
@@ -31,7 +33,8 @@ related fact, carried forward on supersede. ``commit_state``, ``committed_at_pos
 created here for the stories that own them.
 
 Append-only (``epistrel_facts_append_only``): an UPDATE may set ``tx_to`` and ``superseded_by``
-once each (``NULL`` to a value) and change ``membership``/``membership_tx``; an erasure
+once each (``NULL`` to a value), grow ``closed_by`` (never drop an id from it, #471) and change
+``membership``/``membership_tx``; an erasure
 (``epistrel.erasure = on``) may also rewrite ``visibility``. A DELETE passes only under an
 erasure or the story's deletion (``epistrel.allow_story_delete``); TRUNCATE is refused.
 ``core.canon.facts`` is the only writer.
@@ -66,8 +69,15 @@ from epistrel.core.tables.base import metadata, pg_enum, ulid_type
 VISIBILITY_SCOPES: tuple[str, ...] = ("objective", "public", "engine", "characters")
 """The visibility scopes a fact may carry (``visibility->>'scope'``, CHECK)."""
 
-MUTABLE_FACT_COLUMNS: tuple[str, ...] = ("tx_to", "superseded_by", "membership", "membership_tx")
-"""The columns an UPDATE of ``facts`` may change (``tx_to``/``superseded_by`` once each)."""
+MUTABLE_FACT_COLUMNS: tuple[str, ...] = (
+    "tx_to",
+    "superseded_by",
+    "closed_by",
+    "membership",
+    "membership_tx",
+)
+"""The columns an UPDATE of ``facts`` may change (``tx_to``/``superseded_by`` once each,
+``closed_by`` only by growing, #471)."""
 
 _SCOPES = ", ".join(f"'{s}'" for s in VISIBILITY_SCOPES)
 
@@ -109,6 +119,7 @@ facts = Table(
     Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("superseded_by", ulid_type(), nullable=True),
     Column("supersedes", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
+    Column("closed_by", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
     Column("anchored_to", ulid_type(), nullable=True),
     Column(
         "commit_state",
@@ -162,7 +173,6 @@ Index(
 Index("ix_facts_valid_span", facts.c.valid_span, postgresql_using="gist")
 Index("ix_facts_story_lineage", facts.c.story_id, facts.c.lineage_id)
 Index("ix_facts_story_open", facts.c.story_id, postgresql_where=text("tx_to IS NULL"))
-Index("ix_facts_supersedes", facts.c.supersedes, postgresql_using="gin")
 Index("ix_facts_proposition", facts.c.proposition_id)  # #617 (migration 0107)
 
 FACTS = register_derived(

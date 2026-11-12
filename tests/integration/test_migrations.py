@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from alembic import command
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel import __version__
@@ -1249,5 +1251,121 @@ def test_memories_are_partitioned_by_story(scratch_database: str) -> None:
         assert "hnsw" in str(
             scalar("SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_memories_embedding_hnsw'")
         )
+    finally:
+        engine.dispose()
+
+
+def _closers(url: str) -> dict[str, tuple[set[str], set[str]]]:
+    """Per fact: its stored ``closed_by``, and the rows the pre-#471 ``_closed_by`` anti-join
+    finds (``supersedes`` containing its id, same story)."""
+    engine = make_sync_engine(url)
+    try:
+        with engine.connect() as conn:
+            return {
+                str(r.id): ({str(c) for c in r.closed_by}, {str(c) for c in r.oracle})
+                for r in conn.execute(
+                    text(
+                        "SELECT f.id, f.closed_by, ARRAY(SELECT s.id FROM facts s "
+                        "WHERE s.story_id = f.story_id AND s.supersedes @> ARRAY[f.id]) AS oracle "
+                        "FROM facts f"
+                    )
+                )
+            }
+    finally:
+        engine.dispose()
+
+
+async def _closing_history(url: str) -> tuple[str, str, set[str]]:
+    """A story with supersedes (one write closing two versions, with remainders), an erased
+    closer, and a fork of it; answers the story, the fork and the erased ids."""
+    from epistrel.core.db import make_engine
+    from tests.auth_support import auth_settings
+    from tests.canon_support import at, commit, supersede, world
+    from tests.fork_support import fork
+
+    engine = make_engine(auth_settings(url))
+    try:
+        w = await world(engine)
+        story = w.story_id
+        bobby, ann = w.people["Bobby"], w.people["Ann"]
+        kitchen, garden, school = (w.places[p] for p in ("kitchen", "garden", "school"))
+        first = await commit(engine, story, at(bobby, kitchen, 0, 50))
+        await commit(engine, story, at(bobby, garden, 20, 30))  # closes first, keeps remainders
+        moved = await commit(engine, story, at(ann, kitchen, 0, None))
+        await supersede(engine, story, moved.id, at(ann, garden, 0, None))
+        closer = await commit(engine, story, at(ann, school, 10, 20))
+        forked = await fork(engine, story)
+        async with engine.begin() as conn:
+            await conn.execute(text("SET LOCAL epistrel.erasure = 'on'"))
+            await conn.execute(text("DELETE FROM facts WHERE id = :i"), {"i": closer.id})
+        assert first.id
+        return story, forked.story_id, {closer.id}
+    finally:
+        await engine.dispose()
+
+
+def test_facts_closing_marker_backfill(scratch_database: str) -> None:
+    """0152 (#471, ADR-189): on a database with supersedes (a write closing a version with
+    remainders, a supersede), an erased closer and a fork, the backfill sets every fact's
+    ``closed_by`` to exactly the rows the old ``_closed_by`` anti-join finds, and equal to what
+    the write path stored, but for the erased closer. The guard lets ``closed_by`` only grow.
+    The downgrade drops the column and restores ``ix_facts_supersedes`` and 0060's guard."""
+    import asyncio
+
+    cfg = alembic_config(scratch_database)
+    command.upgrade(cfg, "head")
+    story, forked, erased = asyncio.run(_closing_history(scratch_database))
+    engine = make_sync_engine(scratch_database)
+
+    def scalar(sql: str, **params: Any) -> Any:
+        with engine.connect() as conn:
+            return conn.scalar(text(sql), params)
+
+    try:
+        live = _closers(scratch_database)
+        stories = {
+            str(s).rstrip()
+            for s in (
+                scalar("SELECT array_agg(DISTINCT story_id) FROM facts WHERE closed_by <> '{}'")
+                or ()
+            )
+        }
+        assert {story, forked} <= stories  # both the source and the fork have closed versions
+        assert any(stored - oracle == erased for stored, oracle in live.values())
+
+        command.downgrade(cfg, "0151")
+        assert scalar("SELECT to_regclass('ix_facts_supersedes')") == "ix_facts_supersedes"
+        assert (
+            scalar(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_name = 'facts' AND column_name = 'closed_by'"
+            )
+            == 0
+        )
+        guard = str(
+            scalar("SELECT prosrc FROM pg_proc WHERE proname = 'epistrel_facts_append_only'")
+        )
+        assert "closed_by" not in guard
+        assert "'committed>revised'" in guard
+
+        command.upgrade(cfg, "0152")
+        backfilled = _closers(scratch_database)
+        assert set(backfilled) == set(live)
+        assert sum(1 for stored, _ in backfilled.values() if stored) >= 3
+        for fact_id, (stored, oracle) in backfilled.items():
+            assert stored == oracle, fact_id
+            assert stored == live[fact_id][0] - erased, fact_id
+        assert scalar("SELECT to_regclass('ix_facts_supersedes')") is None
+
+        closed = next(k for k, (stored, _) in backfilled.items() if stored)
+        with pytest.raises(DBAPIError, match="keeps every closer"), engine.begin() as conn:
+            conn.execute(text("UPDATE facts SET closed_by = '{}' WHERE id = :i"), {"i": closed})
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE facts SET closed_by = closed_by || ARRAY[:n]::char(26)[] WHERE id = :i"
+                ),
+                {"i": closed, "n": new_ulid()},
+            )
     finally:
         engine.dispose()

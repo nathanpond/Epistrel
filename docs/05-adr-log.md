@@ -19,6 +19,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
 | FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175, 187, 188 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
+| FR-BITEMP | §3 | 189 |
 | FR-MEM | §4 | 070, 071, 072, 075, 169, 187, 188 |
 | FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
@@ -46,7 +47,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180, 189 |
 | NFR-DETERM | §20 | 045, 080 |
 | NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
@@ -251,6 +252,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
 | 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
 | 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Current | — |
+| 189 | A closed fact version stores its closers, and canon reads find them by key | Current | — |
 
 ---
 
@@ -2040,6 +2042,24 @@ Tuning and its exit certification come after every milestone that may change a p
 - `operations` carries one more unique index, on `(operation_id, story_id)`.
 - Test code that scans or updates `memories` names the story, or reads the table a batch of partitions per transaction (`tests.story_support.table_rows`).
 - #866 still makes every hot statement name its story. The remaining unpruned operator lookups go to it, with this decision's measurements: beyond about a thousand stories on default settings, an unpruned statement fails outright rather than running slowly. ADR-187 lists the statements that stay unpruned.
+
+### ADR-189 — A closed fact version stores its closers, and canon reads find them by key
+**Status:** Accepted.
+**Context:** #471. A fact version is closed by the rows whose `supersedes` names it (docs/02 §4.4). In the corrected view it is current while no *active* row closes it. Canon reads (`canon`, `canon_at`, `canon_as_recorded`, the read set's `KeyedLookup.canon_context`, verification and the projections through them) tested this with an anti-join, `NOT EXISTS (facts closer WHERE closer.supersedes @> ARRAY[f.id] …)`, which probed the `ix_facts_supersedes` GIN index once per candidate row. On #153's 50k fixture a subject with about 250 versions read 130 candidate rows. That was 130 probes, about 7.7 ms a statement, and 5 to 8 statements an occasion query. The rule is more than a lookup. A closer counts only when it is active (truncation, swap and regenerate flip membership; a fork's copies are active), when it is outside the operations a structured regenerate leaves out (`membership.excluding`), when it was written at or before the read's position (`through_position`), and, for `canon_as_recorded`, when it was recorded by the record-time and in the timeline then (`active_as_of`). A version can have more than one closer: one truncated away and a later one active, or a supersede and its remainders. `superseded_by` holds only the first, and an erasure can delete a closer's row. The owner's decision (2026-10-20) was a stored marker, done in M10 (NFR-PERF-1 headroom, FR-BITEMP-1..5 unchanged).
+**Decision:** Applied by #471 (migration 0152).
+- `facts.closed_by` (`char(26)[]`, default `{}`) is the inverse of `supersedes`. It lists every row whose `supersedes` names the version, in id order within a write. The writer (`canon.facts._write`, the only one in play) appends the new version's id and its remainders' ids to each version it closes, in the same `UPDATE` and transaction that set `tx_to` and `superseded_by`.
+- A read's closing test is `EXISTS (facts closer WHERE closer.id = ANY(f.closed_by) AND closer.story_id = f.story_id AND …)`, with the same membership, `excluding`, position and record-time conditions on the closer row as before. An open version has an empty array and costs no lookup. A closed one costs one primary-key lookup per closer, never a containment probe. Write-path reads (`_load`, `_current_overlapping`) use the same test.
+- Nothing about the closer is copied onto the closed version, so nothing else needs maintaining. A truncation, untruncation, swap or regenerate flips the closer's membership, and the read sees the flip on the closer row. `excluding` and record-time are tested there too. An erasure that deletes a closer leaves its id in `closed_by`. No row has that id, so the lookup finds nothing, as the anti-join found no row. ULIDs are never reused. An erasure that deletes the closed version takes its marker with it.
+- A story bundle does not carry `closed_by` (`COLUMNS_NOT_EXPORTED`, so the published bundle schema is unchanged). The import rebuilds it from the imported rows' `supersedes` (`canon.facts.rebuild_closers`), so bundles from before 0152 import correctly too.
+- A fork maps `closed_by` through its id map as it maps `supersedes`. A closer it does not copy (written after the fork point) drops out, so the version reads open in the fork, as before.
+- The append-only guard (`epistrel_facts_append_only`) and `MUTABLE_FACT_COLUMNS` admit `closed_by`, but only growing (`NEW.closed_by @> OLD.closed_by`). An id once stored stays, the erased ones included, as `supersedes` and `superseded_by` keep erased ids today.
+- Migration 0152 adds the column, replaces the guard, and backfills every version's `closed_by` from `supersedes` (ordered by the closer's `tx_from` and id). It drops `ix_facts_supersedes`, since no read or write searches `supersedes` by containment any more. A fork maps it row by row with `unnest`, and `supersedes` stays as the record of what each row closed. The downgrade restores 0060's guard and the index and drops the column.
+**Alternatives considered:** Reusing `superseded_by` cannot express a second closer. A version whose first closer was truncated away and which a later row closed again would read open. A `closed_turn`/`closed_tx` copy of the closer's coordinates on the version would have to be rewritten on every membership flip, fork and erasure, and still could not say which of several closers is active at a position. Batching `canon_context`'s subjects into one statement saves round trips but not probes. A separate closers table would be a new table for what one array column holds.
+**Consequences:**
+- Canon reads cost a primary-key lookup per closer of a candidate row, and nothing for an open one. `tests/integration/test_canon_closing_marker.py::test_canon_context_plan_has_no_supersedes_probe` holds `canon_context`'s plan on a few hundred versions of one subject free of `supersedes`.
+- The answers are unchanged. `test_bitemp__closing_marker` (part `M4`, FR-BITEMP-1..5) keeps the old anti-join as an oracle and checks every read kind against it at every narrative position and record-time, under commits, supersedes, truncations, regenerations, erasures, forks and excluded operations. It also checks after every step that `closed_by` is exactly the inverse of `supersedes` over the existing rows, with only erased ids besides. `test_bitemp__reads_find_closers_by_key` checks that the read functions' SQL has no `supersedes` containment. `tests/integration/test_migrations.py::test_facts_closing_marker_backfill` checks the backfill against the anti-join.
+- Every write that closes versions costs one more array append on each, which is the `UPDATE` it already ran. The GIN index's maintenance on every insert is gone.
+- A new writer of `facts` rows with a non-empty `supersedes` must append to the closed versions' `closed_by` in its transaction, or the versions it closes read open. `_write` writes them in play and the bundle import rebuilds them (`tests/integration/test_canon_closing_marker.py::test_rebuild_closers_sets_an_imported_story_s_markers`), and the property test guards the first.
 
 ---
 

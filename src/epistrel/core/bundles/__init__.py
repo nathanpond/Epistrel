@@ -184,8 +184,11 @@ def catalog_tables() -> list[Table]:
 
 COLUMNS_NOT_EXPORTED: dict[str, frozenset[str]] = {
     "memories": frozenset({"embedding", "embedding_model_version", "search"}),
+    "facts": frozenset({"closed_by"}),
 }
-"""#704: vectors and generated columns never travel (an import re-embeds and regenerates)."""
+"""#704: vectors and generated columns never travel (an import re-embeds and regenerates).
+#471: a fact's ``closed_by`` is the inverse of ``supersedes``, rebuilt by the import
+(``canon.facts.rebuild_closers``, ADR-189)."""
 
 
 def _exportable(table: Table, row: Any) -> dict[str, Any]:

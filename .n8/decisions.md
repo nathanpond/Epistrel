@@ -14243,3 +14243,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the local gate ran test_i_29_m9 (155 passed) and test_i_31_m9, C-02, C-03, test_openapi_declared, test_route_guard, test_operations_import and C-27 (44 passed). These are the modules that register purposes or read the changed documents.
   **Why:** the change is in the save-time scan and in description text.
   **Issue:** #858
+- **Decision:** `NotQueued` after `finish` is accepted as designed, and only the test changed. P2 can read A as its head before P1's `fail_item` commits and call `acquire` after it. The queue row is then gone, so `acquire(newcomer=False)` raises `NotQueued(A)` with the slot left free, and the drainer reads its head again. The spec is #329's docstrings: `acquire` (core/turn_gate.py:272-278) and `NotQueued`'s class docstring (:331-333), with queue_drainer.py:114-117.
+  **Why:** planner line. docs/02:160 and FR-CONC-5 only require each queued turn to start after the previous one ended, and `others == []` checks that.
+  **Issue:** #816
+- **Decision:** the scenario moved into the helper `_second_drainer(..., force)`. `test_a_second_drainer_waits_for_a_running_head_the_erasure_reached` (unforced) and the new `test_a_second_drainer_retries_a_running_head_after_it_failed` (forced) both call it, and both apply `_held_then_not_queued`. That check requires every observation before `finish` to be `Held`, every one after it to be `Held` or `NotQueued`, and all of them to name A. The forced test also requires at least one `NotQueued` after `finish`, with `exc.operation_id == A`. Neither test carries a part marker, like the rest of the module.
+  **Why:** planner line (a second forced test beside the unforced one). With one helper, the two tests cannot drift apart.
+  **Issue:** #816
+- **Decision:** the forced run parks P2 inside `watched_acquire`, before `real_acquire`, on the first call after an event is armed. The test waits for P2 to park, then sets `finish`. The wrapped `fail_item` sets the release event after the real `fail_item` returns (in a `finally`, so a failing `fail_item` cannot hang P2).
+  **Why:** P2 is parked only after it has read A as its head, and P1 cannot reach `fail_item` before `finish`. So the order "head read, then `fail_item` commits, then `acquire`" holds without any sleep.
+  **Issue:** #816
+- **Decision:** the stale "docs/02 turn gate section" reference appears only in the plan's routing, not in the tree. The new helper docstring cites docs/02:160 (per-story turn concurrency) and FR-CONC-5 instead. The planner's turn_gate.py line numbers still hold: :272-278, :331-333, and :748-760 for `fail_item`. The queued-status check is at :302-311, not :309-319.
+  **Why:** the stale reference was to be corrected as the plan says, and there was no in-tree copy to edit.
+  **Issue:** #816
+- **Decision:** the mutant is an out-of-tree plugin that replaces `turn_gate._queued_status` with a function that always returns `queued`, which removes the `newcomer=False` check's effect. Under the mutant the forced test fails at `others == []` (P2 ran A). The unforced test still passes, because it reaches the window only by chance.
+  **Why:** `_queued_status` has one caller, the `newcomer=False` branch, so replacing it drops exactly that check.
+  **Issue:** #816
+- **Decision:** stability was checked with a shell loop (no pytest-repeat). The whole module ran 200 consecutive times: 200 of 200 runs exited 0 with "9 passed", in 1592 s. Fail-first: under the forced interleaving, the old all-`Held` assertion failed with CI's shape, `AssertionError: [Held(...), Held(...), NotQueued('operation … is no longer queued')]`. No `src`/`tools` file changed, so the local gate is this module plus the static script.
+  **Why:** the AC asks for 200 consecutive runs, and the brief's gate step (b) has no changed source module to cover.
+  **Issue:** #816

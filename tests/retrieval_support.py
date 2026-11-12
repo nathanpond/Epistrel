@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.core import embeddings
 from epistrel.core.enums import MemoryKind, RetrievalTier
 from epistrel.core.membership import insert_derived
+from epistrel.core.memory import story_partitions
 from epistrel.core.propositions import store
 from epistrel.core.propositions.model import Interval, Proposition
 from epistrel.core.propositions.vocabulary import CORE_BY_NAME
@@ -348,6 +349,41 @@ async def uses_index(db: AsyncEngine, plan: str, index: str) -> bool:
     return any(re.search(rf"\b{re.escape(name)}\b", plan) for name in await index_names(db, index))
 
 
+async def own_index(db: AsyncEngine, index: str, story_id: str) -> str:
+    """The index of ``story_id``'s partition attached to ``index`` (#867)."""
+    async with db.connect() as conn:
+        found = await conn.scalar(
+            text(
+                "SELECT c.relname FROM pg_partition_tree(CAST(:i AS regclass)) t "
+                "JOIN pg_index x ON x.indexrelid = t.relid "
+                "JOIN pg_class c ON c.oid = t.relid "
+                "JOIN pg_class p ON p.oid = x.indrelid "
+                "WHERE t.isleaf AND p.relname = :p"
+            ),
+            {"i": index, "p": story_partitions.partition_name(story_id)},
+        )
+    assert found is not None, (index, story_id)
+    return str(found)
+
+
+async def other_stories_in(db: AsyncEngine, plan: str, story_id: str) -> list[str]:
+    """The ``memories`` partitions other than ``story_id``'s, and their indexes, that ``plan``
+    names (whole names: a partition's own index names may share another's prefix; #867)."""
+    async with db.connect() as conn:
+        names = await conn.scalars(
+            text(
+                "SELECT c.relname FROM pg_partition_tree('memories'::regclass) t "
+                "JOIN pg_class c ON c.oid = t.relid WHERE t.isleaf AND c.relname <> :own "
+                "UNION ALL SELECT i.relname FROM pg_partition_tree('memories'::regclass) t "
+                "JOIN pg_class c ON c.oid = t.relid JOIN pg_index x ON x.indrelid = t.relid "
+                "JOIN pg_class i ON i.oid = x.indexrelid WHERE t.isleaf AND c.relname <> :own"
+            ),
+            {"own": story_partitions.partition_name(story_id)},
+        )
+        others = [str(n) for n in names]
+    return [n for n in others if re.search(rf"\b{re.escape(n)}\b", plan)]
+
+
 __all__ = [
     "DIMENSION",
     "MONTH_AGO",
@@ -360,6 +396,8 @@ __all__ = [
     "index_names",
     "memory",
     "operation_count",
+    "other_stories_in",
+    "own_index",
     "pin",
     "plan_of",
     "set_vectors",

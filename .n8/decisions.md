@@ -14006,3 +14006,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the generic-plan test asserts `plan_cache_mode = force_custom_plan` on a pooled connection, and that no prepared hot statement was planned generically. A mutant that sets `plan_cache_mode=auto` fails it on the mode. With three partitions, Postgres still chose custom plans under `auto`, so the mode assertion is the one that catches the mutant.
   **Why:** the cost-based choice between custom and generic plans depends on the partition count, so the plan counts alone cannot show the setting is in force.
   **Issue:** #866
+- **Decision:** #784's Rule 3 edit left `test_vector_arm_finds_sole_vector_past_scan_cap` covering another story's 1,000 distinct vectors at the lowered `CAP`, sole vector found. That cross-story check is extended into the new `test_a_story_s_only_vector_is_found_beside_identical_vectors`, which runs at both `CAP` and the engine's `HNSW_MAX_SCAN_TUPLES` against identical vectors (the 5,000-turn `long_story` plus another story's 1,000 `NEAR`). The old test is then rewritten in-story per AC4, so the two do not duplicate each other.
+  **Why:** AC4 moves the old test inside one story, which would otherwise drop the cross-story check at a lowered cap.
+  **Issue:** #867
+- **Decision:** the rewritten `test_vector_arm_finds_sole_vector_past_scan_cap` quarantines the story's own 1,000 distinct crowd vectors, so the vector arm's filter discards them. At `CAP` the sole vector is missed, and at the engine's constant it is found. The test is kept, not deleted.
+  **Why:** without a filter, an in-story crowd nearer the query is the correct top `k`, and the sole vector could never be a miss. A filtered crowd is what the cap still bounds inside one graph, as the `story_id` filter once was on the global index.
+  **Issue:** #867
+- **Decision:** the new sole-vector test calls `search.vector_search` under the pipeline's three `SET LOCAL`s (`ef_search` at `DEFAULT_HNSW_EF_SEARCH`, `relaxed_order`, `max_scan_tuples`) with `k = 50`, and also runs `pipeline.retrieve` for the arms. It runs on the module's database, after the `long_story` fixture.
+  **Why:** AC1 names both the search and the pipeline, and the module's database is where #706's flake happened.
+  **Issue:** #867
+- **Decision:** on 7b476ab's code (a `git archive` export in the scratchpad with its own venv), the new test fails at the engine's cap with `assert ([], {}) == (['01M77RN4EY134AVTENCPM2K5BW'], {...: ('vector',)})`. It reproduces at CI scale, so no larger sizing is needed.
+  **Why:** the AC asks for the pre-#784 run to be quoted.
+  **Issue:** #867
+- **Decision:** the plan helpers are `retrieval_support.own_index` (the story's partition index attached to a parent index, through `pg_partition_tree`) and `other_stories_in` (other partitions' tables and indexes a plan names). `test_retrieval_cost_is_fixed_and_indexed` checks every `memories` read against `other_stories_in` and requires `Index Scan using <own HNSW index>`. Its statement count assertion is unchanged.
+  **Why:** `check-lexicon` refuses "partition" in the body of the cost test's M4 part, so the helper's name avoids it, as #866's P-01 did.
+  **Issue:** #867
+- **Decision:** the retype test (`test_a_dimension_change_reindexes_every_story_s_partition`) calls `embeddings.retype` directly on a database of two stories with vectors. It then also makes a third story and checks every leaf of `pg_partition_tree('memories')` for a `vector(8)` column and an attached `hnsw` index. It sits in `test_retrieval.py` with no part marker.
+  **Why:** C-05 is an M4 part, where "partition" is refused, and the story's artifacts name `test_retrieval.py`.
+  **Issue:** #867
+- **Decision:** no production guard is added for a story's own thousands of identical vectors (#784's option 2, declined). `HNSW_MAX_SCAN_TUPLES`'s docstring and docs/02 §6 step 3 state that remaining case and keep the value at 100,000.
+  **Why:** the planner line. It needs hundreds of word-for-word identical memories in one story, and the lexical arm still finds an exact-text match.
+  **Issue:** #867
+- **Decision:** stale references in #867's body were corrected while implementing. `test_retrieval_cost_is_fixed_and_indexed` was at test_retrieval.py:596 (the body says :594), `test_vector_arm_finds_sole_vector_past_scan_cap` at :533 (the body says :575), and `retype` at `core/embeddings.py:165-195` (the body says :164-193). docs/02:328 already said the scan is per story since #784, so only the remaining-case sentence was added.
+  **Why:** line numbers moved with #784 and #866.
+  **Issue:** #867

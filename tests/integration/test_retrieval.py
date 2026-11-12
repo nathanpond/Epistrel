@@ -21,6 +21,7 @@ size, and every ``memories`` read served by an index.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any
 
@@ -28,10 +29,13 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core import embeddings
 from epistrel.core.canon import facts as canon_facts
 from epistrel.core.context import RequestContext
+from epistrel.core.embeddings import HNSW_INDEX
 from epistrel.core.enums import MemoryKind, RecordProvenance, RetrievalTier
 from epistrel.core.ids import new_ulid
+from epistrel.core.memory import story_partitions
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.projections import structured
@@ -57,6 +61,8 @@ from epistrel.core.resolution.time import (
 from epistrel.core.resolution.types import MentionKind, ReasonCode, ResolvedTime, Uncertain
 from epistrel.core.retrieval import pipeline
 from epistrel.core.retrieval.assemble import ContextItem, Tier
+from epistrel.core.retrieval.search import vector_search
+from epistrel.core.settings_schema import DEFAULT_HNSW_EF_SEARCH
 from tests import canon_support as c
 from tests import retrieval_support as r
 from tests.auth_support import bearer
@@ -500,17 +506,79 @@ async def test_equal_scores_rank_by_story_position_not_id(scratch: Scratch) -> N
 CAP = 100
 """The lowered ``hnsw.max_scan_tuples`` of #706's repro (above ``ef_search``'s 40)."""
 CROWD = 1_000
-"""Another story's memories planted nearer the query than the sole vector: more than ``CAP``,
-fewer than the engine's ``HNSW_MAX_SCAN_TUPLES``."""
+"""Memories planted nearer the query than the sole vector: more than ``CAP``, fewer than the
+engine's ``HNSW_MAX_SCAN_TUPLES``."""
 ASIDE = (-0.6, 0.8, 0.0, 0.0)
 """The sole vector: cosine distance 1.6 from ``Q_VECTOR``, on the far side of the space from
 the crowd (every crowd vector is under 0.03), so the scan reaches it only past the crowd."""
 
 
+async def _vector_hits(
+    db: AsyncEngine, story_id: str, *, cap: int | None = None
+) -> tuple[list[str], dict[str, tuple[str, ...]]]:
+    """The story's ids from ``search.vector_search`` for ``Q_VECTOR`` (under the pipeline's
+    ``SET LOCAL``s, at ``cap`` or the engine's ``HNSW_MAX_SCAN_TUPLES``), and the pipeline's
+    memories that the vector arm found, with their arms."""
+    tuples = pipeline.HNSW_MAX_SCAN_TUPLES if cap is None else cap
+    async with db.begin() as conn:
+        await conn.execute(text(f"SET LOCAL hnsw.ef_search = {DEFAULT_HNSW_EF_SEARCH}"))
+        await conn.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+        await conn.execute(text(f"SET LOCAL hnsw.max_scan_tuples = {int(tuples)}"))
+        hits = await vector_search(conn, story_id, Q_VECTOR, version=r.VERSION, k=50)
+    found = await _retrieve(db, story_id, "the brass lantern", embed=_vector(), touch=False)
+    arms = {m.id: m.arms for m in found.memories if pipeline.ARM_VECTOR in m.arms}
+    return [h.memory_id for h in hits], arms
+
+
+async def test_a_story_s_only_vector_is_found_beside_identical_vectors(
+    scratch: Scratch, long_story: r.Story, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#706, #784, #867: in one database, the 5,000-turn fixture's identical ``NEAR`` vectors
+    and another story's 1,000 more sit nearer the query than a story's only vector. With one
+    HNSW graph for every story, thousands of identical vectors made a graph the iterative scan
+    could not cross, and the vector arm missed the sole vector at any cap (#706's flake). With
+    a partition per story (ADR-187), the search reads the story's own graph only: the sole
+    vector comes back from the vector arm alone, at the engine's ``HNSW_MAX_SCAN_TUPLES`` and at
+    ``CAP``, far below the crowd (#784's cross-story case of
+    ``test_vector_arm_finds_sole_vector_past_scan_cap``, moved here).
+
+    Complement: none of the crowd's vectors comes back, though every one is nearer the query;
+    a story with no stamped vector gets no vector hit."""
+    db = scratch.db
+    crowd = await r.build_story(db, fillers=CROWD)
+    await r.set_vectors(db, crowd.story_id, NEAR)
+    story = await r.build_story(db)
+    sole = await r.memory(
+        db, story, "song", "Ann hums an old song.", turn=900, importance=0.5, vector=ASIDE
+    )
+    await r.set_vectors(db, story.story_id, ASIDE)  # the story's pinned version
+    bare = await r.build_story(db)
+    await r.memory(db, bare, "song", "Ann hums an old song.", turn=900, importance=0.5)
+
+    for cap in (None, CAP):
+        if cap is not None:
+            monkeypatch.setattr(pipeline, "HNSW_MAX_SCAN_TUPLES", cap)
+        assert await _vector_hits(db, story.story_id, cap=cap) == ([sole], {sole: ("vector",)})
+        assert await _vector_hits(db, bare.story_id, cap=cap) == ([], {})
+    # The crowd is there, and nearer: its own story's search answers with it.
+    monkeypatch.undo()
+    nearest, _ = await _vector_hits(db, long_story.story_id)
+    assert len(nearest) == 50
+    async with db.connect() as conn:
+        theirs = set(
+            (
+                await conn.scalars(
+                    text("SELECT id FROM memories WHERE story_id = :s"), {"s": long_story.story_id}
+                )
+            ).all()
+        )
+    assert set(nearest) <= theirs
+
+
 async def _crowd(db: AsyncEngine, story_id: str) -> int:
     """Stamp each of the story's memories with its own vector near ``Q_VECTOR``, all distinct
     (thousands of identical vectors make a poor HNSW graph, one an iterative scan can fail to
-    cross at any cap)."""
+    cross at any cap), and quarantine it, so the vector arm's filter discards it."""
     async with db.begin() as conn:
         ids = (
             await conn.scalars(
@@ -523,7 +591,9 @@ async def _crowd(db: AsyncEngine, story_id: str) -> int:
             await conn.execute(
                 text(
                     "UPDATE memories SET embedding = CAST(:v AS vector), "
-                    "embedding_model_version = :version WHERE story_id = :s AND id = :id"
+                    "embedding_model_version = :version, quarantined_at = now(), "
+                    "quarantine_reason = 'crowd', quarantined_by = 'test' "
+                    "WHERE story_id = :s AND id = :id"
                 ),
                 {"v": str(vector), "version": r.VERSION, "s": story_id, "id": memory_id},
             )
@@ -533,17 +603,17 @@ async def _crowd(db: AsyncEngine, story_id: str) -> int:
 async def test_vector_arm_finds_sole_vector_past_scan_cap(
     pg_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#706: when the HNSW index was global, the iterative scan read every other story's nearer
-    vectors before it reached a story's own. In one database, another story plants ``CROWD``
-    vectors nearer the query than a story's only one. With the scan capped below the crowd
-    (``CAP``, as pgvector's default 20,000 is below a large deployment's), the vector arm
-    missed it. #784 (ADR-187): each story's memories are a partition of their own with its own
-    HNSW graph, so the crowd is never scanned and the sole vector comes back from the vector
-    arm alone at the cap below the crowd and at the engine's ``HNSW_MAX_SCAN_TUPLES``.
-    Complement: a story with no stamped vector gets no vector hit at either cap.
+    """#706, rewritten for #784's partitions (#867): the cap still bounds a scan inside one
+    story's graph. The story's own ``CROWD`` vectors sit nearer the query than its only
+    eligible one, and the vector arm's filter discards every one of them (quarantined, #145), as
+    the global index's ``story_id`` filter once discarded other stories'. With the scan capped
+    below the crowd (``CAP``) the vector arm misses the sole vector; at the engine's
+    ``HNSW_MAX_SCAN_TUPLES`` it comes back from the vector arm alone. Complement: a story with
+    no stamped vector gets no vector hit at either cap. Another story's crowd is
+    ``test_a_story_s_only_vector_is_found_beside_identical_vectors``.
 
-    The database is the test's own: the module's holds the 5,000-turn fixture's identical
-    vectors, and past those the scan misses the sole vector at any cap (#784)."""
+    The database is the test's own: the module's holds other stories' vectors, and the crowd's
+    vectors are distinct (identical ones would make a graph the scan may not cross at all)."""
     assert CAP < CROWD < pipeline.HNSW_MAX_SCAN_TUPLES
     async with embedding_db(pg_url, stub_embedding_dimension=r.DIMENSION) as own:
         await reset(own.db)
@@ -552,11 +622,10 @@ async def test_vector_arm_finds_sole_vector_past_scan_cap(
 
 
 async def _past_the_cap(db: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The crowd first: the index's first vector is its entry point, and a sole vector there
+    # The crowd first: the graph's first vector is its entry point, and a sole vector there
     # would be read before any other.
-    crowd = await r.build_story(db, fillers=CROWD)
-    assert await _crowd(db, crowd.story_id) >= CROWD
-    story = await r.build_story(db)
+    story = await r.build_story(db, fillers=CROWD)
+    assert await _crowd(db, story.story_id) >= CROWD
     sole = await r.memory(
         db, story, "song", "Ann hums an old song.", turn=900, importance=0.5, vector=ASIDE
     )
@@ -564,17 +633,62 @@ async def _past_the_cap(db: AsyncEngine, monkeypatch: pytest.MonkeyPatch) -> Non
     bare = await r.build_story(db)
     await r.memory(db, bare, "song", "Ann hums an old song.", turn=900, importance=0.5)
 
-    async def vector_hits(s: r.Story) -> dict[str, tuple[str, ...]]:
-        found = await _retrieve(db, s.story_id, "the brass lantern", embed=_vector(), touch=False)
-        return {m.id: m.arms for m in found.memories if "vector" in m.arms}
-
     monkeypatch.setattr(pipeline, "HNSW_MAX_SCAN_TUPLES", CAP)
-    # #784: the crowd is in another story's partition, so the capped scan never reads it.
-    assert await vector_hits(story) == {sole: ("vector",)}
-    assert await vector_hits(bare) == {}
+    assert await _vector_hits(db, story.story_id, cap=CAP) == ([], {})  # the repro bites
+    assert await _vector_hits(db, bare.story_id, cap=CAP) == ([], {})
     monkeypatch.undo()
-    assert await vector_hits(story) == {sole: ("vector",)}
-    assert await vector_hits(bare) == {}
+    assert await _vector_hits(db, story.story_id) == ([sole], {sole: ("vector",)})
+    assert await _vector_hits(db, bare.story_id) == ([], {})
+
+
+async def test_a_dimension_change_reindexes_every_story_s_partition(pg_url: str) -> None:
+    """#867: ``embeddings.retype`` to another dimension on a database of several stories leaves
+    every story's partition with its column at the new dimension and an HNSW index of its own
+    attached to ``ix_memories_embedding_hnsw`` (``pg_partition_tree``), and a story made after
+    the change gets the same."""
+    async with embedding_db(pg_url, stub_embedding_dimension=r.DIMENSION) as own:
+        db = own.db
+        await reset(db)
+        await r.pin(db)
+        first, second = await r.build_story(db), await r.build_story(db)
+        for s in (first, second):
+            await r.memory(db, s, "song", "Ann hums an old song.", turn=900, vector=ASIDE)
+        async with db.begin() as conn:
+            await embeddings.retype(conn, 2 * r.DIMENSION)
+        third = await r.build_story(db)
+        await r.memory(db, third, "song", "Ann hums an old song.", turn=900)
+
+        async with db.connect() as conn:
+            partitions = (
+                await conn.execute(
+                    text(
+                        "SELECT c.relname AS name, format_type(a.atttypid, a.atttypmod) AS type, "
+                        "(SELECT i.relname FROM pg_partition_tree(CAST(:i AS regclass)) t "
+                        " JOIN pg_index x ON x.indexrelid = t.relid "
+                        " JOIN pg_class i ON i.oid = t.relid "
+                        " WHERE t.isleaf AND x.indrelid = c.oid) AS hnsw, "
+                        "(SELECT am.amname FROM pg_partition_tree(CAST(:i AS regclass)) t "
+                        " JOIN pg_index x ON x.indexrelid = t.relid "
+                        " JOIN pg_class i ON i.oid = t.relid JOIN pg_am am ON am.oid = i.relam "
+                        " WHERE t.isleaf AND x.indrelid = c.oid) AS method "
+                        "FROM pg_partition_tree('memories'::regclass) p "
+                        "JOIN pg_class c ON c.oid = p.relid "
+                        "JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'embedding' "
+                        "WHERE p.isleaf"
+                    ),
+                    {"i": HNSW_INDEX},
+                )
+            ).all()
+        by_name = {p.name: p for p in partitions}
+        for s in (first, second, third):
+            assert story_partitions.partition_name(s.story_id) in by_name
+        assert len(partitions) >= 3
+        for p in partitions:
+            assert p.type == f"vector({2 * r.DIMENSION})", p
+            assert p.hnsw is not None, p
+            assert p.method == "hnsw", p
+        stored = await vectors(db, first.story_id)
+        assert all(v.vector is None for v in stored.values())  # the old dimension's, nulled
 
 
 async def test_a_lite_story_retrieves_nothing(scratch: Scratch) -> None:
@@ -599,7 +713,9 @@ async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story:
     cost follows what it resolves, not the story's size), and every statement that reads
     ``memories`` is served by an index (``EXPLAIN`` with table scans priced out shows no "Seq
     Scan" of ``memories``; the vector arm reads the HNSW index), and the GIN indexes on
-    ``search`` and ``participants`` serve the lexical, alias and occasion arms' operators."""
+    ``search`` and ``participants`` serve the lexical, alias and occasion arms' operators.
+    #867: every read stays on the story's own memories table (ADR-187), and the vector arm
+    scans that table's own HNSW index."""
     db = scratch.db
     small = await r.build_story(db)
     await _plant_occasion(db, small)
@@ -617,7 +733,10 @@ async def test_retrieval_cost_is_fixed_and_indexed(scratch: Scratch, long_story:
     plans = [await r.plan_of(db, sql, params) for sql, params in reads]
     for (sql, _), plan in zip(reads, plans, strict=True):
         assert "Seq Scan on memories" not in plan, (sql, plan)
-    assert await r.uses_index(db, "\n".join(plans), "ix_memories_embedding_hnsw")
+        # #867: each read stays on the story's own memories table (ADR-187).
+        assert await r.other_stories_in(db, plan, long_story.story_id) == [], (sql, plan)
+    own = await r.own_index(db, HNSW_INDEX, long_story.story_id)
+    assert re.search(rf"Index Scan using {re.escape(own)}\b", "\n".join(plans)), plans
     # The lexical, alias and occasion arms' operators are served by their GIN indexes (on this
     # small table the planner reaches the story's rows by its b-tree first; at 50k memories a
     # story the GIN indexes are what narrows them).
@@ -1231,7 +1350,8 @@ async def test_the_vector_arm_runs_on_its_index(
     """#618: the vector statement runs with sorts priced out for itself alone, so the
     planner's choice under that setting (and no other) reads ``ix_memories_embedding_hnsw``
     in distance order on the 5,000-turn fixture; the setting is restored for the rest of the
-    retrieval's transaction."""
+    retrieval's transaction. #867: the index scanned is the story's own partition's, and the
+    plan names no other partition."""
     import importlib
 
     search = importlib.import_module("epistrel.core.retrieval.search")
@@ -1258,4 +1378,6 @@ async def test_the_vector_arm_runs_on_its_index(
         await cursor.execute("EXPLAIN " + vector_sql, params)
         plan = "\n".join(str(row[0]) for row in await cursor.fetchall())
         await conn.rollback()
-    assert await r.uses_index(db, plan, "ix_memories_embedding_hnsw"), plan
+    own = await r.own_index(db, HNSW_INDEX, long_story.story_id)
+    assert re.search(rf"Index Scan using {re.escape(own)}\b", plan), plan
+    assert await r.other_stories_in(db, plan, long_story.story_id) == [], plan

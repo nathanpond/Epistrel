@@ -15,7 +15,9 @@ reference host (``EPISTREL_TEST_PERF_HOST_CLASS=reference``; ADR-190, #793). On 
 it is recorded and reported, not gated. An error, a degraded or a mostly empty result fails on
 either. The test is ``perf_weekly``: deselected unless ``-m`` names the marker, it runs in the
 weekly ``perf.yml`` on the GitHub-hosted runner, labelled as such (host class ``other``). Its
-figures go to ``build/perf/p_01.json`` and from there to ``docs/perf.md``.
+figures go to ``build/perf/p_01.json`` and from there to ``docs/perf.md``, with the owner's
+200 ms target for that runner (``P01_RUNNER_TARGET_MS``, #868) as a note row beside the budget,
+reported against the last attempt's p95 and never gated.
 
 ``test_p_01__smoke`` is PR CI's ``perf_smoke`` run. It runs the same plumbing on the 1k fixture
 with no timing bound, because a timing bound in the PR gate fails under host load (#430,
@@ -70,6 +72,10 @@ SMOKE_WARMUP = 5
 BUDGET_MS = 150.0
 """NFR-PERF-1."""
 SLOWED_S = 0.200
+P01_RUNNER_TARGET_MS = 200.0
+"""#868: the owner's target for the total p95 on the GitHub-hosted runner (the run's last
+attempt, ``attempt_p95_ms[-1]``). Reported beside NFR-PERF-1's budget as a note row in
+docs/perf.md (``epistrel.tools.perf_docs``), never gated: the budget stays 150 ms (ADR-190)."""
 
 
 def _queries(run: ScaleRun, n: int) -> list[str]:
@@ -81,6 +87,7 @@ async def _summary(run: ScaleRun, found: Retrievals, attempts: Sequence[float]) 
         "test": "P-01",
         "requirement": "NFR-PERF-1",
         "budget_p95_ms": BUDGET_MS,
+        "runner_target_p95_ms": P01_RUNNER_TARGET_MS,
         "within_budget": budget_verdict(attempts[-1], BUDGET_MS, host_class()).within,
         "queries": len(found.timings),
         "memories": run.fixture.story.memories,
@@ -132,8 +139,8 @@ async def test_p_01__smoke(scale_1k: ScaleRun) -> None:
     """PR CI's subset: 50 retrievals over the 1k fixture through the same measurement and
     summary, with no timing bound.
 
-    Complement asserted: the summary carries every stage's percentiles and the host it ran on,
-    and nearest-rank p50 ≤ p95 ≤ p99 ≤ max."""
+    Complement asserted: the summary carries every stage's percentiles, the host it ran on and
+    #868's runner target, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max."""
     found = await measure_retrieval(
         scale_1k, _queries(scale_1k, SMOKE_QUERIES), warmup=SMOKE_WARMUP
     )
@@ -141,6 +148,7 @@ async def test_p_01__smoke(scale_1k: ScaleRun) -> None:
     summary = await _summary(scale_1k, found, [percentiles(found.totals)["p95"]])
     record("p_01_smoke", summary)
     assert set(summary["stages_ms"]) == {*STAGES, "total"}
+    assert summary["runner_target_p95_ms"] == P01_RUNNER_TARGET_MS  # #868's note row
     total = summary["total_ms"]
     assert total["p50"] <= total["p95"] <= total["p99"] <= total["max"]
     assert summary["host"]["pgvector"]

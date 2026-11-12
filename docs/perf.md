@@ -9,6 +9,7 @@
 | Test | Requirement | Budget | Measured p95 | Result | Host |
 |---|---|---|---|---|---|
 | P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 290.3 ms | **over budget** | github-runner (not the reference host) |
+| P-01 retrieval, runner target (note, #868) | not a requirement | p95 ≤ 200 ms on github-runner | 290.3 ms | **over target** | github-runner (not the reference host) |
 | P-02 deterministic verify | NFR-PERF-2 | p95 ≤ 50 ms | 18.7 ms | within budget | github-runner (not the reference host) |
 | P-02 could_have_known | NFR-PERF-2 | p95 ≤ 50 ms | 24.4 ms | within budget | github-runner (not the reference host) |
 

@@ -112,6 +112,41 @@ def test_the_pages_carry_the_host_and_the_verdicts(tmp_path: Path) -> None:
     assert "`maintenance_work_mem` 1GB" in capacity_md
 
 
+def test_p_01_runner_target_is_a_note_row_under_the_budget(tmp_path: Path) -> None:
+    """#868: P-01's result carries the owner's runner target (``runner_target_p95_ms``), and the
+    budgets table shows it as a note row right under NFR-PERF-1's 150 ms row, measured by the
+    run's last attempt (``attempt_p95_ms[-1]``), not its first.
+
+    Complement asserted: a last attempt over the target reads **over target**, the 150 ms
+    budget row is unchanged beside it, and a result without the key (from before #868) has no
+    note row."""
+    results = _results(tmp_path, p01=180.0)
+    p01 = json.loads((results / "p_01.json").read_text())
+    for attempts, verdict in (([260.0, 180.0], "within target"), ([180.0, 230.5], None)):
+        docs = tmp_path / f"docs-{attempts[-1]}"
+        docs.mkdir()
+        (results / "p_01.json").write_text(
+            json.dumps({**p01, "runner_target_p95_ms": 200.0, "attempt_p95_ms": attempts})
+        )
+        perf_docs.render(results, docs)
+        lines = (docs / "perf.md").read_text().splitlines()
+        budget = lines.index(
+            "| P-01 retrieval | NFR-PERF-1 | p95 ≤ 150 ms | 180.0 ms | **over budget** "
+            "| github-runner (not the reference host) |"
+        )
+        shown = verdict or "**over target**"
+        assert lines[budget + 1] == (
+            "| P-01 retrieval, runner target (note, #868) | not a requirement | "
+            f"p95 ≤ 200 ms on github-runner | {attempts[-1]:.1f} ms | {shown} "
+            "| github-runner (not the reference host) |"
+        )
+    (results / "p_01.json").write_text(json.dumps(p01))
+    docs = tmp_path / "docs-before"
+    docs.mkdir()
+    perf_docs.render(results, docs)
+    assert "runner target" not in (docs / "perf.md").read_text()
+
+
 def _rows(page: str) -> dict[str, str]:
     """capacity.md's rows by their memories cell, as ``Gated | Within`` cells."""
     rows = [

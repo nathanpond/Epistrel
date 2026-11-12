@@ -1381,3 +1381,63 @@ async def test_the_vector_arm_runs_on_its_index(
     own = await r.own_index(db, HNSW_INDEX, long_story.story_id)
     assert re.search(rf"Index Scan using {re.escape(own)}\b", plan), plan
     assert await r.other_stories_in(db, plan, long_story.story_id) == [], plan
+
+
+async def test_the_vector_arm_compiles_no_plan(
+    scratch: Scratch, long_story: r.Story, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#868: the vector statement runs with JIT off, for itself alone. Pricing sorts out (#618)
+    lifts its plan's cost far above ``jit_above_cost``, and on P-01's 50k fixture compiling
+    that plan took 85-130 ms of every retrieval's ~100 ms vector arm, for a 4 ms index scan.
+    The retrieval's transaction gets ``jit`` (and ``enable_sort``) back as they were.
+
+    Complement asserted: under the arm's own sort setting with JIT on, ``EXPLAIN ANALYZE`` of
+    the same statement shows a ``JIT:`` section (its cost does cross the threshold), and with
+    JIT off it shows none."""
+    import importlib
+
+    search = importlib.import_module("epistrel.core.retrieval.search")
+    db = scratch.db
+    seen: dict[str, str] = {}
+    original = search._nearest
+
+    async def nearest(conn: Any, *args: Any, **kwargs: Any) -> Any:
+        for name in ("jit", "enable_sort"):
+            seen[name] = str(await conn.scalar(text(f"SELECT current_setting('{name}')")))
+        return await original(conn, *args, **kwargs)
+
+    monkeypatch.setattr(search, "_nearest", nearest)
+    with r.statements(db) as statements:
+        async with db.begin() as conn:
+            await conn.execute(text("SET LOCAL jit = on"))
+            await pipeline.retrieve(
+                conn,
+                long_story.story_id,
+                pipeline.RetrievalQuery(QUERY),
+                embed=_vector(),
+                touch=False,
+            )
+            after = [
+                str(await conn.scalar(text(f"SELECT current_setting('{name}')")))
+                for name in ("jit", "enable_sort")
+            ]
+    assert seen == {"jit": "off", "enable_sort": "off"}
+    assert after == ["on", "on"]
+    (vector_sql, params) = next(
+        (sql, p) for sql, p in statements.reading("memories") if "<=>" in sql
+    )
+
+    async def plan(jit: str) -> str:
+        async with db.connect() as conn:
+            await conn.execute(text("SET enable_sort = off"))
+            await conn.execute(text("SET hnsw.iterative_scan = relaxed_order"))
+            await conn.execute(text(f"SET jit = {jit}"))
+            raw = await conn.get_raw_connection()
+            cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+            await cursor.execute("EXPLAIN (ANALYZE) " + vector_sql, params)
+            found = "\n".join(str(row[0]) for row in await cursor.fetchall())
+            await conn.rollback()
+        return found
+
+    assert "JIT:" in await plan("on")
+    assert "JIT:" not in await plan("off")

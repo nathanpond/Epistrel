@@ -97,8 +97,17 @@ async def vector_search(
         return []
     # #618: served by ``ix_memories_embedding_hnsw`` (the ordered ``LIMIT k`` step), never a scan
     # of the story's memories with a top-N sort: sorts are off for this statement alone.
-    prior = await conn.scalar(text("SELECT current_setting('enable_sort')"))
-    await conn.execute(text("SELECT set_config('enable_sort', 'off', true)"))
+    # #868: pricing sorts out puts the plan's cost (the outer re-sort's) far above
+    # ``jit_above_cost``, so every search compiled, inlined and optimized its plan with LLVM:
+    # about 85-130 ms for a 4 ms index scan. JIT is off for this statement too. It changes how
+    # the plan is executed, never the plan or its rows. Both settings go in the same two
+    # statements as before, transaction-local, their prior values restored.
+    prior = (
+        await conn.execute(text("SELECT current_setting('enable_sort'), current_setting('jit')"))
+    ).one()
+    await conn.execute(
+        text("SELECT set_config('enable_sort', 'off', true), set_config('jit', 'off', true)")
+    )
     try:
         return await _nearest(
             conn,
@@ -111,7 +120,10 @@ async def vector_search(
             scope=scope,
         )
     finally:
-        await conn.execute(text("SELECT set_config('enable_sort', :v, true)"), {"v": str(prior)})
+        await conn.execute(
+            text("SELECT set_config('enable_sort', :sort, true), set_config('jit', :jit, true)"),
+            {"sort": str(prior[0]), "jit": str(prior[1])},
+        )
 
 
 async def _nearest(

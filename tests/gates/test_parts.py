@@ -80,6 +80,61 @@ def test_later_requirement_is_a_finding() -> None:
     ]
 
 
+def test_undefined_requirement_is_a_finding() -> None:
+    """#98: a requirement docs/03 does not define is reported, whether a marker names it or a
+    docstring mentions it. Complement: ``test_valid_tree_collects_every_part`` (no finding on a
+    tree whose requirements are all defined and assigned)."""
+    summary, findings = _collect("tests_undefined")
+    prefix = "tests/gates/fixtures/tests_undefined/test_undefined.py::"
+    assert findings == [
+        f"undefined {prefix}test_i_95: FR-NOPE-1",
+        f"undefined {prefix}test_i_94: FR-NOPE-1",
+    ]
+    assert summary == [f"{prefix}test_i_95 2 FR-NOPE-1 marker"]
+
+
+def test_unassigned_requirement_is_a_finding() -> None:
+    """#98: a requirement docs/03 defines but no §22 row assigns (the second ``A`` requirement
+    of ``unassigned.md``) is reported on both paths; the marker's ``interim_until="M3"`` names a
+    §22 milestone later than its part, so it adds no finding of its own. (This docstring names
+    no requirement ID: check-parts reads this file too.)"""
+    summary, findings = _collect("tests_unassigned", FIXTURES / "unassigned.md")
+    prefix = "tests/gates/fixtures/tests_unassigned/test_unassigned.py::"
+    assert findings == [
+        f"unassigned {prefix}test_i_95: FR-A-2",
+        f"unassigned {prefix}test_i_94: FR-A-2",
+    ]
+    assert summary == [f"{prefix}test_i_95 2 FR-A-2 marker"]
+
+
+@pytest.mark.parametrize(
+    ("tree", "expected"),
+    [
+        (
+            "tests_interim_missing",
+            [
+                "bad interim_until tests/gates/fixtures/tests_interim_missing/"
+                "test_interim_missing.py::test_i_95: M99 is not a §22 milestone"
+            ],
+        ),
+        (
+            "tests_interim_not_later",
+            [
+                "bad interim_until tests/gates/fixtures/tests_interim_not_later/"
+                f"test_interim_not_later.py::{name}: {interim} is not later than M3"
+                for name, interim in (("test_i_95", "M3"), ("test_i_94", "M2"))
+            ],
+        ),
+    ],
+)
+def test_bad_interim_until_is_a_finding(tree: str, expected: list[str]) -> None:
+    """#98: ``interim_until`` (a marker argument only; a docstring part has none) must name a
+    §22 milestone later than its part's: a missing one, an equal one and an earlier one are
+    each reported."""
+    _, findings = _collect(tree)
+    assert findings == expected
+
+
 def test_docstring_ids_gate_from_the_latest_milestone() -> None:
     summary, findings = _collect("tests_docstring")
     assert findings == []
@@ -97,6 +152,9 @@ def test_docstring_ids_gate_from_the_latest_milestone() -> None:
         ("tests_nonliteral", "string literals"),
         ("tests_dup_ms", "two part markers"),
         ("tests_syntax", "syntax error"),
+        # #98: a malformed interim_until and a class-level marker are structural, not findings.
+        ("tests_interim_malformed", "milestone must look like M<n>, got 'soon'"),
+        ("tests_class_marker", "TestGrouped: class-level part markers are not supported"),
     ],
 )
 def test_structural_errors(tree: str, message: str) -> None:

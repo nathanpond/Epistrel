@@ -13881,3 +13881,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** Rule 3: `test_a_fork_retries_when_an_erasure_commits_under_it` asserts that both attempts copy into the same fork id (`calls == [fork_id, fork_id]`). It used to assert a fresh id per attempt.
   **Why:** the planner prescribes one fork id, generated before the snapshot retries, so its partition exists before the copy. The first attempt's rows still roll back.
   **Issue:** #784
+- **Decision:** the CI wait budget per run is 90 minutes: 1.5 × the 60-minute longest check on PR #856, the last merged milestone PR.
+  **Why:** n8SDLC 0.9.0 derives the budget (`reference/github.md` → *Waiting on CI*). It is above 30 minutes, so it is logged.
+  **Issue:** M10 (#10)

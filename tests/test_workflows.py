@@ -88,10 +88,15 @@ def test_publish_edge_never_cancels_and_reuses_the_gate() -> None:
     assert wf["jobs"]["publish"]["permissions"] == {"contents": "read", "packages": "write"}
 
 
+# #101: release.yml and rollback.yml share one literal group, so a rollback waits for a running
+# release and a release for a rollback; neither is ever cancelled mid-flight.
+PUBLISH_RELEASE = {"group": "publish-release", "cancel-in-progress": False}
+
+
 def test_release_triggers_only_on_v_tags_and_withholds_latest_by_flavor() -> None:
     wf = _workflow("release.yml")
     assert _on(wf) == {"push": {"tags": ["v*"]}}
-    assert wf["concurrency"]["cancel-in-progress"] is False
+    assert wf["concurrency"] == PUBLISH_RELEASE
     assert wf["jobs"]["ci"]["uses"] == "./.github/workflows/ci.yml"
     meta = next(s for s in _steps(wf, "publish") if "metadata-action" in str(s.get("uses")))
     assert "latest=auto" in meta["with"]["flavor"]
@@ -108,8 +113,29 @@ def test_rollback_is_dispatch_only_with_the_right_inputs() -> None:
     assert list(_on(wf)) == ["workflow_dispatch"]
     assert inputs["good_version"]["required"] is True
     assert inputs["bad_version"]["required"] is False
-    assert wf["concurrency"] == {"group": "release-latest", "cancel-in-progress": False}
+    assert wf["concurrency"] == PUBLISH_RELEASE
     assert wf["jobs"]["rollback"]["if"] == "github.ref == 'refs/heads/main'"
+
+
+def test_rollback_serialises_on_the_group_and_logs_what_it_changed() -> None:
+    """#101: the group, not a racy `gh run list` pre-check, keeps a rollback off a running release;
+    the tag table and the promote/demote and post-condition lines reach the job log as well as the
+    summary, so the API can audit them afterwards."""
+    wf = _workflow("rollback.yml")
+    assert wf["concurrency"] == _workflow("release.yml")["concurrency"] == PUBLISH_RELEASE
+    steps = _steps(wf, "rollback")
+    assert not any("gh run list" in s.get("run", "") for s in steps)
+    by_name = {s.get("name"): s.get("run", "") for s in steps}
+    for name in (
+        "Re-point floating tags",
+        "Promote the good release, demote the bad one",
+        "Post-condition",
+    ):
+        run = by_name[name]
+        writes = [line for line in run.splitlines() if "GITHUB_STEP_SUMMARY" in line]
+        assert writes, f"{name}: writes nothing to the summary"
+        assert all('tee -a "$GITHUB_STEP_SUMMARY"' in line for line in writes), name
+    assert "| tag | before | after |" in by_name["Re-point floating tags"]
 
 
 def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:

@@ -39,7 +39,9 @@ Versions are `0.x` until the engine is feature-complete; `-rc.N` is the only pre
    git switch main && git pull --ff-only
    git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
    ```
-   (`/n8-release` in the n8SDLC workflow does the same.) Only repository admins can create, move or
+   (`/n8-release` in the n8SDLC workflow does the same.) Push release tags one at a time, and wait
+   for each tag's `release.yml` run to start before pushing the next: GitHub keeps one pending run
+   per concurrency group (see Production rollback). Only repository admins can create, move or
    delete `v*` tags — the `release-tags` tag ruleset (`.github/rulesets/release-tags.json`, created
    with `gh api -X POST repos/nathanpond/Epistrel/rulesets --input .github/rulesets/release-tags.json`).
 3. `release.yml` validates the tag (must match `pyproject.toml`'s version, must be on `main`, an rc of
@@ -74,10 +76,19 @@ Afterwards:
   so do `1.2` and `1` when they pointed at the bad digest and `1.2.2` belongs to their line.
 - The Releases page shows `v1.2.2` badged **Latest** and `v1.2.3` badged **Pre-release** with a
   "Rolled back on <date>; use v1.2.2." line appended to its notes.
-- The run's summary lists every tag with its before/after digest and which steps ran.
+- The run's summary and its job log list every tag with its before/after digest, the promote and
+  demote lines, and the post-condition line.
 
 The run refuses, changing nothing, when the good version's image tag or release does not exist, when
-the inputs are not bare `X.Y.Z`, when `good_version == bad_version`, or while a `release.yml` run is
-in progress. Deleting the bad release and its tags instead is a manual choice (`gh release delete`,
-then remove the image tags in the package settings); demotion keeps the history honest. Anyone who
-already pulled `latest` keeps the bad image until they pull again.
+the inputs are not bare `X.Y.Z`, or when `good_version == bad_version`.
+
+`rollback.yml` and `release.yml` share the concurrency group `publish-release`, which never cancels
+a run in progress. A rollback dispatched while a release runs waits for the release to finish, and a
+release waits for a running rollback. GitHub keeps at most one *pending* run per group, though: a
+third run queued behind a pending one cancels the pending one. So dispatch a rollback only when no
+release run is waiting to start (the Actions tab shows it as queued or pending), or the rollback
+cancels that release; and push no tag while a rollback is waiting.
+
+Deleting the bad release and its tags instead is a manual choice (`gh release delete`, then remove
+the image tags in the package settings); demotion keeps the history honest. Anyone who already
+pulled `latest` keeps the bad image until they pull again.

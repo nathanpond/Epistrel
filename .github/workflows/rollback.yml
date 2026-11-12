@@ -1,5 +1,7 @@
 # Production rollback without a rebuild: re-point `latest` (and the floating tags that resolve to the
-# bad digest) at a known-good version and demote the bad GitHub release to a pre-release.
+# bad digest) at a known-good version and demote the bad GitHub release to a pre-release. It shares
+# the `publish-release` concurrency group with release.yml, so it waits for a running release and a
+# release waits for it. The tag table and every change are written to the job log and the summary.
 # See RELEASING.md → Production rollback.
 name: Rollback
 
@@ -19,8 +21,10 @@ on:
 permissions:
   contents: read
 
+# One group with release.yml (see the header). GitHub keeps one *pending* run per group; a third run
+# cancels the pending one, so dispatch only when no release is queued.
 concurrency:
-  group: release-latest
+  group: publish-release
   cancel-in-progress: false
 
 env:
@@ -49,12 +53,6 @@ jobs:
             printf '%s' "$BAD" | grep -Eq "$re" || { echo "::error::bad_version must be bare X.Y.Z"; exit 1; }
             [ "$GOOD" != "$BAD" ] || { echo "::error::good_version and bad_version are the same"; exit 1; }
           fi
-      - name: Refuse while a release is running
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          n=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --status in_progress --json databaseId --jq length)
-          [ "$n" = "0" ] || { echo "::error::a release run is in progress; retry when it finishes"; exit 1; }
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -108,7 +106,8 @@ jobs:
             fi
           done
           echo "moved=$moved" >> "$GITHUB_OUTPUT"
-          printf '## Image tags\n\n| tag | before | after |\n|---|---|---|\n%b' "$report" >> "$GITHUB_STEP_SUMMARY"
+          # tee: the table is in the job log too, so it can be audited through the API afterwards.
+          printf '## Image tags\n\n| tag | before | after |\n|---|---|---|\n%b' "$report" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Promote the good release, demote the bad one
         env:
           GH_TOKEN: ${{ github.token }}
@@ -117,13 +116,13 @@ jobs:
         run: |
           set -eu
           gh release edit "v$GOOD" --repo "$GITHUB_REPOSITORY" --latest --prerelease=false
-          echo "- v$GOOD marked latest" >> "$GITHUB_STEP_SUMMARY"
+          echo "- v$GOOD marked latest" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ -n "$BAD" ]; then
             note="Rolled back on $(date -u +%Y-%m-%d); use v$GOOD."
             body=$(gh release view "v$BAD" --repo "$GITHUB_REPOSITORY" --json body --jq .body)
             printf '%s' "$body" | grep -qF "Rolled back on" || body=$(printf '%s\n\n%s\n' "$body" "$note")
             gh release edit "v$BAD" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --notes "$body"
-            echo "- v$BAD demoted to pre-release" >> "$GITHUB_STEP_SUMMARY"
+            echo "- v$BAD demoted to pre-release" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
       - name: Post-condition
         env:
@@ -135,4 +134,4 @@ jobs:
             now=$(docker buildx imagetools inspect "$IMAGE_LC:$tag" --format '{{.Manifest.Digest}}')
             [ "$now" = "$GOOD_DIGEST" ] || { echo "::error::$IMAGE_LC:$tag resolves to $now, expected $GOOD_DIGEST"; exit 1; }
           done
-          echo "- every re-pointed tag resolves to $GOOD_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          echo "- every re-pointed tag resolves to $GOOD_DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"

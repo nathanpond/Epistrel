@@ -11,8 +11,11 @@ on:
 permissions:
   contents: read
 
+# One group with rollback.yml: a release and a rollback never run at the same time, and neither is
+# cancelled mid-flight. GitHub keeps one *pending* run per group; a third run cancels the pending
+# one, so tags are pushed one at a time (RELEASING.md → Cutting a release).
 concurrency:
-  group: release-${{ github.ref }}
+  group: publish-release
   cancel-in-progress: false
 
 env:

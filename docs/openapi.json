@@ -66161,7 +66161,27 @@
                 }
               }
             },
-            "description": "Not found: `not_found`."
+            "description": "Not found: `job_not_found`, `not_found`."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Conflict; nothing was written: `export_not_ready`."
+          },
+          "410": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Gone; nothing was written: `export_expired`."
           },
           "422": {
             "content": {
@@ -66350,6 +66370,16 @@
             },
             "description": "Conflict; nothing was written: `idempotency_conflict`."
           },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too large; nothing was written: `bundle_too_large`."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -66358,7 +66388,7 @@
                 }
               }
             },
-            "description": "Invalid request; nothing was written: `validation_error`."
+            "description": "Invalid request; nothing was written: `corrupt_bundle`, `rating_required`, `unsupported_format_version`, `validation_error`."
           },
           "503": {
             "content": {

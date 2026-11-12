@@ -756,6 +756,54 @@ async def test_i_10__m7_import_bad_bundles(
             await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
 
 
+@pytest.mark.usefixtures("drained_embedding_jobs")
+@pytest.mark.part("M7", "FR-STORE-7")
+async def test_i_10__m7_import_upload_cap(
+    settings: Settings, engine: AsyncEngine, tmp_path: Any
+) -> None:
+    """#786: the upload itself is cut at ``bundle_max_uncompressed_bytes``, before anything is
+    read or created. At its 1 MiB floor, an upload of one byte more (sent as it is, nothing
+    compressed on the wire) is 413 ``bundle_too_large`` naming the limit and the cap; a clean
+    bundle under it is accepted (202)."""
+    from sqlalchemy import text
+
+    from epistrel.core.bundles import importing
+
+    cap = 1024 * 1024
+    async with rest(settings, engine) as client:
+        story = (await create(client, story_body("Wren", "Ada")))["story_id"]
+        await play_turn(engine, story, "Line.", principal="p-cap")
+        clean = await _exported(client, engine, story, tmp_path)
+        assert len(clean) < cap
+        operator = {**WRITE, "X-Epistrel-Principal": "p-operator"}
+        lowered = await client.put(
+            "/admin/settings", json={"bundle_max_uncompressed_bytes": cap}, headers=operator
+        )
+        assert lowered.status_code == 200, lowered.text
+        try:
+            stories_before = await count(engine, "SELECT count(*) FROM stories")
+            refused = await _import(client, engine, b"\0" * (cap + 1))
+            assert refused.started.status_code == 413, refused.started.text
+            assert refused.error["code"] == "bundle_too_large", refused.error
+            assert refused.error["details"] == {
+                "limit": "bundle_max_uncompressed_bytes",
+                "value": cap,
+            }
+            await _nothing_left(engine, stories_before)
+            accepted = await _import(client, engine, clean)
+            assert accepted.started.status_code == 202, accepted.started.text
+            assert accepted.ready, accepted.status
+        finally:
+            restored = await client.put(
+                "/admin/settings",
+                json={"bundle_max_uncompressed_bytes": importing.MAX_TOTAL_BYTES},
+                headers=operator,
+            )
+            assert restored.status_code == 200, restored.text
+        async with engine.begin() as conn:
+            await conn.execute(text("DELETE FROM jobs WHERE kind = 'story_export'"))
+
+
 # -- M7: export follow-ups (#704) -----------------------------------------------------------------
 
 

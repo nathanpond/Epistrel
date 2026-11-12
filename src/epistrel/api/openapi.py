@@ -1285,6 +1285,16 @@ OPERATION_ERRORS: dict[str, tuple[str, ...]] = {
     "list_feedback_exports": ("cursor_invalid",),
     "get_feedback_export_content": ("media_store_unavailable",),
     "delete_feedback_export": ("media_store_unavailable",),
+    # Story bundles (#249, #250; #786): an export's archive before it is written or once it
+    # expired, or an unknown job; an import's upload past ``bundle_max_uncompressed_bytes`` and
+    # the up-front refusals of its archive.
+    "open_export_bundle": ("export_not_ready", "export_expired", "job_not_found"),
+    "import_story": (
+        "bundle_too_large",
+        "corrupt_bundle",
+        "unsupported_format_version",
+        "rating_required",
+    ),
     # A companion scenario's owner and relations follow its character (#104, #116).
     **{
         operation_id: ("companion_follows_character",)

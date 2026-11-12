@@ -14555,3 +14555,9 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `epistrel evals index` regenerated docs/evals/INDEX.md. Only the Standard, Full and Max rows changed, each now showing `claude-haiku-5-5` in Model. There was no other drift.
   **Why:** AC3.
   **Issue:** #782
+- **Decision:** docs/03 §22's M0, M1 and M9 rows state what each delivered and its exit evidence, condensed from the closed milestones' Goal and Outcomes. The M10 row states #860–#863's goals in one clause each. Its exit is: every M10 issue closed, the milestone PR's CI green three consecutive times with no reruns (#864), and P-01's total p95 at most 200 ms on the GitHub runner, reported and not gated (#868, ADR-190), with NFR-PERF-1's 150 ms kept as the reference-host budget. The row says engine performance stays in M10, because M11 takes only the model-bound floors and performance targets (03:848) and model problems only (M11's milestone goal). The M11 and M12 rows are unchanged, since M12 is still unplanned. The assignment cells read "None — infrastructure", "None — project setup and CI" and "None — bug fixes and testing". The planner's line references (:833, :847, :848, :870, 01:357) matched HEAD.
+  **Why:** AC1–AC3 and the planner lines.
+  **Issue:** #869
+- **Decision:** the lead paragraph says M0 and M1 carry no requirements and what each delivers, that M9 delivered the requirements a consuming game asked for (ADR-184), and that M10 carries none and fixes and hardens. M12 stays "not yet planned". docs/01's sentence now says the two groundwork milestones lay the runtime plumbing and the test gate later milestones are built against. No requirement moved, so the gate counts (docs/04 §15's "M requirements first gated per milestone" line, `tests/gates/test_traceability.py`) did not change. `tests/gates` passed in full.
+  **Why:** AC2. A Rule 3 count fix was not needed.
+  **Issue:** #869

@@ -564,8 +564,20 @@ async def _recheck_state(conn: AsyncConnection, story_id: str, state_id: str, sc
 # -- record parts -----------------------------------------------------------------------------
 
 
-async def _membership(conn: AsyncConnection, table: Any, record_id: str) -> tuple[str, Any] | None:
-    row = (await conn.execute(select(table).where(table.c.id == record_id))).one_or_none()
+def _own(table: Any, story_id: str) -> list[Any]:
+    """#784: a predicate naming the story's partition of partitioned ``memories`` (by id alone,
+    a lookup plans over, and locks, every story's partition)."""
+    return [table.c.story_id == story_id] if table is memories else []
+
+
+async def _membership(
+    conn: AsyncConnection, table: Any, record_id: str, story_id: str
+) -> tuple[str, Any] | None:
+    """The record and the story it belongs to. A memory is looked up in ``story_id``'s
+    partition only, so another story's memory reads as not found (#784)."""
+    row = (
+        await conn.execute(select(table).where(table.c.id == record_id, *_own(table, story_id)))
+    ).one_or_none()
     if row is None:
         return None
     return str(row.story_id), row
@@ -580,8 +592,12 @@ async def _operation_active(conn: AsyncConnection, operation_id: str) -> bool:
     return found is not None
 
 
-async def _row_active(conn: AsyncConnection, table: Any, record_id: str) -> bool:
-    found = await conn.scalar(select(table.c.id).where(table.c.id == record_id, active_only(table)))
+async def _row_active(conn: AsyncConnection, table: Any, record_id: str, story_id: str) -> bool:
+    found = await conn.scalar(
+        select(table.c.id).where(
+            table.c.id == record_id, active_only(table), *_own(table, story_id)
+        )
+    )
     return found is not None
 
 
@@ -653,13 +669,13 @@ async def _apply_record(
     table = {"memories": memories, "utterances": utterances, "state_changes": state_changes}[
         draft.table
     ]
-    found = await _membership(conn, table, draft.record_id)
+    found = await _membership(conn, table, draft.record_id, story_id)
     if found is None:
         raise _invalid(ordinal, "record_not_found", record_id=draft.record_id)
     owner, row = found
     if owner != story_id:
         raise _invalid(ordinal, "wrong_story", record_id=draft.record_id)
-    if not await _row_active(conn, table, draft.record_id):
+    if not await _row_active(conn, table, draft.record_id, story_id):
         raise _inactive(draft.table, draft.record_id)
     if draft.table == "utterances" and draft.action == "set_intent":
         await _set_intent(conn, ordinal, draft, row)
@@ -719,7 +735,9 @@ async def _write_in_place(
         if row.inputs_hash is not None:
             values["inputs_hash"] = None
     await _set_correction(conn, record_id)
-    await conn.execute(update(table).where(table.c.id == record_id).values(**values))
+    await conn.execute(
+        update(table).where(table.c.id == record_id, *_own(table, story_id)).values(**values)
+    )
     await _set_correction(conn, "")
     if table is memories:
         from epistrel.core.erasure.records import memory_record
@@ -734,7 +752,8 @@ async def _write_in_place(
                     memories.c.holder_character_id,
                     memories.c.character_id,
                     memories.c.quarantine_reason,
-                ).where(memories.c.id == record_id)
+                    # #784: the story names its partition of ``memories``.
+                ).where(memories.c.story_id == story_id, memories.c.id == record_id)
             )
         ).one()
         await index_records(conn, [memory_record(fresh)])
@@ -1312,7 +1331,9 @@ async def _invert_record(
     table = {"memories": memories, "utterances": utterances, "state_changes": state_changes}[
         table_name
     ]
-    row = (await conn.execute(select(table).where(table.c.id == record_id))).one()
+    row = (
+        await conn.execute(select(table).where(table.c.id == record_id, *_own(table, story_id)))
+    ).one()
     await _write_in_place(conn, story_id, table, record_id, dict(restore), row)
 
 

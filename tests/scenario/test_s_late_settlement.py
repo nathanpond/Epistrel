@@ -406,10 +406,10 @@ async def test_s_late_settlement__exposure(
         assert heard.literal == {"kind": "int", "value": 1}
         settled_by = done.operation_id
         for count in (
-            "SELECT count(*) FROM memories WHERE operation_id = :o",
-            "SELECT count(*) FROM beliefs WHERE operation_id = :o",
+            "SELECT count(*) FROM memories WHERE story_id = :s AND operation_id = :o",
+            "SELECT count(*) FROM beliefs WHERE story_id = :s AND operation_id = :o",
         ):
-            assert await scalar(engine, count, o=settled_by) == 0
+            assert await scalar(engine, count, s=story, o=settled_by) == 0
 
         # Cal sells the sword at turn h+1; Jenni's resolution at h+2 reads through h⁺2 only.
         await ss.change(engine, story, ss.delta("sword", -1, scope_key=cal, reason="sold it"))

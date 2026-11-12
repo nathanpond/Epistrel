@@ -23,11 +23,12 @@ model calls (``orchestrator.embeddings``) and runs the jobs that write vectors
   embedding, advanced by the re-embed job, ``advance_story``) differs from the pin is
   ``pending`` and is searched lexically only.
 
-A memory is an input of the job that embeds it (``memories:<id>``): whether it is active, its
-membership time, its retrieval tier and the MD5 of its text. An erasure that redacts it, or a
-truncation that discards it, between the read and the commit makes the job drop its output, so
-no vector of a text that no longer exists is ever written (the erasure nulls the vectors it
-finds in its own transaction, #135).
+A memory is an input of the job that embeds it (``memories:<story_id>:<id>``, #784; the
+reader still accepts the older ``memories:<id>`` of a job queued before): whether it is
+active, its membership time, its retrieval tier and the MD5 of its text. An erasure that
+redacts it, or a truncation that discards it, between the read and the commit makes the job
+drop its output, so no vector of a text that no longer exists is ever written (the erasure
+nulls the vectors it finds in its own transaction, #135).
 
 Logs and results carry identifiers, versions and counts only (invariant 3).
 """
@@ -39,7 +40,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select, text, update
+from sqlalchemy import ColumnElement, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core import clock
@@ -422,46 +423,58 @@ async def is_pending(conn: AsyncConnection, story_id: str, pin: Pin | None = Non
 # -- a memory as a job input ------------------------------------------------------------------
 
 
-def memory_input(memory_id: str) -> str:
-    """The input key of a memory a job embeds."""
-    return input_key(memories.name, memory_id)
+def memory_input(story_id: str, memory_id: str) -> str:
+    """The input key of a memory a job embeds: ``memories:<story_id>:<id>``, so reading it back
+    names the story's partition (#784)."""
+    return input_key(memories.name, f"{story_id}:{memory_id}")
 
 
-async def _memory_version(conn: AsyncConnection, memory_id: str) -> Version | None:
-    row = (
-        await conn.execute(
-            select(
-                active_only(memories).label("active"),
-                memories.c.membership_tx,
-                memories.c.retrieval_tier,
-                func.md5(memories.c.text).label("digest"),
-            ).where(memories.c.id == memory_id)
-        )
-    ).one_or_none()
-    if row is None:
-        return None
+def _keyed(row_id: str) -> tuple[str | None, str]:
+    """A memory input's story and id: ``<story_id>:<id>``, or a bare ``<id>`` (the key before
+    #784, still in already-queued jobs' ``input_versions``; read without its story)."""
+    story_id, sep, memory_id = row_id.rpartition(":")
+    return (story_id, memory_id) if sep else (None, row_id)
+
+
+def _version_columns() -> list[Any]:
+    return [
+        active_only(memories).label("active"),
+        memories.c.membership_tx,
+        memories.c.retrieval_tier,
+        func.md5(memories.c.text).label("digest"),
+    ]
+
+
+def _version(row: Any) -> Version:
     return [bool(row.active), row.membership_tx.isoformat(), str(row.retrieval_tier), row.digest]
 
 
-async def _memory_versions(conn: AsyncConnection, ids: Sequence[str]) -> dict[str, Version]:
-    rows = await conn.execute(
-        select(
-            memories.c.id,
-            active_only(memories).label("active"),
-            memories.c.membership_tx,
-            memories.c.retrieval_tier,
-            func.md5(memories.c.text).label("digest"),
-        ).where(memories.c.id.in_(list(ids)))
-    )
-    return {
-        str(row.id): [
-            bool(row.active),
-            row.membership_tx.isoformat(),
-            str(row.retrieval_tier),
-            row.digest,
-        ]
-        for row in rows
-    }
+async def _memory_version(conn: AsyncConnection, row_id: str) -> Version | None:
+    story_id, memory_id = _keyed(row_id)
+    where: list[ColumnElement[bool]] = [memories.c.id == memory_id]
+    if story_id is not None:
+        where.append(memories.c.story_id == story_id)
+    row = (await conn.execute(select(*_version_columns()).where(*where))).one_or_none()
+    return None if row is None else _version(row)
+
+
+async def _memory_versions(conn: AsyncConnection, row_ids: Sequence[str]) -> dict[str, Version]:
+    """The versions of ``row_ids`` (input key ids, either form): one statement per story the
+    keys name, each inside that story's partition, and one unpruned statement for any bare
+    ids."""
+    by_story: dict[str | None, dict[str, str]] = {}
+    for row_id in row_ids:
+        story_id, memory_id = _keyed(row_id)
+        by_story.setdefault(story_id, {})[memory_id] = row_id
+    found: dict[str, Version] = {}
+    for story_id, wanted in by_story.items():
+        where: list[ColumnElement[bool]] = [memories.c.id.in_(list(wanted))]
+        if story_id is not None:
+            where.append(memories.c.story_id == story_id)
+        rows = await conn.execute(select(memories.c.id, *_version_columns()).where(*where))
+        for row in rows:
+            found[wanted[str(row.id)]] = _version(row)
+    return found
 
 
 def _memory_active(version: Version) -> bool:

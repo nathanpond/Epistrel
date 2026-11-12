@@ -10,7 +10,9 @@ path that creates a story creates its partition first.
   right-trimmed story id when it is 1..26 characters of ``[0-9a-z]`` (every ULID), otherwise
   ``memories_p_`` + the first 16 hex digits of its SHA-256 (tests pass arbitrary ids).
 - ``create_partition``: creates and attaches the story's partition in the caller's
-  transaction, idempotently, under a transaction advisory lock on the story id:
+  transaction, idempotently, under a transaction advisory lock on the story id (and, from
+  the ``CREATE``, the creations' global ``CREATE_LOCK``, so concurrent creations never pick the
+  same generated index names):
   ``CREATE TABLE … (LIKE memories INCLUDING ALL) WITH (fillfactor = 70)`` (the checks, the
   generated ``search`` column, the defaults and the indexes; a partitioned parent carries no
   storage parameters, so the partition keeps 30 % of each page free itself), ``ATTACH
@@ -79,6 +81,12 @@ ATTEMPTS = 3
 LOCK_NOT_AVAILABLE = "55P03"
 SWEEP_LOCK = (0x4D454D53, 0)
 """The sweep's global advisory lock ("MEMS", 0): one sweep runs at a time across processes."""
+CREATE_LOCK = (0x4D454D43, 0)
+"""The creations' global transaction advisory lock ("MEMC", 0), taken before ``CREATE TABLE``:
+Postgres names a partition's indexes after the partition's name cut to 63 bytes, so two stories
+whose ids share a long prefix (ULIDs made in the same millisecond) get the same index names, and
+two creations at once collided on ``pg_class``'s unique name index (#784). One at a time, each
+creation sees the other's names and numbers its own."""
 
 DROPPED, ABSENT, LIVE, BUSY = "dropped", "absent", "live", "busy"
 """``drop_partition``'s outcomes: the table was dropped; there was none; the story has a
@@ -118,6 +126,49 @@ def _lock_key(story_id: str) -> tuple[object, object]:
     return LOCK_NAMESPACE, func.hashtext(story_id.rstrip())
 
 
+PARTITIONS_PER_TRANSACTION = 50
+"""How many partitions ``count_rows`` reads in one transaction."""
+
+
+async def attached(conn: AsyncConnection, table: str = PARENT) -> list[str]:
+    """The partitions attached to ``table`` (a catalog read: it locks none of them), by name;
+    empty for a table that is not partitioned."""
+    return [
+        str(n)
+        for n in await conn.scalars(
+            text(
+                "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+                "WHERE i.inhparent = to_regclass(:t) ORDER BY c.relname"
+            ),
+            {"t": _ident(table)},
+        )
+    ]
+
+
+async def count_rows(db: AsyncEngine, table: str, where: str = "TRUE") -> int:
+    """The rows of public ``table`` matching the fixed SQL predicate ``where``. A partitioned
+    table is counted ``PARTITIONS_PER_TRANSACTION`` partitions to a transaction: one statement
+    over ``memories`` locks every story's partition and its indexes (15 locks a story) until it
+    commits, which exhausts the shared lock table on a database of a thousand stories."""
+    async with db.connect() as conn:
+        partitions = await attached(conn, table)
+        if not partitions:
+            return int(
+                await conn.scalar(text(f"SELECT count(*) FROM {_ident(table)} WHERE {where}"))  # noqa: S608 - fixed SQL
+                or 0
+            )
+    total = 0
+    for start in range(0, len(partitions), PARTITIONS_PER_TRANSACTION):
+        chunk = partitions[start : start + PARTITIONS_PER_TRANSACTION]
+        counts = " + ".join(
+            f"(SELECT count(*) FROM {_ident(name)} WHERE {where})"  # noqa: S608 - fixed SQL
+            for name in chunk
+        )
+        async with db.connect() as conn:
+            total += int(await conn.scalar(text(f"SELECT {counts}")) or 0)
+    return total
+
+
 async def has_partition(conn: AsyncConnection, story_id: str) -> bool:
     """Whether ``story_id``'s partition exists and is attached to ``memories``."""
     found = await conn.scalar(
@@ -136,6 +187,7 @@ async def create_partition(conn: AsyncConnection, story_id: str) -> bool:
     await conn.execute(select(func.pg_advisory_xact_lock(*_lock_key(story_id))))
     if await has_partition(conn, story_id):
         return False
+    await conn.execute(select(func.pg_advisory_xact_lock(*CREATE_LOCK)))
     name = _ident(partition_name(story_id))
     await conn.execute(
         text(f"CREATE TABLE {name} (LIKE {PARENT} INCLUDING ALL) WITH (fillfactor = {FILLFACTOR})")
@@ -391,13 +443,17 @@ __all__ = [
     "ABSENT",
     "ATTEMPTS",
     "BUSY",
+    "CREATE_LOCK",
     "DROPPED",
     "FILLFACTOR",
     "LIVE",
     "LOCK_NAMESPACE",
+    "PARTITIONS_PER_TRANSACTION",
     "PREFIX",
     "SWEEP_LOCK",
     "DropScheduler",
+    "attached",
+    "count_rows",
     "create_partition",
     "drop_partition",
     "has_partition",

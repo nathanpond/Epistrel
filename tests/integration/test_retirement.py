@@ -259,7 +259,7 @@ async def test_i_16__all_non_retirable(s: Scratch) -> None:
     story, bobby = w.story_id, w.characters["Bobby"]
     _, ids = await h.held(db, story, bobby, 3_200)
     pins, unpinned = ids[:200], ids[200:]
-    await h.pin_rows(db, pins)
+    await h.pin_rows(db, story, pins)
     (episode,) = await h.episodes(db, story)
     assert (episode.opened_turn, episode.deadline_turn) == (1, 51)
     assert {str(o) for o in await h.run(db, h.RETIREMENT, story)} == {"committed"}
@@ -298,7 +298,7 @@ async def test_i_16__pin_admission(s: Scratch) -> None:
     w = await h.story(db)
     story, bobby = w.story_id, w.characters["Bobby"]
     _, ids = await h.held(db, story, bobby, 201)
-    await h.pin_rows(db, ids[:199])
+    await h.pin_rows(db, story, ids[:199])
     assert (await _pin(s, story, ids[199])).status_code == 200
     refused = await _pin(s, story, ids[200])
     assert refused.status_code == 422, refused.text
@@ -320,7 +320,7 @@ async def test_i_16__pin_admission(s: Scratch) -> None:
         at += plan[who] + 1
         to_pin.extend(mine[:-1])
         spare.append(mine[-1])
-    await h.pin_rows(db, to_pin[:-1])
+    await h.pin_rows(db, wide, to_pin[:-1])
     assert (await _pin(s, wide, to_pin[-1])).status_code == 200
     story_refused = await _pin(s, wide, spare[0])
     assert story_refused.status_code == 422

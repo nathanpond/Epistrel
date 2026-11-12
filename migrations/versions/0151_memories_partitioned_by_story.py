@@ -16,9 +16,12 @@ memories):
    (Postgres cannot enforce a partitioned table's uniqueness without the partition key; memory
    ids stay globally unique by ULID generation), the old table's indexes under their own names
    and definitions (``ix_memories_embedding_hnsw`` exactly where ``core.embeddings.retype``
-   built it, with the parameters it was built with), the ``operations`` foreign key and the
-   two triggers. No default partition. A partitioned parent carries no storage parameters, so
-   each partition carries ``fillfactor = 70`` (0067).
+   built it, with the parameters it was built with), the ``operations`` foreign key keyed by
+   story, ``(operation_id, story_id) REFERENCES operations (operation_id, story_id)``, on a new
+   unique ``uq_operations_operation_id_story_id`` (an operation's deletion checks only its
+   story's partition; keyed by ``operation_id`` alone the check would lock every partition and
+   its indexes; ADR-188), and the two triggers. No default partition. A partitioned parent
+   carries no storage parameters, so each partition carries ``fillfactor = 70`` (0067).
 3. Every story (and any story id the old memories name) gets its partition, filled from the
    old table and attached, in batches of ``BATCH`` stories, each batch one transaction of its
    own (inside ``autocommit_block``), so the lock table never holds thousands of partitions'
@@ -29,7 +32,8 @@ memories):
 Downgrade rebuilds the unpartitioned table: a flat copy (``fillfactor = 70``) is filled from
 the partitions in batches, each partition dropped once copied (resumable the same way); then
 the parent is dropped and the copy takes its name, primary key ``(id)``, indexes (the HNSW one
-included where it existed), foreign key and triggers.
+included where it existed), foreign key (on ``operation_id`` alone again; the operations'
+composite unique key is dropped) and triggers.
 
 Revision ID: 0151
 Revises: 0150
@@ -58,6 +62,13 @@ FLAT = "memories_flat"
 PK = "pk_memories"
 BATCH = 50
 """Stories moved per transaction."""
+
+OPERATION_STORY_KEY = "uq_operations_operation_id_story_id"
+FLAT_FOREIGN_KEY = "FOREIGN KEY (operation_id) REFERENCES operations(operation_id)"
+STORY_FOREIGN_KEY = (
+    "FOREIGN KEY (operation_id, story_id) REFERENCES operations(operation_id, story_id)"
+)
+"""``memories``' ``operations`` foreign key before and after partitioning (#784, ADR-187)."""
 
 NO_TRUNCATE = (
     "CREATE TRIGGER memories_no_truncate BEFORE TRUNCATE ON {table} "
@@ -173,6 +184,11 @@ def _partitioned_parent(bind: Connection) -> None:
         "PARTITION BY LIST (story_id)"
     )
     op.execute(f"ALTER TABLE {TABLE} ADD CONSTRAINT {PK} PRIMARY KEY (id, story_id)")
+    op.execute(
+        f"ALTER TABLE operations ADD CONSTRAINT {OPERATION_STORY_KEY} "
+        "UNIQUE (operation_id, story_id)"
+    )
+    foreign = [f.replace(FLAT_FOREIGN_KEY, STORY_FOREIGN_KEY) for f in foreign]
     for statement in (*indexes, *foreign, *triggers):
         op.execute(statement)
 
@@ -277,5 +293,7 @@ def downgrade() -> None:
     op.execute(f"DROP TABLE {TABLE}")
     op.execute(f"ALTER TABLE {FLAT} RENAME TO {TABLE}")
     op.execute(f"ALTER TABLE {TABLE} ADD CONSTRAINT {PK} PRIMARY KEY (id)")
+    foreign = [f.replace(STORY_FOREIGN_KEY, FLAT_FOREIGN_KEY) for f in foreign]
     for statement in (*indexes, *foreign, *triggers):
         op.execute(statement)
+    op.execute(f"ALTER TABLE operations DROP CONSTRAINT IF EXISTS {OPERATION_STORY_KEY}")

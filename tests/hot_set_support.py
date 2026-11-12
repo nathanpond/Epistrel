@@ -214,17 +214,20 @@ async def queued(db: AsyncEngine, kind: str, story_id: str) -> list[Any]:
     )
 
 
-async def pin_rows(db: AsyncEngine, ids: Sequence[str], principal: str = PRINCIPAL) -> None:
-    """Mark memories pinned outside the pin call (bulk test setup), and recount."""
+async def pin_rows(
+    db: AsyncEngine, story_id: str, ids: Sequence[str], principal: str = PRINCIPAL
+) -> None:
+    """Mark the story's memories pinned outside the pin call (bulk test setup), and recount.
+    (#784: the story names its partition of ``memories``.)"""
     async with db.begin() as conn:
-        story_id = await conn.scalar(
-            text("SELECT story_id FROM memories WHERE id = :i"), {"i": ids[0]}
-        )
         await conn.execute(
-            text("UPDATE memories SET pinned = true, pinned_by = :p WHERE id = ANY(:ids)"),
-            {"ids": list(ids), "p": principal},
+            text(
+                "UPDATE memories SET pinned = true, pinned_by = :p "
+                "WHERE story_id = :s AND id = ANY(:ids)"
+            ),
+            {"s": story_id, "ids": list(ids), "p": principal},
         )
-        await retirement.recount(conn, str(story_id))
+        await retirement.recount(conn, story_id)
 
 
 __all__ = [

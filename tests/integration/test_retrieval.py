@@ -523,9 +523,9 @@ async def _crowd(db: AsyncEngine, story_id: str) -> int:
             await conn.execute(
                 text(
                     "UPDATE memories SET embedding = CAST(:v AS vector), "
-                    "embedding_model_version = :version WHERE id = :id"
+                    "embedding_model_version = :version WHERE story_id = :s AND id = :id"
                 ),
-                {"v": str(vector), "version": r.VERSION, "id": memory_id},
+                {"v": str(vector), "version": r.VERSION, "s": story_id, "id": memory_id},
             )
     return len(ids)
 

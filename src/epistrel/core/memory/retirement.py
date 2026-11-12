@@ -976,15 +976,30 @@ async def reconcile(conn: AsyncConnection, story_id: str) -> bool:
 
 
 async def stories_with_memories(conn: AsyncConnection) -> list[str]:
-    """Every story that has a memory or an open episode (the reconcile's fan-out)."""
+    """The stories the reconcile's fan-out considers: every story, and every story with an open
+    episode. #784: one statement over every story's ``memories`` partition would lock each one
+    and its indexes (15 locks a story), which exhausts the shared lock table on a deployment
+    of a thousand stories, so whether a story has a memory is asked per story, inside its own
+    partition (``needs_reconcile``), in the fan-out's per-story transaction."""
     found = await conn.scalars(
-        select(memories.c.story_id)
-        .group_by(memories.c.story_id)
-        .union(
+        select(stories.c.id).union(
             select(overflow_episodes.c.story_id).where(overflow_episodes.c.closed_turn.is_(None))
         )
     )
-    return sorted({str(s) for s in found})
+    return sorted({str(s).rstrip() for s in found})
+
+
+async def needs_reconcile(conn: AsyncConnection, story_id: str) -> bool:
+    """Whether ``story_id`` has a memory or an open episode (a reconcile's subject)."""
+    found = await conn.scalar(
+        select(
+            exists().where(memories.c.story_id == story_id)
+            | exists().where(
+                overflow_episodes.c.story_id == story_id, overflow_episodes.c.closed_turn.is_(None)
+            )
+        )
+    )
+    return bool(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1055,6 +1070,7 @@ __all__ = [
     "exact_counts",
     "head_turn",
     "invalidate",
+    "needs_reconcile",
     "needs_vectors",
     "on_membership_change",
     "on_memories_written",

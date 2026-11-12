@@ -23,10 +23,10 @@ enqueues the story's ``embed`` job (``on_vectors_needed``, #147's vector hook).
 
 **A run** (both kinds) does nothing unless the story's ``episodic`` module is on. In one
 snapshot it reads the pin and up to ``reembed_batch_size`` (500) memories, oldest first,
-declaring each as an input (``memories:<id>``: membership, membership time, tier and text
-digest, so an erasure or a truncation in between drops the output). Outside the snapshot it
-embeds them through the Model Access Layer (``ModelAccessLayer.embeddings``, batches of
-``embedding_batch_max``). Unpinned, the first embedding pins the deployment in a short
+declaring each as an input (``memories:<story_id>:<id>``: membership, membership time, tier
+and text digest, so an erasure or a truncation in between drops the output). Outside the
+snapshot it embeds them through the Model Access Layer (``ModelAccessLayer.embeddings``,
+batches of ``embedding_batch_max``). Unpinned, the first embedding pins the deployment in a short
 transaction of its own (``core.embeddings.pin_first``: the column's type and the HNSW index);
 pinned, a vector of another dimension is 503 ``embedding_dimension_mismatch`` and another vector
 space ``embedding_version_mismatch``, and nothing is stored. Its ``maintenance`` operation then
@@ -214,7 +214,7 @@ async def _run(ctx: JobContext) -> JobOutput:
         )
         batch = found[:limit]
         for memory in batch:
-            await ctx.declare_input(conn, embeddings.memory_input(memory.id))
+            await ctx.declare_input(conn, embeddings.memory_input(story_id, memory.id))
     more = len(found) > len(batch)
     vectors: dict[str, tuple[float, ...]] = {}
     calls = 0

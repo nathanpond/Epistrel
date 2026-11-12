@@ -76,7 +76,10 @@ free (``fillfactor = 70``), so a retrieval's ``last_accessed_at`` touch is a hea
 writes no index entry.
 **Partitioned by story** (#784, migration 0151; ADR-187): LIST partitions on ``story_id``, one
 per story (``memories_p_<story>``, ``core.memory.story_partitions``), no default partition, so
-a story's rows, indexes and HNSW graph are its own. The primary key is ``(id, story_id)``; each
+a story's rows, indexes and HNSW graph are its own. The primary key is ``(id, story_id)``,
+and the ``operations`` foreign key is ``(operation_id, story_id)`` (on ``operations``' unique
+``(operation_id, story_id)``, ADR-188), so the check an operation's deletion runs reads the
+story's partition alone; each
 partition carries the ``fillfactor`` and a ``TRUNCATE`` refusal of its own. Every path that
 creates a story creates its partition first: a memory for a story with none fails (23514).
 ``core.memory.records`` is the only writer of rows; ``core.mutation``, ``core.memory.retirement``
@@ -95,6 +98,7 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     Computed,
+    ForeignKeyConstraint,
     Index,
     Integer,
     SmallInteger,
@@ -229,7 +233,11 @@ memories = Table(
     Column("trust_tier", pg_enum(MemoryTrustTier, "memory_trust_tier"), nullable=False),
     Column("importance", REAL, nullable=True),
     Column("importance_at", Integer, nullable=True),
-    *derived_columns(),
+    # #784 (ADR-187): the producing operation is keyed by story too (``FOREIGN KEY
+    # (operation_id, story_id)``, below), so the RI check of an operation's deletion names the
+    # story and reads its partition alone; keyed by ``operation_id`` alone it planned over, and
+    # locked, every story's partition and its indexes.
+    *derived_columns(story_keyed=True),
     Column("beat", SmallInteger, nullable=True),
     Column("step", SmallInteger, nullable=False, server_default=text("0")),
     Column("proposition_ids", ARRAY(ulid_type()), nullable=False, server_default=text("'{}'")),
@@ -311,6 +319,9 @@ memories = Table(
         "(jsonb_typeof(visibility->'characters') = 'array' "
         "AND jsonb_array_length(visibility->'characters') > 0)",
         name="visibility_characters",
+    ),
+    ForeignKeyConstraint(
+        ["operation_id", "story_id"], ["operations.operation_id", "operations.story_id"]
     ),
     *derived_indexes("memories"),
     Index("ix_memories_story_membership_tier", "story_id", "membership", "retrieval_tier"),

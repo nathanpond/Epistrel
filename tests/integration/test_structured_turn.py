@@ -474,6 +474,9 @@ async def test_a_rejected_render_implicates_its_context_and_converges(
         )
         assert {"table": "memories", "id": poisoned} in rejected.payload["implicated_record_ids"]
         quarantined = await scalar(
-            engine, "SELECT quarantined_at FROM memories WHERE id = :m", m=poisoned
+            engine,
+            "SELECT quarantined_at FROM memories WHERE story_id = :s AND id = :m",
+            s=story,
+            m=poisoned,
         )
         assert quarantined is not None

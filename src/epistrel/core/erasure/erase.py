@@ -2080,7 +2080,7 @@ async def _prune_memory_visibility(
                 tally,
                 memories.name,
                 str(row.id),
-                delete(memories).where(m.id == row.id),
+                delete(memories).where(m.story_id == story_id, m.id == row.id),
             )
             deleted.append(str(row.id))
             continue
@@ -2088,7 +2088,7 @@ async def _prune_memory_visibility(
         if run.write:
             await conn.execute(
                 update(memories)
-                .where(m.id == row.id)
+                .where(m.story_id == story_id, m.id == row.id)
                 .values(visibility={**row.visibility, "characters": named})
             )
     return deleted
@@ -2133,7 +2133,7 @@ async def _erase_memories(
             tally,
             memories.name,
             str(memory_id),
-            delete(memories).where(m.id == memory_id),
+            delete(memories).where(m.story_id == story_id, m.id == memory_id),
         )
     # #178: a memory another character holds that the subject could also see loses the
     # subject's name from its visibility; one no character is left to see is deleted.
@@ -2169,7 +2169,9 @@ async def _erase_memories(
                 values.update(text=new, embedding=None, embedding_model_version=None)
                 # A dropped vector leaves the story's vector counter (#147).
                 await retirement.invalidate(conn, story_id)
-            await conn.execute(update(memories).where(m.id == row.id).values(**values))
+            await conn.execute(
+                update(memories).where(m.story_id == story_id, m.id == row.id).values(**values)
+            )
 
 
 async def _purge_results(

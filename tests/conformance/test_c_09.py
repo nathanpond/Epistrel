@@ -23,6 +23,7 @@ from pydantic import SecretStr
 from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.core.memory.story_partitions import not_a_partition
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.config import KeyBox
 from epistrel.orchestrator.models.errors import ModelUnavailable
@@ -48,7 +49,7 @@ from tests.model_support import (
     put_key,
     restored_model_config,
 )
-from tests.story_support import WRITE, public_tables, story_body
+from tests.story_support import WRITE, public_tables, story_body, table_rows
 
 EXCLUDED_TABLES = frozenset({"model_config", "alembic_version"})
 NAMED_TABLES = ("config_changes", "idempotency_keys", "jobs")
@@ -63,8 +64,10 @@ async def story_scoped_tables(engine: AsyncEngine) -> set[str]:
     async with engine.connect() as conn:
         found = await conn.scalars(
             text(
-                "SELECT DISTINCT table_name FROM information_schema.columns "
-                "WHERE table_schema = 'public' AND column_name = 'story_id'"
+                "SELECT DISTINCT table_name FROM information_schema.columns "  # noqa: S608 - a fixed catalog predicate
+                "WHERE table_schema = 'public' AND column_name = 'story_id' "
+                # #784: a story's ``memories`` partition is scanned through its parent.
+                f"AND {not_a_partition()}"
             )
         )
         return {*found, "stories"}
@@ -73,10 +76,10 @@ async def story_scoped_tables(engine: AsyncEngine) -> set[str]:
 async def table_hits(engine: AsyncEngine, canaries: list[str]) -> tuple[set[str], list[str]]:
     scanned = set(await public_tables(engine)) - EXCLUDED_TABLES
     hits: list[str] = []
-    async with engine.connect() as conn:
-        for table in sorted(scanned):
-            rows = await conn.scalars(text(f'SELECT t::text FROM "{table}" t'))  # noqa: S608
-            hits.extend(find(canaries, f"table {table}", "\n".join(rows)))
+    for table in sorted(scanned):
+        # #784: a partitioned table (``memories``) is read partition by partition.
+        rows = await table_rows(engine, table)
+        hits.extend(find(canaries, f"table {table}", "\n".join(rows)))
     return scanned, hits
 
 

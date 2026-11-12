@@ -815,11 +815,13 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
 
         foreign_keys = await conn.execute(
             text(
+                # Column pairs by position: #784's ``memories (operation_id, story_id)`` key
+                # pairs ``story_id`` with ``operations.story_id``, its own story.
                 "SELECT c.conrelid::regclass::text, a.attname, c.confrelid::regclass::text, "
                 "fa.attname FROM pg_constraint c "
-                "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey) "
-                "JOIN pg_attribute fa ON fa.attrelid = c.confrelid "
-                "AND fa.attnum = ANY(c.confkey) "
+                "CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(attnum, fattnum) "
+                "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum "
+                "JOIN pg_attribute fa ON fa.attrelid = c.confrelid AND fa.attnum = k.fattnum "
                 "WHERE c.contype = 'f' AND c.conrelid::regclass::text = ANY(:t)"
             ),
             {"t": story_tables},
@@ -827,6 +829,9 @@ async def test_story_isolation_schema(engine: AsyncEngine) -> None:
         allowed = {
             ("story_id", "stories", "id"),
             ("operation_id", "operations", "operation_id"),
+            # #784: ``memories``' operation key is ``(operation_id, story_id)``, so a memory and
+            # its operation are of one story.
+            ("story_id", "operations", "story_id"),
             # #160's mandatory provenance: a belief and the transition that produced it name each
             # other (deferred keys); the provenance trigger holds both to one story and holder.
             ("provenance", "belief_transitions", "id"),
@@ -997,7 +1002,7 @@ async def test_the_sweep_drops_orphan_partitions_only(engine: AsyncEngine) -> No
         await conn.execute(
             text(f"ALTER TABLE memories DETACH PARTITION {partition_name(detached)}")
         )
-    await _leave_detach_pending(engine, partition_name(pending))
+    await _leave_detach_pending(engine, pending)
     assert await scalar(
         engine,
         "SELECT inhdetachpending FROM pg_inherits WHERE inhrelid = to_regclass(:c)",
@@ -1037,11 +1042,15 @@ async def test_the_sweep_drops_orphan_partitions_only(engine: AsyncEngine) -> No
     assert await _partition(engine, live) is not None
 
 
-async def _leave_detach_pending(engine: AsyncEngine, table: str) -> None:
-    """Start ``DETACH … CONCURRENTLY`` of ``table`` and cancel it in its second phase (while an
-    open transaction holds ``memories``), so the detach is left pending."""
+async def _leave_detach_pending(engine: AsyncEngine, story_id: str) -> None:
+    """Start ``DETACH … CONCURRENTLY`` of ``story_id``'s partition and cancel it in its second
+    phase (while an open transaction holds ``memories``), so the detach is left pending."""
+    table = partition_name(story_id)
     async with engine.connect() as reader, engine.connect() as pooled:
-        await reader.execute(text("SELECT count(*) FROM memories"))  # ACCESS SHARE, held
+        # ACCESS SHARE on ``memories``, held (#784: one story's partition, not every one's).
+        await reader.execute(
+            text("SELECT count(*) FROM memories WHERE story_id = :s"), {"s": story_id}
+        )
         detacher = await pooled.execution_options(isolation_level="AUTOCOMMIT")
         pid = await detacher.scalar(text("SELECT pg_backend_pid()"))
         detach = asyncio.create_task(

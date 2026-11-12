@@ -884,7 +884,9 @@ ROW_FILTERS: dict[str, str] = {
         f"OR (t.record_table = 'events' AND t.record_id::text IN {_EVENT_IDS}) "
         + " ".join(
             f"OR (t.record_table = '{name}' AND t.record_id IN "  # noqa: S608 - fixed names
-            f'(SELECT r.id FROM "{name}" r WHERE r.operation_id IN {_OPERATION_IDS}))'
+            # #784: ``r.story_id`` names the source's partition of ``memories``.
+            f'(SELECT r.id FROM "{name}" r WHERE r.story_id = :source '
+            f"AND r.operation_id IN {_OPERATION_IDS}))"
             for name in ("facts", "beliefs", "memories", "utterances", "state_changes")
         )
         + ")"

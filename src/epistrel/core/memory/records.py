@@ -161,7 +161,7 @@ from epistrel.core.profiles.capabilities import module_on
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.settings_schema import MemorySettings
-from epistrel.core.tables import characters, entities, events, operations
+from epistrel.core.tables import characters, entities, events, operations, stories
 from epistrel.core.tables.base import ulid_type
 from epistrel.core.tables.memories import EVENT_TYPE_MAX, TEXT_MAX, memories
 
@@ -1650,18 +1650,28 @@ async def unscored(conn: AsyncConnection, story_id: str, limit: int) -> list[Mem
 
 
 async def stories_with_unscored(conn: AsyncConnection) -> list[str]:
-    """Every story with an active hot memory that has no importance yet."""
-    found = await conn.scalars(
-        select(memories.c.story_id)
-        .where(
-            active_only(memories),
-            memories.c.retrieval_tier == RetrievalTier.HOT.value,
-            memories.c.importance.is_(None),
+    """The stories the importance fan-out considers: every story. #784: one statement over
+    every story's ``memories`` partition would lock each one and its indexes (15 locks a
+    story), which exhausts the shared lock table on a deployment of a thousand stories, so
+    whether a story has an unscored memory is asked per story, inside its own partition
+    (``has_unscored``), in the fan-out's per-story transaction."""
+    found = await conn.scalars(select(stories.c.id).order_by(stories.c.id))
+    return [str(s).rstrip() for s in found]
+
+
+async def has_unscored(conn: AsyncConnection, story_id: str) -> bool:
+    """Whether ``story_id`` has an active hot memory that has no importance yet."""
+    found = await conn.scalar(
+        select(
+            exists().where(
+                memories.c.story_id == story_id,
+                active_only(memories),
+                memories.c.retrieval_tier == RetrievalTier.HOT.value,
+                memories.c.importance.is_(None),
+            )
         )
-        .group_by(memories.c.story_id)
-        .order_by(memories.c.story_id)
     )
-    return [str(s) for s in found]
+    return bool(found)
 
 
 async def set_importance(conn: AsyncConnection, story_id: str, scores: Mapping[str, float]) -> int:
@@ -1814,6 +1824,7 @@ __all__ = [
     "decayed_importance",
     "episodic_on",
     "half_life_turns",
+    "has_unscored",
     "memories_by_id",
     "memories_linked",
     "memories_through",

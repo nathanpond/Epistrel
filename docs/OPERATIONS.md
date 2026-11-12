@@ -154,6 +154,21 @@ Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already 
 
 `memories` has a partition per story, `memories_p_<story>` (ADR-187). `DELETE /stories/{id}` deletes the story's memories with its other rows and answers then; the empty partition is dropped after the deletion, by a background job (`memory_partition_drop`) that detaches it with `ALTER TABLE memories DETACH PARTITION … CONCURRENTLY` and drops it, so other stories' retrievals are never blocked. The detach waits for transactions already open in the database. If one is still open after 5 s, the attempt fails and the job retries with backoff. An hourly sweep (`memory_partition_sweep`, also run once when a worker starts) drops every partition left with no story, such as one from a failed creation. It also finishes a detach left pending and drops a detached `memories_p_*` table that a crash between the detach and the drop left behind. A story's partition is never dropped while the story exists or while it is being created.
 
+**Lock table sizing (ADR-188).** A statement that plans over every partition takes about 15 locks per story (the partition and its 14 indexes), all held until its transaction ends, and Postgres's shared lock table holds about `max_locks_per_transaction × (max_connections + max_prepared_transactions)` locks for the whole server. On the default settings (64 and 100) that is roughly 7,000 slots: measured on `pgvector/pgvector:pg16`, one such statement held 10,921 locks at 727 stories and failed with `out of shared memory` at 1,327. The engine's own turns, retrievals, deletions, prunes, forks and background fan-outs each name their story, so they lock a single partition. A few operator actions cannot, because they change every story's partition in one transaction:
+
+- the first embedding pin and a change of the embedding dimension (`PUT /admin/model-config/embedding`), which retype `memories.embedding` and build the HNSW index on every partition;
+- an embedding model change (the same `PUT`), which nulls the old vectors of every story;
+- an upgrade whose migration alters `memories`;
+- `pg_dump`, which takes one lock per table (about one per story).
+
+Before any of these on a deployment of more than 500 stories, set
+
+`max_locks_per_transaction ≥ 16 × stories ÷ (max_connections + max_prepared_transactions)`, rounded up to a power of two and never below 64,
+
+for example 1024 for 6,000 stories on 100 connections. Then restart Postgres (the setting takes effect only at server start). Each lock slot costs a few hundred bytes of shared memory, so 1024 on 100 connections adds about 30 MB. If the action fails with `out of shared memory` / `HINT: You might need to increase max_locks_per_transaction`, it changed nothing: raise the setting and run it again.
+
+Postgres also keeps statistics for every partition and index in dynamic shared memory (`/dev/shm` in a container): about 0.5 KB per relation, or 8 KB per story. Docker's default `/dev/shm` of 64 MB fills at about 6,000 stories, and parallel queries then fail with `could not resize shared memory segment … No space left on device`. Give the database container `shm_size` of at least 64 MB plus 8 MB per 1,000 stories.
+
 ## Retrieval index tuning
 
 The embedding vectors' HNSW index (`ix_memories_embedding_hnsw`, cosine) is built when the first embedding pins the dimension, and again when a model change retypes the column. It uses the deployment settings `embedding_hnsw_m` (default 16) and `embedding_hnsw_ef_construction` (default 64). A change to either setting applies to the next build only. To rebuild an existing index with the new values, run `REINDEX INDEX CONCURRENTLY ix_memories_embedding_hnsw;` against the database after the `PUT /admin/settings`. Searches keep running during the rebuild.

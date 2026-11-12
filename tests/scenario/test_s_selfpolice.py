@@ -294,11 +294,12 @@ POISON = Spec(
 )
 
 
-async def _quarantine_state(engine: AsyncEngine, memory_id: str) -> Any:
+async def _quarantine_state(engine: AsyncEngine, story_id: str, memory_id: str) -> Any:
     (row,) = await rows(
         engine,
         "SELECT quarantined_at, quarantine_reason, quarantined_by, implication_count "
-        "FROM memories WHERE id = :m",
+        "FROM memories WHERE story_id = :s AND id = :m",
+        s=story_id,
         m=memory_id,
     )
     return row
@@ -344,7 +345,7 @@ async def test_s_selfpolice__quarantine(
         assert planted_in(prompts, CANARY) == [True, True, False, False]
         assert (repeat.renders, repeat.fallback, repeat.gated.rejected) == (1, False, ())
         assert run.emissions == 0
-        state = await _quarantine_state(engine, planted)
+        state = await _quarantine_state(engine, run.story_id, planted)
         assert state.quarantined_at is not None
         assert (state.quarantine_reason, state.quarantined_by, state.implication_count) == (
             "repeated_implication",
@@ -386,13 +387,21 @@ async def test_s_selfpolice__quarantine(
         # An author pin the violation overlaps is quarantined too, with a warning.
         pinned = await run_sequence(engine, lib, models, dataclasses.replace(POISON, requests=()))
         (pin_id,) = pinned.planted
-        pin_text = (await rows(engine, "SELECT text FROM memories WHERE id = :m", m=pin_id))[0]
+        pin_text = (
+            await rows(
+                engine,
+                "SELECT text FROM memories WHERE story_id = :s AND id = :m",
+                s=pinned.story_id,
+                m=pin_id,
+            )
+        )[0]
 
         async def pins(conn: Any, request: SourceRequest) -> list[ContextItem]:
             if request.story_id != pinned.story_id:
                 return []
             quarantined = await conn.scalar(
-                text("SELECT quarantined_at FROM memories WHERE id = :m"), {"m": pin_id}
+                text("SELECT quarantined_at FROM memories WHERE story_id = :s AND id = :m"),
+                {"s": pinned.story_id, "m": pin_id},
             )
             if quarantined is not None:
                 return []
@@ -417,7 +426,7 @@ async def test_s_selfpolice__quarantine(
         assert [(r.renders, r.fallback) for r in stuck.requests] == [(3, True), (3, True)]
         assert stuck.emissions == 0
         (stuck_plant,) = stuck.planted
-        state = await _quarantine_state(engine, stuck_plant)
+        state = await _quarantine_state(engine, stuck.story_id, stuck_plant)
         assert (state.quarantined_at, state.implication_count) == (None, 6)
 
         # Complement: a Lite turn's rejection carries no implicated records.

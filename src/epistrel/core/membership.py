@@ -281,10 +281,12 @@ def _base_table(table: FromClause) -> Table:
 # -- schema -----------------------------------------------------------------------------------
 
 
-def derived_columns() -> list[Column[Any]]:
+def derived_columns(*, story_keyed: bool = False) -> list[Column[Any]]:
     """Fresh copies of the derived-record columns, for a table and for its migration.
 
-    ``operation_id`` is the producing operation (a ULID with a foreign key to ``operations``);
+    ``operation_id`` is the producing operation (a ULID with a foreign key to ``operations``;
+    ``story_keyed``: none on the column, because the table declares the composite
+    ``(operation_id, story_id)`` key itself, as partitioned ``memories`` does, #784);
     ``source_event_ids`` the events it came from; the narrative position is nullable for
     position-less rows; ``membership`` reuses the operations' enum, ``active`` by default;
     ``membership_tx`` has no default, so a row is written through ``insert_derived()``.
@@ -298,7 +300,7 @@ def derived_columns() -> list[Column[Any]]:
         Column(
             "operation_id",
             ulid_type(),
-            ForeignKey("operations.operation_id"),
+            *(() if story_keyed else (ForeignKey("operations.operation_id"),)),
             nullable=False,
         ),
         Column(

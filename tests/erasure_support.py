@@ -30,7 +30,7 @@ from tests.event_support import execute_in_tx
 from tests.feedback_support import rate
 from tests.model_support import config_key
 from tests.respond_support import body, played
-from tests.story_support import override
+from tests.story_support import override, table_rows
 from tests.summary_support import run_due_jobs, segment_rows
 
 PATH = "/admin/erasure"
@@ -269,9 +269,10 @@ async def dump_all(engine: AsyncEngine) -> dict[str, set[str]]:
                 "ORDER BY table_schema, table_name"
             )
         )
-        for schema, table in tables.all():
-            found = await conn.scalars(text(f'SELECT t::text FROM "{schema}"."{table}" t'))  # noqa: S608
-            snapshot[f"{schema}.{table}"] = set(found)
+        names = tables.all()
+    for schema, table in names:
+        # #784: a partitioned table (``memories``) is read partition by partition.
+        snapshot[f"{schema}.{table}"] = set(await table_rows(engine, table, schema))
     return snapshot
 
 

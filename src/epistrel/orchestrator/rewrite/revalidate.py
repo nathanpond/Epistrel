@@ -93,7 +93,7 @@ def _planned_records(read_set: Mapping[str, Any]) -> list[tuple[str, str]]:
 
 
 async def _operations_of(
-    conn: AsyncConnection, records: Sequence[tuple[str, str]]
+    conn: AsyncConnection, story_id: str, records: Sequence[tuple[str, str]]
 ) -> dict[str, list[dict[str, str]]]:
     """Per operation id, the planned records it wrote (tables without ``operation_id`` are
     left out)."""
@@ -105,7 +105,9 @@ async def _operations_of(
         t = metadata.tables.get(table)
         if t is None or "operation_id" not in t.c or "id" not in t.c:
             continue
-        rows = await conn.execute(select(t.c.id, t.c.operation_id).where(t.c.id.in_(ids)))
+        # #784: the story names its partition of a partitioned table (``memories``).
+        own = [t.c.story_id == story_id] if "story_id" in t.c else []
+        rows = await conn.execute(select(t.c.id, t.c.operation_id).where(t.c.id.in_(ids), *own))
         for record_id, operation_id in rows:
             if operation_id is not None:
                 found.setdefault(str(operation_id), []).append(
@@ -151,7 +153,7 @@ async def snapshot(
     """What ``revalidate`` compares against, taken with the plan: the configuration
     high-water revisions, the clock anchor's revision, the planned records' operation versions
     (membership and #236's record version), and the proposition and State keys."""
-    ops = await _operations_of(conn, _planned_records(read_set))
+    ops = await _operations_of(conn, story_id, _planned_records(read_set))
     versions = await _operation_versions(conn, list(ops))
     props, states = _keys(changes)
     return {
@@ -357,7 +359,7 @@ async def revalidate(
     # Planned records: their operations' membership and #236's record version.
     before: dict[str, list[Any]] = dict(read_set.get("operations") or {})
     if before:
-        ops = await _operations_of(conn, _planned_records(read_set))
+        ops = await _operations_of(conn, story_id, _planned_records(read_set))
         now = await _operation_versions(conn, list(before))
         membership: list[dict[str, str]] = []
         record: list[dict[str, str]] = []

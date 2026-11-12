@@ -1658,7 +1658,7 @@ async def _directed_conflicts(
         for record_id in ids:
             if (table, str(record_id)) in known:
                 continue
-            text = await _text_of(conn, table, str(record_id)) if table == "events" else None
+            text = await _text_of(conn, None, table, str(record_id)) if table == "events" else None
             found.append(
                 {
                     "record": {"table": table, "id": str(record_id)},

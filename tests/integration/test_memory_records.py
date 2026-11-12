@@ -9,6 +9,7 @@ The TIME (M4) slices are in ``tests/property/test_time_m4.py``, U-10's importanc
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 from pathlib import Path
@@ -284,7 +285,11 @@ async def test_the_importance_job_scores_each_memory_once(
     pinned = next(iter(found))
     await execute_in_tx(
         engine,
-        ("UPDATE memories SET importance = 0.99, importance_at = 1 WHERE id = :m", {"m": pinned}),
+        (
+            "UPDATE memories SET importance = 0.99, importance_at = 1 "
+            "WHERE story_id = :s AND id = :m",
+            {"s": story, "m": pinned},
+        ),
     )
     models.stub.calls.clear()
     assert await run_importance(engine, models, story) == [queue.CommitOutcome.COMMITTED]
@@ -360,26 +365,27 @@ async def test_the_table_is_guarded(engine: AsyncEngine) -> None:
         engine,
         (
             "UPDATE memories SET importance = 0.4, last_accessed_at = now(), "
-            "retrieval_tier = 'retired' WHERE id = :m",
-            {"m": memory.id},
+            "retrieval_tier = 'retired' WHERE story_id = :s AND id = :m",
+            {"s": w.story_id, "m": memory.id},
         ),
     )
     for statement in (
-        "UPDATE memories SET text = 'rewritten' WHERE id = :m",
-        "UPDATE memories SET provenance = 'author' WHERE id = :m",
-        "DELETE FROM memories WHERE id = :m",
+        "UPDATE memories SET text = 'rewritten' WHERE story_id = :s AND id = :m",
+        "UPDATE memories SET provenance = 'author' WHERE story_id = :s AND id = :m",
+        "DELETE FROM memories WHERE story_id = :s AND id = :m",
         "TRUNCATE memories",
         f"UPDATE {partition} SET text = 'rewritten' WHERE id = :m",  # noqa: S608
         f"DELETE FROM {partition} WHERE id = :m",  # noqa: S608
         f"TRUNCATE {partition}",
     ):
         with pytest.raises(DBAPIError) as raised:
-            await execute_in_tx(engine, (statement, {"m": memory.id}))
+            await execute_in_tx(engine, (statement, {"s": w.story_id, "m": memory.id}))
         assert sqlstate(raised.value) == "EPI01", statement
     async with engine.begin() as conn:
         await conn.execute(text("SET LOCAL epistrel.erasure = 'on'"))
         await conn.execute(
-            text("UPDATE memories SET text = '[erased]' WHERE id = :m"), {"m": memory.id}
+            text("UPDATE memories SET text = '[erased]' WHERE story_id = :s AND id = :m"),
+            {"s": w.story_id, "m": memory.id},
         )
     assert (await memory_rows(engine, w.story_id))[memory.id].text == "[erased]"
 
@@ -397,8 +403,8 @@ async def test_a_touch_is_a_heap_only_update(engine: AsyncEngine) -> None:
     await execute_in_tx(
         engine,
         (
-            "UPDATE memories SET embedding = CAST(:v AS vector) WHERE id = :m",
-            {"m": memory.id, "v": vector},
+            "UPDATE memories SET embedding = CAST(:v AS vector) WHERE story_id = :s AND id = :m",
+            {"s": w.story_id, "m": memory.id, "v": vector},
         ),
     )
     counts = text(
@@ -414,7 +420,8 @@ async def test_a_touch_is_a_heap_only_update(engine: AsyncEngine) -> None:
         ) == ["fillfactor=70"]
         before = (await conn.execute(counts)).one()
         await conn.execute(
-            text("UPDATE memories SET last_accessed_at = now() WHERE id = :m"), {"m": memory.id}
+            text("UPDATE memories SET last_accessed_at = now() WHERE story_id = :s AND id = :m"),
+            {"s": w.story_id, "m": memory.id},
         )
         after = (await conn.execute(counts)).one()
     assert (after[0] - before[0], after[1] - before[1]) == (1, 1)
@@ -471,7 +478,8 @@ async def test_the_writer_records_the_occasion_and_the_lexical_vector(engine: As
     (row,) = await rows(
         engine,
         "SELECT search::text AS search, search @@ to_tsquery('english', 'games') AS hit "
-        "FROM memories WHERE id = :m",
+        "FROM memories WHERE story_id = :s AND id = :m",
+        s=story,
         m=memory.id,
     )
     assert row.hit
@@ -479,16 +487,23 @@ async def test_the_writer_records_the_occasion_and_the_lexical_vector(engine: As
     async with engine.begin() as conn:
         await conn.execute(text("SET LOCAL epistrel.erasure = 'on'"))
         await conn.execute(
-            text("UPDATE memories SET text = '[erased]' WHERE id = :m"), {"m": memory.id}
+            text("UPDATE memories SET text = '[erased]' WHERE story_id = :s AND id = :m"),
+            {"s": story, "m": memory.id},
         )
     (erased,) = await rows(
-        engine, "SELECT search::text AS search FROM memories WHERE id = :m", m=memory.id
+        engine,
+        "SELECT search::text AS search FROM memories WHERE story_id = :s AND id = :m",
+        s=story,
+        m=memory.id,
     )
     assert "bobbi" not in erased.search
     with pytest.raises(DBAPIError):
         await execute_in_tx(
             engine,
-            ("UPDATE memories SET event_type = 'party' WHERE id = :m", {"m": memory.id}),
+            (
+                "UPDATE memories SET event_type = 'party' WHERE story_id = :s AND id = :m",
+                {"s": story, "m": memory.id},
+            ),
         )
     for bad in (
         dataclasses.replace(beat, participants=("01J9Z8Q4N5V6W7X8Y9Z0A1B2C9",)),
@@ -566,6 +581,73 @@ async def test_each_story_writes_into_its_own_partition(engine: AsyncEngine) -> 
         )
     assert sqlstate(raised.value) == "23514"
     assert await memory_rows(engine, nowhere) == {}
+
+
+async def test_neighbouring_stories_create_their_partitions_at_once(engine: AsyncEngine) -> None:
+    """#784: Postgres names a partition's indexes after its name cut to 63 bytes, so stories
+    whose ids share a long prefix (ULIDs made in the same millisecond) get the same index
+    names. Created at once, they collided on ``pg_class``'s unique name index (an eval run's
+    ``create_story`` failed with 23505); the creations' global lock makes each see the other's
+    names. Complement: every partition exists afterwards, and each is dropped again."""
+    base = new_ulid()[:24]
+    ids = [f"{base}{n:02d}" for n in range(8)]
+
+    async def make(story_id: str) -> None:
+        async with story_partitions.story_partition(engine, story_id):
+            pass
+
+    await asyncio.gather(*(make(story_id) for story_id in ids))
+    async with engine.connect() as conn:
+        assert [await story_partitions.has_partition(conn, s) for s in ids] == [True] * len(ids)
+    for story_id in ids:  # no story row: the drop goes through
+        assert await story_partitions.drop_partition(engine, story_id) == story_partitions.DROPPED
+
+
+_LOCKED_PARTITIONS = text(
+    # The ``memories`` partitions this backend holds a lock on, directly or through one of
+    # their indexes.
+    "SELECT DISTINCT coalesce(t.relname, c.relname) FROM pg_locks l "
+    "JOIN pg_class c ON c.oid = l.relation "
+    "LEFT JOIN pg_index i ON i.indexrelid = c.oid "
+    "LEFT JOIN pg_class t ON t.oid = i.indrelid "
+    "WHERE l.pid = pg_backend_pid() AND coalesce(t.relname, c.relname) LIKE 'memories\\_p\\_%'"
+)
+
+
+async def test_an_operation_s_deletion_checks_only_its_story_s_partition(
+    engine: AsyncEngine,
+) -> None:
+    """#784 (ADR-188): the ``operations`` foreign key of ``memories`` is ``(operation_id,
+    story_id)``, so the check a deleted operation runs (no memory may name it) reads its own
+    story's partition: keyed by ``operation_id`` alone it planned over every story's partition
+    and locked each one and its indexes, which ran the shared lock table out ("out of shared
+    memory") once a database held a thousand stories. Every connection plans custom
+    (``plan_cache_mode``), so the check's cached plan stays pruned past the fifth run, when it
+    would otherwise go generic. Complement: the story's own partition is checked."""
+    async with engine.connect() as conn:
+        mine = await create_story(conn, principal=MEMORY_PRINCIPAL)
+        other = await create_story(conn, principal=MEMORY_PRINCIPAL)
+        await conn.commit()
+    await derived_memory(engine, mine, "Mine.", [])
+    await derived_memory(engine, other, "Another story's.", [])
+    async with engine.connect() as conn:
+        for _ in range(7):  # past the plan cache's five custom plans
+            async with conn.begin() as tx:
+                operation = new_ulid()
+                await conn.execute(
+                    text(
+                        "INSERT INTO operations (operation_id, story_id, kind, principal) "
+                        "VALUES (:o, :s, 'maintenance', :p)"
+                    ),
+                    {"o": operation, "s": mine, "p": MEMORY_PRINCIPAL},
+                )
+                await conn.execute(
+                    text("DELETE FROM operations WHERE operation_id = :o"), {"o": operation}
+                )
+                locked = set(await conn.scalars(_LOCKED_PARTITIONS))
+                await tx.rollback()
+            assert locked == {partition_name(mine)}, len(locked)
+        assert await conn.scalar(text("SHOW plan_cache_mode")) == "force_custom_plan"
 
 
 async def test_a_prune_deletes_only_the_doomed_memories(engine: AsyncEngine) -> None:

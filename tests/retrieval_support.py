@@ -209,7 +209,11 @@ async def memory(
         if tier is not RetrievalTier.HOT:
             values["retrieval_tier"] = tier.value
         if values:
-            await conn.execute(update(memories).where(memories.c.id == row["id"]).values(values))
+            await conn.execute(
+                update(memories)
+                .where(memories.c.story_id == row["story_id"], memories.c.id == row["id"])
+                .values(values)
+            )
     story.ids[name] = str(row["id"])
     return str(row["id"])
 

@@ -413,7 +413,10 @@ async def _amendment_names(
     records = union_all(
         select(events.c.id).where(events.c.operation_id.in_(list(operation_ids))),
         select(facts.c.id).where(facts.c.operation_id.in_(list(operation_ids))),
-        select(memories.c.id).where(memories.c.operation_id.in_(list(operation_ids))),
+        # #784: the story names its partition of ``memories``.
+        select(memories.c.id).where(
+            memories.c.story_id == story_id, memories.c.operation_id.in_(list(operation_ids))
+        ),
     ).subquery()
     found = await conn.scalars(
         select(p.amendment_id)
@@ -642,8 +645,12 @@ async def _apply(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
     await conn.execute(text("SELECT set_config('epistrel.allow_prune', :s, true)"), {"s": story_id})
     try:
         for table in PRUNABLE_TABLES:
+            # #784: the story names the partition of a partitioned table (``memories``).
+            own = [table.c.story_id == story_id] if "story_id" in table.c else []
             key = table.c.operation_id
-            doomed = list(await conn.scalars(select(table.c[_pk(table)]).where(key.in_(list(ids)))))
+            doomed = list(
+                await conn.scalars(select(table.c[_pk(table)]).where(key.in_(list(ids)), *own))
+            )
             if not doomed:
                 continue
             if table is story_images:
@@ -652,7 +659,7 @@ async def _apply(conn: AsyncConnection, story_id: str, ids: Sequence[str]) -> di
             for start in range(0, len(doomed), CHUNK):
                 # #702: deleted in chunks of ``CHUNK`` rows, all in the one transaction.
                 chunk = doomed[start : start + CHUNK]
-                await conn.execute(delete(table).where(pk.in_(chunk)))
+                await conn.execute(delete(table).where(pk.in_(chunk), *own))
                 await index.drop_many(conn, table.name, [str(d) for d in chunk])
             rows[table.name] = len(doomed)
     finally:

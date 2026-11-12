@@ -17,9 +17,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | Area | Spec | ADRs |
 |---|---|---|
 | FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175, 187 |
+| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175, 187, 188 |
 | FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
-| FR-MEM | §4 | 070, 071, 072, 075, 169, 187 |
+| FR-MEM | §4 | 070, 071, 072, 075, 169, 187, 188 |
 | FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
 | FR-TURN | §6 | 043, 169, 170 |
@@ -48,7 +48,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-OBS | §19 | 129, 158, 162 |
 | NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187 |
+| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
@@ -249,7 +249,8 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 184 | Consumer requests and bug fixes come before performance tuning: tuning is M11 and the audit M12 | Current | — |
 | 185 | The purpose registry is opened to consumer purposes, stored in the database, with no quality floor | Current | — |
 | 186 | A subject image is kept while it is live: the media sweep never purges it | Current | — |
-| 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Current | — |
+| 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
+| 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Current | — |
 
 ---
 
@@ -1997,19 +1998,42 @@ Tuning and its exit certification come after every milestone that may change a p
 
 ### ADR-187 — Memories are partitioned by story: each story has its own table and HNSW graph
 **Status:** Accepted.
+**Amended by:** ADR-188 — the `operations` foreign key names the story, every connection plans custom, and deployment-wide changes need a sized lock table (the fourth bullet; the scale consequence).
 **Context:** `memories` had one HNSW index over every story's vectors. A story's vector search walked that shared graph and filtered to its own rows, so other stories' vectors decided what it found. Identical texts embed identically (a repeated "Hello."), and thousands of identical vectors build a poor graph: beside them, the iterative scan could return none of a small story's vectors at any `hnsw.max_scan_tuples` (#784, the likely cause of #706's flake). Raising the scan cap (#706) bounded the miss without removing it, and made a small story's search read up to the cap. The owner decided at `/n8-plan M10` round one (2026-11-11) to partition `memories` by story: "There's never a reason to reach into another story's memories."
 **Decision:** The owner's decision, applied by #784 (migration 0151).
 - `memories` is LIST-partitioned by `story_id`, one partition per story (`memories_p_<story id>`), with **no default partition**. Every path that creates a story (a blank or inline-cast story, a story from a scenario, a fork, a bundle import) creates its partition first, in a short transaction of its own; a memory written for a story with no partition fails (SQLSTATE 23514), which is a bug, never a user error.
 - Every index, the HNSW index included, is declared on the parent, so each partition has its own: **each story's vector search walks a graph of its own vectors only**, which no other story's vectors can crowd. The HNSW index is still created by the first pin and rebuilt by a dimension change (FR-MEM-8; `core.embeddings.retype`), now across the partitions.
 - The primary key is `(id, story_id)`, because Postgres cannot enforce a partitioned table's uniqueness without the partition key. **Memory ids stay globally unique by ULID generation**, as every other record's are; a fork copies memories under new ids.
-- Each partition carries the table's `fillfactor = 70` and a `TRUNCATE` refusal of its own; the row guard and the `operations` foreign key are cloned to it on attach.
+- Each partition carries the table's `fillfactor = 70` and a `TRUNCATE` refusal of its own; the row guard and the `operations` foreign key are cloned to it on attach. *[superseded in part by ADR-188: the foreign key is `(operation_id, story_id) REFERENCES operations (operation_id, story_id)`]*
 **Alternatives considered:** Keeping the global index and making test fixtures stamp distinct vectors removes the test flake but not the production miss for a story of repeated lines. An exact search fallback, or deduplicating vectors, amends the fixed statement count of a retrieval and still searches a shared graph. A partial HNSW index per story on the shared table needs the same per-story DDL and leaves the planner choosing among thousands of indexes on one table. Hash partitioning into a fixed number of buckets keeps other stories' vectors in each graph.
 **Consequences:**
-- The scale assumption is thousands of stories per deployment, where Postgres plans and locks a partition per story well (a query that names its story prunes to its partition). A deployment expected to hold hundreds of thousands of stories would need another layout (hash buckets with per-bucket graphs, or partitions by story group), and that would be a new decision. Statements that do not name a story read every partition; #866 makes every hot query name it, and #865 drops a story's partition when the story is deleted (FR-STORE-16).
+- The scale assumption is thousands of stories per deployment, where Postgres plans and locks a partition per story well (a query that names its story prunes to its partition). *[superseded in part by ADR-188: a statement that names no story locks about 15 relations per story until it commits and fails with `out of shared memory` beyond about a thousand stories on default settings; the engine's own statements name their story, and the deployment-wide operator actions need `max_locks_per_transaction` sized by docs/OPERATIONS.md's rule]* A deployment expected to hold hundreds of thousands of stories would need another layout (hash buckets with per-bucket graphs, or partitions by story group), and that would be a new decision. Statements that do not name a story read every partition; #866 makes every hot query name it, and #865 drops a story's partition when the story is deleted (FR-STORE-16).
 - A database is restored into an empty database (docs/OPERATIONS.md): `pg_restore --clean` over an existing one reports an error for each partition's inherited primary key.
 - Upgrading runs migration 0151 with the engine stopped. It copies every memory into its story's partition and builds each partition's indexes, in time proportional to the deployment's memory count, in batches of stories so a crashed run resumes. The downgrade rebuilds the unpartitioned table.
 - A story's vector arm no longer depends on other stories' vectors or on `hnsw.max_scan_tuples` to find a story's own vectors; the cap remains a cost bound (NFR-SCALE-1).
 - No older ADR states the single global index, so none gains a marker; docs/02 describes the partitioned table.
+
+---
+
+### ADR-188 — Memories' operation key names the story, and the lock table is sized for deployment-wide changes
+**Status:** Accepted. Amends ADR-187 (the foreign key; the scale consequence).
+**Context:** CI on #784 (run 43159822725) failed with `out of shared memory` (`HINT: You might need to increase max_locks_per_transaction`) in long integration shards and in the eval runner, where one database collects many stories. A statement that cannot prune plans over every partition and locks each one and its 14 indexes, 15 relations a story, until its transaction ends. Postgres's lock table is shared by the whole server and holds about `max_locks_per_transaction × (max_connections + max_prepared_transactions)` locks. Measured on `pgvector/pgvector:pg16` with the defaults (64, 100), one such statement held 7,516 locks at 500 stories and 10,921 at 727, and failed at 1,327. While one transaction holds that many, other transactions fail to take a single lock, so unrelated turns failed too (REST 503 `database_unavailable`). Three paths reached every partition:
+- the foreign-key check a deleted `operations` row runs (`SELECT 1 FROM memories WHERE operation_id = $1 FOR KEY SHARE`), which names no story, on every `DELETE /stories/{id}` (FR-STORE-16), prune and operation cleanup;
+- generic plans: psycopg prepares a statement it has run five times, and the plan cache, the foreign-key check's included, may then plan it generically, and a generic plan cannot prune when planned and locks every partition when run (PostgreSQL 16);
+- statements that name no story: a job's memory input versions (`memories:<id>` read by id alone), a fork's amendment-part subquery, prune's operation-keyed reads, the hourly reconcile and importance fan-outs (`GROUP BY story_id` over every memory), and the eval runner's isolation count.
+**Decision:** Applied by #784's fix.
+- `memories`' foreign key is `(operation_id, story_id) REFERENCES operations (operation_id, story_id)`, on a new unique `uq_operations_operation_id_story_id` (migration 0151, edited before any release). A memory and its operation belong to one story, and the check of an operation's deletion reads that story's partition alone (or nothing, for an operation with no story).
+- Every connection the engine opens runs with `plan_cache_mode = force_custom_plan` (`core.db.SESSION_OPTIONS`, appended to any `options` the DSN carries), so each statement is planned with its parameters and prunes to its story.
+- A partition is created under a global transaction advisory lock: Postgres names its indexes after its name cut to 63 bytes, and ULIDs made in the same millisecond share that prefix, so two creations at once collided on the generated index names.
+- The paths above name their story. A memory's job-input key is `memories:<story_id>:<id>`, and the reader still accepts the older `memories:<id>` of a job queued before. The fan-outs list the stories and ask each one's partition in that story's own transaction. The runner counts `memories` a batch of partitions per transaction.
+- Some operator actions change every story's partition in one transaction and cannot be split: the first embedding pin and a dimension change (FR-MEM-8: the retype and the HNSW build), an embedding model change (nulling the old vectors), a migration that alters `memories`, and `pg_dump`. Their lock cost grows with the number of stories, so a deployment of more than 500 stories sizes `max_locks_per_transaction` to `16 × stories ÷ (max_connections + max_prepared_transactions)` (rounded up to a power of two, at least 64) before them. docs/OPERATIONS.md states the rule. This is an operational requirement of ADR-187's layout, not a fix for the engine's own statements, which must keep naming their story.
+**Alternatives considered:** Raising `max_locks_per_transaction` alone would have hidden the per-turn paths until a larger deployment. Dropping the foreign key would lose the check that a memory's operation exists. Hash partitioning into a fixed number of buckets would bound every lock count, the deployment-wide ones included, but brings other stories' vectors back into each graph (ADR-187's alternatives). Splitting a model change per story would leave a mixed vector space between its transactions, and Postgres cannot retype one partition alone.
+**Consequences:**
+- A deletion, prune, fork, turn and retrieval locks one story's partition whatever the deployment's size (NFR-SCALE-1). `tests/integration/test_memory_records.py::test_an_operation_s_deletion_checks_only_its_story_s_partition` holds the foreign-key check to its story's partition past the plan cache's fifth run.
+- Each statement is planned on every run, which costs planning time on statements psycopg used to prepare. Before this decision, a prepared statement on `memories` could not prune either.
+- `operations` carries one more unique index, on `(operation_id, story_id)`.
+- Test code that scans or updates `memories` names the story, or reads the table a batch of partitions per transaction (`tests.story_support.table_rows`).
+- #866 still makes every hot statement name its story. The remaining unpruned operator lookups go to it, with this decision's measurements: beyond about a thousand stories on default settings, an unpruned statement fails outright rather than running slowly.
 
 ---
 

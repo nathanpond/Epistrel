@@ -14297,3 +14297,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the mutant is an out-of-tree plugin that wraps `httpx2.AsyncClient.put` and drops `version` from any `/engine-profile` body, which restores the old unpinned assignment. Under it the test failed at the profile assertion with `{'version': 4} != {'version': 1}` and `{'pinned': False} != {'pinned': True}`. Without it, the test and the module (155 passed) pass. No `src`/`tools` file changed, so the local gate is this module plus the static script.
   **Why:** the test plan asks for the new assertion to be shown failing with the old assignment, and the mutant convention forbids in-tree mutations.
   **Issue:** #835
+- **Decision:** stale references corrected: `test_i_29__m9_call_library` is at test_i_29_m9.py:1856 (not :1451), `own_calls` at :1572 (not :1167), the input and output gate tests at :1728 and :1788 (not :1323 and :1383), and the AC4 replay assertion in `test_i_29__m9_call` at :1632-1639 (not :1227-1231). `Engine.call_purpose` delegates to `_keyed` at engine.py:4993-5001 (not :4983-4987). idempotency.py:839 (`release`) and api/routes/purposes.py:91 still hold. The plan's ":1434" minor case is the output gate's; AC2 covers the minors case on both gates.
+  **Why:** #857, #858 and #835 grew the module before this story.
+  **Issue:** #842
+- **Decision:** three tests join test_i_29_m9.py after `test_i_29__m9_call_library`, each `@part("M9", "FR-MODEL-15")`: `_call_library_idempotent` (AC1), `_call_library_gates` (AC2) and `_call_refusal_not_stored` (AC3, REST and library in one function). Each library call uses a fresh `keyed(key)` = `dataclasses.replace(LIBRARY, idempotency_key=key)` with a `unique()` key. AC4 adds no test; it is `test_i_29__m9_call`'s replay assertion.
+  **Why:** planner lines.
+  **Issue:** #842
+- **Decision:** AC1 compares the replay to the first result with `replayed` set aside: the first has `replayed=False`, the replay `replayed=True`, and every other field is equal. The test asserts both flags.
+  **Why:** `PurposeResult.replayed` differs by design, and asserting it also shows the result came from the store.
+  **Issue:** #842
+- **Decision:** the mutant is an out-of-tree plugin (`PYTHONPATH=<scratch> pytest -p mut842`) that replaces `IdempotentCall.release` with a function that only stops key renewal. Under it `test_i_29__m9_call_refusal_not_stored` failed at the REST input-gate retry with `assert 409 != 409` (`idempotency_conflict`, `reason: request_hash`). Without it the module passed (158 passed). No `src`/`tools` file changed, so the local gate is this module plus the static script.
+  **Why:** planner line and the mutant convention.
+  **Issue:** #842

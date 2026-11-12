@@ -18,6 +18,7 @@ traceability gate takes one file per test ID and milestone).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -31,8 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import (
+    GuardrailViolation,
+    IdempotencyConflict,
     InvalidRequest,
     ModuleOff,
+    OutputPolicyViolation,
     PurposeArchived,
     PurposeNotFound,
     PurposeVersionNotFound,
@@ -1870,6 +1874,157 @@ async def test_i_29__m9_call_library(
     with pytest.raises(InvalidRequest) as mistyped:
         await lib.call_purpose(LIBRARY, name, CALL["inputs"], deadline_ms=True)
     assert mistyped.value.details["field"] == "query.deadline_ms"
+
+
+def keyed(key: str) -> RequestContext:
+    """A fresh library context under ``Idempotency-Key`` ``key`` (#842)."""
+    return dataclasses.replace(LIBRARY, idempotency_key=key)
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_library_idempotent(
+    served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
+) -> None:
+    """``Engine.call_purpose`` under an ``Idempotency-Key`` answers a repeat with the stored
+    result and no second call to the purpose's model; a different body under the same key is
+    refused with ``IdempotencyConflict``, as REST answers 409 ``idempotency_conflict`` (#842)."""
+    _, lib = served
+    register, _ = registered
+    name = unique("lib_keyed")
+    assert (await register(purpose_body(name))).status_code == 201
+    ctx = keyed(unique("k-842-lib"))
+
+    lib.models.stub.script(name, [answer("Stored.")])
+    first = await lib.call_purpose(ctx, name, CALL["inputs"])
+    assert first.output["reason"] == "Stored."
+    assert own_calls(lib, name) == 1
+    lib.models.stub.script(name, [answer("Second.")])
+    again = await lib.call_purpose(ctx, name, CALL["inputs"])
+    assert (first.replayed, again.replayed) == (False, True)
+    assert dataclasses.replace(again, replayed=False) == first
+    assert own_calls(lib, name) == 1
+    with pytest.raises(IdempotencyConflict):
+        await lib.call_purpose(ctx, name, {"voter": "Briar", "target": "Ash"})
+    assert own_calls(lib, name) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_library_gates(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+) -> None:
+    """``Engine.call_purpose`` runs the input gate (``GuardrailViolation`` naming its locator,
+    no call to the purpose's model) and the output gate (one retry, then
+    ``OutputPolicyViolation`` with no output), including a depicted minor on each side, as
+    ``test_i_29__m9_call_input_gate`` and ``_output_gate`` assert over REST (#842). Audit rows
+    are asserted over REST only."""
+    _, lib = served
+    register, _ = registered
+    name = unique("lib_gated")
+    assert (await register(purpose_body(name))).status_code == 201
+    banned = {"voter": "Ash", "target": "Briar", "notes": {"said": ["ok", BANNED]}}
+
+    with pytest.raises(GuardrailViolation) as refused_in:
+        await lib.call_purpose(
+            keyed(unique("k-842-in")), name, banned, content_rating=banned_rating
+        )
+    assert refused_in.value.details["violations"][0]["locator"] == "inputs.notes.said[1]"
+    assert own_calls(lib, name) == 0
+
+    lib.models.stub.script(name, [answer(f"said {BANNED}"), answer(f"also {BANNED}")])
+    with pytest.raises(OutputPolicyViolation) as refused_out:
+        await lib.call_purpose(
+            keyed(unique("k-842-out")), name, CALL["inputs"], content_rating=banned_rating
+        )
+    assert refused_out.value.details["attempts"] == 2
+    assert BANNED not in json.dumps(refused_out.value.details)
+    assert own_calls(lib, name) == 2
+
+    recognise(lib.models.stub, UNSAFE_PHRASE)
+    minor = [{"label": "Kit", "true_age": 15}]
+    with pytest.raises(GuardrailViolation) as minor_in:
+        await lib.call_purpose(
+            keyed(unique("k-842-minor-in")),
+            name,
+            {"voter": f"Ash in {UNSAFE_PHRASE}", "target": "Kit"},
+            depicted=minor,
+        )
+    assert "a minor is involved or present" in minor_in.value.message
+    assert own_calls(lib, name) == 2
+    unsafe = answer(f"Kit at {UNSAFE_PHRASE}")
+    lib.models.stub.script(name, [unsafe, unsafe])
+    with pytest.raises(OutputPolicyViolation):
+        await lib.call_purpose(
+            keyed(unique("k-842-minor-out")), name, CALL["inputs"], depicted=minor
+        )
+    assert own_calls(lib, name) == 4
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-15")
+async def test_i_29__m9_call_refusal_not_stored(
+    served: tuple[httpx.AsyncClient, Engine],
+    registered: tuple[Register, list[str]],
+    banned_rating: str,
+) -> None:
+    """A refusal is never stored under its ``Idempotency-Key`` (FR-MODEL-15; #842): over REST
+    and through the library, after a ``guardrail_violation`` or an ``output_policy_violation``
+    under a key, the same key with a valid different body is answered 200 (not 409
+    ``idempotency_conflict``) from a fresh call to the purpose's model. REST and the library
+    use separate keys."""
+    client, lib = served
+    register, _ = registered
+    name = unique("unstored")
+    assert (await register(purpose_body(name))).status_code == 201
+    banned = {"voter": "Ash", "target": "Briar", "notes": {"said": ["ok", BANNED]}}
+    bad = answer(f"said {BANNED}")
+
+    rest_in = {"Idempotency-Key": unique("k-842-rest-in")}
+    refused = await call(
+        client, name, {"inputs": banned, "content_rating": banned_rating}, **rest_in
+    )
+    assert reason_of(refused)[:2] == (422, "guardrail_violation")
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("After input.")])
+    retried = await call(client, name, CALL, **rest_in)
+    assert retried.status_code != 409, retried.text
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "After input."
+    assert own_calls(lib, name) == before + 1
+
+    rest_out = {"Idempotency-Key": unique("k-842-rest-out")}
+    lib.models.stub.script(name, [bad, bad])
+    refused = await call(client, name, {**CALL, "content_rating": banned_rating}, **rest_out)
+    assert reason_of(refused)[:2] == (422, "output_policy_violation")
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("After output.")])
+    retried = await call(client, name, CALL, **rest_out)
+    assert retried.status_code != 409, retried.text
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["output"]["reason"] == "After output."
+    assert own_calls(lib, name) == before + 1
+
+    lib_in = keyed(unique("k-842-lib-in"))
+    with pytest.raises(GuardrailViolation):
+        await lib.call_purpose(lib_in, name, banned, content_rating=banned_rating)
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("Library after input.")])
+    result = await lib.call_purpose(lib_in, name, CALL["inputs"])
+    assert result.output["reason"] == "Library after input."
+    assert own_calls(lib, name) == before + 1
+
+    lib_out = keyed(unique("k-842-lib-out"))
+    lib.models.stub.script(name, [bad, bad])
+    with pytest.raises(OutputPolicyViolation):
+        await lib.call_purpose(lib_out, name, CALL["inputs"], content_rating=banned_rating)
+    before = own_calls(lib, name)
+    lib.models.stub.script(name, [answer("Library after output.")])
+    result = await lib.call_purpose(lib_out, name, CALL["inputs"])
+    assert result.output["reason"] == "Library after output."
+    assert own_calls(lib, name) == before + 1
 
 
 # -- a consumer purpose called inside a story (FR-MODEL-16; #826) -----------------------------

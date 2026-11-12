@@ -60,7 +60,6 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Self
 
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -102,6 +101,12 @@ UPGRADE_CAMEL = "upgradeMode"
 """The camelCase spelling of ``upgrade_mode`` (#229)."""
 UpgradeMode = Literal["backfill", "forward_only"]
 """#229 (FR-PROF-8): how a story with history gains data-producing capability."""
+_SPELLINGS = (
+    ("ignore_warnings", "camel_ignore_warnings", "ignore_warnings and ignoreWarnings"),
+    ("upgrade_mode", "camel_upgrade_mode", "upgrade_mode and upgradeMode"),
+)
+"""#794: each two-spelling flag of ``TwoStageRequest``: its field, its camelCase field, and the
+pair's names for the "disagree" refusal."""
 WARNING_KINDS = (
     "capabilities_gained",
     "capabilities_lost",
@@ -775,37 +780,51 @@ class TwoStageRequest(BaseModel):
     ``ignore_warnings`` a change the impact report warns of is not applied, and the answer is
     the report; with it, the change applies and the answer carries the report too.
     ``ignoreWarnings`` is the same flag for camelCase clients; sending both with different
-    values is 422 ``validation_error``."""
+    values is 422 ``validation_error``.
+
+    #794: each camelCase spelling is a field of its own, so it is validated as strictly as the
+    snake one (a non-boolean ``ignoreWarnings`` is 422 at ``body.ignoreWarnings`` even beside
+    ``ignore_warnings``), and the two are compared only once both are valid: a type error wins
+    over "disagree", and with both spellings invalid the snake one is reported first."""
 
     model_config = ConfigDict(extra="forbid")
 
     ignore_warnings: StrictBool = Field(
         default=False,
-        validation_alias=AliasChoices("ignore_warnings", CAMEL_CASE),
         description="Apply the change even when its impact report warns (FR-PROF-7). An invalid "
         "configuration is refused all the same.",
     )
     upgrade_mode: UpgradeMode | None = Field(
         default=None,
-        validation_alias=AliasChoices("upgrade_mode", UPGRADE_CAMEL),
         description="#229 (FR-PROF-8): how a story with history gains data-producing "
         "capability: `backfill` (the default: its data re-derived, the story paused only while "
         "its own backfill runs) or `forward_only` (from its next turn; the earlier turns keep a "
         "coverage gap). Ignored for a change that adds no such capability.",
     )
+    camel_ignore_warnings: StrictBool = Field(
+        default=False, validation_alias=CAMEL_CASE, exclude=True
+    )
+    """``ignoreWarnings`` as sent (#794); read ``ignore_warnings``, which carries it."""
+    camel_upgrade_mode: UpgradeMode | None = Field(
+        default=None, validation_alias=UPGRADE_CAMEL, exclude=True
+    )
+    """``upgradeMode`` as sent (#794); read ``upgrade_mode``, which carries it."""
 
-    @model_validator(mode="before")
-    @classmethod
-    def _one_spelling(cls, data: Any) -> Any:
-        if isinstance(data, Mapping) and "ignore_warnings" in data and CAMEL_CASE in data:
-            if data["ignore_warnings"] != data[CAMEL_CASE]:
-                raise ValueError("ignore_warnings and ignoreWarnings disagree: send one of them")
-            data = {key: value for key, value in data.items() if key != CAMEL_CASE}
-        if isinstance(data, Mapping) and "upgrade_mode" in data and UPGRADE_CAMEL in data:
-            if data["upgrade_mode"] != data[UPGRADE_CAMEL]:
-                raise ValueError("upgrade_mode and upgradeMode disagree: send one of them")
-            data = {key: value for key, value in data.items() if key != UPGRADE_CAMEL}
-        return data
+    @model_validator(mode="after")
+    def _one_spelling(self) -> Self:
+        sent = self.model_fields_set
+        for snake, camel, names in _SPELLINGS:
+            if camel not in sent:
+                continue
+            value = getattr(self, camel)
+            if snake in sent:
+                if getattr(self, snake) != value:
+                    raise ValueError(f"{names} disagree: send one of them")
+            else:
+                # A frozen subclass (``StoryFromScenario``) refuses ``setattr``.
+                object.__setattr__(self, snake, value)
+                sent.add(snake)
+        return self
 
     @classmethod
     def __get_pydantic_json_schema__(
@@ -817,6 +836,10 @@ class TwoStageRequest(BaseModel):
         if handler.mode == "validation":
             target = handler.resolve_ref_schema(found)
             properties: dict[str, Any] = target.setdefault("properties", {})
+            # #794: the camelCase fields publish under their aliases; each is replaced by its
+            # snake twin's schema and listed last, as before they were fields.
+            properties.pop(CAMEL_CASE, None)
+            properties.pop(UPGRADE_CAMEL, None)
             if "ignore_warnings" in properties:
                 properties[CAMEL_CASE] = {
                     **properties["ignore_warnings"],

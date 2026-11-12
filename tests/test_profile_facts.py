@@ -16,6 +16,7 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+from epistrel.core.genesis.models import StoryFromScenario
 from epistrel.core.profiles import schema
 from epistrel.core.profiles.capabilities import CAPABILITY
 from epistrel.core.profiles.effective import Configuration
@@ -42,6 +43,7 @@ from epistrel.core.profiles.fingerprint import (
 from epistrel.core.profiles.guarantees import GUARANTEES, guarantees
 from epistrel.core.profiles.impact import (
     CAMEL_CASE,
+    UPGRADE_CAMEL,
     WARNING_KINDS,
     ImpactPreviewRequest,
     ImpactReport,
@@ -57,13 +59,14 @@ from epistrel.core.profiles.impact import (
 from epistrel.core.profiles.schema import ProfileSettings, delivered_values, exposed
 from epistrel.core.profiles.store import ProfileUpdate
 from epistrel.core.profiles.validate import parse_settings
+from epistrel.core.prune import PruneRequest
 from epistrel.core.seeds.profiles import LITE_PRESET_ID, lite_settings
 from epistrel.orchestrator.models.config import ConfigRow
 from epistrel.orchestrator.models.facts import TEMPLATE_HASHES, identities, template_source
 from epistrel.orchestrator.models.registry import DEFAULT_MODEL_KEY, STORY_PURPOSES
 from epistrel.testing.profiles import data_producing
 from tests.conftest import REPO_ROOT
-from tests.profile_support import LITE_CAPABILITIES, merged, nest
+from tests.profile_support import LITE_CAPABILITIES, NOT_BOOLEAN, REPORTED_794, merged, nest
 
 FACTS = RuntimeFacts(
     models={"generation": ModelIdentity(id="m-1"), "guardrail_check": ModelIdentity(id="m-2")},
@@ -386,6 +389,86 @@ def test_both_spellings_of_ignore_warnings() -> None:
     assert issubclass(ProfileUpdate, TwoStageRequest)
     with pytest.raises(ValidationError):
         ImpactPreviewRequest.model_validate({})
+
+
+# -- #794: each spelling typed before the two are compared ------------------------------------
+
+
+def test_each_spelling_is_typed_before_they_are_compared() -> None:
+    """#794 at the model (``ProfileUpdate``; ``StoryFromScenario`` and ``PruneRequest`` for the
+    complement): a non-boolean ``ignoreWarnings`` is refused at its own field whatever
+    ``ignore_warnings`` says (a type error wins over "disagree"), and ``upgradeMode`` the same
+    beside ``upgrade_mode``.
+
+    Complement asserted: either spelling alone and both agreeing behave as before (the camel
+    value carried into the snake field, nothing extra dumped), both at odds is still the
+    "disagree" refusal at the body, and the camel field's own name is no spelling."""
+    body = {"name": "Lite", "settings": {}}
+
+    def errors(document: dict[str, Any]) -> list[tuple[Any, str]]:
+        found: list[tuple[Any, str]] = []
+        with pytest.raises(ValidationError) as lax:
+            ProfileUpdate.model_validate(document)
+        with pytest.raises(ValidationError) as strict:
+            ProfileUpdate.model_validate_json(json.dumps(document), strict=True)
+        for caught in (lax, strict):
+            found += [(e["loc"], e["type"]) for e in caught.value.errors()]
+        return found
+
+    for value in NOT_BOOLEAN:
+        for snake in (False, True):
+            assert (
+                errors({**body, "ignore_warnings": snake, CAMEL_CASE: value})
+                == [((CAMEL_CASE,), "bool_type")] * 2
+            ), value
+    assert (
+        errors({**body, "ignore_warnings": 0, CAMEL_CASE: 0})
+        == [
+            (("ignore_warnings",), "bool_type"),
+            ((CAMEL_CASE,), "bool_type"),
+        ]
+        * 2
+    )
+    assert (
+        errors({**body, "upgrade_mode": None, UPGRADE_CAMEL: 0})
+        == [((UPGRADE_CAMEL,), "literal_error")] * 2
+    )
+    assert (
+        errors({**body, "upgrade_mode": "backfill", UPGRADE_CAMEL: None})
+        == [((), "value_error")] * 2
+    )
+    assert errors({**body, "ignore_warnings": True, CAMEL_CASE: False}) == [((), "value_error")] * 2
+    with pytest.raises(ValidationError) as caught:
+        ProfileUpdate.model_validate({**body, "camel_ignore_warnings": True})
+    assert caught.value.errors()[0]["type"] == "extra_forbidden"
+
+    for flag in (False, True):
+        for document in (
+            {**body, "ignore_warnings": flag},
+            {**body, CAMEL_CASE: flag},
+            {**body, "ignore_warnings": flag, CAMEL_CASE: flag},
+        ):
+            found = ProfileUpdate.model_validate(document)
+            assert found.ignore_warnings is flag
+            assert "ignore_warnings" in found.model_fields_set
+            assert set(found.model_dump()) == {
+                "ignore_warnings",
+                "upgrade_mode",
+                "name",
+                "settings",
+            }
+    for mode in ("backfill", "forward_only", None):
+        for sent in (
+            {**body, UPGRADE_CAMEL: mode},
+            {**body, "upgrade_mode": mode, UPGRADE_CAMEL: mode},
+        ):
+            assert ProfileUpdate.model_validate(sent).upgrade_mode == mode
+    created = StoryFromScenario.model_validate(
+        {"scenario": {"id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"}, CAMEL_CASE: True}
+    )
+    assert created.ignore_warnings is True  # carried into a frozen subclass
+    same = {**REPORTED_794, CAMEL_CASE: False}
+    assert PruneRequest.model_validate_json(json.dumps(same), strict=True).ignore_warnings is False
 
 
 async def test_two_stage_applies_only_when_it_may() -> None:

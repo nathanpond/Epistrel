@@ -23,6 +23,10 @@ The C-17 (M3) parts are here too. The I-21 part (profiles' owners) is ``test_i_2
   version → story overrides, validated as a whole; an invalid override refused and not stored;
   the overrides kept across versions; a behavioral edit followed at the next turn with no job;
   a turn in flight finishing under the configuration it captured.
+- ``test_c_16__camel_flag_typed`` and ``test_c_16__reported_794`` (#794): a non-boolean
+  ``ignoreWarnings`` is refused at its field on every route whose body is a two-stage request,
+  beside an ``ignore_warnings`` it would equal loosely as much as alone; #794's own payload, on
+  the route it was reported on.
 - ``test_c_16__follow_latest`` (#113): stories assigned a profile through the API follow its
   latest version; a behavioral edit is a configuration change that applies at each follower's
   next turn boundary without a warning or a job; every respond response names the profile and
@@ -41,16 +45,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import secrets
 from collections.abc import AsyncIterator
 from contextvars import Context
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, get_args
 
 import httpx2 as httpx
 import pytest
 from alembic import command
+from fastapi import FastAPI
+from fastapi.routing import APIRoute, iter_route_contexts
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -63,6 +70,7 @@ from epistrel import (
     ProfileValidate,
     RequestContext,
 )
+from epistrel.api import create_app
 from epistrel.config import Settings
 from epistrel.core import fork as forking
 from epistrel.core.db import make_engine, make_sync_engine
@@ -72,6 +80,7 @@ from epistrel.core.profiles.fingerprint import RuntimeFacts
 from epistrel.core.profiles.impact import (
     CAMEL_CASE,
     Recommendation,
+    TwoStageRequest,
     TwoStageResult,
     creation_report,
     two_stage,
@@ -143,8 +152,11 @@ from tests.profile_support import (
     LITE_CAPABILITIES,
     M3_DELIVERED,
     NO_BACKFILL,
+    NOT_BOOLEAN,
     PROFILES,
     REDERIVATION,
+    REPORTED_794,
+    REPORTED_794_AT,
     SEEDED_PROFILES,
     SETTINGS,
     UNCERTIFIED,
@@ -843,6 +855,96 @@ async def test_c_16__two_stage(scratch: Space) -> None:
 
 
 # -- C-17 --------------------------------------------------------------------------------------
+
+
+TWO_STAGE_ROUTES = {
+    ("POST", "/admin/offboarding"),
+    ("POST", "/stories/{story_id}/prune"),
+    ("PUT", "/stories/{story_id}/engine-profile"),
+    ("PATCH", "/stories/{story_id}/profile-overrides"),
+    ("POST", "/engine-profiles/{profile_id}/upgrade-pinned"),
+    ("PUT", "/engine-profiles/{profile_id}"),
+    ("POST", "/stories"),
+}
+"""#794: the routes whose body is a ``TwoStageRequest`` when it was fixed (discovery must find
+at least these)."""
+SELECTED = {("POST", "/stories"): {"scenario": {"id": "01J9Z8Q4N5V6W7X8Y9Z0A1B2C3"}}}
+"""Routes whose body model a selector picks from the document (``register_body_selector``),
+each with what makes it pick a ``TwoStageRequest``: ``POST /stories`` is a creation from a
+scenario when the body names ``scenario`` (#119). Its handler takes a raw object, so discovery
+by body type cannot find it."""
+
+
+def _two_stage_routes(app: FastAPI) -> set[tuple[str, str]]:
+    """Every route whose handler's body type is a ``TwoStageRequest`` (or an optional one), and
+    the ``SELECTED`` ones."""
+    found = set(SELECTED)
+    for context in iter_route_contexts(app.routes):
+        route = context.original_route
+        if not isinstance(route, APIRoute) or route.body_field is None:
+            continue
+        annotation = route.body_field.field_info.annotation
+        for kind in (annotation, *get_args(annotation)):
+            if isinstance(kind, type) and issubclass(kind, TwoStageRequest):
+                found |= {(method, context.path or route.path) for method in route.methods or ()}
+    return found
+
+
+@pytest.mark.part("M3", "FR-PROF-7")
+@pytest.mark.parametrize("value", NOT_BOOLEAN, ids=repr)
+async def test_c_16__camel_flag_typed(
+    stub_settings: Settings, engine: AsyncEngine, value: Any
+) -> None:
+    """#794: an ``ignoreWarnings`` that is not a boolean is 422 ``validation_error`` at
+    ``body.ignoreWarnings`` on every route whose body is a ``TwoStageRequest``, found from the
+    route table, beside an ``ignore_warnings: false`` it would equal loosely (``0 == False``)
+    as much as alone, and nothing is written.
+
+    Complement asserted: with both spellings non-boolean, the snake one is the field."""
+    routes = _two_stage_routes(create_app(stub_settings))
+    assert routes >= TWO_STAGE_ROUTES, TWO_STAGE_ROUTES - routes
+    problems: list[str] = []
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, _ = await _story(client)
+        unchanged = await configuration_rows(engine)
+        for method, path in sorted(routes):
+            sent = re.sub(r"\{[^}]+\}", story, path)
+            base = SELECTED.get((method, path), {})
+            for body, field in (
+                ({**base, "ignore_warnings": False, CAMEL_CASE: value}, f"body.{CAMEL_CASE}"),
+                ({**base, CAMEL_CASE: value}, f"body.{CAMEL_CASE}"),
+                ({**base, "ignore_warnings": value, CAMEL_CASE: value}, "body.ignore_warnings"),
+            ):
+                response = await client.request(method, sent, json=body, headers=headers(A))
+                error = response.json().get("error", {}) if response.status_code == 422 else {}
+                shown = (error.get("code"), error.get("details", {}).get("field"))
+                if shown != ("validation_error", field):
+                    problems.append(
+                        f"{method} {path} {body}: {response.status_code} {response.text}"
+                    )
+        assert await configuration_rows(engine) == unchanged
+    assert problems == []
+
+
+@pytest.mark.part("M3", "FR-PROF-7")
+async def test_c_16__reported_794(stub_settings: Settings, engine: AsyncEngine) -> None:
+    """#794's exact payload (``REPORTED_794``) to the route it was reported on is 422
+    ``validation_error`` at ``body.ignoreWarnings``, its only error (it was answered 200 with the
+    impact report).
+
+    Complement asserted: the same body with ``ignoreWarnings: false`` is that 200, unapplied."""
+    async with respond_client(stub_settings, engine) as (client, _):
+        story, _ = await _story(client)
+        route = REPORTED_794_AT.format(story_id=story)
+        error = refused(
+            await client.post(route, json=REPORTED_794, headers=headers(A)), 422, "validation_error"
+        )
+        assert error["details"]["field"] == f"body.{CAMEL_CASE}"
+        assert [e["field"] for e in error["details"]["errors"]] == [f"body.{CAMEL_CASE}"]
+        held = await ok(
+            await client.post(route, json={**REPORTED_794, CAMEL_CASE: False}, headers=headers(A))
+        )
+        assert held["applied"] is False
 
 
 def c17_scenario(locked: str, default: str) -> dict[str, Any]:

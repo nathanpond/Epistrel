@@ -14102,3 +14102,33 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the C-01 tally ran `test_c_01` for the four usage routes 20 times, with `.hypothesis` moved to the scratchpad and deleted before each run. All 20 runs gave "4 passed" (20/20). The database was restored afterwards.
   **Why:** the AC asks for 20 consecutive runs with no saved examples, so each run explores afresh.
   **Issue:** #836
+- **Decision:** `TwoStageRequest` gains `camel_ignore_warnings` (`StrictBool`, alias `ignoreWarnings`) and `camel_upgrade_mode` (`UpgradeMode | None`, alias `upgradeMode`), both `exclude=True`. The snake fields now read only their snake key. The before-validator that compared raw values is replaced by an after-validator over `_SPELLINGS`, which compares the validated values and refuses a disagreement at `body`, as before. When only the camel key was sent, it copies the value into the snake field with `object.__setattr__` and adds the snake name to `model_fields_set`.
+  **Why:** this is the planner line's structure. If the snake field kept `AliasChoices(snake, camel)`, a camel-only non-boolean would be reported twice at the same field. `StoryFromScenario` is frozen, so plain assignment is refused.
+  **Issue:** #794
+- **Decision:** `StoryFromScenario`'s redeclared `ignore_warnings` drops its `AliasChoices("ignore_warnings", CAMEL_CASE)`, so it reads the snake key only, like the base field. The camel key reaches it through the base's camel field.
+  **Why:** with the alias kept, both fields would read `ignoreWarnings` and a bad value would be reported twice.
+  **Issue:** #794
+- **Decision:** the JSON-schema hook pops `ignoreWarnings`/`upgradeMode`, which the new fields publish under their aliases, before writing its own entries. `docs/openapi.json` is byte-identical, and `openapi --check` passes.
+  **Why:** re-adding the keys keeps them last in `properties`, where they were before they became fields. The published schema does not change.
+  **Issue:** #794
+- **Decision:** pydantic's JSON mode ignores a key that is an aliased field's own name (`{"camel_ignore_warnings": true}` validates and sets nothing). Python mode refuses it as `extra_forbidden`. FastAPI validates the body in Python mode after `strict_json_body`, so the API answers 422 at `body.camel_ignore_warnings`. Only a library caller of `model_validate_json` would see it ignored. Nothing is changed for this.
+  **Why:** this is pydantic behaviour for every aliased field in the codebase, not something #794 introduced, and the key is never applied.
+  **Issue:** #794
+- **Decision:** the API tests join C-16's M3 parts in `tests/integration/test_engine_profiles.py`: `test_c_16__camel_flag_typed` (parametrized over `0, 1, "true", [], null`) and `test_c_16__reported_794`, each `@part("M3", "FR-PROF-7")`. The model-level complement, `test_each_spelling_is_typed_before_they_are_compared`, is in `tests/test_profile_facts.py`, unmarked, beside `test_both_spellings_of_ignore_warnings`. `NOT_BOOLEAN` and `REPORTED_794` are in `tests/profile_support.py`.
+  **Why:** a part-marked test whose name is not a docs/04 ID becomes its own ID (`check-parts` reported `test_794_…` as unmappable). C-16 (M3) already carries FR-PROF-7 in `test_c_16__two_stage`. `test_profile_facts.py` carries no markers, so its test has none.
+  **Issue:** #794
+- **Decision:** route discovery walks `iter_route_contexts` for routes whose body annotation, or a member of its union, subclasses `TwoStageRequest`. It adds `SELECTED = {POST /stories: a body naming scenario}` explicitly, and asserts the result covers the seven routes at fix time. Each route gets three bodies: the pair with `ignore_warnings: false`, the camel key alone, and both keys non-boolean (expected field `body.ignore_warnings`).
+  **Why:** the planner line asks for body-selector routes to be handled and `POST /stories` to be listed. `/stories` takes a raw object, so discovery by body type cannot find it.
+  **Issue:** #794
+- **Decision:** the pinned test sends #794's payload to a real story's `POST /stories/{id}/prune` on the shared database. The complement is the same body with `ignoreWarnings: false`, which answers 200 with `applied: false`.
+  **Why:** on the pre-fix code the payload answers 200 against a real story, which is the reported failure itself, and pruning with empty `targets` and no confirmation writes nothing.
+  **Issue:** #794
+- **Decision:** the fail-first run used `git archive a20d4fd` in the scratchpad with the new test files copied over, run on the worktree's venv with `PYTHONPATH` set to the archive. All seven new tests failed. `test_c_16__reported_794` got `assert 200 == 422`. Each `test_c_16__camel_flag_typed` case listed 7 routes, for example profile-overrides answering 422 at `body` ("disagree") for `ignoreWarnings: 1`. The model test got `DID NOT RAISE ValidationError`.
+  **Why:** the engine-wide planner line requires the pre-fix commit or an out-of-tree mutant.
+  **Issue:** #794
+- **Decision:** the pinned test is `test_c_16__reported_794`. Its payload and route come from `tests/profile_support.py` (`REPORTED_794`, `REPORTED_794_AT`), and its name and body do not use the word "prune".
+  **Why:** `check-lexicon` refuses "prune" (an M7 term) in an M3 part. The constant follows the module's existing convention for later-milestone terms (`REDERIVATION`).
+  **Issue:** #794
+- **Decision:** the C-01 tally ran `test_c_01` for the seven `TwoStageRequest` routes 20 times, through an out-of-tree pytest plugin that keeps only those items. `.hypothesis` was moved to the scratchpad and deleted before each run. All 20 runs gave "7 passed" (20/20), and `.hypothesis` was restored afterwards.
+  **Why:** the AC asks for 20 consecutive runs with no saved examples. Schemathesis node ids cannot be selected by id on the command line.
+  **Issue:** #794

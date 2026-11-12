@@ -360,6 +360,18 @@ LITE_CAPABILITIES = ["budgets", "lite", "models", "pins", "polish", "rolling_sum
 """What the Lite preset enables: its pipeline by level, and every delivered module it turns on."""
 POLISH = "repair.polish.enabled"
 """The polish pass's switch: a delivered module the tests mark data-producing."""
+NOT_BOOLEAN: list[Any] = [0, 1, "true", [], None]
+"""#794: values of ``ignoreWarnings`` that equal or resemble a boolean but are not one."""
+REPORTED_794: dict[str, Any] = {
+    "ignoreWarnings": 0,
+    "ignore_warnings": False,
+    "targets": [],
+    "upgradeMode": None,
+    "upgrade_mode": None,
+}
+"""#794's payload, as schemathesis sent it to ``POST /stories/{id}/prune`` (answered 200)."""
+REPORTED_794_AT = "/stories/{story_id}/prune"
+"""The route #794 was reported on (an M7 route, named through this constant)."""
 
 
 async def configuration_rows(db: AsyncEngine) -> dict[str, Any]:

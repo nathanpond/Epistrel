@@ -18,8 +18,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from epistrel.api.config_changes import IsoDateTime
 from epistrel.api.deps import ContextDep, EngineDep
+from epistrel.api.iso import IsoDateTime
 from epistrel.api.routes.feedback import FEEDBACK_TAG
 from epistrel.core.feedback_reporting import (
     CURSOR_MAX,

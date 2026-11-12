@@ -18,11 +18,14 @@ import inspect
 import re
 import typing
 from collections.abc import Iterator
+from datetime import UTC, date, datetime
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from epistrel.api import create_app
 from epistrel.core.catalog.scenario_models import (
     RoleEligibility,
     ScenarioCast,
@@ -42,6 +45,7 @@ from epistrel.core.settings_schema import GenerationSettings
 from epistrel.core.timeline import TruncateRequest
 from epistrel.core.variants import ChainRef
 from epistrel.engine import (
+    ISO_TIMES_ATTRIBUTE,
     STRICT_SCALARS_ATTRIBUTE,
     Engine,
     library_only_methods,
@@ -49,6 +53,10 @@ from epistrel.engine import (
 )
 from epistrel.orchestrator.lite.schemas import BudgetOverride, RegenerateRequest
 from epistrel.orchestrator.models.adapter import ModelParams
+from tests import catalog_support, scenario_support
+from tests import consolidation_support as cs
+from tests.auth_support import auth_settings, bearer
+from tests.respond_support import respond_client
 
 LAX = frozenset({"int", "float", "bool"})
 SKIPPED_KEYS = frozenset({"serialization", "metadata", "json_schema_input_schema"})
@@ -294,4 +302,175 @@ async def test_a_mistyped_scalar_is_refused_at_its_parameter(
     passed = await _call(name, parameter, VALID[scalar])
     assert not (
         isinstance(passed, InvalidRequest) and passed.details.get("field") == f"{where}.{parameter}"
+    ), passed
+
+
+# -- date and date-time query parameters (#788) -----------------------------------------------
+
+NOT_A_TIME: tuple[str, ...] = ("258", "0.0", "-1")
+"""Numbers, which pydantic's lax ``datetime`` and ``date`` read as seconds since the epoch: the
+schema's ``date-time`` and ``date`` promise no such form (FR-API-4)."""
+STRICTER: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("/admin/evals/escalation-yield", "from"),
+        ("/admin/evals/escalation-yield", "to"),
+        ("/admin/evals/extraction-shadow", "from"),
+        ("/admin/evals/extraction-shadow", "to"),
+    }
+)
+"""``admin/verify.py``'s ``from``/``to``: strings with an RFC 3339 pattern, stricter than
+``date-time``, so the schema names no format for them and they are listed here."""
+EXTRA_PARAMS: dict[str, dict[str, str]] = {
+    "/admin/stories/{story_id}/facts": {"viewpoint": "omniscient"},
+    "/feedback/aggregates": {"group_by": "day"},
+}
+"""The other parameters a route needs to answer 200."""
+VALID_TIMES: dict[str, tuple[str, ...]] = {
+    "date-time": ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00+02:00"),
+    "date": ("2026-01-01",),
+}
+
+
+def _formats(schema: Any) -> set[str]:
+    if not isinstance(schema, dict):
+        return set()
+    found = {schema["format"]} if "format" in schema else set()
+    for key in ("anyOf", "oneOf", "allOf"):
+        for member in schema.get(key, ()):
+            found |= _formats(member)
+    return found
+
+
+def dated_query_parameters(document: dict[str, Any]) -> dict[tuple[str, str], str]:
+    """``{(path, name): format}`` for every GET query parameter whose schema is a ``date-time``
+    or a ``date``, and ``STRICTER``'s parameters as ``date-time``."""
+    found: dict[tuple[str, str], str] = {}
+    for path, item in document["paths"].items():
+        for parameter in item.get("get", {}).get("parameters", ()):
+            if parameter["in"] != "query":
+                continue
+            formats = _formats(parameter.get("schema")) & {"date", "date-time"}
+            if formats:
+                (found[(path, parameter["name"])],) = formats
+    for key in STRICTER:
+        assert key not in found, key
+        found[key] = "date-time"
+    return found
+
+
+KNOWN_DATED: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("/stories/{story_id}/operations", "since"),
+        ("/stories/{story_id}/operations", "until"),
+        ("/admin/stories/{story_id}/facts", "as_of_record_time"),
+        ("/admin/image-usage", "from"),
+        ("/feedback/aggregates", "to"),
+    }
+)
+"""Parameters the enumeration must find, the issue's among them (a check of the walk itself)."""
+
+
+async def _path_ids(client: Any, engine: AsyncEngine) -> dict[str, str]:
+    """Real ids for the dated routes' path parameters: a story (on ``Structured (M4)``, so its
+    canon reads answer), a catalog character and a scenario."""
+    world = await cs.story(engine)
+    character = await catalog_support.create(client)
+    scenario = await scenario_support.create(client)
+    return {
+        "story_id": world.story_id,
+        "character_id": character["id"],
+        "scenario_id": scenario["id"],
+    }
+
+
+async def _dated_problems(client: Any, ids: dict[str, str], dated: dict[Any, str]) -> list[str]:
+    """Each dated parameter that takes one of ``NOT_A_TIME`` (anything but 422
+    ``validation_error`` at ``query.<name>``) or refuses one of ``VALID_TIMES`` (anything but
+    200)."""
+    problems: list[str] = []
+    for (template, name), kind in sorted(dated.items()):
+        path = template.format(**ids)
+        extra = EXTRA_PARAMS.get(template, {})
+        for value in NOT_A_TIME:
+            answer = await client.get(path, params={**extra, name: value}, headers=bearer())
+            error = answer.json().get("error", {}) if answer.status_code == 422 else {}
+            found = (error.get("code"), error.get("details", {}).get("field"))
+            if found != ("validation_error", f"query.{name}"):
+                problems.append(f"{template} {name}={value}: {answer.status_code}")
+        for value in VALID_TIMES[kind]:
+            answer = await client.get(path, params={**extra, name: value}, headers=bearer())
+            if answer.status_code != 200:
+                problems.append(f"{template} {name}={value}: {answer.text}")
+    return problems
+
+
+@pytest.mark.integration
+async def test_every_dated_query_parameter_refuses_a_number(
+    pg_url: str, engine: AsyncEngine, drained_embedding_jobs: None
+) -> None:
+    """``?until=258`` (``0.0``, ``-1``) is 422 ``validation_error`` at ``query.until``, and so is
+    every other ``date-time`` or ``date`` query parameter the app documents, ``admin/verify``'s
+    pattern-typed ``from``/``to`` among them: a lax one added later fails here (FR-API-4;
+    #788, C-01's flakes). Before #788 ``GET /stories/{id}/operations?until=258`` answered 200.
+
+    Complement asserted: ``2026-01-01T00:00:00Z`` and ``2026-01-01T00:00:00+02:00`` (a date
+    parameter: ``2026-01-01``) still answer 200."""
+    settings = auth_settings(pg_url, model_adapter="stub")
+    dated = dated_query_parameters(create_app(settings).openapi())
+    assert set(dated) >= KNOWN_DATED
+    async with respond_client(settings, engine) as (client, _):
+        ids = await _path_ids(client, engine)
+        assert await _dated_problems(client, ids, dated) == []
+
+
+def _dated_cases() -> list[tuple[str, str, type]]:
+    """``(method, parameter, datetime | date)`` for every public method parameter typed
+    ``datetime`` or ``date`` (alone or with ``None``)."""
+    found: list[tuple[str, str, type]] = []
+    for name in operations() + sorted(library_only_methods()):
+        hints = typing.get_type_hints(inspect.unwrap(getattr(Engine, name)))
+        for parameter, annotation in hints.items():
+            members = set(typing.get_args(annotation)) or {annotation}
+            for kind in (datetime, date):
+                if parameter != "return" and kind in members:
+                    found.append((name, parameter, kind))
+    return found
+
+
+DATED_CASES = _dated_cases()
+VALID_VALUE: dict[type, Any] = {datetime: datetime(2026, 1, 1, tzinfo=UTC), date: date(2026, 1, 1)}
+
+
+def test_every_dated_parameter_is_checked() -> None:
+    """Every ``datetime`` or ``date`` parameter of a public ``Engine`` method is one the ISO
+    check covers (#788), the issue's among them."""
+    assert {
+        ("list_operations", "since"),
+        ("list_operations", "until"),
+        ("list_facts", "as_of_record_time"),
+    } <= {(n, p) for n, p, _ in DATED_CASES}
+    checked = {
+        (name, parameter)
+        for name in operations() + sorted(library_only_methods())
+        for parameter in getattr(getattr(Engine, name), ISO_TIMES_ATTRIBUTE, ())
+    }
+    assert checked == {(n, p) for n, p, _ in DATED_CASES}
+
+
+@pytest.mark.parametrize(
+    ("name", "parameter", "kind"), DATED_CASES, ids=[f"{n}.{p}" for n, p, _ in DATED_CASES]
+)
+async def test_a_number_is_refused_at_a_dated_parameter(
+    name: str, parameter: str, kind: type
+) -> None:
+    """``Engine.list_operations(until=258)`` (``0.0``, ``-1``, ``"258"``, ``True``) is 422
+    ``validation_error`` at ``query.until``, as REST refuses ``?until=258`` (FR-API-3; #788).
+    Complement: a ``datetime`` (a ``date``) passes the check."""
+    for value in (258, 0.0, -1, True, *NOT_A_TIME):
+        refused = await _call(name, parameter, value)
+        assert isinstance(refused, InvalidRequest), (name, parameter, value, refused)
+        assert refused.details["field"] == f"query.{parameter}", (value, refused.details)
+    passed = await _call(name, parameter, VALID_VALUE[kind])
+    assert not (
+        isinstance(passed, InvalidRequest) and passed.details.get("field") == f"query.{parameter}"
     ), passed

@@ -39,6 +39,7 @@ from epistrel.core import (
     fork,
     idempotency,
     ingest,
+    iso,
     mutation,
     offboarding,
     operation_view,
@@ -8988,10 +8989,72 @@ def strict_scalar_methods(engine_class: type) -> None:
             setattr(engine_class, name, _strict_scalars(member, checked))
 
 
+ISO_TIMES_ATTRIBUTE = "__epistrel_iso_times__"
+
+_ISO_CHECKS: dict[type, Callable[[Any], Any]] = {
+    datetime: iso.iso_date_time,
+    date: iso.iso_date,
+}
+
+
+def time_parameters(method: Callable[..., Any]) -> dict[str, Callable[[Any], Any]]:
+    """The parameters of ``method`` typed ``datetime`` or ``date`` (alone or with ``None``),
+    each with the check ``iso_time_methods`` applies to it."""
+    hints = typing.get_type_hints(inspect.unwrap(method))
+    found: dict[str, Callable[[Any], Any]] = {}
+    for name in inspect.signature(method).parameters:
+        members = _union_members(hints[name]) if name in hints else ()
+        for kind, check in _ISO_CHECKS.items():
+            if kind in members:
+                found[name] = check
+    return found
+
+
+def _iso_times[F: Callable[..., Awaitable[Any]]](
+    method: F, checked: Mapping[str, Callable[[Any], Any]]
+) -> F:
+    signature = inspect.signature(method)
+    locations = {name: scalar_location_of(signature.parameters[name]) for name in checked}
+
+    @functools.wraps(method)
+    async def iso_times(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+        except TypeError:
+            return await method(*args, **kwargs)  # the call's own TypeError
+        for name, check in checked.items():
+            value = bound.arguments.get(name)
+            if value is None:
+                continue
+            try:
+                check(value)
+            except ValueError as refused:
+                field = ".".join(locations[name])
+                raise InvalidRequest(str(refused), details={"field": field}) from None
+        return await method(*args, **kwargs)
+
+    setattr(iso_times, ISO_TIMES_ATTRIBUTE, tuple(checked))
+    return iso_times  # type: ignore[return-value]
+
+
+def iso_time_methods(engine_class: type) -> None:
+    """Refuse a number given for a ``datetime`` or ``date`` argument of every public coroutine
+    method of ``engine_class`` (FR-API-3, FR-API-4; #788), as REST refuses ``?until=258`` at
+    ``query.until``: ``258``, ``0.0``, ``-1``, ``True`` or ``"258"`` is 422
+    ``validation_error`` at ``query.<name>``, never a time that many seconds after the epoch.
+    The value is passed on as given. Run beside ``strict_scalar_methods``."""
+    for name, member in list(vars(engine_class).items()):
+        if name.startswith("_") or not inspect.iscoroutinefunction(member):
+            continue
+        if checked := time_parameters(member):
+            setattr(engine_class, name, _iso_times(member, checked))
+
+
 normalise_repeated_methods(Engine)
 gate_story_methods(Engine)
 gate_catalog_methods(Engine)
 strict_scalar_methods(Engine)
+iso_time_methods(Engine)
 guard_nul_methods(Engine)
 # One span, summary line and count per outermost call of every public coroutine method (#74).
 instrument.instrument_engine(Engine)

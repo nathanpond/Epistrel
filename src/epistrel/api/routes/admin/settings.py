@@ -8,9 +8,10 @@ from typing import Annotated
 from fastapi import APIRouter, Query, Response
 from pydantic import ConfigDict
 
-from epistrel.api.config_changes import ConfigChangesBody, DeploymentSettingFilter, IsoDateTime
+from epistrel.api.config_changes import ConfigChangesBody, DeploymentSettingFilter
 from epistrel.api.deps import ContextDep, EngineDep
 from epistrel.api.idempotency import answered
+from epistrel.api.iso import IsoDateTime
 from epistrel.api.responses import DeploymentMutationResponse
 from epistrel.core.config_changes import ConfigScope
 from epistrel.core.deployment import DeploymentState, SettingsPatch

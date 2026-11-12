@@ -54,7 +54,7 @@ from pydantic import (
     model_validator,
 )
 
-from epistrel.api.config_changes import ConfigChangesBody, IsoDateTime, StorySettingFilter
+from epistrel.api.config_changes import ConfigChangesBody, StorySettingFilter
 from epistrel.api.deps import (
     ContextDep,
     EngineDep,
@@ -63,6 +63,7 @@ from epistrel.api.deps import (
     StoryId,
 )
 from epistrel.api.idempotency import answered, no_content
+from epistrel.api.iso import IsoDateTime
 from epistrel.api.responses import MutationResponse
 from epistrel.api.routes.ownership import mount_ownership_routes
 from epistrel.api.routes.timeline import VariantChainBody

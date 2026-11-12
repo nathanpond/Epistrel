@@ -16,14 +16,14 @@ credential: ownership gates nothing. Thin handlers over ``Engine.get_image_usage
 from __future__ import annotations
 
 import datetime as dt
-import re
 from datetime import date
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Query
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from epistrel.api.deps import CharacterId, ContextDep, EngineDep, ScenarioId, StoryId
+from epistrel.api.iso import IsoDate
 from epistrel.core.images import costs as image_costs
 
 admin_router = APIRouter(prefix="/image-usage", tags=["admin"])
@@ -54,18 +54,6 @@ RANGE = (
 )
 
 
-def _iso_date(value: object) -> object:
-    """A query ``date`` is ``YYYY-MM-DD`` only: pydantic would also take a number of seconds
-    since the epoch, which the schema does not promise (FR-API-4)."""
-    if isinstance(value, date):
-        return value
-    if isinstance(value, str) and ISO_DATE.fullmatch(value):
-        return value
-    raise ValueError("must be a date, e.g. 2026-11-08")
-
-
-ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-IsoDate = Annotated[date, BeforeValidator(_iso_date)]
 FromQuery = Annotated[
     IsoDate | None, Query(alias="from", description="The first local day (inclusive).")
 ]

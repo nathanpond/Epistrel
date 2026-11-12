@@ -13,6 +13,7 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 
 from epistrel.api.deps import ContextDep, EngineDep, OperationId, StoryId
+from epistrel.api.iso import IsoDateTime
 from epistrel.core.enums import OperationKind, OperationStatus
 from epistrel.core.genesis.models import CreationReport
 from epistrel.core.ids import ULID_PATTERN
@@ -346,8 +347,8 @@ async def list_operations(
     label: OperationLabel | None = None,
     kind: OperationKind | None = None,
     status: OperationStatus | None = None,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    since: IsoDateTime | None = None,
+    until: IsoDateTime | None = None,
     after_id: Annotated[str | None, Query(pattern=ULID_PATTERN)] = None,
     limit: Annotated[int, Query(ge=1, le=LIST_LIMIT_MAX)] = LIST_LIMIT_DEFAULT,
 ) -> OperationsBody:

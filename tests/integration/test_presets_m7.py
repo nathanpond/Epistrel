@@ -8,7 +8,8 @@ import json
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 
 import pytest
 from alembic import command
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
 from epistrel.core.db import make_engine
+from epistrel.core.deployment import NULL_MEANS, NULLABLE
 from epistrel.core.ids import new_ulid
 from epistrel.core.profiles import schema, tiers
 from epistrel.core.profiles.effective import merged_settings
@@ -25,7 +27,7 @@ from epistrel.core.profiles.reservation import reservation
 from epistrel.core.profiles.schema import ProfileSettings
 from epistrel.core.profiles.validate import validate_profile
 from epistrel.core.seeds import profiles as seeds
-from epistrel.core.settings_schema import flatten
+from epistrel.core.settings_schema import DeploymentSettings, flatten
 from epistrel.orchestrator.budget import TurnBudget
 from epistrel.orchestrator.commit.salience import Beat, detect_salience
 from epistrel.orchestrator.models.registry import SALIENCE_DETECTION, SceneContext
@@ -574,11 +576,43 @@ async def test_presets__strongest(stub_settings: Settings, engine: AsyncEngine) 
             routed = config["effective"]["models"]["purposes"]
             assert {routed[p]["model"] for p in seeds.MAX_STRONGEST_PURPOSES} == {None}
             assert config["fingerprint"] != before
+            whole = await client.put("/admin/settings", json={"model_tiers": None}, headers=WRITE)
+            assert whole.status_code == 422, whole.text
+            assert whole.json()["error"]["code"] == "validation_error"
+            assert whole.json()["error"]["details"]["field"] == "body.model_tiers"
+            again = await client.put(
+                "/admin/settings", json={"model_tiers": {"strongest": None}}, headers=WRITE
+            )
+            assert again.status_code == 200, again.text
+            assert again.json()["model_tiers"]["strongest"] is None
         finally:
             await client.put(
                 "/admin/settings", json={"model_tiers": {"strongest": None}}, headers=WRITE
             )
             await client.delete("/admin/model-config/salience_detection", headers=WRITE)
+
+
+def _optional(annotation: Any) -> bool:
+    return get_origin(annotation) in (Union, UnionType) and type(None) in get_args(annotation)
+
+
+def test_presets__nullable_settings_described() -> None:
+    """#780: ``PUT /admin/settings``'s committed description names every setting in
+    ``NULLABLE`` with what its ``null`` means, and how a model tier is cleared
+    (``model_tiers.<tier>``; ``model_tiers: null`` itself refused). Guard: ``NULLABLE`` is
+    exactly the ``DeploymentSettings`` fields typed ``| None``, so the two cannot diverge."""
+    document = json.loads((REPO_ROOT / "docs" / "openapi.json").read_text(encoding="utf-8"))
+    described = document["paths"]["/admin/settings"]["put"]["description"]
+    assert sorted(name for name in NULLABLE if f"`{name}`" not in described) == []
+    for name, meaning in NULL_MEANS.items():
+        assert f"`{name}` ({meaning})" in described, name
+    assert set(NULL_MEANS) == NULLABLE
+    assert "`model_tiers.<tier>`" in described
+    assert "`model_tiers: null` itself is 422" in described
+    typed_none = {
+        name for name, info in DeploymentSettings.model_fields.items() if _optional(info.annotation)
+    }
+    assert typed_none == NULLABLE
 
 
 def test_presets__no_structured_name_asserted() -> None:

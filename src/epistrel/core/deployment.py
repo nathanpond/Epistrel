@@ -114,6 +114,8 @@ from epistrel.core.tables.model_config import model_config
 __all__ = [
     "MINOR_AGE_THRESHOLD_MAX",
     "MINOR_AGE_THRESHOLD_MIN",
+    "NULLABLE",
+    "NULL_MEANS",
     "DeploymentState",
     "SettingsPatch",
     "apply_settings",
@@ -128,16 +130,19 @@ __all__ = [
 ]
 
 
-NULLABLE = frozenset(
-    {
-        "media_moderation_webhook_url",
-        "public_base_url",
-        "max_characters_at_start_ceiling",
-        "certification_recertify_interval_s",
-    }
-)
-"""Top-level settings whose ``null`` resets them to their default instead of being refused: no
-moderation hook or base URL (#105), and no starting-cast ceiling (#108)."""
+NULL_MEANS: Mapping[str, str] = {
+    "media_moderation_webhook_url": "no moderation hook",
+    "public_base_url": "no base URL",
+    "max_characters_at_start_ceiling": "no starting-cast ceiling",
+    "certification_recertify_interval_s": "never re-certify",
+}
+"""What ``null`` means for each top-level setting that accepts it: the setting is unset (back
+to its default). ``PUT /admin/settings``'s description is built from it (#780)."""
+
+NULLABLE = frozenset(NULL_MEANS)
+"""The four top-level settings whose ``null`` resets them to their default instead of being
+refused: no moderation hook or base URL (#105), no starting-cast ceiling (#108), and never
+re-certify (#234)."""
 
 FEEDBACK_TAGS = "feedback_tags"
 TIME_ZONE_SETTING = "deployment_time_zone"
@@ -155,11 +160,13 @@ class ModelTiersPatch(BaseModel):
 
 class SettingsPatch(BaseModel):
     """A partial update (JSON merge) of ``DeploymentSettings``: only the fields present change,
-    and ``null`` is refused for a top-level field (except ``media_moderation_webhook_url``,
-    ``public_base_url`` and ``max_characters_at_start_ceiling``, whose ``null`` unsets them). A
-    list (``media_allowed_types``, ``listing_status_values``, ``feedback_tags``) replaces the
-    stored one. ``profile_defaults`` is laid over the stored defaults (an object merges into an
-    object; any other value, ``null`` included, replaces). Bounds are ``DeploymentSettings``'s,
+    and ``null`` is refused for a top-level field except the four in ``NULLABLE``
+    (``media_moderation_webhook_url``, ``public_base_url``, ``max_characters_at_start_ceiling``
+    and ``certification_recertify_interval_s``), whose ``null`` unsets them; ``model_tiers:
+    null`` is refused, while ``model_tiers.<tier>: null`` clears one tier. A list
+    (``media_allowed_types``, ``listing_status_values``, ``feedback_tags``) replaces the stored
+    one. ``profile_defaults`` is laid over the stored defaults (an object merges into an object;
+    any other value, ``null`` included, replaces). Bounds are ``DeploymentSettings``'s,
     checked on the merged settings (422 ``validation_error`` at ``body.<field>``); M2's engine
     dials are refused (``SUPERSEDED_DEPLOYMENT_SETTINGS``)."""
 

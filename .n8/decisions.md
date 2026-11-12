@@ -14189,3 +14189,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the local gate ran `tests/scenario/test_s_lite_directive.py` (4 passed) and test_openapi_declared, test_route_guard, test_route_flags, test_trust_boundary, C-24, S-DIRECT-GEORGE, S-REBASE-VS-REGEN and test_commitments (66 passed). `tests/integration/test_respond.py` and the other modules that name `timeline` were skipped.
   **Why:** only the description text changed; no behaviour moved.
   **Issue:** #778
+- **Decision:** `core.deployment.NULL_MEANS` (each nullable setting with what its `null` means) is the one source, and `NULLABLE = frozenset(NULL_MEANS)` keeps the same four names. `PUT /admin/settings`'s nullable sentence is built from `NULL_MEANS` in `api/routes/admin/settings.py::_nullable_sentence`, so a fifth nullable setting appears in the description without a second edit. The sentence names the nested nulls (a `profile_defaults` member, `model_tiers.<tier>`), says `model_tiers: null` is 422 at `body.model_tiers`, and documents `model_tiers.strongest` (a listed model id, or `null` to clear). `docs/openapi.json` was regenerated, and `openapi --check` passes.
+  **Why:** the description must come from the code (planner line: the source is `NULLABLE`). The per-name meanings could not be derived from the field types, so they sit beside the names.
+  **Issue:** #780
+- **Decision:** the stale "three" docstrings were fixed: `NULLABLE`'s note (now deployment.py:143-145) and `SettingsPatch` (now :161-171, which also names `model_tiers.<tier>: null`). Both line references in the plan had moved by a few lines.
+  **Why:** AC5. The code moved since the plan was written.
+  **Issue:** #780
+- **Decision:** the tests are in `tests/integration/test_presets_m7.py` with no part marker. The new `test_presets__nullable_settings_described` reads the committed `docs/openapi.json`. It asserts every `NULLABLE` name and its meaning appear, the `model_tiers` wording, and that `NULLABLE` equals the `DeploymentSettings` fields typed `| None`. The equality part already passes on main and is a guard only. `test_presets__strongest` is extended: `model_tiers: null` answers 422 `validation_error` at `body.model_tiers`, and `{"model_tiers": {"strongest": null}}` answers 200 with `strongest` null. Fail-first: before the regeneration, the new test failed with `assert ['certificati...y_interval_s'] == []`.
+  **Why:** the planner lines name the module and no marker, like `test_presets__strongest`. The committed document is what the Console reads.
+  **Issue:** #780
+- **Decision:** the local gate ran test_presets_m7, test_u_18, test_config_changes, test_config_revalidation and test_openapi_declared (35 passed). Other modules that import `core.deployment` were skipped: C-01, C-03, X-07, E-11, test_respond, test_idempotency, test_story_texts, test_i_28_m9, test_scenario_validation and S-SELFPOLICE.
+  **Why:** behaviour did not change. Only descriptions changed, and `NULLABLE`'s members are the same.
+  **Issue:** #780

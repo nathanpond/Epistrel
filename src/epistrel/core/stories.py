@@ -721,7 +721,9 @@ class StoryView:
     (#527)."""
     pause: dict[str, Any] | None = None
     """While the story is paused (#118): ``{job_id, cause, progress {done, total}}``, the check
-    that paused it. Read by ``get_story`` only."""
+    (or backfill, whose ``progress`` carries its own members too, and ``backfill_id`` and
+    ``conflicts_open`` while it waits for its conflicts; #783) that paused it. Read by
+    ``get_story`` only."""
     scenario: ScenarioOrigin | None = None
     """The scenario version the story was created from (#119); ``None`` for a blank story.
     Read by ``get_story`` only."""
@@ -2302,6 +2304,11 @@ def _modeled_at(row: Any) -> Position:
     )
 
 
+PAUSE_KEYS = ("job_id", "cause", "progress", "backfill_id", "conflicts_open")
+"""The members of ``pause.details`` a story read shows (#783: the last two only when a backfill
+waits for its conflicts)."""
+
+
 async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False) -> StoryView:
     """The story with its cast in order and its engine profile at the version it runs on. True
     ages only when ``omniscient`` (FR-CAT-12)."""
@@ -2318,7 +2325,7 @@ async def get_story(db: AsyncEngine, story_id: str, *, omniscient: bool = False)
         paused = None
         if pause.is_paused(row.status):
             found = await pause.details(conn, story_id)
-            paused = {k: found[k] for k in ("job_id", "cause", "progress")}
+            paused = {k: found[k] for k in PAUSE_KEYS if k in found}
         cast = (
             await conn.execute(
                 select(

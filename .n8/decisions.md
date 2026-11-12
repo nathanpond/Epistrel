@@ -14066,3 +14066,21 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the local gate's one failure, `test_erasure_resurrection.py::test_a_fork_carries_the_story_ledger`, is order-dependent and predates this change. It fails after `test_i_10.py` on a `git archive` of 25848f6 too, and passes alone. Filed as #884, not fixed here.
   **Why:** it counts every story's pending ledger rows. Nothing in it reads `closed_by`.
   **Issue:** #471, #884
+- **Decision:** the mapping is a new `core.pause.pause_progress(row)` (`done`/`total` from `chunks_done`/`chunks_total`, then `backfill_progress`'s members), used by `details()` for both backfill causes. `backfill_progress` is unchanged.
+  **Why:** `GET /stories/{id}/backfill` builds its `Progress` model from `backfill_progress`, which has no `done`/`total`. One mapping in `core/pause.py` still serves the story read and the 409 alike.
+  **Issue:** #783
+- **Decision (Rule 1):** `core.stories.get_story` keeps `backfill_id` and `conflicts_open` from `pause.details` (`PAUSE_KEYS`); it used to keep only `job_id`, `cause` and `progress`.
+  **Why:** the AC asks for both members on a `backfill_conflicts` pause, and the read dropped them before the response model saw them.
+  **Issue:** #783
+- **Decision:** the cause-based omission is one wrap `model_serializer` on `StoryPauseBody` (it knows the cause), not one on `StoryPauseProgressBody`. The serializer has no return annotation and carries `# type: ignore[no-untyped-def]`.
+  **Why:** a return annotation (`dict[str, Any]`) makes pydantic publish the response schema as a free-form object, which drops the members from `docs/openapi.json`. `Self` fails the OpenAPI build. Without an annotation the schema stays the model's.
+  **Issue:** #783
+- **Decision:** `phase` is a `Literal` of `ACTIVE_STATUSES` (queued, extracting, reconciling, paused_for_conflicts), not of all seven statuses.
+  **Why:** the planner line points at `ACTIVE_STATUSES`. A backfill that ends resumes its story in the same transaction (`core.backfill._resume`), so a pause never names an ended one.
+  **Issue:** #783
+- **Decision:** the tests join existing parts. `test_i_19__m7_backfill` (M7, FR-PROF-8,9) runs one job step to `extracting` and reads the story, and its 409 exact-keys assertion takes the new key set. `test_i_19__m7_conflicts` (M7, FR-PROF-10) reads the story under `backfill_conflicts`. The complement is in `test_rating_change.py::test_i_22__relax_tighten` (M3, FR-RATE-6,7), where a rating-check pause reads exactly `{done, total}`. The exact-keys assertion was at test_i_19.py:153-159, as the body says.
+  **Why:** the engine-wide test rule puts a regression test in the part that covers the behaviour. No new test ID fits better.
+  **Issue:** #783
+- **Decision:** the pre-fix run used `git archive` of fcb6e7d in the scratchpad with this change's test file over it, its 409 key assertions dropped. Both backfill tests failed at `GET /stories/{id}` with `ValidationError ... progress.done Field required` and the request log `status: 500`.
+  **Why:** the test plan asks for the read to be seen answering 500 on the old code. The old code fails the new 409 assertions first, so they were dropped from that copy only.
+  **Issue:** #783

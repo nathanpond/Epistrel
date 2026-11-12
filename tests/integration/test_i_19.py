@@ -124,6 +124,33 @@ async def _counts(engine: AsyncEngine, story: str) -> tuple[int, int, int]:
     )
 
 
+BACKFILL_PROGRESS = {
+    "done",
+    "total",
+    "phase",
+    "chunks_done",
+    "chunks_total",
+    "reconciled_through_turn",
+    "last_turn",
+}
+"""A backfill pause's ``progress`` keys (#783): ``done``/``total`` and the backfill's own."""
+
+
+async def _story_pause(client: httpx.AsyncClient, story: str) -> dict[str, Any]:
+    """``GET /stories/{id}``'s ``pause`` of a story a backfill pauses (#783): 200, every
+    backfill progress member present, ``done``/``total`` the chunks done of the total."""
+    read = await ok(await client.get(f"/stories/{story}", headers=READ))
+    assert read["status"] == "paused", read["status"]
+    pause: dict[str, Any] = read["pause"]
+    progress = pause["progress"]
+    assert set(progress) == BACKFILL_PROGRESS, progress
+    assert (progress["done"], progress["total"]) == (
+        progress["chunks_done"],
+        progress["chunks_total"],
+    )
+    return pause
+
+
 @pytest.fixture
 def stub_settings(pg_url: str) -> Any:
     return auth_settings(pg_url, model_adapter="stub")
@@ -154,19 +181,29 @@ async def test_i_19__m7_backfill(stub_settings: Any, engine: AsyncEngine) -> Non
         assert refused.status_code == 409, refused.text
         error = refused.json()["error"]
         assert (error["code"], error["details"]["cause"]) == ("story_paused", "backfill")
-        assert set(error["details"]["progress"]) == {
-            "phase",
-            "chunks_done",
-            "chunks_total",
-            "reconciled_through_turn",
-            "last_turn",
-        }
+        assert set(error["details"]["progress"]) == BACKFILL_PROGRESS
+        progress = error["details"]["progress"]
+        assert (progress["done"], progress["total"]) == (
+            progress["chunks_done"],
+            progress["chunks_total"],
+        )
         assert await _counts(engine, story) == counts
         assert (await client.get(f"/stories/{story}/history", headers=READ)).status_code == 200
         pending = await ok(await client.get(f"/stories/{story}/effective-config", headers=READ))
         assert pending["profile"]["id"] != FULL_PRESET_ID
         assert pending["pending_backfill"]["id"] == started["backfill"]["id"]
         generated = _calls(lib, GENERATION.name, REGENERATION.name, "repair")
+        # #783: the story reads (200, not 500) while its backfill runs, with the pause's
+        # progress as done/total (chunks) plus the backfill's own members.
+        assert await run_backfill(engine, story, steps=1) == 1
+        running = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
+        assert running["status"] == "extracting", running
+        pause = await _story_pause(client, story)
+        assert pause["job_id"] == error["details"]["job_id"]
+        assert set(pause) == {"job_id", "cause", "progress"}
+        assert pause["cause"] == "backfill"
+        assert pause["progress"]["phase"] == "extracting"
+        assert pause["progress"]["last_turn"] == running["progress"]["last_turn"]
         assert await run_backfill(engine, story) > 0
         done = await ok(await client.get(f"/stories/{story}/backfill", headers=READ))
         assert done["status"] == "completed", done
@@ -442,7 +479,15 @@ async def test_i_19__m7_conflicts(stub_settings: Any, engine: AsyncEngine) -> No
         assert refused.status_code == 409, refused.text
         details = refused.json()["error"]["details"]
         assert (details["cause"], details["conflicts_open"]) == ("backfill_conflicts", 1)
+        assert set(details["progress"]) == BACKFILL_PROGRESS
         assert await _counts(engine, asked) == counts
+        pause = await _story_pause(client, asked)
+        assert (pause["cause"], pause["backfill_id"], pause["conflicts_open"]) == (
+            "backfill_conflicts",
+            shown["id"],
+            1,
+        )
+        assert pause["progress"]["phase"] == "paused_for_conflicts"
         held = await ok(await client.post(f"/stories/{asked}/backfill", json={}, headers=WRITE))
         assert (held["applied"], held["conflicts_open"]) == (False, 1)
         wrong = await client.post(

@@ -23,7 +23,10 @@ When its turns pass, the job re-runs the edit it held back while the story is st
 story, and nothing else.
 
 The refusal names what paused the story: ``details {story_id, job_id, cause, progress {done,
-total}}``. This module reads only tables, so ``core.events.operation`` can use it.
+total}}``. A backfill's ``progress`` (#228) also carries its own members (``pause_progress``,
+#783), and ``done``/``total`` are its chunks extracted of its total, so a reader of ``done`` and
+``total`` alone reads every cause. This module reads only tables, so ``core.events.operation``
+can use it.
 """
 
 from __future__ import annotations
@@ -93,7 +96,7 @@ async def details(conn: AsyncConnection, story_id: str) -> dict[str, Any]:
                 "story_id": story_id,
                 "job_id": backfill.job_id or backfill.id,
                 "cause": BACKFILL,
-                "progress": backfill_progress(backfill),
+                "progress": pause_progress(backfill),
             }
             if str(backfill.status) == BACKFILL_CONFLICTS_STATUS:
                 # #230: the backfill finished its pass and waits for the author.
@@ -139,6 +142,14 @@ def backfill_progress(row: Any) -> dict[str, Any]:
     }
 
 
+def pause_progress(row: Any) -> dict[str, Any]:
+    """A backfill's progress as a pause names it (#783): ``done``/``total``, the chunks extracted
+    of its total (every cause's members), then ``backfill_progress``'s own. The one mapping, read
+    by ``GET /stories/{id}`` and the 409 ``story_paused`` alike."""
+    progress = backfill_progress(row)
+    return {"done": progress["chunks_done"], "total": progress["chunks_total"], **progress}
+
+
 async def paused_error(conn: AsyncConnection, story_id: str) -> StoryPaused:
     found = await details(conn, story_id)
     what = {
@@ -174,6 +185,7 @@ async def _refuse_in(conn: AsyncConnection, story_id: str) -> None:
 
 __all__ = [
     "BACKFILL",
+    "BACKFILL_CONFLICTS",
     "RATING_CHECK",
     "REACTIVATION_CHECK",
     "REACTIVATION_KIND",
@@ -181,6 +193,7 @@ __all__ = [
     "details",
     "holding",
     "is_paused",
+    "pause_progress",
     "paused_error",
     "refuse",
 ]

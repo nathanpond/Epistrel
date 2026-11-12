@@ -54519,11 +54519,41 @@
         "type": "object"
       },
       "StoryPauseBody": {
-        "description": "What pauses the story (#118): the check's job (``GET\n/stories/{id}/content-rating/checks/{job_id}``), its ``cause`` (``rating_check``) and its\nprogress.",
+        "description": "What pauses the story, by ``cause``: ``rating_check`` (#118: a rating tightening's\nhistory check, ``GET /stories/{id}/content-rating/checks/{job_id}``), ``reactivation_check``\n(#120: the turns an edit would reactivate, the same route), ``backfill`` (#228: the story's\nstructured data backfilled, ``GET /stories/{id}/backfill``; ``job_id`` is its job) and\n``backfill_conflicts`` (#230: the backfill waits for its conflicts to be resolved, and names\n``backfill_id`` and ``conflicts_open``, absent under every other cause). ``progress`` is\n``done`` of ``total`` under every cause, plus a backfill's own members under the two\nbackfill causes (#783).",
         "properties": {
+          "backfill_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "``backfill_conflicts`` only: the backfill that waits.",
+            "title": "Backfill Id"
+          },
           "cause": {
+            "enum": [
+              "rating_check",
+              "reactivation_check",
+              "backfill",
+              "backfill_conflicts"
+            ],
             "title": "Cause",
             "type": "string"
+          },
+          "conflicts_open": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "``backfill_conflicts`` only: its conflicts still open.",
+            "title": "Conflicts Open"
           },
           "job_id": {
             "anyOf": [
@@ -54549,13 +54579,81 @@
         "type": "object"
       },
       "StoryPauseProgressBody": {
-        "description": "The progress of the check that paused the story: records checked, of how many.",
+        "description": "The progress of what paused the story. ``done`` of ``total`` under every cause: records\nchecked of how many for ``rating_check`` and ``reactivation_check``, chunks extracted of\nhow many for ``backfill`` and ``backfill_conflicts`` (#783). Under the two backfill causes\nonly, the backfill's own progress follows (as ``GET /stories/{id}/backfill`` reports it);\nunder the others those members are absent.",
         "properties": {
+          "chunks_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A backfill only: the chunks extracted (``done``).",
+            "title": "Chunks Done"
+          },
+          "chunks_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A backfill only: the chunks in all (``total``).",
+            "title": "Chunks Total"
+          },
           "done": {
+            "description": "Records checked, or a backfill's chunks extracted.",
             "title": "Done",
             "type": "integer"
           },
+          "last_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A backfill only: the last turn of the range it backfills.",
+            "title": "Last Turn"
+          },
+          "phase": {
+            "anyOf": [
+              {
+                "enum": [
+                  "queued",
+                  "extracting",
+                  "reconciling",
+                  "paused_for_conflicts"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A backfill only: its status.",
+            "title": "Phase"
+          },
+          "reconciled_through_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A backfill only: the last turn its reconciliation committed; ``null`` before it commits one.",
+            "title": "Reconciled Through Turn"
+          },
           "total": {
+            "description": "Records to check, or a backfill's chunks in all.",
             "title": "Total",
             "type": "integer"
           }

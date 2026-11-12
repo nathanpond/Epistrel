@@ -45,10 +45,12 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StringConstraints,
     ValidationError,
     WithJsonSchema,
     create_model,
+    model_serializer,
     model_validator,
 )
 
@@ -397,21 +399,83 @@ class DormantChainBody(BaseModel):
     truncate_operation_id: str | None
 
 
-class StoryPauseProgressBody(BaseModel):
-    """The progress of the check that paused the story: records checked, of how many."""
+BACKFILL_PAUSES = ("backfill", "backfill_conflicts")
+"""The causes of a pause by a backfill (#228, #230)."""
+BACKFILL_PROGRESS_MEMBERS = (
+    "phase",
+    "chunks_done",
+    "chunks_total",
+    "reconciled_through_turn",
+    "last_turn",
+)
+"""A backfill pause's own ``progress`` members (#783), omitted under every other cause."""
+CONFLICTS_MEMBERS = ("backfill_id", "conflicts_open")
+"""A ``backfill_conflicts`` pause's own members (#230), omitted under every other cause."""
 
-    done: int
-    total: int
+
+class StoryPauseProgressBody(BaseModel):
+    """The progress of what paused the story. ``done`` of ``total`` under every cause: records
+    checked of how many for ``rating_check`` and ``reactivation_check``, chunks extracted of
+    how many for ``backfill`` and ``backfill_conflicts`` (#783). Under the two backfill causes
+    only, the backfill's own progress follows (as ``GET /stories/{id}/backfill`` reports it);
+    under the others those members are absent."""
+
+    done: int = Field(description="Records checked, or a backfill's chunks extracted.")
+    total: int = Field(description="Records to check, or a backfill's chunks in all.")
+    phase: Literal["queued", "extracting", "reconciling", "paused_for_conflicts"] | None = Field(
+        default=None, description="A backfill only: its status."
+    )
+    chunks_done: int | None = Field(
+        default=None, description="A backfill only: the chunks extracted (``done``)."
+    )
+    chunks_total: int | None = Field(
+        default=None, description="A backfill only: the chunks in all (``total``)."
+    )
+    reconciled_through_turn: int | None = Field(
+        default=None,
+        description="A backfill only: the last turn its reconciliation committed; ``null`` "
+        "before it commits one.",
+    )
+    last_turn: int | None = Field(
+        default=None, description="A backfill only: the last turn of the range it backfills."
+    )
 
 
 class StoryPauseBody(BaseModel):
-    """What pauses the story (#118): the check's job (``GET
-    /stories/{id}/content-rating/checks/{job_id}``), its ``cause`` (``rating_check``) and its
-    progress."""
+    """What pauses the story, by ``cause``: ``rating_check`` (#118: a rating tightening's
+    history check, ``GET /stories/{id}/content-rating/checks/{job_id}``), ``reactivation_check``
+    (#120: the turns an edit would reactivate, the same route), ``backfill`` (#228: the story's
+    structured data backfilled, ``GET /stories/{id}/backfill``; ``job_id`` is its job) and
+    ``backfill_conflicts`` (#230: the backfill waits for its conflicts to be resolved, and names
+    ``backfill_id`` and ``conflicts_open``, absent under every other cause). ``progress`` is
+    ``done`` of ``total`` under every cause, plus a backfill's own members under the two
+    backfill causes (#783)."""
 
     job_id: str | None
-    cause: str
+    cause: Literal["rating_check", "reactivation_check", "backfill", "backfill_conflicts"]
     progress: StoryPauseProgressBody
+    backfill_id: str | None = Field(
+        default=None, description="``backfill_conflicts`` only: the backfill that waits."
+    )
+    conflicts_open: int | None = Field(
+        default=None, description="``backfill_conflicts`` only: its conflicts still open."
+    )
+
+    # No return annotation: one would replace the response schema with its type (#783).
+    @model_serializer(mode="wrap")
+    def _by_cause(self, handler: SerializerFunctionWrapHandler):  # type: ignore[no-untyped-def]
+        """Omit the members another cause carries (a ``null`` ``reconciled_through_turn`` of a
+        backfill stays, so ``exclude_if`` cannot)."""
+        found = handler(self)
+        if not isinstance(found, dict):
+            return found
+        if self.cause not in BACKFILL_PAUSES and isinstance(found.get("progress"), dict):
+            for name in BACKFILL_PROGRESS_MEMBERS:
+                found["progress"].pop(name, None)
+        if self.cause != "backfill_conflicts":
+            for name in CONFLICTS_MEMBERS:
+                found.pop(name, None)
+        return found
 
 
 class AmendmentChecksBody(BaseModel):

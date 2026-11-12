@@ -13982,6 +13982,7 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
   **Issue:** #876, #784
 - **Hold:** PR #874. The owner chooses between options (a)–(d) on #784 (issuecomment-6819284394): partition-per-story makes operator actions that touch every partition (embedding-model change, a migration on `memories`, `pg_dump`) need `max_locks_per_transaction` sized to the story count (ADR-188). The run recommends (a): ship the setting in `docker-compose.yml` and the test Postgres. Work dependent on #784 continues on the current design. **Lifts when:** the owner answers on #784, or in the session.
   **Issue:** #784
+  **Resolved:** 2026-11-12. The owner answered in the session: "Do option a". `docker-compose.yml` and the test Postgres ship a raised `max_locks_per_transaction` (and `shm_size`), sized by ADR-188's rule. The hold on PR #874 lifts once that commit is green in CI.
 - **Decision (Rule 1):** retirement's ranking (`retirement.ranked`) names the story in its `_covered` subquery, which looks up the covering output by id. Before, that subquery correlated only on `covered_by` and planned over every story's partition. The capture test failed on it before the fix with "[retirement] 3 other partition(s)".
   **Why:** it runs on every retirement run, which is a hot path.
   **Issue:** #866
@@ -14561,3 +14562,23 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the lead paragraph says M0 and M1 carry no requirements and what each delivers, that M9 delivered the requirements a consuming game asked for (ADR-184), and that M10 carries none and fixes and hardens. M12 stays "not yet planned". docs/01's sentence now says the two groundwork milestones lay the runtime plumbing and the test gate later milestones are built against. No requirement moved, so the gate counts (docs/04 §15's "M requirements first gated per milestone" line, `tests/gates/test_traceability.py`) did not change. `tests/gates` passed in full.
   **Why:** AC2. A Rule 3 count fix was not needed.
   **Issue:** #869
+- **Decision:** #490 is partially executed. The bulk builder (`_BulkCanon`, the `by_commit` oracle) and its two equivalence tests are done (870fded). The AC "the default spec builds in under 10 minutes locally and on github-runner" is not met: the local 50k build took 1,001 s (16.7 min). Of that, turns_and_canon was 766 s, projections 105 s, the index 51 s, subject_references 42 s and memories 34 s. The floor is the engine's own turn commit, 26–38 ms per turn and growing with the turn count, because `story_heads` rewrites its whole map. That is filed as #887. #490 stays open with a progress comment and is left out of PR #874's Closes lines. #153 is not ticked.
+  **Why:** the planner line routes turns through Operation/OperationBatch, the engine's own commit, so the builder cannot go below the engine's per-turn cost. Making the turn commit cheaper (#887) is an engine change no M10 story covers. That is the owner's triage call, so it is not fixed here.
+  **Issue:** #490, #887
+- **Decision:** #868 proceeds even though its blocker #490 is open.
+  **Why:** #868 depends on #490 so that the weekly job can build its fixture. The bulk builder delivers that: it is faster than the commit path (about 2,541 s on 2026-10-22). The 10-minute target is a separate goal that #868's measurement does not need.
+  **Issue:** #868, #490
+- **Decision:** CI run 43305715919 on #834 (c43d7bc) failed one test on attempt 1: `test_s_fork_snapshot__own_lease_renewal` (`assert [1, 1] == [1]`, inside C-08's scenario sub-run). The run's failed jobs were re-run once, and attempt 2 is green (5,193 passed).
+  **Why:** the test is timing-sensitive (a 0.15 s lease renewed every 0.05 s), and #834's diff touches only crash and fault tooling. Per the rule, an unrelated failure gets one re-run, and it is real only if it recurs. The flake is recorded for #864, the flake sweep, which owns "fix or file what goes red".
+  **Issue:** #834, #864
+- **Decision:** the Docker VM's disk was nearly full (3.2 GB free of 59 GB) after #868's 50k dump restore. The agent removed its own containers. Nothing else was pruned: about 39 GB is reclaimable (unused volumes, images and build cache), but some of it may belong to the owner's other projects, so pruning is the owner's call. The owner was told.
+  **Why:** a `docker system prune` would delete other projects' unused volumes, and that cannot be undone.
+  **Issue:** #868, #502
+- **Decision (owner triage, 2026-11-12):** the owner pulled all eight issues the run had filed for triage into M10.
+  - #877 (sev:high), #873 (sev:medium), #886 and #885 (sev:low) go under #860.
+  - #872 and #884 (sev:low) go under #861.
+  - #887 and #888 go under #862. #887 is fixed in this run; #888 is measured first and fixed only if the cost is real.
+  - New edges: #490 is blocked by #887 (its 10-minute target needs the cheaper turn commit), and #864 is blocked by #884.
+  - Execution order after the docs batch: the #784 option (a) setting, then #872, #884, #877, #873, #886, #885, #888, #887, a second attempt at #490's target, #864 and #502.
+  **Why:** the owner's answers to the session's triage questions. #887 was chosen "M10 now" over investigate-only or backlog, and #885/#886 "both into M10" over the recommended split. These are bug issues with expected and actual behaviour stated; each executor derives its AC into its plan comment, so no replan is needed.
+  **Issue:** #872, #873, #877, #884, #885, #886, #887, #888

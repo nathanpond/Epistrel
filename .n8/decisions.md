@@ -14219,3 +14219,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the local gate ran test_i_29_m9, test_i_31_m9, C-02 and C-03 (149 passed), the modules that register purposes. No other test imports `core.purposes.validation`.
   **Why:** the change is in the save-time scan only.
   **Issue:** #857
+- **Decision:** the scan refuses every `NSRef` target (`{% set x.y = … %}` and the block form) with "the template sets x.y, and 'x' is not a namespace", and a subscript slice whose step is a constant zero (`_zero`, which folds `-0`/`+0` like `_number`) with "the template uses a slice step of 0". The zero-step check runs after the computed-bound check. Both messages contain the planner's phrases.
+  **Why:** AC items 1 and 2. No `namespace` exists in the environment (#837), so no `NSRef` target can be valid, and the refusal also covers `{% set inputs._y = 1 %}`, whose target the `_` check never saw.
+  **Issue:** #858
+- **Decision:** deviation from the planner line "hand rules for item 3's filters; signature introspection only for item 4's tests". Required-argument arity comes from the signature for both filters and tests (`_required`, giving `FILTER_ARGUMENTS` and `TEST_ARGUMENTS`). It skips `_PASSED`, a first `env` and the filtered or tested value, and returns nothing for a `*args` signature. Hand rules remain only where the signature hides the requirement: `map` with no filter and no `attribute` keyword, and `selectattr`/`rejectattr` with no arguments. `slice(0)`/`slice(slices=0)` is a separate hand rule with the message "the filter 'slice' makes 0 slices".
+  **Why:** the planner's premise holds for `map`/`select*` but not for `replace` and `slice`, whose Jinja signatures name `old`, `new` and `slices`. One introspection helper yields the AC's `replace` rule, plus `slice()`, `batch()` and `groupby()` with no arguments, which also fail on every render. A required parameter can never be omitted, so the superset adds no false refusals.
+  **Issue:** #858
+- **Decision:** a positional-only parameter (the `operator` comparisons behind `eq`, `gt` and the rest) counts only by position. `select('eq', b=1)` is refused, because Python refuses that keyword.
+  **Why:** counting the keyword would accept a template that fails on every render.
+  **Issue:** #858
+- **Decision:** the rules reach `map('<filter>', …)` through `_filter_problem`'s recursion, so `map('slice', 0)`, `map('map')` and `map('select', 'divisibleby')` are refused. Each yields lazy generators that render as their reprs and fail only when read. `test_i_29__m9_always_failing` reads those rows (`|map('list')`) to show they fail.
+  **Why:** the planner line applies the rules through `map`. A generator repr is never useful text, and any read of it fails.
+  **Issue:** #858
+- **Decision:** stale references corrected: `_PASSED` is at validation.py:114 (not :102), `env.globals.clear()` is at :231 (not :218-222), `_number` is at :242 (not :230-238), and the `/admin/purposes` POST description is at api/routes/admin/purposes.py:126-138.
+  **Why:** #857 moved the code after the plan was written.
+  **Issue:** #858
+- **Decision:** the call-time note is in `register_purpose`'s description and a new "Consumer purposes" section at the end of docs/OPERATIONS.md. `replace_purpose`'s description is unchanged. `docs/openapi.json` was regenerated. FR-MODEL-14 is not amended.
+  **Why:** AC3 names the POST description (:130) and the new section. The owner gates FR-MODEL-14.
+  **Issue:** #858
+- **Decision:** tests are in `tests/integration/test_i_29_m9.py` (`@part("M9", "FR-MODEL-14")`, integration marker). `REFUSALS` gained 25 rows, and `REPLACE_REFUSALS` gained the issue's 4 repros. `valid_edges` gained the complement fragments with their rendered text. The new `test_i_29__m9_always_failing` checks each `ALWAYS_FAILING` message exactly, checks that each one raises when rendered in `environment()` without the scan, and checks that `STILL_SAVED` renders. Fail-first: with an out-of-tree plugin that swaps in c874cec's `_scan`, all 25 new `REFUSALS` cases and `replace_refusals` failed with `KeyError: 'error'` (the save answered 201/200), and `always_failing` failed with `Failed: DID NOT RAISE PurposeRefused`. `valid_edges` passed there.
+  **Why:** the test plan names these tables. The direct test pins the messages, which the REST rows check only for presence.
+  **Issue:** #858
+- **Decision:** the local gate ran test_i_29_m9 (155 passed) and test_i_31_m9, C-02, C-03, test_openapi_declared, test_route_guard, test_operations_import and C-27 (44 passed). These are the modules that register purposes or read the changed documents.
+  **Why:** the change is in the save-time scan and in description text.
+  **Issue:** #858

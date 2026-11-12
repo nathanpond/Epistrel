@@ -62,6 +62,18 @@ or mapping such a name without calling it stays accepted, because it reads the k
 exists. The alias is one level deep: an alias of an alias or a macro argument is not followed,
 and such a call fails cleanly when it is made.
 
+#858: what fails on every render, whatever the inputs, is refused too. Every ``{% set x.y %}``
+target (``'x' is not a namespace``: no ``namespace`` exists here), so ``{% set inputs._y = 1 %}``
+is refused as well; a slice step of the constant ``0`` (``-0`` and ``+0`` included);
+``slice(0)``; ``map`` with neither a filter nor ``attribute``; ``selectattr``/``rejectattr`` with
+no arguments; and a filter or test given fewer arguments than its signature requires
+(``FILTER_ARGUMENTS``, ``TEST_ARGUMENTS``: ``replace``, ``slice``, ``batch``, ``groupby``,
+``divisibleby``, ``sameas``, ``in`` and the comparisons), as ``is <test>`` or through ``select``,
+``reject``, ``selectattr`` and ``rejectattr``, and through ``map('<filter>', …)``. ``select`` and
+``reject`` with no arguments filter by truthiness and stay accepted. A template can still fail
+for its inputs (``loop(x)``, ``1/0``, a call of a missing attribute): such a call answers 422
+``template_render_error`` (FR-MODEL-15).
+
 **Output schemas** are the JSON Schema subset the strict structured path (#761) can send as it
 is: an object root; each node a single-string ``type`` among string, number, integer, boolean,
 array and object; ``properties``, ``required`` (listing every property, as strict decoding
@@ -143,6 +155,39 @@ TEST_POSITIONS: Final[Mapping[str, int]] = {
     "rejectattr": 1,
 }
 """Filters that apply a test named by an argument, and that argument's position (#853)."""
+
+
+def _required(function: Any) -> tuple[str | None, ...]:
+    """The arguments a template must pass filter or test ``function`` (#858): its parameters
+    with no default, past those Jinja passes itself (``_PASSED``, a first ``env``) and the
+    filtered or tested value, each by the keyword that can pass it (``None`` for a
+    positional-only one). Empty when it takes ``*args`` (``map``, ``select`` and the like,
+    which ``_filter_problem`` checks by hand) or its signature cannot be read."""
+    try:
+        parameters = list(inspect.signature(function).parameters.values())
+    except TypeError, ValueError:
+        return ()
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in parameters):
+        return ()
+    parameters = [p for p in parameters if p.name not in _PASSED]
+    if parameters and parameters[0].name == "env":
+        parameters = parameters[1:]
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return tuple(
+        None if p.kind is inspect.Parameter.POSITIONAL_ONLY else p.name
+        for p in parameters[1:]
+        if p.kind in positional and p.default is inspect.Parameter.empty
+    )
+
+
+FILTER_ARGUMENTS: Final[Mapping[str, tuple[str | None, ...]]] = {
+    name: needed for name, function in FILTERS.items() if (needed := _required(function))
+}
+"""Built-in filters that need arguments, and their names (#858)."""
+TEST_ARGUMENTS: Final[Mapping[str, tuple[str | None, ...]]] = {
+    name: needed for name, function in TESTS.items() if (needed := _required(function))
+}
+"""Built-in tests that need arguments, and their names (#858)."""
 
 
 def _mutating(*values: object) -> frozenset[str]:
@@ -248,6 +293,26 @@ def _number(arg: nodes.Expr | None, kinds: type | tuple[type, ...]) -> bool:
         and isinstance(arg.value, kinds)
         and not isinstance(arg.value, bool)
     )
+
+
+def _zero(arg: nodes.Expr | None) -> bool:
+    """A constant zero, or ``-``/``+`` of one (#858)."""
+    if isinstance(arg, (nodes.Neg, nodes.Pos)):
+        arg = arg.node
+    return _number(arg, (int, float)) and cast(nodes.Const, arg).value == 0
+
+
+def _arity_problem(
+    name: str,
+    needed: tuple[str | None, ...],
+    args: list[nodes.Expr],
+    kwargs: list[nodes.Keyword],
+) -> str | None:
+    """``name`` given fewer than the ``needed`` arguments, by position or keyword (#858)."""
+    given = {kw.key for kw in kwargs}
+    if all(index < len(args) or arg in given for index, arg in enumerate(needed)):
+        return None
+    return f"{name!r} needs {len(needed)} argument(s)"
 
 
 def _constant_key(arg: nodes.Expr) -> bool:
@@ -377,6 +442,18 @@ def _filter_problem(
         if not (isinstance(first, nodes.Const) and isinstance(first.value, str)):
             return "the filter 'map' names a filter that is computed"
         return _filter_problem(first.value, args[1:], kwargs, None)
+    # #858: what Jinja refuses on every render, for any value.
+    if name == "map" and not any(kw.key == "attribute" for kw in kwargs):
+        return "'map' needs 1 argument(s)"
+    if name in ("selectattr", "rejectattr") and not args:
+        return f"{name!r} needs 1 argument(s)"
+    problem = _arity_problem(name, FILTER_ARGUMENTS.get(name, ()), args, kwargs)
+    if problem is not None:
+        return problem
+    if name == "slice":
+        slices = args[0] if args else next(kw.value for kw in kwargs if kw.key == "slices")
+        if _zero(slices):
+            return "the filter 'slice' makes 0 slices"
     if not all(_safe_attribute(arg) for arg in _attribute_args(name, args, kwargs)):
         return (
             f"the filter {name!r} names an attribute that is computed, starts with '_' or "
@@ -387,6 +464,10 @@ def _filter_problem(
         test = args[position]
         if not (isinstance(test, nodes.Const) and test.value in TESTS):
             return f"the filter {name!r} names a test that is computed or not a Jinja built-in"
+        needed = TEST_ARGUMENTS.get(cast(str, test.value), ())
+        problem = _arity_problem(cast(str, test.value), needed, args[position + 1 :], kwargs)
+        if problem is not None:
+            return problem
     if name == "format":
         if any(_private(kw.key) for kw in kwargs):
             return "the filter 'format' names a field that starts with '_'"
@@ -459,6 +540,13 @@ def _scan(tree: nodes.Template) -> str | None:
                 return "the template slices by a computed bound; slice bounds are constant integers"
             if not _constant_key(node.arg):
                 return "the template reads an item by a computed key; item keys are constants"
+            if isinstance(node.arg, nodes.Slice) and _zero(node.arg.step):
+                return "the template uses a slice step of 0"
+        if isinstance(node, nodes.NSRef):
+            # #858: no `namespace` exists here (#837), so no target of `{% set x.y %}` is one.
+            return (
+                f"the template sets {node.name}.{node.attr}, and {node.name!r} is not a namespace"
+            )
         member = _member(node)
         if member in FORMAT_METHODS:
             return f"the template uses {member!r}, which consumer templates may not"
@@ -478,8 +566,14 @@ def _scan(tree: nodes.Template) -> str | None:
             return f"the template uses {member!r}, a method that changes its value"
         if isinstance(node, nodes.Name) and node.name in ("self", "super"):
             return f"the template references {node.name!r}, which consumer templates may not"
-        if isinstance(node, nodes.Test) and node.name not in TESTS:
-            return f"the template uses the test {node.name!r}, which is not a Jinja built-in"
+        if isinstance(node, nodes.Test):
+            if node.name not in TESTS:
+                return f"the template uses the test {node.name!r}, which is not a Jinja built-in"
+            needed = TEST_ARGUMENTS.get(node.name, ())
+            test_kwargs = cast(list[nodes.Keyword], node.kwargs)
+            problem = _arity_problem(node.name, needed, node.args, test_kwargs)
+            if problem is not None:
+                return problem
         if isinstance(node, (nodes.Filter, nodes.Test, nodes.Call)) and (
             node.dyn_args is not None or node.dyn_kwargs is not None
         ):
@@ -679,6 +773,7 @@ def check_schema(schema: Any, field: str = "body.output_schema") -> dict[str, An
 __all__ = [
     "ATTRIBUTE_POSITIONS",
     "DESCRIPTION_MAX",
+    "FILTER_ARGUMENTS",
     "FORMAT_METHODS",
     "MAPPING_MUTATING_METHODS",
     "MUTATING_METHODS",
@@ -694,6 +789,7 @@ __all__ = [
     "TEMPLATE_INVALID",
     "TEMPLATE_MAX_BYTES",
     "TEMPLATE_VARIABLES",
+    "TEST_ARGUMENTS",
     "TEST_POSITIONS",
     "PurposeRefused",
     "canonical_json",

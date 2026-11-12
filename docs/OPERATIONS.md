@@ -306,3 +306,9 @@ The bundled OpenRouter adapter does not declare `idempotency_keys`: the recorded
 - `GET /image-jobs/{id}` gives each attempt's `cost`, `cost_status`, `currency`, `outputs_billed` and `accounting`, the job's `cost` totals and its `usage` (`outputs_used`, `overage`, `extra_outputs`, `ambiguous_sends`).
 
 The cost records hold ids, amounts, currencies, counts and dates, and no story content. They survive erasure and principal offboarding. A story's deletion keeps them with the story removed, so the deployment report still counts them, and the story's report then answers 404. They are never exported, and they go with the accounting retention (`image_accounting_retention_days`), by the day they report on.
+
+## Consumer purposes
+
+A consumer purpose (`POST`/`PUT /admin/purposes`, FR-MODEL-14) is checked when it is saved: its name, its templates and its output schema. A refusal is 422 `validation_error` with `details.reason` and the first fault in `details.message`. The template check also refuses what it can see would fail on every render, whatever the inputs: a `{% set x.y = … %}` (no namespace exists in a consumer template), a slice step of 0, `slice(0)`, `map` with neither a filter nor `attribute`, `selectattr`/`rejectattr` with no arguments, and a filter or test given fewer arguments than it needs (`'replace' needs 2 argument(s)`). `select` and `reject` with no arguments filter by truthiness and are accepted.
+
+The save check cannot rule out every render error. A saved template can still fail for the inputs a call brings, or for a misuse the check does not model: calling `loop(x)` or `loop.cycle()` wrongly, `1/0`, or calling an attribute the inputs do not have. Such a call answers 422 `template_render_error` and calls no model (FR-MODEL-15). Fix the template with a `PUT`, which writes a new version.

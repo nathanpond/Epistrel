@@ -129,7 +129,11 @@ class PurposeVersionsBody(BaseModel):
         "message, an optional `system_template`, and the `output_schema` the reply must match. "
         "Everything is checked now, never at call time: 422 `validation_error` with "
         "`details.reason` `name_invalid`, `name_taken`, `template_invalid`, `schema_invalid` "
-        "or `purpose_limit`, the first fault only. It has no quality floor and no "
+        "or `purpose_limit`, the first fault only. A template that fails on every render is "
+        "refused here when the check can see it (a `{% set x.y %}`, a slice step of 0, a "
+        "filter or test missing its arguments). One can still fail for its inputs (`loop(x)`, "
+        "`1/0`, a call of a missing attribute): that call answers 422 "
+        "`template_render_error` (FR-MODEL-15). It has no quality floor and no "
         "certification: its output quality is the consumer's concern (ADR-185)."
     ),
 )

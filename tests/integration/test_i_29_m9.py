@@ -47,6 +47,7 @@ from epistrel.core.purposes.validation import (
     PURPOSE_LIMIT,
     PurposeRefused,
     check_template,
+    environment,
 )
 from epistrel.engine import Engine
 from epistrel.orchestrator.models.adapter import Message, UnknownPurpose
@@ -686,6 +687,158 @@ REFUSALS: list[tuple[str, dict[str, Any], str, str | None]] = [
         "template_invalid",
         "body.template",
     ),
+    # #858: what fails on every render: a `{% set x.y %}`, a slice step of 0, a filter or
+    # test missing its arguments, directly or through `map('<filter>', …)`.
+    (
+        "set_namespace_attribute",
+        {"template": "{% set inputs.x = 1 %}x"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_namespace_private",
+        {"template": "{% set inputs._y = 1 %}x"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "set_block_namespace",
+        {"template": "{% set inputs.x %}y{% endset %}x"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_step_zero",
+        {"template": "{{ inputs.list[::0] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_step_negative_zero",
+        {"template": "{{ inputs.list[1:2:-0] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_step_positive_zero",
+        {"template": "{{ inputs.list[::+0] }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_no_filter",
+        {"template": "{{ inputs.list|map|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_keyword_no_filter",
+        {"template": "{{ inputs.list|map(default=1)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "selectattr_no_args",
+        {"template": "{{ inputs.list|selectattr|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "rejectattr_no_args",
+        {"template": "{{ inputs.list|rejectattr|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "replace_no_args",
+        {"template": "{{ 'a'|replace }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "replace_one_arg",
+        {"template": "{{ inputs.voter|replace('a') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "replace_one_keyword",
+        {"template": "{{ inputs.voter|replace(new='b') }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_zero",
+        {"template": "{{ inputs.list|slice(0)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "slice_keyword_zero",
+        {"template": "{{ inputs.list|slice(slices=0)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_replace_one_arg",
+        {"template": "{{ inputs.list|map('replace', 'a')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_slice_zero",
+        {"template": "{{ inputs.list|map('slice', 0)|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_selectattr_no_args",
+        {"template": "{{ inputs.list|map('selectattr')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "select_test_no_args",
+        {"template": "{{ inputs.list|select('divisibleby')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "reject_test_no_args",
+        {"template": "{{ inputs.list|reject('sameas')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "selectattr_test_no_args",
+        {"template": "{{ inputs.list|selectattr('votes', 'divisibleby')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "rejectattr_test_no_args",
+        {"template": "{{ inputs.list|rejectattr('votes', 'eq')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "map_select_test_no_args",
+        {"template": "{{ inputs.list|map('select', 'divisibleby')|list }}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "is_test_no_args",
+        {"template": "{% if inputs.voter is divisibleby %}x{% endif %}"},
+        "template_invalid",
+        "body.template",
+    ),
+    (
+        "is_comparison_no_args",
+        {"template": "{% if inputs.voter is gt %}x{% endif %}"},
+        "template_invalid",
+        "body.template",
+    ),
     (
         "pop_taken",
         {"template": "{{ inputs.pop }}"},
@@ -838,8 +991,12 @@ REPLACE_REFUSALS: list[str] = [
     "{{ ([inputs.list]|map(attribute='append')|first)(1) }}",
     "{% set p = inputs.list.append %}{{ p(1) }}",
     "{% set p = inputs['pop'] %}{{ p('voter') }}",
+    "{% set inputs.x = 1 %}x",
+    "{{ inputs.list[::0] }}",
+    "{{ inputs.list|map|list }}",
+    "{{ inputs.list|select('divisibleby')|list }}",
 ]
-"""#852's and #857's routes, refused on ``PUT`` as on ``POST``."""
+"""#852's, #857's and #858's routes, refused on ``PUT`` as on ``POST``."""
 
 
 @pytest.mark.integration
@@ -847,7 +1004,8 @@ REPLACE_REFUSALS: list[str] = [
 async def test_i_29__m9_replace_refusals(
     served: tuple[httpx.AsyncClient, Engine], registered: tuple[Register, list[str]]
 ) -> None:
-    """A replacement is checked like a registration: each of #852's and #857's templates is
+    """A replacement is checked like a registration: each of #852's, #857's and #858's
+    templates is
     refused on ``PUT /admin/purposes/{name}`` with 422 ``template_invalid``, and the purpose
     stays at version 1.
 
@@ -935,6 +1093,90 @@ def test_i_29__m9_mutating_calls() -> None:
         assert check_template(template, "body.template").render(inputs=inputs) == rendered
 
 
+ALWAYS_FAILING: list[tuple[str, str]] = [
+    ("{% set inputs.x = 1 %}x", "the template sets inputs.x, and 'inputs' is not a namespace"),
+    ("{% set inputs._y = 1 %}x", "the template sets inputs._y, and 'inputs' is not a namespace"),
+    ("{{ inputs.list[::0] }}", "the template uses a slice step of 0"),
+    ("{{ inputs.list[::-0] }}", "the template uses a slice step of 0"),
+    ("{{ inputs.list|map|list }}", "'map' needs 1 argument(s)"),
+    ("{{ inputs.list|map(default=1)|list }}", "'map' needs 1 argument(s)"),
+    ("{{ inputs.list|selectattr|list }}", "'selectattr' needs 1 argument(s)"),
+    ("{{ inputs.list|rejectattr|list }}", "'rejectattr' needs 1 argument(s)"),
+    ("{{ inputs.voter|replace }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.voter|replace('a') }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.voter|replace(old='a') }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.list|slice(0)|list }}", "the filter 'slice' makes 0 slices"),
+    ("{{ inputs.list|slice(slices=0)|list }}", "the filter 'slice' makes 0 slices"),
+    ("{{ inputs.list|map('replace', 'a')|list }}", "'replace' needs 2 argument(s)"),
+    ("{{ inputs.list|map('slice', 0)|map('list')|list }}", "the filter 'slice' makes 0 slices"),
+    ("{{ inputs.list|map('map')|map('list')|list }}", "'map' needs 1 argument(s)"),
+    ("{{ inputs.list|select('divisibleby')|list }}", "'divisibleby' needs 1 argument(s)"),
+    ("{{ inputs.list|reject('in')|list }}", "'in' needs 1 argument(s)"),
+    ("{{ inputs.rows|selectattr('a', 'divisibleby')|list }}", "'divisibleby' needs 1 argument(s)"),
+    ("{{ inputs.rows|rejectattr('a', 'eq')|list }}", "'eq' needs 1 argument(s)"),
+    ("{{ inputs.list|select('eq', b=1)|list }}", "'eq' needs 1 argument(s)"),
+    ("{{ inputs.voter is sameas }}", "'sameas' needs 1 argument(s)"),
+    (
+        "{{ inputs.list|map('select', 'divisibleby')|map('list')|list }}",
+        "'divisibleby' needs 1 argument(s)",
+    ),
+]
+"""#858: templates that fail on every render, each with the message that names its construct."""
+
+STILL_SAVED: list[tuple[str, str]] = [
+    ("{{ inputs.list|select|list }}", "[1, 2, 3]"),
+    ("{{ inputs.list|reject|list }}", "[]"),
+    ("{{ inputs.list[::2] }}", "[1, 3]"),
+    ("{{ inputs.list[::-1] }}", "[3, 2, 1]"),
+    ("{{ inputs.names|map('upper')|join }}", "ABCD"),
+    ("{{ inputs.rows|selectattr('a')|list }}", "[{'a': 1}]"),
+    ("{{ inputs.voter|replace('A', 'E') }}", "Esh"),
+    ("{{ inputs.voter|replace(old='A', new='E') }}", "Esh"),
+    ("{{ inputs.list|select('divisibleby', 3)|list }}", "[3]"),
+    ("{{ inputs.list|select('divisibleby', num=3)|list }}", "[3]"),
+    ("{{ inputs.list[2] is divisibleby(3) }}", "True"),
+    ("{{ inputs.list|slice(2)|list }}", "[[1, 2], [3]]"),
+    ("{{ inputs.rows|map(attribute='a', default=0)|list }}", "[1, 0]"),
+    ("{{ inputs.names|map('replace', old='a', new='A')|join }}", "Abcd"),
+    ("{{ inputs.rows|selectattr('a', 'eq', 1)|list }}", "[{'a': 1}]"),
+]
+"""#858's complement: the accepted neighbours of ``ALWAYS_FAILING``, with what they render."""
+
+
+@pytest.mark.integration
+@pytest.mark.part("M9", "FR-MODEL-14")
+def test_i_29__m9_always_failing() -> None:
+    """#858: ``check_template`` refuses a template the scan can see fails on every render,
+    naming the construct: a ``{% set x.y %}`` target (no namespace exists), a constant zero
+    slice step, ``slice(0)``, ``map`` with no filter, ``selectattr``/``rejectattr`` with no
+    arguments, and a filter or test given fewer arguments than it needs, directly, through
+    ``select``/``reject``/``selectattr``/``rejectattr`` or through ``map('<filter>', …)``.
+    Each does fail when rendered without the scan (a generator ``map`` yields fails once it
+    is read, so those rows read it).
+
+    Complement asserted: the neighbours in ``STILL_SAVED`` are accepted and render."""
+    inputs = {
+        "voter": "Ash",
+        "list": [1, 2, 3],
+        "names": ["ab", "cd"],
+        "rows": [{"a": 1}, {"a": 0}],
+    }
+    env = environment()
+    for template, message in ALWAYS_FAILING:
+        with pytest.raises(PurposeRefused) as refused:
+            check_template(template, "body.template")
+        details = refused.value.details
+        assert (details["reason"], details["field"], details["message"]) == (
+            "template_invalid",
+            "body.template",
+            message,
+        ), template
+        with pytest.raises(Exception):  # noqa: B017, PT011 - any render error
+            env.from_string(template).render(inputs=inputs)
+    for template, rendered in STILL_SAVED:
+        assert check_template(template, "body.template").render(inputs=inputs) == rendered
+
+
 @pytest.mark.integration
 @pytest.mark.part("M9", "FR-MODEL-14")
 async def test_i_29__m9_valid_edges(
@@ -989,6 +1231,14 @@ async def test_i_29__m9_valid_edges(
             # #857: a mutating name that is bound or mapped and not called reads the key.
             "{% set p = inputs['pop'] %}{{ p }}|{{ ([inputs]|map(attribute='pop')|first) }}|"
             "{{ inputs.add }}|{% set x = inputs.append_text %}{{ x }}|"
+            # #858: truthiness select/reject, nonzero steps and filters/tests given their
+            # arguments.
+            "{{ inputs.names | select | join }}|{{ inputs.names | reject | list }}|"
+            "{{ inputs.names[::-1] | join }}|{{ inputs.voter | replace('A', 'E') }}|"
+            "{{ inputs.voter | replace(old='s', new='S') }}|"
+            "{{ inputs.list | selectattr('name') | map(attribute='name') | join }}|"
+            "{{ inputs.list | map(attribute='votes') | select('divisibleby', 2) | join }}|"
+            "{% if inputs.list[1].votes is divisibleby(2) %}even{% endif %}|"
             "{% if viewpoint %}{{ viewpoint.name }}{% endif %}"
             "{% if story %}{{ story.title | default('') }}{% endif %}"
         ),
@@ -1011,7 +1261,7 @@ async def test_i_29__m9_valid_edges(
     assert called.status_code == 200, called.text
     assert lib.models.stub.calls[-1].messages[1].content == (
         "ABCDEF|Ash|x|y|x,y|y|y|cd|abef|3|xy|x, y|ABCDEF|Ash|-|Ash|Ash and %(_y)s|101|Ash|"
-        "abcdef|x|s|kept|P|P|A|T|"
+        "abcdef|x|s|kept|P|P|A|T|abcdef|[]|efcdab|Esh|ASh|xy|2|even|"
     )
     keywords = _schema(
         kind={"type": "string", "const": "vote", "title": "Kind"},

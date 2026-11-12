@@ -1,11 +1,13 @@
 version: 1
-plugin_version: 0.8.0
+plugin_version: 0.9.0
 stack: python             # FastAPI service, uv-managed
 initialized: 2026-10-07
 wiki: enabled
 repo: nathanpond/Epistrel
 visibility: public
 context7: installed
+exec:
+  full_suite: sequential   # sequential | pipelined (pipelined needs tests safe to run concurrently)
 security_findings: issues
 areas: [core, orchestrator, api, db, ci, infra, docs]
 related_repos:

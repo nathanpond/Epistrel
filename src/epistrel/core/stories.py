@@ -120,7 +120,7 @@ from epistrel.core.idempotency import Scope
 from epistrel.core.ids import Ulid, new_ulid
 from epistrel.core.media.assets import assert_referenceable
 from epistrel.core.membership import Position
-from epistrel.core.memory.story_partitions import story_partition
+from epistrel.core.memory.story_partitions import schedule_drop, story_partition
 from epistrel.core.ownership import Owner, RelationFilter
 from epistrel.core.profiles import store as profiles
 from epistrel.core.profiles.effective import ProfileVersionRef, StoryProfileRef
@@ -231,6 +231,7 @@ from epistrel.core.tables.states import (
 from epistrel.core.tables.story_images import story_images
 from epistrel.core.tables.utterances import utterances
 from epistrel.core.trimmed import trim_as_sent
+from epistrel.testing import pauses
 
 Database = AsyncEngine | AsyncConnection
 
@@ -2094,6 +2095,9 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
     audit event names the story and the acting principal, and by a ``story_deleted``
     ``audit_log`` row (null ``story_id``; the story's earlier audit rows are detached). The
     story's relations are removed and a ``deleted`` ownership event names its owner (#104).
+    The story's ``memories`` partition is dropped after the commit, by the
+    ``memory_partition_drop`` job enqueued in the same transaction (#865; the hourly sweep
+    catches any the job misses).
     """
     async with db.connect() as conn:
         exists = await conn.scalar(select(stories.c.id).where(stories.c.id == story_id))
@@ -2121,6 +2125,10 @@ async def delete_story(db: AsyncEngine, story_id: str, *, principal: str) -> dic
             principal=principal,
             details={"story_id": story_id, "operation_id": op.operation_id},
         )
+        # #865: the story's memories partition is dropped by a job that runs after this commits
+        # (a detach here would hold ACCESS EXCLUSIVE on ``memories`` until the commit).
+        await schedule_drop(conn, story_id)
+        await pauses.pause(pauses.STORY_DELETE_BEFORE_COMMIT)
 
     op = Operation(
         db,

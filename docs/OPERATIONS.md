@@ -150,6 +150,10 @@ The same statement is served by `GET /admin/erasure/boundary` as data, and it en
 Delivered exports are outside the erasure boundary (FR-ADMIN-8: exports already delivered): an export's file counts as delivered once it has been downloaded, and an erasure cannot reach a copy outside the deployment. Until its first download, an erasure redacts the subject in the file's cases.
 <!-- feedback-export-boundary:end -->
 
+## Story memory partitions
+
+`memories` has a partition per story, `memories_p_<story>` (ADR-187). `DELETE /stories/{id}` deletes the story's memories with its other rows and answers then; the empty partition is dropped after the deletion, by a background job (`memory_partition_drop`) that detaches it with `ALTER TABLE memories DETACH PARTITION … CONCURRENTLY` and drops it, so other stories' retrievals are never blocked. The detach waits for transactions already open in the database. If one is still open after 5 s, the attempt fails and the job retries with backoff. An hourly sweep (`memory_partition_sweep`, also run once when a worker starts) drops every partition left with no story, such as one from a failed creation. It also finishes a detach left pending and drops a detached `memories_p_*` table that a crash between the detach and the drop left behind. A story's partition is never dropped while the story exists or while it is being created.
+
 ## Retrieval index tuning
 
 The embedding vectors' HNSW index (`ix_memories_embedding_hnsw`, cosine) is built when the first embedding pins the dimension, and again when a model change retypes the column. It uses the deployment settings `embedding_hnsw_m` (default 16) and `embedding_hnsw_ef_construction` (default 64). A change to either setting applies to the next build only. To rebuild an existing index with the new values, run `REINDEX INDEX CONCURRENTLY ix_memories_embedding_hnsw;` against the database after the `PUT /admin/settings`. Searches keep running during the rebuild.

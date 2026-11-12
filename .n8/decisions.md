@@ -13884,3 +13884,36 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the CI wait budget per run is 90 minutes: 1.5 × the 60-minute longest check on PR #856, the last merged milestone PR.
   **Why:** n8SDLC 0.9.0 derives the budget (`reference/github.md` → *Waiting on CI*). It is above 30 minutes, so it is logged.
   **Issue:** M10 (#10)
+- **Decision:** `delete_story` enqueues the `memory_partition_drop` job inside the deletion's own transaction, as a story-less job coalesced per story. It does not enqueue in a second transaction after the commit.
+  **Why:** a job row written in the transaction is claimable only after the commit, so the drop still runs after the deletion commits, and the deletion and its drop job commit or roll back together. Core reaches the job through a port (`story_partitions.set_drop_scheduler`), which the Orchestrator's handler module binds at import, so `core` imports no `orchestrator` module. Without a bound scheduler, the sweep drops the partition.
+  **Issue:** #865
+- **Decision:** Rule 3: `test_s_delete` now expects one new `jobs` row (the partition drop, queued and story-less) among the rows a deletion adds, and asserts its kind and target. The rest of the FR-STORE-16 suite is unchanged.
+  **Why:** the planner says the FR-STORE-16 suite is unchanged, but the AC requires a background job, and a job is a `jobs` row. The test compares every table's rows before and after the deletion, so it needs to list the new row.
+  **Issue:** #865
+- **Decision:** `drop_partition` and the sweep take the story's session advisory lock with a try-lock. When another session holds it, the job attempt fails and is retried, and the sweep skips that story until its next run. A story with a `stories` row is never dropped (`live`), and a missing table is `absent`.
+  **Why:** the AC requires skipping a story whose creator holds the lock. Holding the lock from the check to the `DROP` also makes a creation that starts during the drop wait, then create a new partition.
+  **Issue:** #865
+- **Decision:** a drop first finalizes and drops any orphan partition whose detach is pending. The sweep handles pending detaches before the others.
+  **Why:** PostgreSQL allows one pending detach per partitioned table. Any other `DETACH … CONCURRENTLY` fails with "already pending detach" until it is finalized (seen in the sweep test). The detach's second phase also waits for every transaction already open in the database, even one that never touched `memories`, so an interrupted detach can happen in normal operation.
+  **Issue:** #865
+- **Decision:** the sweep's global advisory lock is a try-lock on `(0x4D454D53 "MEMS", 0)`. A sweep that finds it held returns `{"locked": 1}` and does nothing.
+  **Why:** a second sweep running at the same time would repeat the first one's work. The separate namespace cannot collide with a story key, which is `("MEMP", hashtext(story_id))`.
+  **Issue:** #865
+- **Decision:** the sweep drops a detached `memories_p_*` table only when no live story's partition name matches it. The check uses a SQL expression that mirrors `partition_name` (a lowercased id, or the first 16 hex digits of the id's SHA-256).
+  **Why:** a detached table cannot be traced to its story through a partition bound. Without the check, a table someone detached by hand for a live story would be dropped.
+  **Issue:** #865
+- **Decision:** the start-up run of the sweep is a worker recovery hook that `Engine.start_workers` registers (`memory_partition_sweep`). It enqueues the sweep job under the recurring task's coalesce key. `api` mode does not run it.
+  **Why:** the planner puts the sweep wherever the media sweep's start-up and maintenance hook is. The media sweep is a recurring task run by the worker, which has no other start-up hook. A recovery hook runs once in each worker's start-up pass, and the coalesce key merges it with a recurring firing that is already due. `api` mode runs no background jobs.
+  **Issue:** #865
+- **Decision:** the new tests in `tests/integration/test_s_delete.py` carry no part marker. They are `test_a_deleted_story_s_partition_is_dropped`, `test_the_sweep_drops_orphan_partitions_only` and `test_a_deletion_does_not_stall_another_story_s_retrieval`.
+  **Why:** they are regression tests next to `test_story_isolation_schema`, which carries no marker either. M10 gates nothing, and they are not new parts of S-DELETE.
+  **Issue:** #865
+- **Decision:** two pause points were added to `epistrel.testing.pauses`: `stories.delete.before_commit` and `memories.partition.detached`. The timing test runs another story's retrieval at each point, with `lock_timeout` 2 s, and asserts that it finishes in under 2 s.
+  **Why:** the AC's 2 s assertion needs the deletion's transaction and the drop held open while the retrieval runs. A lock timeout makes a blocked retrieval fail at 2 s instead of hanging.
+  **Issue:** #865
+- **Decision:** Filed #875: since #784, every story creation holds an extra pooled connection for the partition's session advisory lock, so about 15 simultaneous creations can exhaust the default pool. It was not fixed here.
+  **Why:** the risk is in the creation path, which #865 does not change. The drop job and the sweep each use one autocommit connection.
+  **Issue:** #875
+- **Decision:** stale references in #865's body were corrected while implementing. `delete_story` is at `core/stories.py:2087` (the body says :2078). The `STORY_TABLES` loop is at :2185-2187 (the body says :2176-2178). The eval runner's deletions are at `evals/runner.py:419` and :447 (the body says :418 and :446). `api/app.py:87` and `core/offboarding.py:748` are unchanged.
+  **Why:** #784's commit moved the lines. Offboarding and the eval runner call `delete_story`, so they need no change.
+  **Issue:** #865

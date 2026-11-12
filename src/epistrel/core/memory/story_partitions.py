@@ -24,6 +24,25 @@ path that creates a story creates its partition first.
   the story id until the story's transaction is done, so a sweep of empty partitions with no
   story row (#865) never drops one a creation is about to fill. A failed creation leaves the
   empty partition behind for that sweep.
+- ``drop_partition`` (#865): drops a deleted story's partition, after the deletion commits (the
+  ``memory_partition_drop`` job ``core.stories.delete_story`` enqueues through
+  ``schedule_drop``). Detaching or dropping a partition inside a transaction would hold
+  ACCESS EXCLUSIVE on ``memories`` until the commit and stall every story's retrieval, so it
+  runs on an autocommit connection, with ``lock_timeout`` 5 s: ``ALTER TABLE memories DETACH
+  PARTITION … CONCURRENTLY`` (``… FINALIZE`` when an earlier detach was interrupted), then
+  ``DROP TABLE``. It holds the story's session advisory lock throughout and does nothing while
+  the story has a ``stories`` row or another session holds that lock (a creation in flight).
+  The detach's second phase waits for every transaction already open in the database: one
+  open past the lock timeout fails the attempt and leaves the detach pending, and the next
+  attempt (or the sweep) finalizes it. ``memories`` holds one pending detach at a time, so a
+  drop finalizes any orphan's pending detach first.
+- ``sweep_orphans`` (#865): the safety net, run hourly and once at a worker's start (the
+  ``memory_partition_sweep`` task) under a global advisory lock. It drops every partition
+  whose bound (``pg_get_expr(relpartbound)``: a hashed name cannot be reversed) names no
+  ``stories`` row, finalizing a detach-pending one, and every detached ``memories_p_*`` table
+  a crash between the detach and the drop left behind (unless its name is a live story's).
+  A story whose session advisory lock is held is skipped. A live story's partition is never
+  dropped.
 
 Logs carry identifiers only (invariant 3).
 """
@@ -33,12 +52,15 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+
+from epistrel.testing import pauses
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +77,12 @@ LOCK_TIMEOUT = "5s"
 EXCLUSIVE and ``operations``' SHARE ROW EXCLUSIVE briefly)."""
 ATTEMPTS = 3
 LOCK_NOT_AVAILABLE = "55P03"
+SWEEP_LOCK = (0x4D454D53, 0)
+"""The sweep's global advisory lock ("MEMS", 0): one sweep runs at a time across processes."""
+
+DROPPED, ABSENT, LIVE, BUSY = "dropped", "absent", "live", "busy"
+"""``drop_partition``'s outcomes: the table was dropped; there was none; the story has a
+``stories`` row (nothing is dropped); another session holds the story's advisory lock."""
 
 _PLAIN = re.compile(r"[0-9a-z]{1,26}")
 
@@ -183,14 +211,200 @@ async def _held(conn: AsyncConnection, story_id: str) -> AsyncIterator[None]:
             await conn.invalidate()
 
 
+# -- dropping (#865) --------------------------------------------------------------------------
+
+DropScheduler = Callable[[AsyncConnection, str], Awaitable[None]]
+"""``schedule(conn, story_id)``: enqueue the drop of ``story_id``'s partition in ``conn``'s
+transaction (the Orchestrator's ``memory_partition_drop`` job), so it runs after the commit."""
+
+_SCHEDULER: list[DropScheduler] = []
+
+
+def set_drop_scheduler(scheduler: DropScheduler | None) -> None:
+    """Make ``scheduler`` the one ``schedule_drop`` calls (``None``: nothing is scheduled, and
+    the sweep drops the partition)."""
+    _SCHEDULER.clear()
+    if scheduler is not None:
+        _SCHEDULER.append(scheduler)
+
+
+async def schedule_drop(conn: AsyncConnection, story_id: str) -> bool:
+    """Enqueue the drop of ``story_id``'s partition in ``conn``'s transaction; ``False`` when
+    no scheduler is bound (the sweep drops it later)."""
+    if not _SCHEDULER:
+        return False
+    await _SCHEDULER[0](conn, story_id)
+    return True
+
+
+@asynccontextmanager
+async def _autocommit(db: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """A pooled connection in autocommit (``DETACH … CONCURRENTLY`` runs outside a transaction
+    block) with ``lock_timeout`` set; one that fails is invalidated, never pooled with a session
+    advisory lock or the timeout still set."""
+    async with db.connect() as pooled:
+        conn = await pooled.execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            await conn.execute(text(f"SET lock_timeout = '{LOCK_TIMEOUT}'"))
+            yield conn
+            await conn.execute(text("RESET lock_timeout"))
+        except BaseException:
+            await conn.invalidate()
+            raise
+
+
+async def _attached(conn: AsyncConnection, table: str) -> bool | None:
+    """``None``: ``table`` is not a partition of ``memories``; otherwise whether its detach is
+    pending."""
+    row = (
+        await conn.execute(
+            text(
+                "SELECT i.inhdetachpending FROM pg_inherits i "
+                "WHERE i.inhparent = CAST(:p AS regclass) AND i.inhrelid = to_regclass(:c)"
+            ),
+            {"p": PARENT, "c": _ident(table)},
+        )
+    ).first()
+    return None if row is None else bool(row[0])
+
+
+async def _drop(conn: AsyncConnection, story_id: str, table: str) -> str:
+    """Drop ``table``, ``story_id``'s partition, on ``conn`` (autocommit) unless the story
+    lives or its advisory lock is held elsewhere (see the module docstring)."""
+    key = _lock_key(story_id)
+    if not await conn.scalar(select(func.pg_try_advisory_lock(*key))):
+        return BUSY
+    try:
+        live = await conn.scalar(
+            text("SELECT EXISTS (SELECT 1 FROM stories WHERE id = :s)"), {"s": story_id.rstrip()}
+        )
+        if live:
+            return LIVE
+        pending = await _attached(conn, table)
+        name = _ident(table)
+        if pending is not None:
+            mode = "FINALIZE" if pending else "CONCURRENTLY"
+            await conn.execute(text(f"ALTER TABLE {PARENT} DETACH PARTITION {name} {mode}"))
+            await pauses.pause(pauses.MEMORY_PARTITION_DETACHED)
+        elif await conn.scalar(text("SELECT to_regclass(:c)"), {"c": name}) is None:
+            return ABSENT
+        await conn.execute(text(f"DROP TABLE IF EXISTS {name}"))
+        logger.info("memories partition of %s dropped", story_id)
+        return DROPPED
+    finally:
+        await conn.execute(select(func.pg_advisory_unlock(*key)))
+
+
+async def drop_partition(db: AsyncEngine, story_id: str) -> str:
+    """Detach and drop the partition of ``story_id``, a deleted story (see the module
+    docstring); one of ``DROPPED``, ``ABSENT``, ``LIVE`` or ``BUSY``. ``memories`` holds one
+    pending detach at a time, so an orphan's detach an earlier run left pending is finalized and
+    dropped first. A lock timeout raises (SQLSTATE 55P03), and the job retries."""
+    async with _autocommit(db) as conn:
+        for row in await _orphans(conn, pending_only=True):
+            await _drop(conn, str(row.story_id), str(row.relname))
+        return await _drop(conn, story_id, partition_name(story_id))
+
+
+_ORPHANS = (
+    # A partition's bound is ``FOR VALUES IN ('<story id>')`` (quotes doubled); the anti-join
+    # compares as ``bpchar``, so it reads the ``stories`` key. A pending detach comes first.
+    "SELECT o.relname, o.story_id, o.pending FROM (SELECT c.relname, "
+    "i.inhdetachpending AS pending, replace(substring(pg_get_expr(c.relpartbound, c.oid) "
+    "FROM '^FOR VALUES IN \\(''(.*)''\\)$'), '''''', '''') AS story_id "
+    "FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+    "WHERE i.inhparent = CAST(:p AS regclass){only}) o "
+    "WHERE o.story_id IS NOT NULL AND NOT EXISTS "
+    "(SELECT 1 FROM stories s WHERE s.id = CAST(o.story_id AS bpchar)) "
+    "ORDER BY o.pending DESC, o.relname"
+)
+
+
+async def _orphans(conn: AsyncConnection, *, pending_only: bool = False) -> list[Any]:
+    """The partitions whose bound names no ``stories`` row (``pending_only``: those whose
+    detach is pending), pending ones first."""
+    only = " AND i.inhdetachpending" if pending_only else ""
+    return list((await conn.execute(text(_ORPHANS.format(only=only)), {"p": PARENT})).all())
+
+
+_LEFTOVERS = text(
+    "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE c.relkind = 'r' AND NOT c.relispartition AND n.nspname = current_schema() "
+    "AND starts_with(c.relname, :prefix) ORDER BY c.relname"
+)
+
+
+async def _live_name(conn: AsyncConnection, table: str) -> bool:
+    """Whether ``table`` is the partition name of a story that has a ``stories`` row."""
+    suffix = table.removeprefix(PREFIX)
+    found = await conn.scalar(
+        text(
+            "SELECT EXISTS (SELECT 1 FROM stories WHERE lower(rtrim(id)) = :s "
+            "OR left(encode(sha256(convert_to(rtrim(id), 'UTF8')), 'hex'), 16) = :s)"
+        ),
+        {"s": suffix},
+    )
+    return bool(found)
+
+
+async def sweep_orphans(db: AsyncEngine) -> dict[str, int]:
+    """Drop every orphan partition and detached leftover (see the module docstring); counts
+    only. ``{"locked": 1}`` when another process is sweeping."""
+    counts = {"dropped": 0, "leftovers": 0, "busy": 0, "failed": 0}
+    async with _autocommit(db) as conn:
+        if not await conn.scalar(select(func.pg_try_advisory_lock(*SWEEP_LOCK))):
+            return {"locked": 1}
+        try:
+            for row in await _orphans(conn):
+                try:
+                    outcome = await _drop(conn, str(row.story_id), str(row.relname))
+                except DBAPIError as exc:
+                    # A lock timeout, or a pending detach this run could not finalize: the next
+                    # run tries again.
+                    logger.warning(
+                        "memories sweep: %s not dropped: %s", row.relname, type(exc).__name__
+                    )
+                    counts["failed"] += 1
+                    continue
+                if outcome == DROPPED:
+                    counts["dropped"] += 1
+                elif outcome == BUSY:
+                    counts["busy"] += 1
+            for table in (await conn.scalars(_LEFTOVERS, {"prefix": PREFIX})).all():
+                if await _live_name(conn, str(table)):
+                    logger.warning("detached memories table %s names a live story", table)
+                    continue
+                await conn.execute(text(f"DROP TABLE IF EXISTS {_ident(str(table))}"))
+                counts["leftovers"] += 1
+        finally:
+            await conn.execute(select(func.pg_advisory_unlock(*SWEEP_LOCK)))
+    if counts["dropped"] or counts["leftovers"]:
+        logger.info(
+            "memories sweep: %d partition(s), %d leftover(s) dropped",
+            counts["dropped"],
+            counts["leftovers"],
+        )
+    return counts
+
+
 __all__ = [
+    "ABSENT",
     "ATTEMPTS",
+    "BUSY",
+    "DROPPED",
     "FILLFACTOR",
+    "LIVE",
     "LOCK_NAMESPACE",
     "PREFIX",
+    "SWEEP_LOCK",
+    "DropScheduler",
     "create_partition",
+    "drop_partition",
     "has_partition",
     "not_a_partition",
     "partition_name",
+    "schedule_drop",
+    "set_drop_scheduler",
     "story_partition",
+    "sweep_orphans",
 ]

@@ -218,6 +218,7 @@ from epistrel.orchestrator.jobs.handlers import erasure_reconcile as erasure_rec
 from epistrel.orchestrator.jobs.handlers import importance as importance_job
 from epistrel.orchestrator.jobs.handlers import lite_summary as lite_summary_job
 from epistrel.orchestrator.jobs.handlers import media_sweep as media_sweep_job
+from epistrel.orchestrator.jobs.handlers import memory_partitions as memory_partitions_job
 from epistrel.orchestrator.jobs.handlers import offboarding as offboarding_job
 from epistrel.orchestrator.jobs.handlers import outbox as outbox_job
 from epistrel.orchestrator.jobs.handlers import prune_policy as prune_policy_job
@@ -932,7 +933,8 @@ class Engine:
         (the ``turn_queue`` recovery hook), and its ``turn_queue_drain`` task re-checks every
         30 s. The ``lite_summary`` job calls models through this Engine's layer (#72). ``api``
         mode runs no worker and only drains the queues left behind once. Either
-        way it runs in the background, so an unreachable database never stops the server."""
+        way it runs in the background, so an unreachable database never stops the server.
+        #865: a worker's start-up pass also enqueues the memories partition sweep once."""
         mode = mode or self.settings.mode
         turn_queue_job.bind(self.drainer.recover)
         lite_summary_job.bind(self.models)
@@ -982,6 +984,10 @@ class Engine:
         register_recovery_hook(RATING_CHECK_HOOK, _end_rating_checks)
         register_recovery_hook(CERTIFICATIONS_HOOK, _load_certifications)
         register_recovery_hook(IMAGE_ATTEMPTS_HOOK, _recover_image_attempts)
+        # #865: the memories partition sweep runs once at start, then hourly.
+        register_recovery_hook(
+            memory_partitions_job.SWEEP_HOOK, memory_partitions_job.schedule_sweep
+        )
         self.worker = Worker(self.db, WorkerConfig.from_settings(self.settings, mode=mode))
         self._worker_task = asyncio.create_task(self.worker.run(), name="epistrel-worker")
 
@@ -1017,6 +1023,7 @@ class Engine:
             unregister_recovery_hook(RATING_CHECK_HOOK)
             unregister_recovery_hook(CERTIFICATIONS_HOOK)
             unregister_recovery_hook(IMAGE_ATTEMPTS_HOOK)
+            unregister_recovery_hook(memory_partitions_job.SWEEP_HOOK)
         if turn_queue_job.bound() == self.drainer.recover:
             turn_queue_job.bind(None)
         if lite_summary_job.bound() is self.models:

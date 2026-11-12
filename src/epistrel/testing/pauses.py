@@ -37,6 +37,10 @@ The points:
 - ``bundles.import.before_ready``: a story import's job (#250) has inserted the bundle, passed
   every gate and rebuilt the projections; the story is still ``importing`` and the job
   ``running`` (stage ``embedding``), the finishing transaction not begun.
+- ``stories.delete.before_commit``: a story deletion (FR-STORE-16) has deleted every row of the
+  story and enqueued its partition's drop (#865); its transaction has not committed yet.
+- ``memories.partition.detached``: a memories partition's drop (#865) has detached the partition
+  (``DETACH … CONCURRENTLY``, or ``FINALIZE``); it has not dropped the table yet.
 
 This module imports nothing but the standard library, so ``epistrel.core`` can call it.
 """
@@ -61,6 +65,8 @@ ERASURE_RECONCILE_BEFORE_REAPPLY = "erasure.reconcile.before_reapply"
 BUNDLE_EXPORT_AFTER_SNAPSHOT = "bundles.export.after_snapshot"
 BUNDLE_EXPORT_BEFORE_SCAN = "bundles.export.before_scan"
 BUNDLE_IMPORT_BEFORE_READY = "bundles.import.before_ready"
+STORY_DELETE_BEFORE_COMMIT = "stories.delete.before_commit"
+MEMORY_PARTITION_DETACHED = "memories.partition.detached"
 POINTS = (
     CATALOG_SAVE_BEFORE_CAS,
     CATALOG_PUBLISH_LOCKED,
@@ -76,6 +82,8 @@ POINTS = (
     BUNDLE_EXPORT_AFTER_SNAPSHOT,
     BUNDLE_EXPORT_BEFORE_SCAN,
     BUNDLE_IMPORT_BEFORE_READY,
+    STORY_DELETE_BEFORE_COMMIT,
+    MEMORY_PARTITION_DETACHED,
 )
 
 ARRIVAL_TIMEOUT_S = 10.0
@@ -147,9 +155,11 @@ __all__ = [
     "MEDIA_COMPLETE_LOCKED",
     "MEDIA_SWEEP_BEFORE_PURGE",
     "MEDIA_UPLOAD_BEFORE_COMMIT",
+    "MEMORY_PARTITION_DETACHED",
     "OWNERSHIP_ADD_FOUND",
     "POINTS",
     "PROFILE_PURGE_BEFORE_LOCK",
+    "STORY_DELETE_BEFORE_COMMIT",
     "Hold",
     "held",
     "pause",

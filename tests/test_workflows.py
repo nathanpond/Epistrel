@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +139,221 @@ def test_rollback_serialises_on_the_group_and_logs_what_it_changed() -> None:
         assert writes, f"{name}: writes nothing to the summary"
         assert all('tee -a "$GITHUB_STEP_SUMMARY"' in line for line in writes), name
     assert "| tag | before | after |" in by_name["Re-point floating tags"]
+
+
+# #96: the rollback's and the release re-run's shell steps run under bash with fake `docker` and
+# `gh` on PATH. The fakes keep image tags as files and log every call's argv as one JSON line.
+FAKE_CLI = """import json, os, pathlib, sys
+state = pathlib.Path(os.environ["FAKE_STATE"])
+argv = sys.argv[1:]
+with (state / "calls.jsonl").open("a") as log:
+    log.write(json.dumps([pathlib.Path(sys.argv[0]).name, *argv]) + "\\n")
+if argv[:3] == ["buildx", "imagetools", "inspect"]:
+    tag = state / "tags" / argv[3].rsplit(":", 1)[1]
+    if not tag.exists():
+        sys.exit(1)
+    print(tag.read_text())
+elif argv[:3] == ["buildx", "imagetools", "create"]:
+    (state / "tags" / argv[4].rsplit(":", 1)[1]).write_text(argv[5].rsplit("@", 1)[1])
+elif argv[:2] == ["release", "view"] and "body" in argv:
+    print(os.environ.get("FAKE_BODY", ""))
+elif argv[:2] == ["release", "view"] and "isPrerelease" in argv:
+    print(os.environ.get("FAKE_PRERELEASE", "false"))
+"""
+GOOD = "sha256:good"
+BAD = "sha256:bad"
+
+
+def _run_step(
+    tmp_path: Path, run: str, env: dict[str, str], tags: dict[str, str] | None = None
+) -> tuple[list[list[str]], dict[str, str], str]:
+    """Run a step's script; return the fakes' calls, the image tags after it, and the summary."""
+    bash = shutil.which("bash")
+    assert bash is not None
+    bin_dir, state = tmp_path / "bin", tmp_path / "state"
+    (state / "tags").mkdir(parents=True)
+    bin_dir.mkdir()
+    for name in ("docker", "gh"):
+        fake = bin_dir / name
+        fake.write_text(f"#!{sys.executable}\n{FAKE_CLI}")
+        fake.chmod(0o755)
+    for tag, digest in (tags or {}).items():
+        (state / "tags" / tag).write_text(digest)
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    full = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "FAKE_STATE": str(state),
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "GITHUB_REPOSITORY": "o/r",
+        "IMAGE_LC": "ghcr.io/o/r",
+        **env,
+    }
+    done = subprocess.run(
+        [bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", run],
+        env=full,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    log = state / "calls.jsonl"
+    calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    after = {p.name: p.read_text().strip() for p in (state / "tags").iterdir()}
+    return calls, after, summary.read_text() if summary.exists() else ""
+
+
+def _created(calls: list[list[str]]) -> list[str]:
+    return [c[5].rsplit(":", 1)[1] for c in calls if c[1:4] == ["buildx", "imagetools", "create"]]
+
+
+def _step(workflow: dict[str, Any], job: str, name: str) -> dict[str, Any]:
+    return next(s for s in _steps(workflow, job) if s.get("name") == name)
+
+
+def test_rollback_re_promotion_selects_the_tags_with_tools_release_retag() -> None:
+    """#96: a bare re-promotion asks `retag` which floating tags good_version heads."""
+    wf = _workflow("rollback.yml")
+    select = _step(wf, "rollback", "Select the floating tags good_version heads")
+    assert select["if"] == "inputs.bad_version == ''"
+    assert "--json tagName,isDraft,isPrerelease" in select["run"]
+    assert "python -m tools.release retag --released-file released.json" in select["run"]
+    assert 'tee -a "$GITHUB_OUTPUT"' in select["run"]
+    retag = _step(wf, "rollback", "Re-point floating tags")
+    assert retag["env"]["SELECTED"] == "${{ steps.select.outputs.tags }}"
+
+
+@pytest.mark.parametrize(
+    ("selected", "before", "moved"),
+    [
+        ("latest 0.1 0", {"latest": BAD, "0.1": BAD, "0": GOOD}, ["latest", "0.1"]),
+        ("0.1", {"latest": "sha256:newer", "0.1": BAD, "0": "sha256:newer"}, ["0.1"]),
+        ("", {"latest": "sha256:newer", "0.1": "sha256:newer"}, []),
+    ],
+    ids=["heads-all-0-already-good", "heads-its-minor-only", "heads-nothing"],
+)
+def test_rollback_re_promotion_re_points_exactly_the_selected_tags(
+    tmp_path: Path, selected: str, before: dict[str, str], moved: list[str]
+) -> None:
+    """#96 AC: every selected tag not already on the good digest is re-pointed, and only those; a
+    tag already there is reported unchanged and not re-created."""
+    run = _step(_workflow("rollback.yml"), "rollback", "Re-point floating tags")["run"]
+    env = {"GOOD": "0.1.1", "BAD": "", "GOOD_DIGEST": GOOD, "BAD_DIGEST": "", "SELECTED": selected}
+    calls, after, summary = _run_step(tmp_path, run, env, before)
+    assert _created(calls) == moved
+    for tag in ("latest", "0.1", "0"):
+        expected = GOOD if tag in moved else before.get(tag)
+        assert after.get(tag) == expected, tag
+        row = next(line for line in summary.splitlines() if line.startswith(f"| `{tag}` |"))
+        assert row.endswith(f"| `{GOOD}` |" if tag in moved else "| unchanged |"), row
+    assert (tmp_path / "output").read_text() == f"moved={''.join(' ' + t for t in moved)}\n"
+
+
+def test_rollback_with_bad_version_still_moves_latest_and_the_bad_lines(tmp_path: Path) -> None:
+    """#96 leaves the bad_version path's selection as it was: `latest` always, `X.Y`/`X` when they
+    are on the bad digest and good_version is in their line."""
+    run = _step(_workflow("rollback.yml"), "rollback", "Re-point floating tags")["run"]
+    env = {"GOOD": "1.2.2", "BAD": "1.2.3", "GOOD_DIGEST": GOOD, "BAD_DIGEST": BAD, "SELECTED": ""}
+    before = {"latest": BAD, "1.2": BAD, "1": "sha256:other"}
+    calls, after, _ = _run_step(tmp_path, run, env, before)
+    assert _created(calls) == ["latest", "1.2"]
+    assert after == {"latest": GOOD, "1.2": GOOD, "1": "sha256:other"}
+
+
+@pytest.mark.parametrize(
+    ("selected", "flags"),
+    [
+        ("latest 0.1 0", ["--latest", "--prerelease=false"]),
+        ("0.1", ["--latest=false", "--prerelease=false"]),
+    ],
+)
+def test_rollback_re_promotion_marks_latest_only_when_latest_moved(
+    tmp_path: Path, selected: str, flags: list[str]
+) -> None:
+    """#96 AC: `gh release edit --latest` runs only when `latest` is among the selected tags."""
+    run = _step(
+        _workflow("rollback.yml"), "rollback", "Promote the good release, demote the bad one"
+    )
+    calls, _, _ = _run_step(
+        tmp_path, run["run"], {"GOOD": "0.1.1", "BAD": "", "SELECTED": selected}
+    )
+    assert calls == [["gh", "release", "edit", "v0.1.1", "--repo", "o/r", *flags]]
+
+
+def test_release_rerun_builds_and_moves_nothing() -> None:
+    """#96 AC: a re-run of a released tag still runs ci and smoke, skips publish, and its `rerun`
+    job has no build, push or re-tag step."""
+    wf = _workflow("release.yml")
+    assert wf["jobs"]["publish"]["if"] == "needs.validate.outputs.already_released != 'true'"
+    rerun = wf["jobs"]["rerun"]
+    assert rerun["if"] == "needs.validate.outputs.already_released == 'true'"
+    assert rerun["needs"] == ["validate", "ci", "smoke"]
+    assert rerun["permissions"] == {"contents": "write", "packages": "read"}
+    uses = [str(s.get("uses", "")) for s in rerun["steps"]]
+    assert not any(a in u for u in uses for a in ("build-push", "metadata-action", "setup-qemu"))
+    runs = "\n".join(s.get("run", "") for s in rerun["steps"])
+    assert "imagetools inspect" in runs
+    assert not any(
+        c in runs for c in ("imagetools create", "docker push", "docker build ", "buildx build")
+    )
+    listed = _step(wf, "validate", "Released tags so far")["run"]
+    assert "--json tagName,isDraft,isPrerelease" in listed
+
+
+RELEASE_BODY = "## What's changed\n- a fix\n\nImage: `ghcr.io/o/r:0.1.1@sha256:rebuilt`"
+
+
+@pytest.mark.parametrize(
+    ("version", "prerelease", "highest", "demoted", "flags"),
+    [
+        ("0.1.1", "false", "true", "false", ["--latest"]),
+        ("0.1.1", "false", "false", "false", []),
+        ("0.1.1", "false", "true", "true", []),
+        ("0.2.0-rc.1", "true", "false", "true", ["--prerelease"]),
+    ],
+    ids=["highest", "not-highest", "demoted-by-a-rollback", "rc"],
+)
+def test_release_rerun_rewrites_the_digest_and_reasserts_the_flags(
+    tmp_path: Path, version: str, prerelease: str, highest: str, demoted: str, flags: list[str]
+) -> None:
+    """#96 AC: the Image line carries the digest the X.Y.Z tag resolves to; `--latest` only for the
+    highest; an rc re-asserts `--prerelease`; a demoted release keeps its flags (a rollback
+    stands)."""
+    wf = _workflow("release.yml")
+    digest = _step(wf, "rerun", "Read back the released digest")["run"]
+    calls, _, _ = _run_step(tmp_path, digest, {"VERSION": version}, {version: GOOD})
+    assert calls == [
+        [
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            f"ghcr.io/o/r:{version}",
+            "--format",
+            "{{.Manifest.Digest}}",
+        ]
+    ]
+    assert (tmp_path / "output").read_text() == f"digest={GOOD}\n"
+    run = _step(wf, "rerun", "Re-assert the GitHub release")["run"]
+    env = {
+        "TAG": f"v{version}",
+        "VERSION": version,
+        "PRERELEASE": prerelease,
+        "HIGHEST": highest,
+        "DIGEST": GOOD,
+        "FAKE_BODY": RELEASE_BODY.replace("0.1.1", version),
+        "FAKE_PRERELEASE": demoted,
+    }
+    calls, _, summary = _run_step(tmp_path / "edit", run, env)
+    edits = [c for c in calls if c[1:3] == ["release", "edit"]]
+    assert len(edits) == 1
+    notes = edits[0][-1]
+    assert edits[0][:-2] == ["gh", "release", "edit", f"v{version}", "--repo", "o/r", *flags]
+    assert edits[0][-2] == "--notes"
+    assert notes.splitlines()[-1] == f"Image: `ghcr.io/o/r:{version}@{GOOD}`"
+    assert notes.count("Image: ") == 1
+    assert "nothing rebuilt or re-tagged" in summary
 
 
 def test_chaos_runs_weekly_and_on_dispatch_and_reports_a_red_run() -> None:

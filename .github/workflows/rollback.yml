@@ -1,5 +1,8 @@
 # Production rollback without a rebuild: re-point `latest` (and the floating tags that resolve to the
-# bad digest) at a known-good version and demote the bad GitHub release to a pre-release. It shares
+# bad digest) at a known-good version and demote the bad GitHub release to a pre-release. Without
+# `bad_version` it is a re-promotion: every floating tag the good version heads (`tools.release
+# retag`, #96) is re-pointed at its recorded digest, and the release is marked Latest only when
+# `latest` is among them. It shares
 # the `publish-release` concurrency group with release.yml, so it waits for a running release and a
 # release waits for it. The tag table and every change are written to the job log and the summary.
 # See RELEASING.md → Production rollback.
@@ -29,6 +32,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
+  UV_VERSION: "0.12.23"
 
 jobs:
   rollback:
@@ -78,6 +82,29 @@ jobs:
           fi
           echo "good_digest=$good_digest" >> "$GITHUB_OUTPUT"
           echo "bad_digest=$bad_digest" >> "$GITHUB_OUTPUT"
+      # A bare re-promotion (#96) re-points every floating tag good_version is the highest of. Demoted
+      # releases (a stable tag flagged prerelease) never count as higher; good_version itself counts
+      # even while demoted. The bad_version path keeps its own selection in the next step.
+      - uses: actions/checkout@v7
+        if: inputs.bad_version == ''
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.3  # exact: setup-uv publishes no floating major tag past v7
+        if: inputs.bad_version == ''
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.14"
+      - name: Select the floating tags good_version heads
+        id: select
+        if: inputs.bad_version == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GOOD: ${{ inputs.good_version }}
+        run: |
+          set -eu
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName,isDraft,isPrerelease > released.json
+          # stdlib only: no project sync is needed to run the selection.
+          uv run --no-project python -m tools.release retag --released-file released.json --good "$GOOD" | tee -a "$GITHUB_OUTPUT"
       - name: Re-point floating tags
         id: retag
         env:
@@ -85,6 +112,7 @@ jobs:
           BAD: ${{ inputs.bad_version }}
           GOOD_DIGEST: ${{ steps.pre.outputs.good_digest }}
           BAD_DIGEST: ${{ steps.pre.outputs.bad_digest }}
+          SELECTED: ${{ steps.select.outputs.tags }}
         run: |
           set -eu
           major=${GOOD%%.*}; rest=${GOOD#*.}; minor=${rest%%.*}
@@ -92,11 +120,16 @@ jobs:
           for tag in latest "$major.$minor" "$major"; do
             before=$(docker buildx imagetools inspect "$IMAGE_LC:$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || echo "(none)")
             move=no
-            if [ "$tag" = "latest" ]; then move=yes
-            elif [ -n "$BAD" ] && [ "$before" = "$BAD_DIGEST" ]; then
+            if [ -z "$BAD" ]; then
+              # Re-promotion: exactly the tags the selection step chose.
+              case " $SELECTED " in *" $tag "*) move=yes ;; esac
+            elif [ "$tag" = "latest" ]; then move=yes
+            elif [ "$before" = "$BAD_DIGEST" ]; then
               # Only when good belongs to that line (a bad 1.3.0 with good 1.2.5 leaves `1.3` alone).
               case "$BAD" in "$major.$minor."*) move=yes ;; "$major."*) [ "$tag" = "$major" ] && move=yes ;; esac
             fi
+            # A tag already on the good digest is reported unchanged and not re-created.
+            if [ "$before" = "$GOOD_DIGEST" ]; then move=no; fi
             if [ "$move" = yes ]; then
               docker buildx imagetools create -t "$IMAGE_LC:$tag" "$IMAGE_LC@$GOOD_DIGEST"
               moved="$moved $tag"
@@ -113,10 +146,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GOOD: ${{ inputs.good_version }}
           BAD: ${{ inputs.bad_version }}
+          SELECTED: ${{ steps.select.outputs.tags }}
         run: |
           set -eu
-          gh release edit "v$GOOD" --repo "$GITHUB_REPOSITORY" --latest --prerelease=false
-          echo "- v$GOOD marked latest" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -n "$BAD" ]; then
+            gh release edit "v$GOOD" --repo "$GITHUB_REPOSITORY" --latest --prerelease=false
+            echo "- v$GOOD marked latest" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            # Re-promotion: Latest only when the image's `latest` moved with it (or already was on it).
+            case " $SELECTED " in
+              *" latest "*)
+                gh release edit "v$GOOD" --repo "$GITHUB_REPOSITORY" --latest --prerelease=false
+                echo "- v$GOOD marked latest" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+              *)
+                gh release edit "v$GOOD" --repo "$GITHUB_REPOSITORY" --latest=false --prerelease=false
+                echo "- v$GOOD re-promoted (not latest: a higher release holds it)" | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            esac
+          fi
           if [ -n "$BAD" ]; then
             note="Rolled back on $(date -u +%Y-%m-%d); use v$GOOD."
             body=$(gh release view "v$BAD" --repo "$GITHUB_REPOSITORY" --json body --jq .body)

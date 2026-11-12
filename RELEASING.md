@@ -58,13 +58,22 @@ What results:
 | `v1.2.3-rc.1` | `1.2.3-rc.1` only | marked **Pre-release** |
 
 `latest` is never moved by a pre-release, and never by a version lower than the highest stable
-version already published. Re-running the workflow for an existing tag updates the release's digest
-line and leaves the generated notes alone.
+version already published. A release a rollback demoted (a stable version marked pre-release) does
+not count as higher.
+
+Re-running the workflow for a tag that is already released runs the gate and the smoke again, but
+builds, pushes and re-tags nothing: the `rerun` job reads the digest back from the `X.Y.Z` image tag
+and rewrites the release's `Image:` line with it, so the recorded digest never changes after release.
+The generated notes are left alone. It also re-asserts the GitHub flags: an `-rc.N` stays
+**Pre-release**, and the highest stable version is marked **Latest** (a lower one's Latest is left
+alone). A re-run never undoes a rollback: a release a rollback demoted keeps its flags, and
+re-promotion (below) is the way back.
 
 ## Production rollback
 
 A bad release is undone without rebuilding: `rollback.yml` re-tags the known-good multi-arch image
-as `latest` and demotes the bad GitHub release.
+as `latest` and demotes the bad GitHub release. A floating tag already on the good digest is reported
+"unchanged" and not re-created.
 
 ```bash
 gh workflow run rollback.yml -f good_version=1.2.2 -f bad_version=1.2.3
@@ -78,6 +87,23 @@ Afterwards:
   "Rolled back on <date>; use v1.2.2." line appended to its notes.
 - The run's summary and its job log list every tag with its before/after digest, the promote and
   demote lines, and the post-condition line.
+
+### Re-promotion
+
+Run it with `good_version` alone to put a release back where it belongs, for example once a
+demoted release has been fixed or a rollback went too far:
+
+```bash
+gh workflow run rollback.yml -f good_version=0.1.1
+```
+
+`python -m tools.release retag` picks every floating tag the good version is the highest of
+(`latest`, `X.Y`, `X`), counting the good version even while it is demoted and ignoring every other
+demoted release. Those tags are re-pointed at the good version's recorded digest, with no rebuild, and
+the release loses its Pre-release badge. It is marked **Latest** only when `latest` is among them;
+otherwise it is marked not latest. For example, re-promoting `0.1.1` re-points `latest`, `0.1` and `0`
+when `0.1.0` is the only other release, only `0.1` when `0.2.0` exists, and `0.1` and `0` when
+`1.0.0` exists. Leave `bad_version` empty to re-promote: any version passed there is demoted.
 
 The run refuses, changing nothing, when the good version's image tag or release does not exist, when
 the inputs are not bare `X.Y.Z`, or when `good_version == bad_version`.

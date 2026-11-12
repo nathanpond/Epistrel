@@ -14504,3 +14504,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** RELEASING.md's rollback section drops "or while a `release.yml` run is in progress" from the refusals. It now says that a rollback and a release wait for each other through `publish-release`. It also documents the one-pending-run limit and says to dispatch a rollback only when no release run is waiting to start. "Cutting a release" step 2 says to push tags one at a time and wait for each run to start. The text names no `gh run list --status queued` command, because GitHub can report a run held by a concurrency group as `pending` rather than `queued`.
   **Why:** AC4 and the planner line. A command that misses pending runs would give a false all-clear.
   **Issue:** #101
+- **Decision:** `--released-file` takes the JSON of `gh release list --json tagName,isDraft,isPrerelease` for both `validate` and `retag`; `read_released` drops drafts and returns the released tags and the demoted ones (a stable tag flagged prerelease). The plain one-tag-per-line format is gone, and release.yml writes `released.json`. `validate` gained a `demoted` argument (default empty), so its existing callers and tests are unchanged.
+  **Why:** planner line (the list comes from that command; validate's `highest` follows retag's rule). One format for one flag keeps the two subcommands reading the same file.
+  **Issue:** #96
+- **Decision:** the demoted rule applies to `highest_minor` and `highest_major` too, not only `highest`. Both commands share `_heads`.
+  **Why:** a release re-run's floating-tag flags then agree with what a re-promotion would pick for every tag, not just `latest`.
+  **Issue:** #96
+- **Decision:** `retag` refuses a good version with no published (non-draft) release, and an rc. The output is one `tags=` line, which may be empty: a good version that heads nothing re-points nothing and is marked not latest.
+  **Why:** the pre-checks already refuse a missing release; the tool refuses too so it never picks tags for nothing. An empty selection is a legitimate re-promotion that only clears the Pre-release badge.
+  **Issue:** #96
+- **Decision:** rollback.yml's re-promotion runs `retag` in a new step "Select the floating tags good_version heads" (with `actions/checkout@v7` and `astral-sh/setup-uv@v10.3.3`, the versions already in release.yml, gated on `inputs.bad_version == ''`), via `uv run --no-project`, since the tool is stdlib only. The #101 step names are kept. The "already on the good digest → unchanged, not re-created" rule applies to the `bad_version` path as well; its selection is unchanged.
+  **Why:** planner lines. Skipping a no-op `imagetools create` changes no outcome on either path, and one rule is simpler than two.
+  **Issue:** #96
+- **Decision:** a re-promotion edits the good release with `--prerelease=false` and either `--latest` (when `latest` was selected) or `--latest=false`.
+  **Why:** AC (`--latest` only when `latest` is selected). `--latest=false` is explicit so GitHub's default for a newly un-prereleased release never marks a lower version Latest. Un-demoting is what re-promotion is for.
+  **Issue:** #96
+- **Decision:** release.yml's `publish` job skips when `already_released`, and a new `rerun` job (needs validate, ci, smoke; `contents: write`, `packages: read`) reads the digest from the `X.Y.Z` tag with `imagetools inspect`, rewrites the Image line, and edits the flags: `--prerelease` for an rc; nothing for a stable release currently flagged prerelease (demoted); `--latest` when `highest`; nothing otherwise. The publish job's "update" branch is kept, for a release that exists only as a draft.
+  **Why:** planner lines and AC3 (a rollback stands). Reading `isPrerelease` at edit time is the same rule as `read_released`.
+  **Issue:** #96
+- **Decision:** the workflow tests run the real step scripts under bash with fake `docker` and `gh` (a Python script on PATH that stores image tags as files and logs argv). New tests in `tests/test_workflows.py`, no part marker like their neighbours: `test_rollback_re_promotion_selects_the_tags_with_tools_release_retag`, `test_rollback_re_promotion_re_points_exactly_the_selected_tags` (3 cases), `test_rollback_with_bad_version_still_moves_latest_and_the_bad_lines`, `test_rollback_re_promotion_marks_latest_only_when_latest_moved` (2), `test_release_rerun_builds_and_moves_nothing`, `test_release_rerun_rewrites_the_digest_and_reasserts_the_flags` (4). `tests/release/test_validate.py` gained the AC's three version lists and the demoted cases. Fail-first used out-of-tree plugins: `mut96wf` (HEAD's workflow files) failed 10 workflow tests, e.g. `assert ['latest'] == ['0.1']`; `mut96rule` (no release counted demoted) failed 3, e.g. `assert (False, False, False) == (True, True, True)`.
+  **Why:** AC4, the test plan, and the mutant convention. Asserting step text alone would not show which tags move.
+  **Issue:** #96
+- **Decision:** the RELEASING.md lines the planner cites (:59-60) were :60-62 at HEAD. The re-run paragraph and a new "Re-promotion" subsection replace and extend them.
+  **Why:** stale line reference.
+  **Issue:** #96

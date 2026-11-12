@@ -14363,3 +14363,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #886 is filed, not fixed here. A benched `major` character's reactivation still runs `_cast_full`'s 200 branch with `already_counted=False`, so it can be refused at a total that the reactivation would not change.
   **Why:** it is a separate behaviour (the benched case), and one `already_counted` flag can't express "counted in the total but not in the active count". The planner prescribed the flag as it is.
   **Issue:** #845
+- **Decision:** the kept-card docstring now cites `boundary.KEPT_CARD` and paraphrases it in one sentence (labels, public description and structural fields stay; name redacted; images and content rating emptied). The #390/#393/#400 sentences are folded into it, and #381 and the complements paragraph are unchanged. The docstring is at test_i_27.py:505-518 (the phrase was at :508, as the plan said).
+  **Why:** planner line (merge, don't append).
+  **Issue:** #421

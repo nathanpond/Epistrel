@@ -13812,3 +13812,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** Audit (M12) emphases gained a provisional M10 entry: the partitioning's data integrity and isolation, canon marker equivalence, schema strictness against OpenAPI, the template save scan, release flag consistency, and honest runner perf reporting.
   **Why:** /n8-plan §4; it is provisional because M11 is still unplanned.
   **Issue:** M12 milestone
+
+## /n8-exec M10 — 2026-11-11
+
+- **Decision (method):** M10 runs on `milestone/m10-bug-fixes-testing` in the worktree `.claude/worktrees/m10`, off `origin/main` at 7b476ab. Stories run one at a time, each in its own background agent, in this order: #784, #865, #866, #867, #471 (schema first); #783, #836, #794, #788, #786, #778, #780, #857, #858 (API contract); #816, #834, #835, #842, #843, #844, #845, #421, #99, #98, #97 (test reliability); #793, #490, #868 (performance); #101, #96, #100, #95, #420, #782, #869 (release and docs); then #864 (flake sweep) and #502 (1M capacity run).
+  **Why:** the order follows the milestone's six phases and every native `blocked_by` edge. The main checkout holds the owner's uncommitted `.idea` edits.
+  **Issue:** M10 (#10)
+- **Decision (method):** the full-suite gate per story is CI's sharded run on the milestone PR, not a local run. `.n8/config.yml` says `exec.full_suite: sequential`, but the full local suite takes about 10 hours. Each story agent runs its own tests, every test module that names a file it changed, ruff, format, mypy, lint-imports and the `tools.gates` checks locally, then commits without pushing. The orchestrator pushes one story commit at a time, only after the previous story's CI run has finished, so every story gets its own CI run at its own SHA. The next story's agent works while that run goes. A push cancels the PR's in-progress run (`cancel-in-progress` on pull requests), so two story SHAs never share a run unless a red run drains the pipeline. In that case the fix lands at the tip, and one green run there stands for every story since the red one.
+  **Why:** M8 and M9 used CI's sharded run as the gate, and it worked. Overlapping the next agent's work with the current run keeps the per-story evidence while using wall-clock time.
+  **Issue:** M10 (#10)
+- **Decision (method):** the milestone PR opens ready for review, not as a draft.
+  **Why:** n8SDLC 0.9.0 drafts a milestone PR only when a run holds its merge. M9 used a draft PR for CI, and that convention no longer applies.
+  **Issue:** M10 (#10)
+- **Decision:** `current_milestone = 8` in `pyproject.toml`, though M9 closed, is filed as #872 (needs-triage), not changed here. At 9, all four gates pass (check-assignment, check-parts, check-lexicon, check-traceability).
+  **Why:** no M10 story covers it. M10 adds no requirements, so the stale value does not affect any M10 gate.
+  **Issue:** #872

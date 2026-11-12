@@ -14339,3 +14339,27 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the mutant is an out-of-tree plugin (`MUT844=global|rating|figures PYTHONPATH=<scratch> pytest -p mut844`) that wraps `safety_checks.applicable`. It drops global or rating policies, or drops age-conditioned policies unless a declared (non-figure) subject is a minor. Under each mode, the matching test failed with `assert 202 == 422` at its refusal. Without it, the module and `tests/gates` passed (619 passed).
   **Why:** planner line and the mutant convention.
   **Issue:** #844
+- **Decision:** stale references corrected: `reactivate_character`'s `check()` is at core/stories.py:1853-1857 (not :1840-1843), `_reactivation_room` at :1667 (not :1663), `_cast_full` at :1100-1112 (its 200 branch at :1110-1112, not :1097-1099) and `pause.refuse` in `require_writable` at :1041 (not :1028). structured/pipeline.py:739, lite/pipeline.py:430, api/routes/admin/mutation.py:270/319, narrator_generation.j2:104 and test_i_31_m9.py's turn-slot setup (:330-340) still held.
+  **Why:** #828-#844 grew stories.py after the plan was written.
+  **Issue:** #845
+- **Decision:** `_cast_full` takes `already_counted` (keyword, default `False`), which gives `actual` = count, not count + 1, in both the `max_story_cast` branch and the `STORY_CAST_LIMIT_MAX` branch. `_reactivation_room` takes `benched` and passes `already_counted=not benched`. `check()` reads the bench, runs `_reactivation_room`, and only then raises `not_benched`. The re-check under the story lock calls the same `check()`, so a single edit reorders both. The test's docstring says so instead of driving the locked path separately.
+  **Why:** planner lines and the owner's gate answer (422 before 409, actual = count).
+  **Issue:** #845
+- **Decision:** the paused-story case pauses the story with `core.backfill.start` (one `gap_fill` chunk over turn 0, a `start_job` that answers a fresh id with no jobs row). That writes `stories.status`/`paused_by` and the `story_paused` control event, as a real backfill does. The test asserts 409 `story_paused` with `cause: backfill`. Its `finally` cancels the backfill and resumes the story. It is not a raw `UPDATE stories SET status = 'paused'` (I-29's form), because that pause names no backfill.
+  **Why:** the AC says "paused by a backfill", and the planner line asks for the core pause path that writes status and `paused_by`.
+  **Issue:** #845
+- **Decision:** AC4's interleaving deviates from the planner's order ("holder → bench waiting on the slot → turn enqueued → release"). That order cannot put the bench before the turn: `turn_gate.acquire` lets no newcomer take a free slot while a turn is queued, so the waiting bench would run after the queued turn. Instead the test lets the bench take the slot and holds it on a monkeypatched `core.stories._refuse_busy` (the first call in `_bench_change`, inside the slot and before the operation opens). It enqueues the turn (`turn_queue` row seen), then lets the bench commit. The drainer then starts the turn, and `run_queued`'s `refuse_benched` refuses it. No foreign holder is used. One helper serves the structured and the Lite story in `test_i_31__m9_queued`.
+  **Why:** this is the only order that lands the bench between enqueue and drain. A monkeypatch inside the test is a hook, not an in-tree mutation.
+  **Issue:** #845
+- **Decision:** AC3 stores two memories from Briar's viewpoint while she is benched: the first is quarantined, and in the second a unique span is sanitized to "garden". After her reactivation, a `{{ viewpoint.text }}` call's prompt holds the sanitized sentence. Neither the span nor the quarantined memory's word appears in it. The sanitized memory showing up is the positive control that retrieval reached her memories.
+  **Why:** the planner's [P] line asks for the effect (the quarantined memory absent after reactivation), not only the 200s.
+  **Issue:** #845
+- **Decision:** the new tests join their modules with the module's own markers. I-31 gains `test_i_31__m9_reactivate_precedence`, `_paused`, `_queued` and `_operator_memory_writes` (`@part("M9", "FR-MULTI-13")`). I-32 gains `test_i_32__m9_switch_busy`, `_switch_timing` and `_narrator_line` (`@part("M9", "FR-MULTI-14")`). The timing test reads each turn's `turn_report` by `narrative_turn`. The narrator test brings the narrator in with an input that addresses no character (`do` with no `say`), as test_structured_turn.py does. docs/04's I-31/I-32 lines are unchanged, as in #842-#844, and the route descriptions already list 422 before 409.
+  **Why:** engine-wide test rule.
+  **Issue:** #845
+- **Decision:** the fail-first used an out-of-tree plugin (`PYTHONPATH=<scratch>/mut845 pytest -p mut845`) that restores the old `_reactivation_room` (409 first, then `_cast_full` with count + 1). Under it `test_i_31__m9_reactivate_precedence` failed with `At index 0 diff: 409 != 422`.
+  **Why:** the test plan says the precedence test fails on main first, and the mutant convention forbids in-tree mutations.
+  **Issue:** #845
+- **Decision:** #886 is filed, not fixed here. A benched `major` character's reactivation still runs `_cast_full`'s 200 branch with `already_counted=False`, so it can be refused at a total that the reactivation would not change.
+  **Why:** it is a separate behaviour (the benched case), and one `already_counted` flag can't express "counted in the total but not in the active count". The planner prescribed the flag as it is.
+  **Issue:** #845

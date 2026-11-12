@@ -25,6 +25,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import turn_gate
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import NotBenched
 from epistrel.core.ids import new_ulid
@@ -385,6 +386,120 @@ async def test_i_32__m9_switch(
     assert restored.status_code == 200, restored.text
     assert restored.json()["character"]["participation"] == {"role": "silent", "fixed": True}
     assert refusal(await switch(client, story, ada, "present"))[:2] == (409, "not_benched")
+
+
+@pytest.mark.part("M9", "FR-MULTI-14")
+async def test_i_32__m9_switch_busy(
+    served: tuple[httpx.AsyncClient, Engine], engine: AsyncEngine
+) -> None:
+    """#845: the mode switch answers 423 ``story_busy`` while a turn holds the story's turn
+    slot (``_bench_change``'s refusal, as I-31's bench and reactivate do), and writes nothing.
+    Complement: once the slot is free, the same switch is 200."""
+    client, _ = served
+    story, ids = await new_story(client, "Wren", "Ada", "Bo")
+    ada = ids["Ada"]
+    assert (await bench(client, story, ada)).status_code == 200
+    before = await revisions(engine, story)
+    holder = new_ulid()
+    assert await turn_gate.acquire(engine, story, holder, lease_s=60) is None
+    try:
+        busy = await switch(client, story, ada, "present")
+        assert busy.status_code == 423, busy.text
+        assert busy.json()["error"]["code"] == "story_busy"
+    finally:
+        await turn_gate.release_now(engine, story, holder)
+    assert await revisions(engine, story) == before
+    assert len(await bench_rows(engine, story)) == 1
+    switched = await switch(client, story, ada, "present")
+    assert switched.status_code == 200, switched.text
+
+
+async def report_of(engine: AsyncEngine, story: str, turn: int) -> dict[str, Any]:
+    """The committed turn ``turn``'s ``turn_report``."""
+    found = await scalar(
+        engine,
+        "SELECT turn_report FROM operations WHERE story_id = :s AND kind = 'turn' "
+        "AND status = 'committed' AND narrative_turn = :t",
+        s=story,
+        t=turn,
+    )
+    assert isinstance(found, dict)
+    return found
+
+
+@pytest.mark.part("M9", "FR-MULTI-14")
+async def test_i_32__m9_switch_timing(
+    served: tuple[httpx.AsyncClient, Engine],
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    forgetting: None,
+) -> None:
+    """#845: a mode switch takes effect from the next turn, and each turn keeps the mode it
+    started with. Bobby is benched ``present`` for turn 1 (its report's ``bench.present``
+    lists him and Jenni's prompt names him); he is switched to ``sequestered`` after it, so
+    turns 2 and 3 report no present bench and their prompts lack the line, while turn 1's
+    report is unchanged."""
+    client, lib = served
+    stub = lib.models.stub
+    story, ids, _ = await ts.room(client, engine, "Wren", "Jenni", "Bobby")
+    await ms.per_character(engine, story)
+    bobby = ids["Bobby"]
+    assert (await bench(client, story, bobby, {"mode": "present"})).status_code == 200
+
+    async def play(line: str) -> str:
+        stub.reset()
+        stub.script("generation", [render(beat("do", line))])
+        stub.script("salience_detection", [NOTHING_SALIENT])
+        played = await respond(
+            client, story, body(ids["Wren"], "Well?", render_character_ids=[ids["Jenni"]])
+        )
+        assert played.status_code == 200, played.text
+        (call,) = schema_calls(stub, "CharacterRender")
+        return "\n".join(m.content for m in call.messages)
+
+    assert NOT_TAKING_PART in await play("Jenni pours the tea.")
+    first = await report_of(engine, story, 1)
+    assert first["bench"] == {"present": [bobby]}
+    assert (await switch(client, story, bobby, "sequestered")).status_code == 200
+    for turn, line in ((2, "Jenni sits."), (3, "Jenni stands.")):
+        assert "Present but not taking part" not in await play(line)
+        assert "bench" not in await report_of(engine, story, turn)
+    assert await report_of(engine, story, 1) == first
+
+
+@pytest.mark.part("M9", "FR-MULTI-14")
+async def test_i_32__m9_narrator_line(
+    served: tuple[httpx.AsyncClient, Engine],
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+    forgetting: None,
+) -> None:
+    """#845: the narrator's prompt carries the line too (``narrator_generation.j2``). With
+    Bobby benched ``present``, an input that addresses no character brings the narrator in,
+    and its recorded request holds "Present but not taking part: Bobby; never give them
+    dialogue". Complement: benched ``sequestered``, the narrator's prompt has no such line."""
+    client, lib = served
+    stub = lib.models.stub
+
+    async def narrator_prompt(mode: str) -> str:
+        story, ids, _ = await ts.room(client, engine, "Wren", "Jenni", "Bobby")
+        assert (await bench(client, story, ids["Bobby"], {"mode": mode})).status_code == 200
+        stub.reset()
+        stub.script(
+            "generation",
+            [
+                render(beat("narration", "The kettle starts to whistle.")),
+                render(beat("do", "Jenni looks up.")),
+            ],
+        )
+        stub.script("salience_detection", [NOTHING_SALIENT])
+        played = await respond(client, story, body(ids["Wren"], None, do="waits by the window"))
+        assert played.status_code == 200, played.text
+        (call,) = schema_calls(stub, "NarratorRender")
+        return "\n".join(m.content for m in call.messages)
+
+    assert NOT_TAKING_PART in await narrator_prompt("present")
+    assert "Present but not taking part" not in await narrator_prompt("sequestered")
 
 
 @pytest.mark.part("M9", "FR-MULTI-14")

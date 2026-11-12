@@ -1097,19 +1097,24 @@ async def _active_cast_count(conn: AsyncConnection, story_id: str) -> int:
     return int(await conn.scalar(query) or 0)
 
 
-async def _cast_full(conn: AsyncConnection, story_id: str) -> None:
+async def _cast_full(
+    conn: AsyncConnection, story_id: str, *, already_counted: bool = False
+) -> None:
     """422 ``validation_error`` (``cast_max``) when the story already holds as many full
     characters as the deployment's ``max_story_cast`` allows (FR-MULTI-12): one more would
     pass it. A story above a lowered limit is refused the same way. Benched characters do not
     count (FR-MULTI-13), but benched and unbenched full characters together never pass
-    ``STORY_CAST_LIMIT_MAX`` (``limit`` 200)."""
+    ``STORY_CAST_LIMIT_MAX`` (``limit`` 200). ``already_counted``: the request's character is
+    in the counts already (a reactivation of an unbenched ``major`` character, #845), so
+    ``actual`` is the count itself, not one more."""
+    more = 0 if already_counted else 1
     limit = await story_cast_limit(conn)
     count = await _active_cast_count(conn, story_id)
     if count >= limit:
-        raise cast_max(limit, count + 1)
+        raise cast_max(limit, count + more)
     total = await _major_count(conn, story_id)
     if total >= STORY_CAST_LIMIT_MAX:
-        raise cast_max(STORY_CAST_LIMIT_MAX, total + 1)
+        raise cast_max(STORY_CAST_LIMIT_MAX, total + more)
 
 
 async def _name_taken(conn: AsyncConnection, story_id: str, name: str) -> None:
@@ -1664,16 +1669,20 @@ def _not_benched(character_id: str) -> NotBenched:
     return NotBenched("the character is not benched", {"character_id": character_id})
 
 
-async def _reactivation_room(conn: AsyncConnection, story_id: str, character_id: str) -> None:
+async def _reactivation_room(
+    conn: AsyncConnection, story_id: str, character_id: str, *, benched: bool
+) -> None:
     """422 ``cast_max`` when reactivating a full (``major``) character would pass the story's
-    ``max_story_cast`` (FR-MULTI-12); a ``minor`` one never counts."""
+    ``max_story_cast`` (FR-MULTI-12); a ``minor`` one never counts. It runs before the 409
+    ``not_benched`` (#845): an unbenched ``major`` character in a full cast is 422 too, its
+    ``actual`` the count it is already part of."""
     weight = await conn.scalar(
         select(characters.c.weight).where(
             characters.c.story_id == story_id, characters.c.id == character_id
         )
     )
     if weight == CharacterWeight.MAJOR.value:
-        await _cast_full(conn, story_id)
+        await _cast_full(conn, story_id, already_counted=not benched)
 
 
 async def _source_event(conn: AsyncConnection, operation_id: str, type_: str) -> str:
@@ -1851,10 +1860,11 @@ async def reactivate_character(
     await _bench_prechecks(db, story_id, character_id, expected_revision)
 
     async def check(conn: AsyncConnection) -> EventPayload:
+        # 422 before 409 (#845), here and in the re-check under the story lock.
         found = await benches.bench_of(conn, story_id, character_id)
+        await _reactivation_room(conn, story_id, character_id, benched=found is not None)
         if found is None:
             raise _not_benched(character_id)
-        await _reactivation_room(conn, story_id, character_id)
         return CharacterReactivated(
             character_id=character_id,
             mode=found.mode,

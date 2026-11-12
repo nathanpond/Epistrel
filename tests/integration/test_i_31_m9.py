@@ -17,15 +17,19 @@ milestone).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx2 as httpx
 import pytest
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from epistrel.config import Settings
+from epistrel.core import backfill as core_backfill
+from epistrel.core import stories as core_stories
 from epistrel.core import turn_gate
 from epistrel.core.context import RequestContext
 from epistrel.core.errors import AlreadyBenched, CharacterBenched, InvalidRequest, NotBenched
@@ -50,7 +54,7 @@ from tests.integration.test_i_29_m9 import (
     story_call,
     unique,
 )
-from tests.respond_support import body, new_story, respond, respond_client
+from tests.respond_support import body, new_story, respond, respond_client, until
 from tests.story_support import WRITE, character, create
 from tests.structured_turn_support import beat, claim, render, schema_calls, structured_story
 
@@ -350,6 +354,69 @@ async def test_i_31__m9_refusals(
         assert unarchived.status_code == 200, unarchived.text
 
 
+async def paused_by_backfill(engine: AsyncEngine, story: str) -> str:
+    """Pause ``story`` for a backfill as ``core.backfill.start`` does (``stories.status`` and
+    ``paused_by``, a ``story_paused`` control event), with a job id no worker claims; answers
+    the backfill's id."""
+
+    async def no_job(conn: AsyncConnection, backfill_id: str, story_id: str) -> str:
+        return new_ulid()
+
+    async with engine.begin() as conn:
+        await conn.execute(text("SELECT id FROM stories WHERE id = :s FOR UPDATE"), {"s": story})
+        started = await core_backfill.start(
+            conn,
+            story,
+            kind="gap_fill",
+            capabilities=["structured"],
+            span=(0, 0),
+            source={},
+            target={},
+            principal="p-author",
+            start_job=no_job,
+        )
+    return started.id
+
+
+async def resumed(engine: AsyncEngine, story: str, backfill_id: str) -> None:
+    """End the pause ``paused_by_backfill`` began (the backfill cancelled)."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE story_backfills SET status = 'cancelled' WHERE id = :b"),
+            {"b": backfill_id},
+        )
+        await conn.execute(
+            text("UPDATE stories SET status = 'active', paused_by = NULL WHERE id = :s"),
+            {"s": story},
+        )
+
+
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_paused(
+    served: tuple[httpx.AsyncClient, Engine], engine: AsyncEngine
+) -> None:
+    """#845: on a story paused by a backfill, bench and reactivate are refused with what
+    ``pause.refuse`` emits: 409 ``story_paused`` naming the backfill (``cause: backfill``).
+    Nothing is written. Complement: once the pause ends, both succeed."""
+    client, _ = served
+    story, ids = await new_story(client, "Wren", "Ada", "Bo")
+    ada, bo = ids["Ada"], ids["Bo"]
+    assert (await bench(client, story, ada)).status_code == 200
+    backfill_id = await paused_by_backfill(engine, story)
+    try:
+        before = await revisions(engine, story)
+        for refused in (await bench(client, story, bo), await reactivate(client, story, ada)):
+            status, code, details = refusal(refused)
+            assert (status, code) == (409, "story_paused"), refused.text
+            assert (details["story_id"], details["cause"]) == (story, "backfill")
+        assert await revisions(engine, story) == before
+        assert len(await bench_rows(engine, story)) == 1
+    finally:
+        await resumed(engine, story, backfill_id)
+    assert (await bench(client, story, bo)).status_code == 200
+    assert (await reactivate(client, story, ada)).status_code == 200
+
+
 @pytest.mark.part("M9", "FR-MULTI-13")
 async def test_i_31__m9_cast_count(
     served: tuple[httpx.AsyncClient, Engine], cast_limit: SetLimit
@@ -391,6 +458,75 @@ async def test_i_31__m9_cast_count(
     assert (await story_read(client, sid))["cast"] == {"active": 3, "benched": 1}
     minor = await reactivate(client, sid, ids["Bo"])
     assert minor.status_code == 200, minor.text
+
+
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_reactivate_precedence(
+    served: tuple[httpx.AsyncClient, Engine], engine: AsyncEngine, cast_limit: SetLimit
+) -> None:
+    """#845: a reactivation's 422 ``cast_max`` comes before its 409 ``not_benched``. At a
+    limit of 3 with Wren, Ada and Bo full and Cy ``minor``: reactivating Ada (unbenched,
+    ``major``) is 422 ``cast_max`` with ``actual`` 3, the count she is already part of; Cy
+    (unbenched, ``minor``: minors never count) is 409 ``not_benched``. With Bo benched (the
+    cast not full) Ada is 409 ``not_benched``. With Dale added (full again) Bo, benched, is 422
+    with ``actual`` 4. No refusal writes anything. The re-check under the story lock runs the
+    same ``check``, so it keeps the order."""
+    client, _ = served
+    story = await create(
+        client,
+        {
+            "characters": [
+                character("Wren", is_player=True),
+                character("Ada"),
+                character("Bo"),
+                character("Cy"),
+            ]
+        },
+    )
+    sid = story["story_id"]
+    ids = {c["name"]: c["id"] for c in story["characters"]}
+    demoted = await client.post(
+        f"/stories/{sid}/characters/{ids['Cy']}/weight", json={"weight": "minor"}, headers=WRITE
+    )
+    assert demoted.status_code == 200, demoted.text
+    await cast_limit(3)
+    before = await revisions(engine, sid)
+    assert refusal(await reactivate(client, sid, ids["Ada"])) == (
+        422,
+        "validation_error",
+        {"field": "body", "cap": "cast_max", "limit": 3, "actual": 3},
+    )
+    assert refusal(await reactivate(client, sid, ids["Cy"])) == (
+        409,
+        "not_benched",
+        {"character_id": ids["Cy"]},
+    )
+    assert await revisions(engine, sid) == before
+
+    assert (await bench(client, sid, ids["Bo"])).status_code == 200
+    assert (await story_read(client, sid))["cast"] == {"active": 2, "benched": 1}
+    before = await revisions(engine, sid)
+    assert refusal(await reactivate(client, sid, ids["Ada"])) == (
+        409,
+        "not_benched",
+        {"character_id": ids["Ada"]},
+    )
+    assert await revisions(engine, sid) == before
+    added = await client.post(
+        f"/stories/{sid}/characters",
+        json={"name": "Dale", "definition": "A driver.", "true_age": 52},
+        headers=WRITE,
+    )
+    assert added.status_code == 201, added.text
+    before = await revisions(engine, sid)
+    assert refusal(await reactivate(client, sid, ids["Bo"])) == (
+        422,
+        "validation_error",
+        {"field": "body", "cap": "cast_max", "limit": 3, "actual": 4},
+    )
+    assert refusal(await reactivate(client, sid, ids["Ada"]))[:2] == (422, "validation_error")
+    assert await revisions(engine, sid) == before
+    assert len(await bench_rows(engine, sid)) == 1
 
 
 # -- turns ------------------------------------------------------------------------------------
@@ -447,6 +583,82 @@ async def test_i_31__m9_out_of_turns(
         refused = await respond(client, story, payload)
         assert refusal(refused) == (409, "character_benched", {"character_id": ada}), payload
     assert await revisions(engine, story) == before
+
+
+async def queued_naming_benched(
+    client: httpx.AsyncClient,
+    engine: AsyncEngine,
+    lib: Engine,
+    monkeypatch: pytest.MonkeyPatch,
+    story: str,
+    ids: dict[str, str],
+) -> httpx.Response:
+    """Under ``queue`` concurrency, a turn rendering Ada is queued while her bench holds the
+    story's turn slot (``_bench_change``'s first ``_refuse_busy`` waits until the turn is in
+    ``turn_queue``), so the bench commits between the turn's enqueue and its drain. A newcomer
+    never overtakes a queued turn (``turn_gate.acquire``), so the bench must hold the slot
+    before the turn is enqueued. Answers the queued turn's response."""
+    holding, enqueued = asyncio.Event(), asyncio.Event()
+    real = core_stories._refuse_busy
+    armed = [True]
+
+    async def held(conn: AsyncConnection, story_id: str, **kwargs: Any) -> None:
+        if armed[0] and story_id == story:
+            armed[0] = False
+            holding.set()
+            await enqueued.wait()
+        await real(conn, story_id, **kwargs)
+
+    monkeypatch.setattr(core_stories, "_refuse_busy", held)
+    stub = lib.models.stub
+    stub.reset()
+    benching = asyncio.ensure_future(bench(client, story, ids["Ada"]))
+    await asyncio.wait_for(holding.wait(), 30)
+    turn = asyncio.ensure_future(
+        respond(client, story, body(ids["Wren"], "Ada?", render_character_ids=[ids["Ada"]]))
+    )
+
+    async def in_queue() -> bool:
+        found = await rows(
+            engine, "SELECT operation_id FROM turn_queue WHERE story_id = :s", s=story
+        )
+        return len(found) == 1
+
+    await until(in_queue, "the turn is queued behind the bench")
+    enqueued.set()
+    benched = await benching
+    assert benched.status_code == 200, benched.text
+    answered = await turn
+    assert stub.calls == []
+    (op,) = await rows(
+        engine,
+        "SELECT status::text AS status, error_code FROM operations "
+        "WHERE story_id = :s AND kind = 'turn'",
+        s=story,
+    )
+    assert (op.status, op.error_code) == ("failed", "character_benched")
+    return answered
+
+
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_queued(
+    served: tuple[httpx.AsyncClient, Engine],
+    engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#845: a turn queued (``turn_concurrency: queue``) naming Ada, who is benched before the
+    turn is drained, is refused as it starts by ``refuse_benched`` (``run_queued``): the queued
+    request's answer is 409 ``character_benched`` ``{character_id}``, no model is called and
+    the turn's operation fails with that code. The same on a structured story
+    (``structured.pipeline.run_queued``) and a Lite one (``lite.pipeline.run_queued``)."""
+    client, lib = served
+    queue = {"settings": {"turn_concurrency": "queue"}}
+    for story, ids in (
+        await structured_story(client, "Wren", "Ada", "Bo", **queue),
+        await new_story(client, "Wren", "Ada", "Bo", **queue),
+    ):
+        answered = await queued_naming_benched(client, engine, lib, monkeypatch, story, ids)
+        assert refusal(answered) == (409, "character_benched", {"character_id": ids["Ada"]})
 
 
 @pytest.mark.part("M9", "FR-MULTI-13")
@@ -634,6 +846,77 @@ async def test_i_31__m9_deliberate_writes(
         prompt = prompt_of(lib, look)
         assert f"{REMEMBERED} pact." in prompt
         assert "Olivia sent the text" in prompt
+    finally:
+        for purpose in (name, look):
+            archived = await client.post(f"/admin/purposes/{purpose}/archive", headers=OPERATOR)
+            assert archived.status_code == 200, archived.text
+
+
+@pytest.mark.part("M9", "FR-MULTI-13")
+async def test_i_31__m9_operator_memory_writes(
+    served: tuple[httpx.AsyncClient, Engine],
+    engine: AsyncEngine,
+    drained_embedding_jobs: None,
+) -> None:
+    """#845: the operator's memory writes reach a benched character (FR-MULTI-13). With Briar
+    benched, two memories are stored from her viewpoint; quarantining one and sanitizing the
+    other (``POST /admin/stories/{id}/memories/{mid}/quarantine``, ``…/sanitize``) answer 200.
+    After her reactivation, a viewpoint call's prompt for Briar (a template showing only
+    ``viewpoint.text``) holds the sanitized memory with its surrogate, and neither the
+    quarantined memory nor the sanitized span."""
+    client, lib = served
+    name, look = unique("juror"), unique("juror_view")
+    held, span = "OSPREY-845", "HERON-845"
+    for purpose, template in ((name, MEMORY_TEMPLATE), (look, "{{ viewpoint.text }}")):
+        made = await client.post(
+            "/admin/purposes",
+            json=purpose_body(purpose, template=template, output_schema=MEMORY_SCHEMA),
+            headers=OPERATOR,
+        )
+        assert made.status_code == 201, made.text
+    try:
+        story, ids = await partitioned_story(client)
+        briar = ids["Briar"]
+        assert (await bench(client, story, briar)).status_code == 200
+        lib.models.stub.script(
+            name,
+            [
+                remembered(f"I voted for Cato because of the {held} pact."),
+                remembered(f"Cato hid the key under the {span} stone."),
+            ],
+        )
+        memories = []
+        for _ in range(2):
+            stored = await story_call(client, story, name, store_body(briar))
+            assert stored.status_code == 200, stored.text
+            memories.append(stored.json()["memory_id"])
+        quarantined, sanitized = memories
+        admin = f"/admin/stories/{story}/memories"
+        done = await client.post(
+            f"{admin}/{quarantined}/quarantine",
+            json={"reason": "The operator withdrew it."},
+            headers=OPERATOR,
+        )
+        assert done.status_code == 200, done.text
+        done = await client.post(
+            f"{admin}/{sanitized}/sanitize",
+            json={"span": span, "surrogate": "garden"},
+            headers=OPERATOR,
+        )
+        assert done.status_code == 200, done.text
+
+        assert (await reactivate(client, story, briar)).status_code == 200
+        lib.models.stub.script(look, [remembered("Again.")])
+        question = {
+            "inputs": {"target": "Cato, the pact and the key under the stone"},
+            "viewpoint_character_id": briar,
+        }
+        again = await story_call(client, story, look, question)
+        assert again.status_code == 200, again.text
+        prompt = prompt_of(lib, look)
+        assert "Cato hid the key under the garden stone." in prompt
+        assert span not in prompt
+        assert held not in prompt
     finally:
         for purpose in (name, look):
             archived = await client.post(f"/admin/purposes/{purpose}/archive", headers=OPERATOR)

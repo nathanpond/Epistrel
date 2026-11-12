@@ -11,8 +11,11 @@ beforehand, as a turn loads it once for all of its claims.
 ``test_p_02`` is the measurement on the scale fixture's canon (50k facts over 200 subjects). It
 runs 2,000 claims drawn from the fixture's own plan (``scale.claims``): 40% supported, 30%
 contradicted, 20% novel and 10% uncertain, checked one after another after 20 warm-up claims.
-It gates the p95, and a miss is measured once more first. The test is ``perf_weekly``, run by
-the weekly ``perf.yml`` on the GitHub-hosted runner. Its figures go to ``build/perf/p_02.json``.
+It records the p95 against the budget (``within_budget``), a miss measured once more first,
+and fails on a miss only on the reference host (``EPISTREL_TEST_PERF_HOST_CLASS=reference``;
+ADR-190, #793); elsewhere the miss is reported, not gated. A wrong verdict fails on either. The
+test is ``perf_weekly``, run by the weekly ``perf.yml`` on the GitHub-hosted runner (host class
+``other``). Its figures go to ``build/perf/p_02.json``.
 ``test_p_02__smoke`` is PR CI's ``perf_smoke`` run on the 1k fixture, with no timing bound
 (#430, #432).
 
@@ -27,10 +30,10 @@ and 50 unresolved exposures). ``test_p_02__could_have_known`` runs 400 checks af
 ones, a quarter of each path (``knowledge.PROBE_KINDS``): a belief licenses it, canon the
 character may read does, an unresolved exposure's dry run does, or no record does (every path
 is read). The story's predicate registry and its settings with partitions on are loaded once,
-as a turn loads them. It gates the p95, a miss measured once more first (``perf_weekly``;
-``build/perf/p_02_could_have_known.json``). ``test_p_02__could_have_known_smoke`` is the
-``perf_smoke`` run on the 1k fixture, with no timing bound. Both assert each check found the
-path it was built for.
+as a turn loads them. Its p95 is gated as P-02's is, on the reference host only, a miss
+measured once more first (``perf_weekly``; ``build/perf/p_02_could_have_known.json``).
+``test_p_02__could_have_known_smoke`` is the ``perf_smoke`` run on the 1k fixture, with no
+timing bound. Both assert each check found the path it was built for.
 """
 
 from __future__ import annotations
@@ -50,7 +53,9 @@ from epistrel.testing.fixtures import knowledge, scale
 from tests.perf.scale_support import (
     KNOWLEDGE,
     ScaleRun,
+    budget_verdict,
     gate,
+    host_class,
     host_info,
     percentiles,
     record,
@@ -104,6 +109,7 @@ async def _summary(
         "test": "P-02",
         "requirement": "NFR-PERF-2",
         "budget_p95_ms": BUDGET_MS,
+        "within_budget": budget_verdict(attempts[-1], BUDGET_MS, host_class()).within,
         "claims": len(timings),
         "facts": run.fixture.story.facts,
         "check_ms": percentiles(timings),
@@ -125,7 +131,7 @@ def _verdicts_as_built(outcomes: Counter[tuple[str, str]], n: int) -> None:
 @pytest.mark.part("M4", "NFR-PERF-2")
 async def test_p_02(scale_50k: ScaleRun) -> None:
     """2,000 deterministic checks over 50k facts of canon: p95 within 50 ms (a miss is measured
-    once more first).
+    once more first), gated on the reference host and reported elsewhere (ADR-190).
 
     Complement asserted: each claim got the verdict it was built for (a contradicted claim is
     never supported, a novel one never contradicted), with all four kinds present."""
@@ -137,7 +143,7 @@ async def test_p_02(scale_50k: ScaleRun) -> None:
     summary = await _summary(scale_50k, timings, outcomes, attempts)
     record("p_02", summary)
     _verdicts_as_built(outcomes, CLAIMS)
-    assert gate(attempts[-1], BUDGET_MS) == [], summary
+    assert not budget_verdict(attempts[-1], BUDGET_MS, host_class()).fail, summary
 
 
 @pytest.mark.perf_smoke
@@ -147,13 +153,15 @@ async def test_p_02__smoke(scale_1k: ScaleRun) -> None:
     summary, with no timing bound.
 
     Complement asserted: each claim got the verdict it was built for, with all four kinds
-    present, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max."""
+    present, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max.; the summary records whether its p95 was
+    within the budget."""
     timings, outcomes = await _measure(scale_1k, SMOKE_CLAIMS, warmup=5)
     _verdicts_as_built(outcomes, SMOKE_CLAIMS)
     summary = await _summary(scale_1k, timings, outcomes, [percentiles(timings)["p95"]])
     record("p_02_smoke", summary)
     found = summary["check_ms"]
     assert found["p50"] <= found["p95"] <= found["p99"] <= found["max"]
+    assert summary["within_budget"] is (found["p95"] <= BUDGET_MS), summary
 
 
 async def _measure_known(
@@ -206,6 +214,7 @@ async def _known_summary(
         "test": "P-02 could_have_known",
         "requirement": "NFR-PERF-2",
         "budget_p95_ms": BUDGET_MS,
+        "within_budget": budget_verdict(attempts[-1], BUDGET_MS, host_class()).within,
         "checks": len(timings),
         "facts": run.fixture.story.facts,
         "knowledge": {"beliefs": KNOWLEDGE.beliefs, "exposures": KNOWLEDGE.exposures},
@@ -229,7 +238,8 @@ def _paths_as_built(outcomes: Counter[tuple[str, str, str | None]], n: int) -> N
 @pytest.mark.part("M5", "NFR-PERF-2")
 async def test_p_02__could_have_known(scale_50k_knowledge: ScaleRun) -> None:
     """400 could-have-known checks over the 50k fixture's canon and its characters' beliefs and
-    exposures: p95 within 50 ms (a miss is measured once more first).
+    exposures: p95 within 50 ms (a miss is measured once more first), gated on the reference
+    host and reported elsewhere (ADR-190).
 
     Complement asserted: each check found the path it was built for (a believed proposition by
     its transition, readable canon as canon, an exposure by its dry run, and an uncovered one
@@ -243,7 +253,7 @@ async def test_p_02__could_have_known(scale_50k_knowledge: ScaleRun) -> None:
     summary = await _known_summary(run, timings, by_kind, outcomes, attempts)
     record("p_02_could_have_known", summary)
     _paths_as_built(outcomes, CHECKS)
-    assert gate(attempts[-1], BUDGET_MS) == [], summary
+    assert not budget_verdict(attempts[-1], BUDGET_MS, host_class()).fail, summary
 
 
 @pytest.mark.perf_smoke
@@ -253,7 +263,8 @@ async def test_p_02__could_have_known_smoke(scale_1k_knowledge: ScaleRun) -> Non
     through the same measurement and summary, with no timing bound.
 
     Complement asserted: each check found the path it was built for, with all four kinds
-    present, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max."""
+    present, and nearest-rank p50 ≤ p95 ≤ p99 ≤ max.; the summary records whether its p95 was
+    within the budget."""
     run = scale_1k_knowledge
     timings, by_kind, outcomes = await _measure_known(run, SMOKE_CHECKS, warmup=4)
     _paths_as_built(outcomes, SMOKE_CHECKS)
@@ -261,6 +272,7 @@ async def test_p_02__could_have_known_smoke(scale_1k_knowledge: ScaleRun) -> Non
     record("p_02_could_have_known_smoke", summary)
     found = summary["check_ms"]
     assert found["p50"] <= found["p95"] <= found["p99"] <= found["max"]
+    assert summary["within_budget"] is (found["p95"] <= BUDGET_MS), summary
 
 
 @pytest.mark.perf_smoke

@@ -270,10 +270,13 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
     GitHub-hosted runner, labelled ``github-runner``, with the fixture cached by its key; only
     the ``perf_weekly`` tests run there; a red run files or comments on an issue; the docs job
     renders docs/perf.md and docs/capacity.md red or green and opens the rolling PR, and is the
-    only job that may write contents or pull requests.
+    only job that may write contents or pull requests. #793 (ADR-190): the weekly job is host
+    class ``other``, so a budget miss does not fail it, and its summary lists the misses
+    (``perf_docs --misses``).
 
     Complement asserted: the nightly job does not run on the weekly schedule, the weekly job not
-    on the nightly one, and PR CI names no ``perf_weekly``."""
+    on the nightly one, PR CI names no ``perf_weekly``, and a red run (an error, an empty or
+    degraded result) is still reported."""
     wf = _workflow("perf.yml")
     triggers = _on(wf)
     assert {"cron": "0 3 * * 0"} in triggers["schedule"]
@@ -290,6 +293,7 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
     assert weekly["permissions"] == {"contents": "read", "issues": "write"}
     assert weekly["timeout-minutes"] == 180
     assert weekly["env"]["EPISTREL_TEST_PERF_HOST"] == "github-runner"
+    assert weekly["env"]["EPISTREL_TEST_PERF_HOST_CLASS"] == "other"
     assert "EPISTREL_TEST_PERF_CACHE_DIR" in weekly["env"]
     steps = _steps(wf, "weekly")
     (cache,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")]
@@ -300,6 +304,10 @@ def test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr() -> None:
         assert f"tests/perf/{name}" in run["run"]
     report = next(s for s in steps if s.get("name") == "Report a red run")
     assert "Weekly perf run failed" in report["run"]
+    assert report["if"] == "failure() && steps.weekly.outcome == 'failure'"
+    summarise = next(s for s in steps if s.get("name") == "Summarise")
+    assert summarise["if"] == "always()"
+    assert "python -m epistrel.tools.perf_docs --misses --results build/perf" in summarise["run"]
     assert docs["needs"] == ["weekly", "weekly-structured", "weekly-multi"]
     assert "failure" in docs["if"]
     # #587: `weekly-p04` runs P-04's two workloads without the scale suite, so the docs job

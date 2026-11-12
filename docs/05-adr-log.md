@@ -47,9 +47,9 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
 | FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180, 189 |
+| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180, 189, 190 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188 |
+| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188, 190 |
 | NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
 | NFR-REL | §20 | 045, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
@@ -253,6 +253,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 187 | Memories are partitioned by story: each story has its own table and HNSW graph | Partly superseded | 188 |
 | 188 | Memories' operation key names the story, and the lock table is sized for deployment-wide changes | Current | — |
 | 189 | A closed fact version stores its closers, and canon reads find them by key | Current | — |
+| 190 | The engine-only latency budgets are gated on the reference host only and reported elsewhere | Current | — |
 
 ---
 
@@ -2060,6 +2061,21 @@ Tuning and its exit certification come after every milestone that may change a p
 - The answers are unchanged. `test_bitemp__closing_marker` (part `M4`, FR-BITEMP-1..5) keeps the old anti-join as an oracle and checks every read kind against it at every narrative position and record-time, under commits, supersedes, truncations, regenerations, erasures, forks and excluded operations. It also checks after every step that `closed_by` is exactly the inverse of `supersedes` over the existing rows, with only erased ids besides. `test_bitemp__reads_find_closers_by_key` checks that the read functions' SQL has no `supersedes` containment. `tests/integration/test_migrations.py::test_facts_closing_marker_backfill` checks the backfill against the anti-join.
 - Every write that closes versions costs one more array append on each, which is the `UPDATE` it already ran. The GIN index's maintenance on every insert is gone.
 - A new writer of `facts` rows with a non-empty `supersedes` must append to the closed versions' `closed_by` in its transaction, or the versions it closes read open. `_write` writes them in play and the bundle import rebuilds them (`tests/integration/test_canon_closing_marker.py::test_rebuild_closers_sets_an_imported_story_s_markers`), and the property test guards the first.
+
+### ADR-190 — The engine-only latency budgets are gated on the reference host only and reported elsewhere
+**Status:** Accepted.
+**Context:** #793. The weekly scale suite (`perf.yml`'s `weekly` job: P-01, P-02 and P-06) runs on the GitHub-hosted runner, the host the owner chose for the performance suites on #153. It gated NFR-PERF-1's p95 ≤ 150 ms (P-01, and P-06's steps up to ~50k memories, NFR-SCALE-1) and NFR-PERF-2's p95 ≤ 50 ms (P-02 and its could-have-known span) on that runner. The runner is not NFR-PERF-4's reference host (4 vCPU, 16 GB, NVMe, Postgres co-located), and its timings move with the image and its neighbours. P-01 has been over budget there every week since 2026-10-27 (p95 about 290 ms on 2026-11-11, mostly the vector and lexical arms). The failing run opened or commented on the "Weekly perf run failed" issue every week, whatever changed. NFR-PERF-4 already says that results on other hosts are reported, not gated, and the `weekly-structured` and `weekly-multi` jobs follow it. The owner's M10 decision (option c) was to treat the engine-only budgets the same way. #868 sets and meets a measured target.
+**Decision:** Applied by #793.
+- NFR-PERF-1,2's budgets, and NFR-SCALE-1's at each step of P-06's curve up to ~50k memories, are gated only on the reference host. On any other host, the GitHub-hosted runner included, they are measured and reported, not gated, mirroring NFR-PERF-4.
+- `EPISTREL_TEST_PERF_HOST_CLASS` (`reference` or `other`, default `other`; any other value is an error) names the host class. `tests.perf.scale_support.budget_verdict(measured_ms, budget_ms, host_class)` answers `Verdict(within, fail)`: a miss fails only under `reference`. A missing measurement (none, or NaN) fails under either class.
+- P-01's, P-02's and the could-have-known summaries record `within_budget`, as P-06's points already did. P-06's per-point `gated` is true only for a step up to ~50k on the reference host. `docs/capacity.md`'s Gated column follows it, and a result from before this decision, which has no host class, reads as `other`.
+- An error, an empty or degraded result, a wrong verdict or path, and a missing measurement still fail under either class. P-01's and P-02's second measurement after a miss stays.
+- `perf.yml`'s weekly job sets `EPISTREL_TEST_PERF_HOST_CLASS: other`. Its summary lists every miss as `MISS <result> <metric> p95=<x> budget=<y>` (`python -m epistrel.tools.perf_docs --misses`). The "Weekly perf run failed" issue is still filed for a red run, and a miss alone no longer makes the run red.
+**Alternatives considered:** Keeping the gate on the runner left the weekly run red every week. That said nothing new about a change, and a real regression (an error, a degraded arm) would read the same as the runner's usual miss. Raising the budgets to what the runner measures would change NFR-PERF-1,2 to fit a host the requirements never named. Gating on a fixed multiple of the budget on the runner would make a figure that no requirement states. A self-hosted reference runner would be new infrastructure, outside #793.
+**Consequences:**
+- The runner's weekly run is green while it shows its misses in the step summary, in `docs/perf.md` (**over budget**) and in `docs/capacity.md` (Within 150 ms **no**). A budget regression on the runner is read there, not from a red run.
+- A run with `EPISTREL_TEST_PERF_HOST_CLASS=reference` gates as before. `tests/perf/test_p_01.py::test_p_01__gate_bites` checks the verdict both ways on a slowed vector arm, and that a degraded or a mostly empty result fails on either class.
+- Until a reference host runs the suite, NFR-PERF-1,2's budgets have no gate. #868 tracks meeting a measured target.
 
 ---
 

@@ -14399,3 +14399,36 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the tests join `tests/gates/test_lexicon.py` (no `part` marker, like the module's other tests): `test_all_caps_does_not_match_a_capitalized_term[STATE|STATES]` (with `State`/`States` as the complement), `test_lowercase_words_of_a_capitalized_term_match_in_any_case`, and the CLI repro `test_cli_does_not_report_all_caps_for_a_capitalized_term`, which expects exit codes `[0, 1]`. On the pre-fix code all four failed (`assert ['tests/test_...n an M2 part'] == []` and `assert [1, 1] == [0, 1]`). With the fix, `tests/gates` passed (620 passed). No other test module imports `tools.gates.lexicon`.
   **Why:** test plan (fails on main first, via `_lines`, plus one CLI repro).
   **Issue:** #97
+- **Decision:** the ADR is ADR-190, not ADR-189. #471's closing marker took ADR-189 before this story ran. ADR-190 cites NFR-PERF-1,2 and NFR-SCALE-1, so it joins both rows of the area index and the by-ADR index (Current). It amends no earlier ADR, because none stated that the runner gates the budgets.
+  **Why:** the planner line says to use the next free number when the ADR is written.
+  **Issue:** #793
+- **Decision:** `budget_verdict(measured_ms, budget_ms, host_class)` lives in `tests/perf/scale_support.py` beside `gate`, which it uses. It answers a frozen `Verdict(within, fail)`. A `None` or NaN measurement is `Verdict(False, True)` under either class (AC1's "missing measurement still fails"). An unknown class, in the argument or in `EPISTREL_TEST_PERF_HOST_CLASS`, raises `ValueError` and does not fall back to `other`. `host_info()` records `host_class`, so every result file carries it.
+  **Why:** planner line. A typo such as `Reference` must not quietly turn the gate off.
+  **Issue:** #793
+- **Decision:** P-01's and P-02's retry still keys on `gate(attempts[0], …)`, so a miss is measured once more under both classes. The final assertion is `not budget_verdict(attempts[-1], …).fail`. `_plumbing`, `_verdicts_as_built` and `_paths_as_built` are unchanged and still run before it, so errors, degraded or empty results and wrong verdicts or paths fail under either class. `within_budget` is computed inside `_summary`/`_known_summary` from the last attempt, so the smoke summaries carry it too.
+  **Why:** AC1 (the retry stays, and errors stay separate assertions).
+  **Issue:** #793
+- **Decision:** P-06's `gated` is `step <= GATED_UP_TO and host_class == "reference"`. `within_budget` comes from `budget_verdict`, and the weekly assertion (`gated and not within_budget`) is unchanged. The smoke test asserts that both points are `gated` only under `reference`.
+  **Why:** planner line ("P-06's gated field follows the host class").
+  **Issue:** #793
+- **Decision:** `capacity_page` reads a step as gated only when the point says `gated` and the result's `host.host_class` is `reference`. A result with no host class (from before #793) reads as `other`. capacity.md was regenerated with `capacity_page` alone, from the 2026-11-11 run's `p_06.json` (run 43051783469). The old generator reproduces the committed page byte for byte from that file, which was checked before the rewrite. perf.md was not regenerated, because a render appends a history row and would duplicate 2026-11-11's.
+  **Why:** capacity.md is generated (planner line), and old result files must not read as gated.
+  **Issue:** #793
+- **Decision:** the weekly Summarise step's miss list is `python -m epistrel.tools.perf_docs --misses` (new `misses()` + flag) and not an inline script in perf.yml. The step prints `MISS <result> <metric> p95=<x> budget=<y>`, where `<result>` is the file name (`p_01`, `p_02`, `p_02_could_have_known`, `p_06`) and P-06's metric is `retrieval_ms@<memories>`, for every point, the reported 100k one included. It prints `NOT MEASURED <result>` for a missing file and `(none)` when nothing missed. `tests/test_perf_docs.py::test_misses_lists_each_budget_the_run_missed` tests it. The test names contain spaces (`P-02 could_have_known`), so the file name is the `<test>` token.
+  **Why:** a module function is unit-tested, and an inline YAML script is not.
+  **Issue:** #793
+- **Decision:** perf.yml's weekly env gains `EPISTREL_TEST_PERF_HOST_CLASS: other` beside `EPISTREL_TEST_PERF_HOST`. The "Report a red run" step and its condition are unchanged. `tests/test_workflows.py::test_perf_runs_the_scale_suite_weekly_and_opens_a_docs_pr` now pins the env value, the Summarise step's `--misses` call and the report step's condition. No action version changed. The two GitHub Actions lesson greps (`uses:` without a ref, floating `latest`) print nothing.
+  **Why:** planner line and AC3.
+  **Issue:** #793
+- **Decision:** docs/03's note on NFR-PERF-1,2 is the inline `*[amended by ADR-190: …]*` marker the spec uses (as FR-MODEL-13 and FR-MEDIA-2 carry), one on each requirement, and not a separate paragraph. docs/04 §11's P-01 line (it is at :364; :371 is P-06) gains the reference-host gate and names P-02, and the P-06 line notes that the runner's figures are reported. pyproject.toml's `perf_weekly` marker text says the same.
+  **Why:** AC4, written in the spec's own amendment convention.
+  **Issue:** #793
+- **Decision:** the 100k-cap question is answered from the two runs' `perf-weekly` artifacts. 2026-11-08 (run 42468177583, ed2be26, which has no `hnsw.max_scan_tuples`): P-01 `vector` p50 108.3 / p95 116.6 / p99 137.3 ms, total p95 338.9 ms. 2026-11-11 (run 43051783469, 8c648ba, `HNSW_MAX_SCAN_TUPLES = 100_000` from #706/920dba7): `vector` p50 103.3 / p95 113.5 / p99 144.7 ms, total p95 290.3 ms. Both ran on runner image ubuntu26 20261101.186.1 with 4 vCPU. The vector arm's p95 fell 3.1 ms, which is within run-to-run noise, so the higher cap did not regress the vector arm. The total's 49 ms drop is mostly `profiles` (p95 140.8 → 73.9 ms).
+  **Why:** AC5 asks for this comparison in the completion comment. The figures are recorded here so the orchestrator can quote them.
+  **Issue:** #793
+- **Decision:** AC5's dispatched weekly run on the branch is left to the orchestrator. The brief forbids pushing, and a dispatch needs the branch on the remote.
+  **Why:** brief (never `git push`).
+  **Issue:** #793
+- **Decision:** the fail-first used an out-of-tree plugin (`MUT793=<mode> PYTHONPATH=<scratch>/mut793 pytest -p mut793`). `verdict` replaces `budget_verdict` in the `tests.perf` modules with the pre-#793 rule (any miss fails), and `test_p_01__gate_bites` failed with `assert Verdict(withi...se, fail=True) == Verdict(withi...e, fail=False)`. `capacity` restores HEAD's `capacity_page`, and `test_capacity_gated_column_follows_the_host_class` failed with `assert {'1,000': 'ye...orted) | yes'} == {'1,000': 'no...orted) | yes'}`.
+  **Why:** mutant convention.
+  **Issue:** #793

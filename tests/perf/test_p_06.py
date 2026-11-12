@@ -7,11 +7,14 @@ from the scale fixture at 1k memories (``scale.ScaleSpec.scaled``) and adds memo
 ``scale.grow``, spread over the same turns. At each step the HNSW index is rebuilt the way a pin
 builds it (``embeddings.retype``, ``maintenance_work_mem`` 1GB, no parallel workers). The step
 records the build's elapsed time, the index's size and the retrieval latency of 200 queries
-(P-01's templates, after 10 warm-up queries). Steps up to 50k memories are gated at NFR-PERF-1's
-p95 ≤ 150 ms. The 100k step is measured and reported, never gated: NFR-SCALE-1's range ends at
-~50k. The figures go to ``build/perf/p_06.json``, and from there to ``docs/capacity.md`` with
-the server's settings. The test is ``perf_weekly``. ``test_p_06__smoke`` runs a 500 → 1k curve
-in PR CI with no timing bound (#430, #432).
+(P-01's templates, after 10 warm-up queries). Each step records whether its p95 is within
+NFR-PERF-1's 150 ms (``within_budget``). Steps up to 50k memories are gated on the reference host
+only (``EPISTREL_TEST_PERF_HOST_CLASS=reference``; ADR-190, #793), and a point's ``gated`` says
+so. On any other host, the weekly runner included, every step is reported, not gated. The 100k
+step is measured and reported, never gated: NFR-SCALE-1's range ends at ~50k. The figures go to
+``build/perf/p_06.json``, and from there to ``docs/capacity.md`` with the server's settings. The
+test is ``perf_weekly``. ``test_p_06__smoke`` runs a 500 → 1k curve in PR CI with no timing
+bound (#430, #432).
 
 ``test_p_06__retirement`` measures #147's forced story-scope retirement spike on the 50k
 fixture (``perf_weekly``). This is the commit in which an overflow episode reaches its deadline.
@@ -41,8 +44,10 @@ from epistrel.core.memory import records, retirement
 from epistrel.core.profiles.effective import effective_configuration
 from epistrel.testing.fixtures import scale
 from tests.perf.scale_support import (
+    REFERENCE,
     ScaleRun,
-    gate,
+    budget_verdict,
+    host_class,
     host_info,
     measure_retrieval,
     percentiles,
@@ -53,7 +58,8 @@ from tests.perf.scale_support import (
 
 STEPS = (1_000, 10_000, 50_000, 100_000)
 GATED_UP_TO = 50_000
-"""NFR-SCALE-1's range: the curve is gated up to here, reported beyond."""
+"""NFR-SCALE-1's range: the curve is gated up to here on the reference host, reported beyond
+(and everywhere on another host)."""
 QUERIES = 200
 WARMUP = 10
 SMOKE_STEPS = (500, 1_000)
@@ -69,6 +75,7 @@ STUCK_MS = 2_000.0
 async def _curve(run: ScaleRun, steps: tuple[int, ...], queries: int) -> list[dict[str, Any]]:
     """Grow the run's story through ``steps``; at each, the index build and the retrieval."""
     texts = [q for _, q in scale.queries(run.fixture.spec, run.fixture.story, queries)]
+    cls = host_class()
     points: list[dict[str, Any]] = []
     for step in steps:
         index = await scale.grow(run.db, run.fixture, step)
@@ -78,6 +85,7 @@ async def _curve(run: ScaleRun, steps: tuple[int, ...], queries: int) -> list[di
         found = await measure_retrieval(run, texts, warmup=WARMUP)
         assert found.degraded == {}, found.degraded
         latency = percentiles(found.totals)
+        verdict = budget_verdict(latency["p95"], BUDGET_MS, cls)
         points.append(
             {
                 "memories": run.fixture.story.memories,
@@ -85,8 +93,8 @@ async def _curve(run: ScaleRun, steps: tuple[int, ...], queries: int) -> list[di
                 "index_bytes": index.bytes,
                 "vectors": index.vectors,
                 "retrieval_ms": latency,
-                "gated": step <= GATED_UP_TO,
-                "within_budget": not gate(latency["p95"], BUDGET_MS),
+                "gated": step <= GATED_UP_TO and cls == REFERENCE,
+                "within_budget": verdict.within,
             }
         )
     return points
@@ -110,7 +118,8 @@ async def _curve_summary(run: ScaleRun, points: list[dict[str, Any]]) -> dict[st
 @pytest.mark.part("M4", "NFR-SCALE-1")
 async def test_p_06(pg_url: str) -> None:
     """The curve at 1k, 10k, 50k and 100k memories: the index holds every vector at each step,
-    and retrieval's p95 is within 150 ms at every step up to 50k (100k is reported only).
+    and retrieval's p95 is within 150 ms at every step up to 50k, gated on the reference host
+    and reported elsewhere (ADR-190; 100k is reported only).
 
     Complement asserted: the index and the vector count grow with the memories, so each point
     measures the bigger set and not the first one again."""
@@ -134,7 +143,8 @@ async def test_p_06__smoke(pg_url: str) -> None:
     with no timing bound.
 
     Complement asserted: the second point's index holds twice the vectors and is larger than
-    the first's."""
+    the first's, and both points (inside the gated range) are ``gated`` only on the reference
+    host (ADR-190)."""
     async with scale_database(pg_url, scale.ScaleSpec.scaled(SMOKE_STEPS[0])) as run:
         points = await _curve(run, SMOKE_STEPS, SMOKE_QUERIES)
         summary = await _curve_summary(run, points)
@@ -145,6 +155,8 @@ async def test_p_06__smoke(pg_url: str) -> None:
     assert first["hnsw_build_s"] > 0
     assert second["hnsw_build_s"] > 0
     assert summary["host"]["maintenance_work_mem"]
+    assert [p["gated"] for p in points] == [host_class() == REFERENCE] * 2, points
+    assert summary["host"]["host_class"] == host_class()
 
 
 async def _forced_run(run: ScaleRun) -> dict[str, Any]:

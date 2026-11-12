@@ -2,6 +2,7 @@
 (NFR-PERF-1,2, NFR-SCALE-1; docs/04 P-01, P-02, P-06; #153).
 
     uv run python -m epistrel.tools.perf_docs [--results build/perf] [--docs docs]
+    uv run python -m epistrel.tools.perf_docs --misses [--results build/perf]
 
 The weekly suite (``tests/perf/test_p_01.py``, ``test_p_02.py`` and ``test_p_06.py``, marker
 ``perf_weekly``) writes one JSON file per measurement under ``build/perf/``: ``p_01``,
@@ -26,7 +27,14 @@ so the pages are never edited by hand.
   ``p_02_could_have_known``) beside the verify budget, with its p95 by path.
 - ``docs/capacity.md`` has P-06's curve: memories, HNSW build time, index size and retrieval
   percentiles at each step, which steps are gated, and the server settings the curve was
-  measured under. It also states that capacity is claimed only for the measured range.
+  measured under. It also states that capacity is claimed only for the measured range. A step
+  reads as gated only when the run's host class is ``reference`` (ADR-190, #793); a result
+  without a host class predates #793 and reads as ``other``.
+- ``--misses`` prints nothing to the pages. It prints one ``MISS <result> <metric> p95=<x>
+  budget=<y>`` line per budget the run recorded as missed (``within_budget: false`` in
+  ``p_01``, ``p_02``, ``p_02_could_have_known`` and each of ``p_06``'s points) and a
+  ``NOT MEASURED <result>`` line per missing result file, for ``perf.yml``'s weekly summary.
+  Off the reference host a miss does not fail the run, so this is where it shows.
 
 **Host label.** Every table names the host it was measured on. The owner's round-one decision
 on #153 is that the GitHub-hosted runner hosts the performance suites, so the weekly numbers
@@ -383,20 +391,53 @@ def perf_page(found: Mapping[str, Mapping[str, Any]], existing: str = "") -> str
     return "\n".join(lines)
 
 
+BUDGETED = (("p_01", "total_ms"), ("p_02", "check_ms"), ("p_02_could_have_known", "check_ms"))
+"""The single-figure budgets ``misses`` reads: each result and the percentiles it gates."""
+
+
+def misses(found: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """The budgets the run recorded as missed, and the budgeted results it lacks (see the
+    module docstring's ``--misses``)."""
+    lines: list[str] = []
+    for name, metric in BUDGETED:
+        result = found.get(name)
+        if result is None:
+            lines.append(f"NOT MEASURED {name}")
+        elif result.get("within_budget") is False:
+            p95 = dict(result.get(metric) or {}).get("p95")
+            lines.append(f"MISS {name} {metric} p95={p95} budget={result.get('budget_p95_ms')}")
+    p06 = found.get("p_06")
+    if p06 is None:
+        lines.append("NOT MEASURED p_06")
+    else:
+        for point in p06.get("points", []):
+            if point.get("within_budget") is False:
+                p95 = dict(point.get("retrieval_ms") or {}).get("p95")
+                lines.append(
+                    f"MISS p_06 retrieval_ms@{point.get('memories')} p95={p95} "
+                    f"budget={p06.get('budget_p95_ms')}"
+                )
+    return lines
+
+
 def capacity_page(found: Mapping[str, Mapping[str, Any]]) -> str:
     """``docs/capacity.md`` for the run's P-06 curve."""
     p06 = found.get("p_06")
     host = dict((p06 or {}).get("host") or {})
     label = host_label(host)
+    reference = host.get("host_class") == "reference"
     lines = [
         "# Measured capacity",
         "",
         GENERATED,
         "",
         "P-06's vector-scale curve (NFR-SCALE-1). Capacity is claimed **only for the measured "
-        "range**: the budgets are gated up to ~50k memories in one story, and the 100k point "
-        "is measured and reported but not gated. Any larger figure is an unvalidated estimate "
-        "until a benchmark measures it. P-10 (`python -m epistrel.tools.capacity --up-to N`, "
+        "range**: up to ~50k memories in one story, where NFR-PERF-1's p95 ≤ 150 ms applies. "
+        "That budget is gated only on the reference host (ADR-190): on any other host, the "
+        "GitHub-hosted runner included, the figures are reported, not gated, and the Gated "
+        "column says so. The 100k point is measured and reported but never gated. Any larger "
+        "figure is an unvalidated estimate until a benchmark measures it. P-10 "
+        "(`python -m epistrel.tools.capacity --up-to N`, "
         "informational and run by hand) extends the curve and writes "
         "`docs/capacity-exploration.md`. The dev/hobby concurrency target (NFR-PERF-4: 10 "
         "stories in active play on the reference host) is a separate statement, not a "
@@ -424,7 +465,7 @@ def capacity_page(found: Mapping[str, Mapping[str, Any]]) -> str:
             f"| {point.get('memories'):,} | {float(point.get('hnsw_build_s', 0)):.1f} | "
             f"{int(point.get('index_bytes', 0)) / 2**20:.1f} | {_ms(q.get('p50'))} | "
             f"{_ms(q.get('p95'))} | {_ms(q.get('p99'))} | "
-            f"{'yes' if point.get('gated') else 'no (reported)'} | "
+            f"{'yes' if point.get('gated') and reference else 'no (reported)'} | "
             f"{'yes' if point.get('within_budget') else '**no**'} |"
         )
     return "\n".join([*lines, ""])
@@ -445,11 +486,20 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m epistrel.tools.perf_docs", description=__doc__)
     p.add_argument("--results", type=Path, default=Path("build/perf"))
     p.add_argument("--docs", type=Path, default=Path("docs"))
+    p.add_argument(
+        "--misses",
+        action="store_true",
+        help="print the run's budget misses and missing results; write no page",
+    )
     return p
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if args.misses:
+        for line in misses(load(args.results)):
+            print(line)
+        return 0
     for path in render(args.results, args.docs):
         print(f"wrote {path}")
     return 0

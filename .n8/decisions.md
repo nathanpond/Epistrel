@@ -14309,3 +14309,18 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the mutant is an out-of-tree plugin (`PYTHONPATH=<scratch> pytest -p mut842`) that replaces `IdempotentCall.release` with a function that only stops key renewal. Under it `test_i_29__m9_call_refusal_not_stored` failed at the REST input-gate retry with `assert 409 != 409` (`idempotency_conflict`, `reason: request_hash`). Without it the module passed (158 passed). No `src`/`tools` file changed, so the local gate is this module plus the static script.
   **Why:** planner line and the mutant convention.
   **Issue:** #842
+- **Decision:** stale references corrected: `genesis()`'s re-check is at core/genesis/create.py:1766-1769 (not :1764-1766), after the #784/#875 partition and claim lines; `create_from_scenario` is at :1899 (not :1914), and `plan()`'s check at :1098-1100. The test module's lines (:55, :226, :249, :256-263) still held before this story.
+  **Why:** #784 and #875 grew `genesis()` after the plan was written.
+  **Issue:** #843
+- **Decision:** `test_i_28__m9_scenario_recheck` (AC1 and AC2 in one function, `@part("M9", "FR-MULTI-12")`) monkeypatches `core.genesis.create.create_from_scenario` with a wrapper that passes an explicit `story_id` and wraps the real input gate: the wrapper runs the gate, then lowers the limit with the `cast_limit` fixture. The request is `StoryFromScenario.model_validate(three_roles(...))` sent through `Engine.create_story`, so the engine's real gate, rating check and policy writer are used. Rows are checked by that explicit id.
+  **Why:** planner lines. The gate runs after `plan()` and before `choose_profile`, `plan_structured` and `genesis()`, so only `genesis()`'s re-check can refuse.
+  **Issue:** #843
+- **Decision:** the mutant is an out-of-tree plugin (`PYTHONPATH=<scratch> pytest -p mut843`) that replaces `create.story_cast_limit`, which only `genesis()` reads, with one answering 10**6. `plan()` reads `read_settings` and is unaffected. Under it `test_i_28__m9_scenario_recheck` failed with `Failed: DID NOT RAISE InvalidRequest`. Without it the module passed (8 passed).
+  **Why:** the test plan asks for AC1 to be shown failing under a mutant that skips the re-check.
+  **Issue:** #843
+- **Decision:** `test_i_28__m9_vocative` (AC3) runs under per-character partitions (`modeling_support.street`), because `modeling_on` models by interaction only there. The vocative is the player's own `say` ("Thanks, Rhea.", beat 1) addressing the entity added first with `store.add_entity`. The `character_modeled` payload holds `trigger` (`interaction`), not `via`, so the test asserts the trigger and entity id there, the row's `modeled_beat` 1 and `definition` (the vocative), and `via == "vocative"` through a spy on `modeling.model_all`. The non-minor count is SQL `weight <> 'minor'`: 3 before and after. No mutant: `_cast_full` has no caller on the modeling path, so the test pins an outcome that is safe by construction.
+  **Why:** planner lines. `via` is not persisted (only `Modeled.via` carries it), and the player's `say` is not subject to render verification, so the beat is not repaired away.
+  **Issue:** #843
+- **Decision:** the inline scenario of `test_i_28__m9_scenario` is now the helper `three_roles`. Two small helpers join it: `story_rows` (the `stories` and `characters` counts for an id) and `full_count`. No `src`/`tools` file changed, so the local gate is this module, `tests/gates` (610 passed) and the static script.
+  **Why:** planner line (extract the scenario into a helper).
+  **Issue:** #843

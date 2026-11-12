@@ -24,11 +24,22 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from epistrel.config import Settings
 from epistrel.core.context import RequestContext
 from epistrel.core.deployment import SettingsPatch
+from epistrel.core.epistemic import modeling
 from epistrel.core.errors import InvalidRequest
+from epistrel.core.genesis import create as create_module
+from epistrel.core.genesis.models import StoryFromScenario
+from epistrel.core.ids import new_ulid
 from epistrel.core.propositions import store
 from epistrel.core.settings_schema import DEFAULT_MAX_STORY_CAST, STORY_CAST_LIMIT_MAX
-from epistrel.core.stories import AdHocCharacter, CharacterSpec, CharacterWeightRequest, StorySpec
+from epistrel.core.stories import (
+    AdHocCharacter,
+    CharacterSpec,
+    CharacterWeightRequest,
+    CreatedStory,
+    StorySpec,
+)
 from tests import genesis_support as g
+from tests import modeling_support as ms
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import rows
 from tests.respond_support import body as respond_body
@@ -43,6 +54,7 @@ DRIVER: dict[str, Any] = {
     "definition": "A delivery driver in a hurry.",
     "true_age": 52,
 }
+VOCATIVE = "Thanks, Rhea."
 SetLimit = Callable[[int], Awaitable[None]]
 
 
@@ -117,6 +129,40 @@ async def weights(engine: AsyncEngine, story_id: str) -> dict[str, str]:
         s=story_id,
     )
     return {r.name: r.weight for r in found}
+
+
+async def three_roles(client: httpx.AsyncClient) -> dict[str, Any]:
+    """A ``POST /stories`` body creating a story from a new published scenario of three roles
+    (the mother and the aunt filled ad hoc, the player's persona): three members."""
+    scenario_id, _ = await g.published_scenario(
+        client,
+        g.scenario_body(g.role("mother"), g.role("aunt"), g.role("player", kind="player")),
+    )
+    return g.from_scenario(
+        scenario_id,
+        slots={"mother": g.ad_hoc_slot("Mara", 52), "aunt": g.ad_hoc_slot("Iris", 49)},
+    )
+
+
+async def story_rows(engine: AsyncEngine, story_id: str) -> tuple[int, int]:
+    """How many ``stories`` rows and ``characters`` rows ``story_id`` has."""
+    found = await rows(
+        engine,
+        "SELECT (SELECT count(*) FROM stories WHERE id = :s) AS stories, "
+        "(SELECT count(*) FROM characters WHERE story_id = :s) AS characters",
+        s=story_id,
+    )
+    return int(found[0].stories), int(found[0].characters)
+
+
+async def full_count(engine: AsyncEngine, story_id: str) -> int:
+    """The story's characters that count against the limit: weight other than ``minor``."""
+    found = await rows(
+        engine,
+        "SELECT count(*) AS n FROM characters WHERE story_id = :s AND weight <> 'minor'",
+        s=story_id,
+    )
+    return int(found[0].n)
 
 
 @pytest.mark.part("M9", "FR-MULTI-12")
@@ -253,20 +299,117 @@ async def test_i_28__m9_scenario(
     against a limit of 2 are 422 ``cast_max`` with nothing created; at 3 the story is
     created."""
     async with respond_client(stub_settings, engine) as (client, _):
-        scenario_id, _ = await g.published_scenario(
-            client,
-            g.scenario_body(g.role("mother"), g.role("aunt"), g.role("player", kind="player")),
-        )
-        body = g.from_scenario(
-            scenario_id,
-            slots={"mother": g.ad_hoc_slot("Mara", 52), "aunt": g.ad_hoc_slot("Iris", 49)},
-        )
+        body = await three_roles(client)
         await cast_limit(2)
         refused = await client.post("/stories", json=body, headers=g.headers())
         assert refusal(refused) == cast_max(2, 3)
         await cast_limit(3)
         made = await g.create_from(client, body)
         assert len(made["characters"]) == 3
+
+
+@pytest.mark.part("M9", "FR-MULTI-12")
+async def test_i_28__m9_scenario_recheck(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    cast_limit: SetLimit,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``genesis()`` re-checks the limit in force when it writes (#843): a creation of three
+    planned at a limit of 3, whose limit is lowered to 2 after ``plan()`` (inside the input
+    gate, so the real plan, gate, profile, structured plan and genesis steps run), is refused
+    with ``cast_max`` ``{limit: 2, actual: 3}`` and writes no ``stories`` or ``characters``
+    row under its id. Complement: with the limit left at 3 the same creation makes the story
+    under that id."""
+    real = create_module.create_from_scenario
+    lower_to: list[int] = []
+    story_id = ""
+
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
+        gate = kwargs["gate"]
+
+        async def lowering(*gate_args: Any) -> None:
+            await gate(*gate_args)
+            for value in lower_to:
+                await cast_limit(value)
+
+        return await real(*args, **{**kwargs, "gate": lowering, "story_id": story_id})
+
+    monkeypatch.setattr(create_module, "create_from_scenario", wrapped)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        request = StoryFromScenario.model_validate(await three_roles(client))
+        await cast_limit(3)
+
+        lower_to[:] = [2]
+        story_id = new_ulid()
+        with pytest.raises(InvalidRequest) as lowered:
+            await lib.create_story(LIBRARY, request)
+        assert _cap(lowered.value) == {
+            "field": "body",
+            "cap": "cast_max",
+            "limit": 2,
+            "actual": 3,
+        }
+        assert await story_rows(engine, story_id) == (0, 0)
+
+        await cast_limit(3)
+        lower_to[:] = []
+        story_id = new_ulid()
+        made = await lib.create_story(LIBRARY, request)
+        assert isinstance(made, CreatedStory)
+        assert made.story_id == story_id
+        assert len(made.characters) == 3
+        assert await story_rows(engine, story_id) == (1, 3)
+
+
+@pytest.mark.part("M9", "FR-MULTI-12")
+async def test_i_28__m9_vocative(
+    stub_settings: Settings,
+    engine: AsyncEngine,
+    cast_limit: SetLimit,
+    drained_embedding_jobs: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lazy modeling by interaction is never refused at the limit (#843): with 3 full
+    characters at a limit of 3, under per-character partitions, a structured turn whose
+    ``say`` addresses an existing person entity by name (a vocative) models it ``minor``, and
+    the story's count of characters weighing other than ``minor`` stays 3. No mutant: the
+    limit's check (``_cast_full``) is not on the modeling path, so this is safe by
+    construction and the test pins the outcome."""
+    made: list[modeling.Modeled] = []
+    real = modeling.model_all
+
+    async def spy(*args: Any, **kwargs: Any) -> list[modeling.Modeled]:
+        found = await real(*args, **kwargs)
+        made.extend(found)
+        return found
+
+    monkeypatch.setattr(modeling, "model_all", spy)
+    async with respond_client(stub_settings, engine) as (client, lib):
+        story, ids, _ = await ms.street(client, engine, "Wren", "Ada", "Bo")
+        await cast_limit(3)
+        assert await full_count(engine, story) == 3
+        async with engine.begin() as conn:
+            rhea = await store.add_entity(conn, story, "person", "Rhea")
+        lib.models.stub.script(
+            "generation",
+            [render(beat("do", "Ada watches the road.")), render(beat("do", "Bo waits."))],
+        )
+        lib.models.stub.script("salience_detection", [ms.salient_characters()])
+        turn = await respond(client, story, respond_body(ids["Wren"], VOCATIVE))
+        assert turn.status_code == 200, turn.text
+
+        cast = await ms.characters_of(engine, story)
+        assert cast["Rhea"].weight == "minor"
+        assert str(cast["Rhea"].id) == str(rhea)
+        assert (cast["Rhea"].modeled_turn, cast["Rhea"].modeled_beat) == (1, 1)
+        assert cast["Rhea"].definition == VOCATIVE
+        events = await ms.modeled_events(engine, story)
+        assert [(e.payload["trigger"], e.payload["entity_id"]) for e in events] == [
+            ("interaction", str(rhea))
+        ]
+        assert [(m.name, m.trigger, m.via) for m in made] == [("Rhea", "interaction", "vocative")]
+        assert await full_count(engine, story) == 3
 
 
 @pytest.mark.part("M9", "FR-MULTI-12")

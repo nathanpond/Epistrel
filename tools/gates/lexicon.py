@@ -142,8 +142,10 @@ def _word_matches(token: str, word: str, *, last: bool, exact_case: bool) -> boo
         return token.lower().startswith(stem.lower()) if not exact_case else token.startswith(stem)
     candidates = inflections(word) if last else {word.lower()}
     if exact_case:
-        # first letter must match the term's case; the rest compares in lower case
-        return token[0] == word[0] and token.lower() in candidates
+        # a capitalized word matches only its own pattern: first letter upper, the rest lower
+        # (`State`, `States`), never all caps (`STATE`, #97)
+        capitalized = token[:1].isupper() and token[1:] == token[1:].lower()
+        return capitalized and token.lower() in candidates
     return token.lower() in candidates
 
 
@@ -165,7 +167,9 @@ def find_phrase(
             if acronym and j == 0:
                 ok = _acronym_matches(token, word)
             else:
-                ok = _word_matches(token, word, last=last, exact_case=exact_case and j == 0)
+                # only a Capitalized term's capitalized words are case-checked (#97)
+                checked = exact_case and word[:1].isupper()
+                ok = _word_matches(token, word, last=last, exact_case=checked)
             if not ok:
                 break
         if ok:

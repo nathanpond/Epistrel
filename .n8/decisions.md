@@ -14390,3 +14390,12 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the planner's line references in `tools/gates/parts.py` (undefined/unassigned docstring path :286-290, marker path :308-313, `_interim_problem` :192-197, finding :271-275, class marker :162-166, `_parse_milestone` :175-179) still hold, give or take a line. No correction was needed.
   **Why:** checked before writing.
   **Issue:** #98
+- **Decision:** `_word_matches` under `exact_case` now requires the token to be first-upper, rest-lower (`token[:1].isupper()` and the rest unchanged by `lower()`), with its lower-case form among the word's inflections. It no longer compares only the first letter. `find_phrase` case-checks a word only when the term is Capitalized and that word starts upper-case (`exact_case and word[:1].isupper()`, replacing `j == 0`). For every term in today's table this is still the first word only. The prefix-stem branch and the acronym path are unchanged.
+  **Why:** owner-approved planner line ("only the capitalized words are case-checked … `StandardPreset` still matches `Standard preset`").
+  **Issue:** #97
+- **Decision:** a consequence of the new rule: `STANDARD preset` no longer reports `Standard preset` (M7), because its capitalized word is all caps. `test_lowercase_words_of_a_capitalized_term_match_in_any_case` pins this beside the `StandardPreset` match.
+  **Why:** the same rule as `STATE`. Over-reporting was #97's bug.
+  **Issue:** #97
+- **Decision:** the tests join `tests/gates/test_lexicon.py` (no `part` marker, like the module's other tests): `test_all_caps_does_not_match_a_capitalized_term[STATE|STATES]` (with `State`/`States` as the complement), `test_lowercase_words_of_a_capitalized_term_match_in_any_case`, and the CLI repro `test_cli_does_not_report_all_caps_for_a_capitalized_term`, which expects exit codes `[0, 1]`. On the pre-fix code all four failed (`assert ['tests/test_...n an M2 part'] == []` and `assert [1, 1] == [0, 1]`). With the fix, `tests/gates` passed (620 passed). No other test module imports `tools.gates.lexicon`.
+  **Why:** test plan (fails on main first, via `_lines`, plus one CLI repro).
+  **Issue:** #97

@@ -49,6 +49,48 @@ def test_capitalized_state_fails_but_lowercase_state_passes() -> None:
     assert _lines([_part("M2", "state = 1  # plain state")]) == []
 
 
+@pytest.mark.parametrize("word", ["STATE", "STATES"])
+def test_all_caps_does_not_match_a_capitalized_term(word: str) -> None:
+    """#97: a Capitalized term's capitalized word matches only first-upper, rest-lower forms,
+    inflections included, so an all-caps constant is not the term. Complement: ``State`` and
+    ``States`` still report it."""
+    assert _lines([_part("M2", f"x = {word}")]) == []
+    for surface in ("State", "States"):
+        assert _lines([_part("M2", f"x = {surface}")]) == [
+            f'tests/test_x.py::test_y uses "{surface}" (State, M6) in an M2 part'
+        ]
+
+
+def test_lowercase_words_of_a_capitalized_term_match_in_any_case() -> None:
+    """#97: only a term's capitalized words are case-checked; its lower-case words match in any
+    case, so CamelCase ``StandardPreset`` is still ``Standard preset``."""
+    for body in ("p = StandardPreset()", "standard preset", "STANDARD preset"):
+        expected = (
+            ['tests/test_x.py::test_y uses "Standard Preset" (Standard preset, M7) in an M2 part']
+            if body.startswith("p =")
+            else []
+        )
+        assert _lines([_part("M2", body)]) == expected
+
+
+def test_cli_does_not_report_all_caps_for_a_capitalized_term(tmp_path: Path) -> None:
+    """#97's repro: ``x = STATE`` in an M2 part passes check-lexicon; ``x = State`` fails it."""
+    codes = []
+    for body in ("x = STATE", "x = State"):
+        parts = tmp_path / "parts.json"
+        parts.write_text(json.dumps([_part("M2", body)]))
+        proc = subprocess.run(
+            [sys.executable, "-m", "tools.gates", "check-lexicon", "--parts", str(parts)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+        codes.append(proc.returncode)
+    assert codes == [0, 1]
+
+
 def test_not_counted_phrase_is_removed_before_matching() -> None:
     assert _lines([_part("M2", "run the scenario suite here")]) == []
     assert _lines([_part("M2", "create a scenario here")]) == [

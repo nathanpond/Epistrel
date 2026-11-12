@@ -66,7 +66,7 @@ from tests.policy_support import rated_policy_rating, words
 from tests.profile_support import nest
 from tests.respond_support import body as turn_body
 from tests.respond_support import new_story, respond, respond_client
-from tests.story_support import WRITE, character, create, override
+from tests.story_support import READ, WRITE, character, create, override
 
 OPERATOR = {**bearer(), "X-Epistrel-Principal": "p-operator"}
 LIBRARY = RequestContext(principal="p-operator")
@@ -2024,10 +2024,18 @@ async def test_i_29__m9_story_refusals(
     shared, shared_ids = await new_story(client, "Ash", "Briar")
     assigned = await client.put(
         f"/stories/{shared}/engine-profile",
-        json={"profile_id": structured_m4(), "ignore_warnings": True},
+        json={"profile_id": structured_m4(), "version": 1, "ignore_warnings": True},
         headers=WRITE,
     )
     assert assigned.status_code == 200, assigned.text
+    config = (await client.get(f"/stories/{shared}/effective-config", headers=READ)).json()
+    assert config["profile"] == {
+        "id": structured_m4(),
+        "version": 1,
+        "pinned": True,
+        "deleted": False,
+    }
+    assert config["effective"]["character_knowledge"]["partitions"] is False
     lib.models.stub.script(needs, [answer()])
     accepted = await story_call(client, shared, needs, ask(shared_ids["Briar"]))
     assert accepted.status_code == 200, accepted.text

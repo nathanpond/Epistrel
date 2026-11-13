@@ -2,7 +2,7 @@
 
 **Working draft**
 
-Each ADR records a decision, its context, and consequences, so the *why* travels with the project. Status values: **Accepted**, **Superseded**, **Proposed**. ADRs are append-only: when a later ADR changes part of an earlier one, the earlier ADR gains an **Amended by** line naming the later ADR and the clause it changes, and clauses that are now wrong carry an inline *[superseded by ADR-…]* marker. Where a later ADR narrows an earlier ADR's **Consequences**, that line is restated in its narrowed form and marked *[revised per ADR-…]*, so no broader claim remains readable as current. A factual slip in an ADR's own text that no later decision changes (a wrong file path, a misnamed test) is not an amendment: the original text stays, followed by an inline *[corrected YYYY-MM-DD, #N: …]* marker naming the date, the issue and the correct fact; a correction never changes a decision. The current rule is always the latest ADR in the chain; the requirements specification (*03*) is normative where the two differ. The **indexes** below are generated from the log on every change: by requirement area, and by ADR with each one's standing — current, amended, or partly superseded.
+Each ADR records a decision, its context, and consequences, so the *why* travels with the project. Status values: **Accepted**, **Superseded**, **Proposed**. ADRs are append-only: when a later ADR changes part of an earlier one, the earlier ADR gains an **Amended by** line naming the later ADR and the clause it changes, and clauses that are now wrong carry an inline *[superseded by ADR-…]* marker. Where a later ADR narrows an earlier ADR's **Consequences**, that line is restated in its narrowed form and marked *[revised per ADR-…]*, so no broader claim remains readable as current. A factual slip in an ADR's own text that no later decision changes (a wrong file path, a misnamed test) is not an amendment: the original text stays, followed by an inline *[corrected YYYY-MM-DD, #N: …]* marker naming the date, the issue and the correct fact; a correction never changes a decision. The current rule is always the latest ADR in the chain; the requirements specification (*03*) is normative where the two differ. The **indexes** below are generated from the log on every change, by `uv run python -m epistrel.tools.adr_index --write` (CI runs it with `--check`): by requirement area, and by ADR with each one's standing — current, amended, or partly superseded.
 
 ---
 
@@ -16,44 +16,44 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 
 | Area | Spec | ADRs |
 |---|---|---|
-| FR-RESP | §1 | 047, 071, 078, 087, 091, 144, 145, 174, 177 |
-| FR-STORE | §2 | 045, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 167, 175, 187, 188 |
-| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 144, 169, 175 |
+| FR-RESP | §1 | 047, 059, 071, 078, 087, 091, 144, 145, 169, 174, 177 |
+| FR-STORE | §2 | 018, 045, 054, 071, 072, 075, 076, 079, 080, 122, 128, 129, 132, 138, 143, 144, 157, 167, 172, 175, 176, 187, 188 |
+| FR-CONC | §2.3 | 045, 052, 057, 062, 072, 122, 144, 169, 174, 175 |
 | FR-BITEMP | §3 | 189 |
-| FR-MEM | §4 | 070, 071, 072, 075, 169, 187, 188, 191 |
-| FR-EPI | §5 | 024, 167, 168, 171, 173, 174 |
+| FR-MEM | §4 | 070, 071, 072, 075, 164, 169, 187, 188, 191 |
+| FR-EPI | §5 | 024, 025, 034, 035, 069, 167, 168, 171, 173, 174 |
 | FR-BELIEF | §5.1 | 026, 069, 075, 168, 170, 172, 173 |
-| FR-TURN | §6 | 043, 169, 170 |
-| FR-COMMIT | §7 | 018, 022, 043, 053, 129, 173 |
+| FR-TURN | §6 | 024, 043, 143, 166, 169, 170 |
+| FR-COMMIT | §7 | 018, 022, 043, 053, 129, 164, 173 |
 | FR-RET | §8 | 129, 167 |
-| FR-PROP | §8.1 | 160, 162, 163, 165, 167 |
-| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 165, 173, 174, 177 |
+| FR-PROP | §8.1 | 017, 050, 160, 162, 163, 165, 167 |
+| FR-VERIFY | §9 | 043, 065, 077, 138, 144, 158, 160, 162, 163, 164, 165, 173, 174, 177 |
 | FR-GUARD | §11 | 087, 095, 096, 114, 161, 169 |
 | FR-REWRITE | §12.1 | 144 |
-| FR-MODEL | §13 | 129, 136, 144, 150, 170, 185 |
-| FR-EXT | §15 | 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144 |
-| FR-STATE | §15.1 | 055, 072, 144 |
+| FR-MODEL | §13 | 017, 129, 136, 144, 150, 170, 185 |
+| FR-EXT | §15 | 037, 051, 054, 056, 061, 066, 072, 074, 092, 133, 140, 144, 174 |
+| FR-STATE | §15.1 | 055, 061, 072, 144 |
 | FR-CLOCK | §15.2 | 060, 063, 064, 067, 068, 073, 074, 076, 144, 178 |
-| FR-MULTI | §16 | 043, 126 |
+| FR-MULTI | §16 | 043, 054, 126 |
 | FR-API | §17 | 092, 138 |
 | FR-AUTH | §17.1 | 078, 091, 093, 144, 149, 152 |
-| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176 |
-| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171 |
-| FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142 |
-| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 182, 183 |
+| FR-ADMIN | §18 | 046, 080, 103, 128, 129, 138, 144, 153, 154, 155, 156, 157, 159, 161, 176, 186 |
+| FR-CAT | §18.1 | 081, 088, 089, 090, 091, 095, 097, 107, 108, 138, 144, 171, 176 |
+| FR-SCN | §18.2 | 081, 082, 087, 088, 091, 097, 107, 140, 141, 142, 164 |
+| FR-PROF | §18.3 | 084, 086, 087, 107, 134, 138, 141, 142, 144, 158, 164, 182, 183 |
 | FR-LITE | §18.4 | 085, 086, 087, 178 |
 | FR-MEDIA | §18.5 | 083, 097, 113, 116, 151, 152, 186 |
 | FR-RATE | §18.6 | 094, 107, 132, 138 |
-| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 145, 181, 182, 186 |
+| FR-IMG | §18.7 | 098, 099, 100, 101, 102, 103, 104, 105, 108, 109, 110, 113, 114, 116, 117, 118, 119, 120, 121, 124, 125, 129, 130, 131, 135, 136, 138, 145, 181, 182, 186 |
 | FR-FB | §18.8 | 111, 175 |
-| FR-OBS | §19 | 129, 158, 162 |
-| NFR-PERF | §20 | 080, 123, 126, 133, 137, 145, 146, 147, 162, 170, 180, 189, 190 |
+| FR-OBS | §19 | 017, 129, 158, 162 |
+| NFR-PERF | §20 | 002, 017, 080, 123, 126, 133, 137, 138, 145, 146, 147, 150, 162, 170, 180, 189, 190 |
 | NFR-DETERM | §20 | 045, 080 |
-| NFR-SCALE | §20 | 070, 072, 075, 137, 175, 187, 188, 190, 191 |
-| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 112, 114, 115, 158, 164, 166, 179, 182, 184, 185 |
-| NFR-REL | §20 | 045, 127, 175 |
+| NFR-SCALE | §20 | 002, 070, 072, 075, 137, 175, 187, 188, 190, 191 |
+| NFR-QUAL | §20 | 044, 065, 077, 080, 101, 106, 110, 112, 114, 115, 158, 163, 164, 165, 166, 179, 182, 184, 185 |
+| NFR-REL | §20 | 045, 054, 127, 175 |
 | NFR-SEC | §20 | 138, 149, 152 |
-| NFR-PRIV | §20 | 077, 101, 154, 157, 159, 161, 169, 176 |
+| NFR-PRIV | §20 | 026, 077, 101, 154, 157, 159, 161, 169, 174, 176 |
 | NFR-PORT | §20 | 150 |
 | NFR-OPS | §20 | 127, 148, 151, 191 |
 | NFR-MAINT | §20 | 148 |
@@ -170,7 +170,7 @@ The ADRs whose decisions cite each requirement area, oldest first — the last l
 | 104 | Image limits count every provider output; catalog results are candidates attached deliberately | Amended | 109, 135, 138 |
 | 105 | Image metadata states its guarantees; an image's audience viewpoint is separate from its camera POV | Amended | 110 |
 | 106 | Creative quality is outside the guarantee; Epistrel guarantees the inputs | Amended | 112 |
-| 107 | Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions | Partly superseded | 14141, 183 |
+| 107 | Review clarifications: persona text is never canon, one validation report shape, stale versus uncertified, advisory rating suggestions | Partly superseded | 141, 183 |
 | 108 | The image safety path knows true ages; the image model gets only what the audience perceives | Amended | 114, 129 |
 | 109 | Catalog candidates are durable private assets; image reservations are atomic; unchecked uploads are named as such | Partly superseded | 113, 114, 117, 135 |
 | 110 | Checker certification is reported per policy; image tests and ADR consequences stay inside the guarantee boundary | Current | — |

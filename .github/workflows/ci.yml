@@ -50,6 +50,10 @@ jobs:
       - name: capability-map
         run: uv run python -m epistrel.tools.capability_map --check
         if: always()
+      # ADR indexes (#889): docs/05's two indexes are exactly what the log itself generates.
+      - name: adr-index
+        run: uv run python -m epistrel.tools.adr_index --check
+        if: always()
       # Guarantee table (#132, FR-VERIFY-15): docs/guarantees.md is exactly what GUARANTEES renders,
       # and every delivered model purpose has a model-dependent row.
       - name: guarantees

@@ -331,6 +331,84 @@ async def test_a_write_at_the_head_reads_the_placements_still_open(engine: Async
     assert read[0] == read[1], read
 
 
+async def examined(engine: AsyncEngine, sql: str, params: Any) -> int:
+    """The rows ``sql``'s scans examine (each scan's rows kept plus those its filter and recheck
+    removed), from ``EXPLAIN (ANALYZE, FORMAT JSON)`` with sequential scans priced out: on these
+    small tables the planner would otherwise read every row whatever indexes exist."""
+    async with engine.connect() as conn:
+        await conn.execute(text("SET LOCAL enable_seqscan = off"))
+        raw = await conn.get_raw_connection()
+        cursor = raw.driver_connection.cursor()  # type: ignore[union-attr]
+        await cursor.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params)
+        found = await cursor.fetchone()
+        await conn.rollback()
+    assert found is not None
+    total = 0
+    nodes = [found[0][0]["Plan"]]
+    while nodes:
+        node = nodes.pop()
+        nodes += node.get("Plans", [])
+        if "Relation Name" in node:
+            kept = node["Actual Rows"] + node.get("Rows Removed by Filter", 0)
+            kept += node.get("Rows Removed by Index Recheck", 0)
+            total += kept * node["Actual Loops"]
+    return total
+
+
+async def test_a_write_at_the_head_examines_only_the_rows_still_open(engine: AsyncEngine) -> None:
+    """#892: the scene inputs a head write reads (its placement and ``scene`` relationship rows)
+    are found through an index, not by filtering the story's whole history: the rows their scans
+    examine are the same after 2 past stays and presences, expired (``valid_to``) and closed (a
+    later fact closed them), as after 40. #153's test above counts the rows answered; this
+    counts the rows read to find them."""
+    seen_rows: list[int] = []
+    for stays in (2, 40):
+        w = await world(engine)
+        story = w.story_id
+        bobby, ann, cal = w.people["Bobby"], w.people["Ann"], w.people["Cal"]
+        kitchen, garden, school = (w.places[p] for p in ("kitchen", "garden", "school"))
+        await execute_in_tx(
+            engine, ("UPDATE stories SET story_minute_zero = 100000 WHERE id = :s", {"s": story})
+        )
+        stay = await commit(engine, story, at(ann, garden, 0, None))
+        visit = await commit(engine, story, rel(ann, PRESENT_AT, garden, 0))
+        for i in range(stays):
+            place = kitchen if i % 2 else garden
+            await commit(engine, story, at(bobby, place, i * 10, i * 10 + 5))
+            await commit(engine, story, at(bobby, place, i * 10, i * 10 + 5, predicate=PRESENT_AT))
+            stay = await supersede_fact(engine, story, stay.id, at(ann, place, i * 10, None))
+            visit = await supersede_fact(
+                engine, story, visit.id, rel(ann, PRESENT_AT, place, i * 10)
+            )
+        await supersede_fact(engine, story, stay.id, at(ann, school, 100000, None))
+        await supersede_fact(engine, story, visit.id, rel(ann, PRESENT_AT, school, 100000))
+        await commit(engine, story, at(bobby, kitchen, 100000, None))
+        for table in ("placement", "relationships"):
+            history = await scalar(
+                engine,
+                f"SELECT count(*) FILTER (WHERE closed_by_fact_id IS NOT NULL) * 1000 "  # noqa: S608
+                f"+ count(*) FILTER (WHERE valid_to IS NOT NULL) FROM {table} WHERE story_id = :s",
+                s=story,
+            )
+            assert divmod(history, 1000) == (stays + 1, stays), (table, history)
+        with statements(engine) as seen:
+            await commit(engine, story, at(cal, kitchen, 100000, None))
+        reads = [
+            (sql, params)
+            for table in ("placement", "relationships")
+            for sql, params in seen.reading(table)
+            if "valid_to >" in sql
+        ]
+        assert {"placement", "relationships"} <= {
+            t for t in TABLES if any(t in q for q, _ in reads)
+        }
+        seen_rows.append(sum([await examined(engine, sql, params) for sql, params in reads]))
+        then = await scene_of(engine, story, viewpoint="omniscient")
+        assert then.location is not None
+        assert (then.location.entity_id, sorted(present(then))) == (kitchen, sorted([bobby, cal]))
+    assert seen_rows[0] == seen_rows[1], seen_rows
+
+
 @pytest.mark.part("M4", "FR-STORE-3")
 async def test_i_01__structured_viewpoint(engine: AsyncEngine, settings: Settings) -> None:
     """The scene and the profile are read for a viewpoint: Ann, placed in the kitchen by a

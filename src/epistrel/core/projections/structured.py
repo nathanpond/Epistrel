@@ -68,8 +68,8 @@ from sqlalchemy import (
     insert,
     or_,
     select,
-    true,
     tuple_,
+    union_all,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -478,19 +478,29 @@ async def _scene_predicates(conn: AsyncConnection, story_id: str) -> frozenset[s
     return frozenset(str(i) for i in found)
 
 
-def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> ColumnElement[bool]:
+def _from_turn_on(table: Table, from_turn: int, basis: TimeBasis) -> list[ColumnElement[bool]]:
     """The rows ``scene`` can keep at some turn from ``from_turn`` on (#153): not closed at or
     before ``(from_turn, 0)`` (``through``), and valid past that turn's story time (``covers``;
-    story time never decreases with the turn). The rest are dropped by every such turn."""
+    story time never decreases with the turn). The rest are dropped by every such turn.
+
+    #892: as three disjoint arms, whose union is that condition, each served by one of the
+    table's in-force indexes (``tables.projections._in_force_indexes``), so a read finds only the
+    rows it keeps instead of filtering the story's history: open and valid for ever, open and
+    valid past that story time, and closed at or after ``from_turn`` (the exact condition is
+    checked on those)."""
     start = basis.at(NarrativePosition(from_turn))
     closed = tuple_(table.c.closed_turn, func.coalesce(table.c.closed_slot, 0))
-    return and_(
-        or_(
-            table.c.closed_by_fact_id.is_(None),
-            and_(table.c.closed_turn.is_not(None), closed > tuple_(from_turn, 0)),
+    is_open = table.c.closed_by_fact_id.is_(None)
+    return [
+        and_(is_open, table.c.valid_to.is_(None)),
+        and_(is_open, table.c.valid_to > start),
+        and_(
+            table.c.closed_by_fact_id.is_not(None),
+            table.c.closed_turn >= from_turn,
+            closed > tuple_(from_turn, 0),
+            or_(table.c.valid_to.is_(None), table.c.valid_to > start),
         ),
-        or_(table.c.valid_to.is_(None), table.c.valid_to > start),
-    )
+    ]
 
 
 async def _scene_inputs(
@@ -501,33 +511,30 @@ async def _scene_inputs(
 ) -> tuple[list[Row], list[Row]]:
     """The story's placement rows and its ``scene`` relationship rows; with ``from_turn``, only
     those a scene from that turn on can use, so a write at the head reads the rows still open
-    there rather than the story's whole history."""
+    there rather than the story's whole history (#153), through an index (#892)."""
     if from_turn is not None and basis is None:
         basis = await _basis(conn, story_id)
 
-    def bounded(table: Table) -> ColumnElement[bool]:
-        return (
-            true() if from_turn is None or basis is None else _from_turn_on(table, from_turn, basis)
-        )
-
-    places = [
-        dict(r._mapping)
-        for r in await conn.execute(
-            select(placement).where(placement.c.story_id == story_id, bounded(placement))
-        )
-    ]
-    scene_ids = await _scene_predicates(conn, story_id)
-    presences = (
-        [
-            dict(r._mapping)
-            for r in await conn.execute(
-                select(relationships).where(
-                    relationships.c.story_id == story_id,
-                    relationships.c.predicate_id.in_(sorted(scene_ids)),
-                    bounded(relationships),
+    async def read(table: Table, *where: ColumnElement[bool]) -> list[Row]:
+        if from_turn is None or basis is None:
+            query: Any = select(table).where(*where)
+        else:
+            query = union_all(
+                *(
+                    select(table).where(*where, arm)
+                    for arm in _from_turn_on(table, from_turn, basis)
                 )
             )
-        ]
+        return [dict(r._mapping) for r in await conn.execute(query)]
+
+    places = await read(placement, placement.c.story_id == story_id)
+    scene_ids = await _scene_predicates(conn, story_id)
+    presences = (
+        await read(
+            relationships,
+            relationships.c.story_id == story_id,
+            relationships.c.predicate_id.in_(sorted(scene_ids)),
+        )
         if scene_ids
         else []
     )

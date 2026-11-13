@@ -146,9 +146,10 @@ jobs:
     # rest of tests/evals run as `eval`, `eval-e08-think`, `eval-e08` and `eval-harness`.
     name: test (${{ matrix.shard.name }})
     runs-on: ubuntu-latest
-    # 50, not 35 (#179, then M6): E-08's 300-case real-suite run is one file that took 21 minutes on a
-    # slow runner, and the think-mode shard reached 34m58s and then the 35-minute cap on M6's PR.
-    timeout-minutes: 50
+    # 75, not 50 (M10): integration-i-z took 34-50 minutes across M10's runs (37-46 before it) and hit
+    # the 50-minute cap twice; earlier, 50 not 35 (#179, then M6): E-08's 300-case real-suite run is one
+    # file that took 21 minutes on a slow runner, and the think-mode shard hit the 35-minute cap on M6's PR.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

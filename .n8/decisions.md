@@ -14827,3 +14827,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** #864 is closed by the merge with AC3 (`:edge` published for the merge commit) unticked. Its AC names `/n8-verify` as the place that check is made.
   **Why:** the post-merge publish can only be observed after the merge, and the plan assigns it to verification.
   **Issue:** #864
+- **Decision (Rule 3):** the scale fixture's cache dumps and restores with PATH's `pg_dump`/`pg_restore` only when they are the test server's major version (`scale.PG_MAJOR`, 16). Otherwise it uses `pgvector/pgvector:pg16`'s own tools through `docker run`.
+  **Why:** the weekly run 43517905000 (`suite: weekly` on main @ 026d0f6, #868's second measurement) failed before measuring anything. Run 43483176343 had dumped the new cache entry with the runner's client, which is newer than 16, and restoring that dump into PG16 failed with `unrecognized configuration parameter "transaction_timeout"`. Every weekly run that hit that cache key would fail the same way. Editing scale.py moves `fixture_version()`, so the bad entry's key is abandoned and the next run rebuilds the cache.
+  **Issue:** #868, #490, #793

@@ -65,6 +65,7 @@ import inspect
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -1415,7 +1416,28 @@ async def grow(
 # -- the cache -------------------------------------------------------------------------------------
 
 PG_IMAGE = "pgvector/pgvector:pg16"
-"""The image whose ``pg_dump``/``pg_restore`` run when PATH has none (the test server's)."""
+"""The image whose ``pg_dump``/``pg_restore`` run when PATH has none of the test server's major
+version (the test server's)."""
+PG_MAJOR = 16
+"""``PG_IMAGE``'s major version."""
+
+
+def _client_major(path: str) -> int | None:
+    """The major version ``path --version`` prints (``pg_restore (PostgreSQL) 18.1``)."""
+    done = subprocess.run(  # noqa: S603 - a client found on PATH, asked its version
+        [path, "--version"], capture_output=True, text=True, check=False
+    )
+    found = re.search(r"\)\s+(\d+)", done.stdout)
+    return int(found.group(1)) if found else None
+
+
+def _path_tool(tool: str) -> str | None:
+    """PATH's ``tool`` when it is the test server's major version. A newer client's dump
+    restores settings the server does not know: the weekly run 43517905000's runner dumped with
+    a client newer than 16, and restoring that dump failed on PG16 with ``unrecognized
+    configuration parameter "transaction_timeout"``."""
+    found = shutil.which(tool)
+    return found if found is not None and _client_major(found) == PG_MAJOR else None
 
 
 def alembic_head() -> str:
@@ -1440,8 +1462,9 @@ def cache_key(spec: ScaleSpec) -> str:
 
 
 def _pg_argv(tool: str, url: str, *args: str) -> tuple[list[str], dict[str, str]]:
-    """``tool`` against the database at ``url``: PATH's binary, else the pgvector image's
-    through ``docker run`` (host networking on Linux; ``host.docker.internal`` elsewhere)."""
+    """``tool`` against the database at ``url``: PATH's binary if it is ``PG_MAJOR``'s, else the
+    pgvector image's through ``docker run`` (host networking on Linux;
+    ``host.docker.internal`` elsewhere)."""
     u = make_url(url)
     env = {**os.environ, "PGPASSWORD": u.password or ""}
     host = u.host or "localhost"
@@ -1455,10 +1478,11 @@ def _pg_argv(tool: str, url: str, *args: str) -> tuple[list[str], dict[str, str]
         "-d",
         u.database or "",
     ]
-    if shutil.which(tool):
-        return [tool, *conn, *args], env
+    local = _path_tool(tool)
+    if local is not None:
+        return [local, *conn, *args], env
     if not shutil.which("docker"):
-        raise RuntimeError(f"neither {tool} nor docker is on PATH")
+        raise RuntimeError(f"neither {tool} {PG_MAJOR} nor docker is on PATH")
     network = ["--network", "host"]
     if sys.platform != "linux":
         network = []

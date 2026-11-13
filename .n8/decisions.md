@@ -14600,3 +14600,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** `[tool.epistrel.gates] current_milestone` is now 9, not 10. At 9 every gate exits 0: check-assignment (448 assigned, M9), check-parts (1280 parts, 431 requirements gated at ≤ M9), check-lexicon (0 violations) and check-traceability (443 rows at ≤ M9; §15 and §22 agree). `tests/gates` passed in full (622). Fail-first does not apply to a config value; the gates at 9 are the check. The parts count is 1280, not the issue's 1252, because M10 work since 7b476ab added parts.
   **Why:** M9 closed on 2026-11-11 and M10 is still open.
   **Issue:** #872
+- **Decision:** `test_a_fork_carries_the_story_ledger`'s pending count is scoped to `story_ref IN (source, fork)`, rather than to rows created after the test started. Before the fix, `test_i_10.py` then `test_erasure_resurrection.py` gave `assert 2 == 0` (1 failed, 42 passed); after it, 43 passed, and the module alone 6 passed.
+  **Why:** the issue's first suggested fix. The story scope says exactly what the test owns and needs no clock or id watermark. The source's own row is still counted, so the reconciler check is not weakened.
+  **Issue:** #884

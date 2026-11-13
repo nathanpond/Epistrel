@@ -456,9 +456,14 @@ async def test_a_fork_carries_the_story_ledger(
         refused = await respond(client, fork_id, body(player, "Who is there?"))
         assert refused.status_code == 409, refused.text
         assert refused.json()["error"]["code"] == "erased_subject_referenced"
+        # Scoped to this test's stories: other modules' erasures may leave their own rows
+        # pending in the session database (#884).
         pending = await scalar(
             engine,
-            "SELECT count(*) FROM erasure_ledger WHERE applied_at IS NULL AND copied_from IS NULL",
+            "SELECT count(*) FROM erasure_ledger WHERE applied_at IS NULL AND copied_from IS NULL "
+            "AND story_ref IN (:s, :f)",
+            s=sid,
+            f=fork_id,
         )
         assert pending == 0
 

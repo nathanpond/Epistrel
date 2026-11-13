@@ -14597,3 +14597,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** the larger lock table also runs in the test servers, although the #784 entry above recorded that it was "not raised in the engine, in CI or in the test containers".
   **Why:** the owner's option (a) names the test Postgres. The earlier canary (CI failing on lock exhaustion) is replaced by the pruning registry, which `EXPLAIN`s every hot statement whatever the lock table's size. ADR-191's last consequence says so.
   **Issue:** #784
+- **Decision:** `[tool.epistrel.gates] current_milestone` is now 9, not 10. At 9 every gate exits 0: check-assignment (448 assigned, M9), check-parts (1280 parts, 431 requirements gated at ≤ M9), check-lexicon (0 violations) and check-traceability (443 rows at ≤ M9; §15 and §22 agree). `tests/gates` passed in full (622). Fail-first does not apply to a config value; the gates at 9 are the check. The parts count is 1280, not the issue's 1252, because M10 work since 7b476ab added parts.
+  **Why:** M9 closed on 2026-11-11 and M10 is still open.
+  **Issue:** #872

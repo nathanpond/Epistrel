@@ -14815,3 +14815,15 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (Rule 1):** #892's row-count test now runs in a migrated database of its own (`scratch_database`). It still analyses the tables first and asserts no growth. The 8c04d7d run (43448965759) read [8, 170]: the 40-stay story was now the one read through another index. In the shared database, the other tests' many small stories make the planner estimate any one story at a row or two, so every index that starts with `story_id` costs the same, whichever story is read. In the test's own database the statistics describe only its stories, as they would in a deployment. The whole-history mutant still reads [28, 332] and fails.
   **Why:** the planner's choice depended on the rest of the shared database, not on the code under test. #892's own measurements (1k, 5k, 25k turns) were taken on a database holding only that story.
   **Issue:** #892
+- **Decision (plan deviation):** #502's `--maintenance-work-mem` and `--parallel-workers` are applied per session by the capacity tool (`capacity.build_settings`), not threaded into `scale.rebuild_index` as the subtask said.
+  **Why:** `scale.fixture_version()` hashes `scale.py`'s whole source, so any edit to `rebuild_index` would move the fixture version and the weekly cache, whatever its defaults. The AC's own goal ("defaults unchanged so `fixture_version()` and the weekly cache don't move") needs the change kept out of `scale.py`. At the defaults the build is still `rebuild_index`'s own serial one.
+  **Issue:** #502
+- **Decision:** docs/capacity-exploration.md is hand-merged into two sections: the 2026-11-13 tuned run (250k and 1M), and the 2026-10-22 run kept for reference. The tool writes one run per page, so the merge is noted at the top of the page.
+  **Why:** #502's AC asks for the 1M row beside 250k, with the old 250k row kept. The two runs differ in host load, `shared_buffers` and build settings, so their rows are kept apart rather than in one table.
+  **Issue:** #502
+- **Decision:** PR #874 merges without #502. #502 is labelled `blocked` + `needs-owner-action` (its AC1: the Docker VM raised to 64 GB) and lands afterwards on its own branch. M10 stays open until it does.
+  **Why:** #864's three green attempts stand on head 6a36e66. Any #502 commit (its two capacity CLI flags and the results) would move the head, and its run waits on the owner's Docker change. This is the skill's blocked-story path: only completed stories are closed.
+  **Issue:** #502, #864
+- **Decision:** #864 is closed by the merge with AC3 (`:edge` published for the merge commit) unticked. Its AC names `/n8-verify` as the place that check is made.
+  **Why:** the post-merge publish can only be observed after the merge, and the plan assigns it to verification.
+  **Issue:** #864

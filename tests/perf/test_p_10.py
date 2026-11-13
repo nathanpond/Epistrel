@@ -27,7 +27,9 @@ import sys
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
+from epistrel.core.db import make_engine
 from epistrel.testing.fixtures import scale
 from epistrel.tools import capacity
 from tests.perf.scale_support import RESULT_DIR, host_info, record, scale_database, server_info
@@ -142,3 +144,47 @@ async def test_p_10__smoke(pg_url: str) -> None:
     assert found["unmeasured_steps"] == list(capacity.DEFAULT_STEPS)
     assert "Unmeasured: 250,000, 1,000,000, 5,000,000 memories." in found["page"]
     assert "| 1,000 |" in found["page"]
+
+
+@pytest.mark.perf_smoke
+async def test_p_10__build_settings(pg_url: str) -> None:
+    """#502: the CLI's ``--maintenance-work-mem`` and ``--parallel-workers`` reach every
+    connection opened while ``build_settings`` holds (the build's session), and the page labels
+    the parallel build on its row and in its prose.
+
+    Complement asserted: a connection opened afterwards has the server's own settings again, so
+    the retrieval and commit measurements that follow are not taken under them."""
+    db = make_engine(capacity.make_settings(pg_url))
+    show = (
+        "SELECT current_setting('maintenance_work_mem'), "
+        "current_setting('max_parallel_maintenance_workers')"
+    )
+    try:
+        async with db.connect() as conn:
+            before = tuple((await conn.execute(text(show))).one())
+        await db.dispose()
+        with capacity.build_settings(db, "96MB", 3):
+            async with db.connect() as conn:
+                during = tuple((await conn.execute(text(show))).one())
+        await db.dispose()
+        async with db.connect() as conn:
+            after = tuple((await conn.execute(text(show))).one())
+    finally:
+        await db.dispose()
+    assert during == ("96MB", "3"), during
+    assert after == before != during, (before, after)
+    step = capacity.Step(
+        memories=1_000_000,
+        hnsw_build_s=1.0,
+        index_bytes=2**20,
+        vectors=1_000_000,
+        maintenance_work_mem="8GB",
+        build_spilled_after=None,
+        bulk_memory_rows_per_s=1.0,
+        live_memory_rows_per_s=1.0,
+        event_rows_per_s=1.0,
+        parallel_workers=4,
+    )
+    page = capacity.page([step], {"host": "local"}, requested=[1_000_000], start={"memories": 1})
+    assert "| 8GB, 4 workers, fit in memory |" in page, page
+    assert "parallel maintenance workers" in page, page

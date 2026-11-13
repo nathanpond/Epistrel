@@ -1,0 +1,82 @@
+{
+  "budgets": {
+    "commit_p95_ms": 250.0,
+    "retrieval_p95_ms": 150.0
+  },
+  "commit_samples": 100,
+  "first_failure": {
+    "budget": "retrieval p95 349.5 ms > 150 ms",
+    "memories": 250000
+  },
+  "host": {
+    "host": "local-mac-tuned",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "ram_gb": 128.0,
+    "vcpus": 16
+  },
+  "informational": true,
+  "live_memory_rows": 2000,
+  "points": [
+    {
+      "build_spilled_after": null,
+      "bulk_memory_rows_per_s": 1611.8,
+      "commit_ms": {
+        "max": 45.398,
+        "p50": 14.297,
+        "p95": 18.855,
+        "p99": 24.396
+      },
+      "event_rows_per_s": 115.5,
+      "hnsw_build_s": 80.1,
+      "index_bytes": 1024008192,
+      "live_memory_rows_per_s": 157.7,
+      "maintenance_work_mem": "8GB",
+      "memories": 250000,
+      "parallel_workers": 4,
+      "retrieval_ms": {
+        "max": 389.79,
+        "p50": 231.88,
+        "p95": 349.475,
+        "p99": 369.366
+      },
+      "vectors": 250000
+    },
+    {
+      "build_spilled_after": null,
+      "bulk_memory_rows_per_s": 1579.7,
+      "commit_ms": {
+        "max": 28.424,
+        "p50": 14.238,
+        "p95": 19.236,
+        "p99": 26.791
+      },
+      "event_rows_per_s": 83.4,
+      "hnsw_build_s": 352.398,
+      "index_bytes": 4096008192,
+      "live_memory_rows_per_s": 153.5,
+      "maintenance_work_mem": "8GB",
+      "memories": 1000000,
+      "parallel_workers": 4,
+      "retrieval_ms": {
+        "max": 918.455,
+        "p50": 606.154,
+        "p95": 882.03,
+        "p99": 899.504
+      },
+      "vectors": 1000000
+    }
+  ],
+  "queries": 100,
+  "requested_steps": [
+    250000,
+    1000000
+  ],
+  "requirement": "NFR-SCALE-1",
+  "start": {
+    "events": 2000,
+    "memories": 1000
+  },
+  "test": "P-10",
+  "turns_per_step": 500,
+  "unmeasured_steps": []
+}

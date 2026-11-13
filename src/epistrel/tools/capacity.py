@@ -105,6 +105,8 @@ class Step:
     event_rows_per_s: float
     commit_ms: dict[str, float] = field(default_factory=dict)
     retrieval_ms: dict[str, float] = field(default_factory=dict)
+    parallel_workers: int = 0
+    """The build's ``max_parallel_maintenance_workers`` (#502); 0 is a serial build."""
 
     def failed_budget(self) -> str | None:
         if self.retrieval_ms.get("p95", 0.0) > RETRIEVAL_BUDGET_MS:
@@ -177,8 +179,14 @@ def page(
             "",
             f"The story starts as the scale fixture at {start.get('memories', 0):,} memories and "
             f"{start.get('events', 0):,} events and grows by memories only; each step also "
-            f"commits {TURNS_PER_STEP + COMMIT_SAMPLES:,} turns. Each index build runs serially "
-            "under the step's `maintenance_work_mem`, the way a pin builds it.",
+            f"commits {TURNS_PER_STEP + COMMIT_SAMPLES:,} turns. "
+            + (
+                "Each index build runs under the step's `maintenance_work_mem` with the parallel "
+                "maintenance workers its row gives (a pin builds serially)."
+                if any(s.parallel_workers for s in measured)
+                else "Each index build runs serially under the step's `maintenance_work_mem`, "
+                "the way a pin builds it."
+            ),
         ]
     lines += [
         "",
@@ -188,10 +196,13 @@ def page(
     ]
     for s in measured:
         q, c = s.retrieval_ms, s.commit_ms
+        memory = s.maintenance_work_mem + (
+            f", {s.parallel_workers} workers" if s.parallel_workers else ""
+        )
         spilled = (
-            f"{s.maintenance_work_mem}, spilled after {s.build_spilled_after:,} tuples"
+            f"{memory}, spilled after {s.build_spilled_after:,} tuples"
             if s.build_spilled_after is not None
-            else f"{s.maintenance_work_mem}, fit in memory"
+            else f"{memory}, fit in memory"
         )
         lines.append(
             f"| {s.memories:,} | {s.hnsw_build_s:.1f} | {spilled} | {s.index_bytes / 2**20:.1f} "
@@ -301,13 +312,54 @@ def spilled_after(messages: Sequence[str]) -> int | None:
     return None
 
 
+@contextmanager
+def build_settings(
+    db: AsyncEngine, maintenance_work_mem: str, parallel_workers: int
+) -> Iterator[None]:
+    """Every connection ``db`` opens meanwhile builds under ``maintenance_work_mem`` with
+    ``parallel_workers`` (#502). Set per session, not through ``scale.rebuild_index``, whose
+    source is the fixture's version (``scale.fixture_version``): changing it would move the weekly
+    cache. A parallel build shares its graph through ``/dev/shm``, so the server needs one as large
+    as ``maintenance_work_mem``."""
+
+    def connected(dbapi_connection: Any, _record: Any) -> None:
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT set_config('maintenance_work_mem', %s, false), "
+                "set_config('max_parallel_maintenance_workers', %s, false)",
+                (maintenance_work_mem, str(parallel_workers)),
+            )
+        finally:
+            cursor.close()
+
+    event.listen(db.sync_engine, "connect", connected)
+    try:
+        yield
+    finally:
+        event.remove(db.sync_engine, "connect", connected)
+
+
 async def _rebuild(
-    db: AsyncEngine, notices: _Notices, dimension: int, maintenance_work_mem: str
+    db: AsyncEngine,
+    notices: _Notices,
+    dimension: int,
+    maintenance_work_mem: str,
+    parallel_workers: int = 0,
 ) -> tuple[Any, int | None]:
-    """``scale.rebuild_index`` on a fresh connection (so the NOTICE handler is on it)."""
+    """``scale.rebuild_index`` on a fresh connection (so the NOTICE handler is on it). At the
+    defaults it is the fixture's own serial build; otherwise the build's settings are the
+    session's (``build_settings``)."""
     await db.dispose()
     with notices.capturing() as seen:
-        index = await scale.rebuild_index(db, dimension, maintenance_work_mem=maintenance_work_mem)
+        if maintenance_work_mem == scale.MAINTENANCE_WORK_MEM and parallel_workers == 0:
+            index = await scale.rebuild_index(
+                db, dimension, maintenance_work_mem=maintenance_work_mem
+            )
+        else:
+            with build_settings(db, maintenance_work_mem, parallel_workers):
+                index = await scale.rebuild_index(db, dimension, maintenance_work_mem=None)
+            await db.dispose()
     return index, spilled_after(seen)
 
 
@@ -365,6 +417,7 @@ async def measure_steps(
     turns: int = TURNS_PER_STEP,
     live_rows: int = LIVE_MEMORY_ROWS,
     maintenance_work_mem: str = scale.MAINTENANCE_WORK_MEM,
+    parallel_workers: int = 0,
     log: Log = print,
 ) -> list[Step]:
     """Grow the built ``fixture`` through ``steps`` and measure each (the module docstring)."""
@@ -379,7 +432,7 @@ async def measure_steps(
             await scale.grow(db, fixture, target, rebuild=False)
             bulk_rate = (fixture.story.memories - before) / max(time.perf_counter() - started, 1e-9)
             index, spilled = await _rebuild(
-                db, notices, fixture.spec.dimension, maintenance_work_mem
+                db, notices, fixture.spec.dimension, maintenance_work_mem, parallel_workers
             )
             fixture.index = index
             log(f"step {target:,}: index built in {index.build_s:.1f} s")
@@ -405,6 +458,7 @@ async def measure_steps(
                 event_rows_per_s=round(event_rate, 1),
                 commit_ms=percentiles(commit_samples),
                 retrieval_ms=percentiles(timings),
+                parallel_workers=parallel_workers,
             )
             # Last: the live writes add to the story, which the next step grows from.
             step.live_memory_rows_per_s = round(await live_memory_writes(db, fixture, live_rows), 1)
@@ -449,6 +503,8 @@ async def measure(
     queries: int,
     *,
     start: int = START,
+    maintenance_work_mem: str = scale.MAINTENANCE_WORK_MEM,
+    parallel_workers: int = 0,
     log: Log = print,
 ) -> tuple[list[Step], dict[str, Any]]:
     """Build the fixture at ``start`` memories in ``dsn``, then grow and measure each step;
@@ -459,7 +515,17 @@ async def measure(
     try:
         fixture = await scale.build_scale_fixture(db, scale.ScaleSpec.scaled(start), log=log)
         begun = {"memories": fixture.story.memories, "events": fixture.story.events}
-        return await measure_steps(db, lib, fixture, steps, queries=queries, log=log), begun
+        measured = await measure_steps(
+            db,
+            lib,
+            fixture,
+            steps,
+            queries=queries,
+            maintenance_work_mem=maintenance_work_mem,
+            parallel_workers=parallel_workers,
+            log=log,
+        )
+        return measured, begun
     finally:
         await lib.models.aclose()
         await db.dispose()
@@ -478,6 +544,18 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--queries", type=int, default=QUERIES)
     p.add_argument("--out", type=Path, default=OUT)
     p.add_argument("--json", type=Path, default=None, help="also write every figure here")
+    p.add_argument(
+        "--maintenance-work-mem",
+        default=scale.MAINTENANCE_WORK_MEM,
+        help=f"each index build's maintenance_work_mem (default {scale.MAINTENANCE_WORK_MEM})",
+    )
+    p.add_argument(
+        "--parallel-workers",
+        type=int,
+        default=0,
+        help="each index build's max_parallel_maintenance_workers (default 0, serial); the "
+        "server's /dev/shm must hold maintenance_work_mem",
+    )
     return p
 
 
@@ -488,7 +566,14 @@ async def _main(args: argparse.Namespace) -> int:
         print(f"error: no step above {args.start_memories:,} and at most --up-to", file=sys.stderr)
         return 2
     async with database(args.database_url) as dsn:
-        measured, begun = await measure(dsn, steps, args.queries, start=args.start_memories)
+        measured, begun = await measure(
+            dsn,
+            steps,
+            args.queries,
+            start=args.start_memories,
+            maintenance_work_mem=args.maintenance_work_mem,
+            parallel_workers=args.parallel_workers,
+        )
     host = host_info()
     args.out.write_text(page(measured, host, requested=requested, start=begun))
     print(f"wrote {args.out}")

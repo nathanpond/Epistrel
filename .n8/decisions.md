@@ -14744,3 +14744,22 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision:** 0153 is the next free migration number, after M10's 0151 (#784) and 0152 (#471). The issue's references matched HEAD: `after_turn` → `refresh(from_turn=…)` → `_scene_inputs`, and `_from_turn_on`.
   **Why:** the caller asked for the next free number, and the brief asks for stale references to be checked.
   **Issue:** #892
+- **Decision (owner triage, 2026-11-13):** #889 joins M10 under #863 (sev:low) with option (a): a generator that derives both ADR indexes from the log, plus a `--check` in CI's lint job. It runs after #877 and #873.
+  **Why:** the owner answered "a - now" to the session's question. The recommendation had been (b), making the header say the indexes are maintained by hand.
+  **Issue:** #889
+- **Decision (incident):** while advancing past #842, the orchestrator's push helper deleted the remote branch `milestone/m10-bug-fixes-testing`. A BSD `sed` error left the queue file empty, so the "next SHA" was empty and `git push origin :refs/heads/…` ran as a delete. GitHub closed PR #874 as a result. Recovery took about two minutes:
+  - the branch was re-pushed at its last pushed commit, 59703d4;
+  - `gh pr reopen 874` restored the PR, still a draft with the same head;
+  - every linked issue was checked and is still open. No commit was lost; all were local.
+  The helper now refuses any target that is not a full 40-hex SHA on the local branch (tested on empty, short, unknown and real values), and the queue is built with Python.
+  **Why:** recorded so that the PR's closed/reopened events and the branch's delete/re-create in its history have an explanation.
+  **Issue:** M10 (#10), PR #874
+- **Decision:** CI run 43342954693 on #844 (8373b11) was cancelled: `test (integration-i-z)` hit its 50-minute `timeout-minutes`. That shard's last five runs took 41.0, 45.1, 45.6, 48.9 and 49.7 minutes. M10 keeps adding tests to it, and runner speed varies. Per the skill, a cancel is re-run, not fixed, so the failed jobs were re-run.
+  **Why:** a timeout is not a test failure. If the shard times out again, raising its `timeout-minutes` (ci.yml:155) is a Rule 3 fix, and splitting the shard is #864's call.
+  **Issue:** #844, #864
+- **Decision (owner, 2026-11-13):** #490's build-time AC is relaxed from "under 10 minutes locally and on the runner" to "under 15 minutes locally (measured on the M10 branch after #887), with the runner's `fixture_timings_s` from a dispatched weekly run recorded, reported not gated". Both AC lines in #490's body carry an *[amended by the owner]* note.
+  **Why:** the owner asked what the target affects at runtime. The answer: nothing, because it only bounds CI wall-clock and runner cost on weeks the fixture cache misses. #887 brought the projected build to about 13.5 min, and 25,000 engine turn commits at about 26 ms each set a floor of about 650 s. Batching turns per commit (fixture fidelity) and normalising `story_heads` (a new table) were offered and not chosen.
+  **Issue:** #490, #153, #887
+- **Decision:** #490's local measurement and the weekly-run dispatch happen at the tail, after #892. The dispatch serves three stories at once: #868's runner median of 3, #490's runner figure, and #793's AC5 dispatch. The local 50k build waits until the owner frees Docker disk space for #502, which they asked to be told about when it is next.
+  **Why:** the Docker VM had about 3 GB free, and a 50k build or restore filled it before (#868).
+  **Issue:** #490, #868, #793, #502

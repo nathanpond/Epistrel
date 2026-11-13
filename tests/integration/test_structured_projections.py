@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx2 as httpx
 import pytest
+from alembic import command
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import text
@@ -39,6 +40,7 @@ from epistrel.core.resolution.types import ResolvedTime
 from tests.auth_support import auth_settings, bearer
 from tests.canon_support import World, at, commit, run, world
 from tests.canon_support import supersede as supersede_fact
+from tests.conftest import alembic_config
 from tests.event_support import execute_in_tx, rows, scalar
 from tests.fork_support import fork
 from tests.openapi_support import assert_documented, lists_code
@@ -335,9 +337,7 @@ async def examined(engine: AsyncEngine, sql: str, params: Any) -> int:
     """The rows ``sql``'s scans examine (each scan's rows kept plus those its filter and recheck
     removed), from ``EXPLAIN (ANALYZE, FORMAT JSON)`` with sequential scans priced out: on these
     small tables the planner would otherwise read every row whatever indexes exist. The tables are
-    analysed first, so the plan follows this story's rows rather than whatever statistics the
-    tests before left behind (on CI's shared database a stale estimate once read a 2-stay story
-    through another of its indexes, examining all of its rows)."""
+    analysed first, so the plan follows the stories' rows as they are now."""
     await execute_in_tx(engine, ("ANALYZE placement", {}), ("ANALYZE relationships", {}))
     async with engine.connect() as conn:
         await conn.execute(text("SET LOCAL enable_seqscan = off"))
@@ -359,14 +359,28 @@ async def examined(engine: AsyncEngine, sql: str, params: Any) -> int:
     return total
 
 
-async def test_a_write_at_the_head_examines_only_the_rows_still_open(engine: AsyncEngine) -> None:
+async def test_a_write_at_the_head_examines_only_the_rows_still_open(scratch_database: str) -> None:
     """#892: the scene inputs a head write reads (its placement and ``scene`` relationship rows)
     are found through an index, not by filtering the story's whole history: the rows their scans
     examine are the same after 2 past stays and presences, expired (``valid_to``) and closed (a
     later fact closed them), as after 40: no more after 40. #153's test above counts the rows
     answered; this counts the rows read to find them. A small story may still be read through
     another of the story's indexes (it costs the same there), so the check is that the history
-    adds nothing, not that the two counts are equal."""
+    adds nothing, not that the two counts are equal.
+
+    It runs in a database of its own. In the shared one, the other tests' many small stories
+    make the planner estimate any one story at a row or two, so every index that starts with
+    ``story_id`` costs the same, and CI's runs read [28, 8] and then [8, 170] through other
+    indexes. Here the statistics describe only these stories, as they would in a deployment."""
+    command.upgrade(alembic_config(scratch_database), "head")
+    engine = make_engine(auth_settings(scratch_database))
+    try:
+        await _examines_only_open_rows(engine)
+    finally:
+        await engine.dispose()
+
+
+async def _examines_only_open_rows(engine: AsyncEngine) -> None:
     seen_rows: list[int] = []
     for stays in (2, 40):
         w = await world(engine)

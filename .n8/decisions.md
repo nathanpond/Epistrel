@@ -14806,3 +14806,6 @@ Scope: the re-verify after PR #724 filed no new bug. It left M7 open on #228 (fi
 - **Decision (method):** inline pushes use `"${sha}:refs/heads/…"`. In zsh, `$sha:refs` applies the `:r` modifier and mangles the refspec ("src refspec …efs/heads/… does not match any"). That caused the failed first pushes of #843 and G1, and both were retried correctly. The helper scripts run under bash and were not affected.
   **Why:** recorded so the two failed pushes have a cause on file.
   **Issue:** M10 (#10)
+- **Decision:** #793 (AC5), #868 (the runner median of 3) and #490 (the runner figure) are measured after the merge, on `main`: Sunday's scheduled weekly run plus dispatched `suite: weekly` runs. They are not measured from the milestone branch. The three stay out of PR #874's Closes lines and are closed afterwards with that evidence. Their code is in the PR and green in CI.
+  **Why:** `perf.yml`'s `weekly-docs` job pushes the rolling `perf/weekly` branch and opens a docs PR from whatever ref it ran on, so a branch dispatch would base the rolling docs PR on the milestone branch. A weekly run takes about 3¾ hours (43051783469: 15:47–19:31) under one `perf` concurrency group, so three would serialize to about 11 hours. The suite is built to run on `main`.
+  **Issue:** #793, #868, #490

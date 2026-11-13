@@ -334,7 +334,11 @@ async def test_a_write_at_the_head_reads_the_placements_still_open(engine: Async
 async def examined(engine: AsyncEngine, sql: str, params: Any) -> int:
     """The rows ``sql``'s scans examine (each scan's rows kept plus those its filter and recheck
     removed), from ``EXPLAIN (ANALYZE, FORMAT JSON)`` with sequential scans priced out: on these
-    small tables the planner would otherwise read every row whatever indexes exist."""
+    small tables the planner would otherwise read every row whatever indexes exist. The tables are
+    analysed first, so the plan follows this story's rows rather than whatever statistics the
+    tests before left behind (on CI's shared database a stale estimate once read a 2-stay story
+    through another of its indexes, examining all of its rows)."""
+    await execute_in_tx(engine, ("ANALYZE placement", {}), ("ANALYZE relationships", {}))
     async with engine.connect() as conn:
         await conn.execute(text("SET LOCAL enable_seqscan = off"))
         raw = await conn.get_raw_connection()
@@ -359,8 +363,10 @@ async def test_a_write_at_the_head_examines_only_the_rows_still_open(engine: Asy
     """#892: the scene inputs a head write reads (its placement and ``scene`` relationship rows)
     are found through an index, not by filtering the story's whole history: the rows their scans
     examine are the same after 2 past stays and presences, expired (``valid_to``) and closed (a
-    later fact closed them), as after 40. #153's test above counts the rows answered; this
-    counts the rows read to find them."""
+    later fact closed them), as after 40: no more after 40. #153's test above counts the rows
+    answered; this counts the rows read to find them. A small story may still be read through
+    another of the story's indexes (it costs the same there), so the check is that the history
+    adds nothing, not that the two counts are equal."""
     seen_rows: list[int] = []
     for stays in (2, 40):
         w = await world(engine)
@@ -406,7 +412,7 @@ async def test_a_write_at_the_head_examines_only_the_rows_still_open(engine: Asy
         then = await scene_of(engine, story, viewpoint="omniscient")
         assert then.location is not None
         assert (then.location.entity_id, sorted(present(then))) == (kitchen, sorted([bobby, cal]))
-    assert seen_rows[0] == seen_rows[1], seen_rows
+    assert seen_rows[1] <= seen_rows[0], seen_rows
 
 
 @pytest.mark.part("M4", "FR-STORE-3")

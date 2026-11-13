@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from epistrel.api import create_app
@@ -17,7 +18,7 @@ from epistrel.core.db import make_engine
 from epistrel.core.enums import OperationKind, Provenance
 from epistrel.core.errors import StoryNotFound
 from epistrel.core.events import Operation
-from epistrel.core.projections import rebuild
+from epistrel.core.projections import HEADS, rebuild
 from tests.auth_support import auth_settings, bearer
 from tests.event_support import execute_in_tx, new_story, play_turn, rows, scalar, story_row
 from tests.projection_support import snapshot, truncate, untruncate
@@ -122,6 +123,45 @@ async def test_heads_follow_turns_and_truncation(engine: AsyncEngine) -> None:
     assert tuple((await rows(engine, head, s=story_id))[0]) == (4, {"1": 1, "2": 1, "3": 2})
     await truncate(engine, story_id, 1)
     assert tuple((await rows(engine, head, s=story_id))[0]) == (2, {"1": 1})
+
+
+async def test_a_turn_commit_reads_and_writes_only_its_heads_entry(
+    engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#887: a turn's commit loads and writes only its own entry of the heads' map, so what it
+    reads and sends for ``story_heads`` does not grow with the story (it loaded the whole map
+    and wrote it back). The stored head is still the whole map, equal to a rebuild."""
+    story_id = await new_story(engine)
+    loaded: list[int] = []
+    sent: list[list[tuple[str, int]]] = []
+    load = HEADS.load
+
+    async def counted(conn: Any, story: str, events: Any) -> Any:
+        found = await load(conn, story, events)
+        loaded.extend(len(row["active_variants"]) for row in found)
+        return found
+
+    def grab(conn: Any, cursor: Any, statement: str, parameters: Any, *_: Any) -> None:
+        if "story_heads" in statement and sent:
+            sent[-1].append((statement, len(repr(parameters))))
+
+    monkeypatch.setattr(HEADS, "load", counted)
+    event.listen(engine.sync_engine, "before_cursor_execute", grab)
+    try:
+        for n in range(1, 61):
+            sent.append([])
+            await play_turn(engine, story_id, f"turn {n:02d}")
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", grab)
+    assert max(loaded) <= 1, loaded
+    assert sent[11] == sent[59]  # turns 12 and 60 send the same statements and bytes
+    head = "SELECT next_turn_index, active_variants FROM story_heads WHERE story_id = :s"
+    expected = (61, {str(n): 1 for n in range(1, 61)})
+    assert tuple((await rows(engine, head, s=story_id))[0]) == expected
+    incremental = await snapshot(engine, story_id)
+    await execute_in_tx(engine, *_drop_projection_rows(story_id))
+    await rebuild(engine, story_id)
+    assert await snapshot(engine, story_id) == incremental
 
 
 async def test_story_less_and_empty_operations_touch_no_projection(engine: AsyncEngine) -> None:

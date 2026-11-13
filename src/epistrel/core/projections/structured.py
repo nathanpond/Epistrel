@@ -51,6 +51,8 @@ Log lines carry identifiers and counts only (invariant 3); this module logs noth
 
 from __future__ import annotations
 
+import bisect
+import itertools
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -549,10 +551,11 @@ async def _scenes(
         return {}
     actor = await _actor(conn, story_id)
     basis = basis or await _basis(conn, story_id)
+    nows = [basis.at(_end_of(turn, variant)) for turn, variant, _ in turns]
     out: dict[tuple[Any, ...], Row] = {}
-    for turn, variant, operation_id in turns:
-        now = basis.at(_end_of(turn, variant))
-        found = scene(places, presences, actor, turn_position(turn), now)
+    for (turn, variant, operation_id), found in zip(
+        turns, _swept(places, presences, actor, turns, nows), strict=True
+    ):
         if found.empty:
             continue
         out[(story_id, turn, variant)] = {
@@ -564,6 +567,71 @@ async def _scenes(
             "source_operation_id": operation_id,
         }
     return out
+
+
+def _swept(
+    places: Sequence[Row],
+    presences: Sequence[Row],
+    actor: str | None,
+    turns: Sequence[tuple[int, int, str]],
+    nows: Sequence[int],
+) -> list[Scene]:
+    """``scene`` at each of ``turns`` (ascending), at story time ``nows``, in one sweep (#887).
+
+    A row passes ``through`` and ``covers`` at a contiguous run of the turns, because turns
+    ascend and story time never decreases with the turn: the run is found by bisection, and a
+    turn's scene is recomputed (by ``scene``, from the rows in force) only where the rows in
+    force change. If story time ever decreases, each turn's scene is computed over every row."""
+    if any(later < earlier for earlier, later in itertools.pairwise(nows)):
+        return [
+            scene(places, presences, actor, turn_position(turn), now)
+            for (turn, _, _), now in zip(turns, nows, strict=True)
+        ]
+    numbers = [turn for turn, _, _ in turns]
+    starts: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    ends: dict[int, list[tuple[int, int]]] = defaultdict(list)
+    for kind, rows in enumerate((places, presences)):
+        for index, row in enumerate(rows):
+            span = _span(row, numbers, nows)
+            if span is not None:
+                starts[span[0]].append((kind, index))
+                ends[span[1]].append((kind, index))
+    held: tuple[dict[int, Row], dict[int, Row]] = ({}, {})
+    found = Scene(None, ())
+    out: list[Scene] = []
+    for at, (turn, now) in enumerate(zip(numbers, nows, strict=True)):
+        leaving, entering = ends.pop(at, []), starts.pop(at, [])
+        for kind, index in leaving:
+            del held[kind][index]
+        for kind, index in entering:
+            held[kind][index] = (places, presences)[kind][index]
+        if leaving or entering or at == 0:
+            in_force = [[held[kind][i] for i in sorted(held[kind])] for kind in (0, 1)]
+            found = scene(in_force[0], in_force[1], actor, turn_position(turn), now)
+        out.append(found)
+    return out
+
+
+def _span(
+    row: Mapping[str, Any], turns: Sequence[int], nows: Sequence[int]
+) -> tuple[int, int] | None:
+    """The indexes ``[start, end)`` of ``turns`` at which ``row`` passes ``through`` (at
+    ``turn_position``) and ``covers`` (at ``nows``); ``None`` when it passes at none."""
+    start, end = 0, len(turns)
+    since = row["since_turn"]
+    if since is not None:
+        start = bisect.bisect_left(turns, int(since) + (1 if (row["since_slot"] or 0) > 0 else 0))
+    if row["closed_by_fact_id"] is not None:
+        closed = row["closed_turn"]
+        if closed is None:
+            return None
+        end = bisect.bisect_left(turns, int(closed) + (1 if (row["closed_slot"] or 0) > 0 else 0))
+    lo, hi = row["valid_from"], row["valid_to"]
+    if lo is not None:
+        start = max(start, bisect.bisect_left(nows, lo))
+    if hi is not None:
+        end = min(end, bisect.bisect_left(nows, hi))
+    return (start, end) if start < end else None
 
 
 # -- writing --------------------------------------------------------------------------------

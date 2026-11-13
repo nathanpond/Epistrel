@@ -12,6 +12,7 @@ which ``tests/property/test_time_m4.py`` covers."""
 from __future__ import annotations
 
 import asyncio
+import random
 from collections import Counter
 from typing import Any
 
@@ -653,3 +654,91 @@ def test_i_01__structured_rebuild(pg_url: str) -> None:
         "closed",
     )
     assert all(OCCURRED[k] > 0 for k in kinds), OCCURRED
+
+
+def _random_scene_rows(rng: Any, turns: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Placement and presence rows with random positions, closers and valid-time."""
+    entities = ["actor", "e1", "e2", "e3"]
+    places = ["p1", "p2", "p3"]
+
+    def positioned(row: dict[str, Any]) -> dict[str, Any]:
+        since = rng.choice([None, *range(0, turns + 2)])
+        row["since_turn"] = since
+        row["since_slot"] = rng.choice([None, 0, 1])
+        closed = rng.random() < 0.4
+        row["closed_by_fact_id"] = "F" if closed else None
+        row["closed_turn"] = rng.choice([None, *range(0, turns + 2)]) if closed else None
+        row["closed_slot"] = rng.choice([None, 0, 2]) if closed else None
+        lo = rng.choice([None, *range(0, 10 * turns, 7)])
+        row["valid_from"] = lo
+        row["valid_to"] = rng.choice([None, (lo or 0) + rng.randint(1, 40)])
+        row["source_fact_id"] = f"{rng.randint(0, 9999):04d}"
+        return row
+
+    placements = [
+        positioned(
+            {
+                "entity_id": rng.choice(entities),
+                "location_id": rng.choice([None, *places]),
+            }
+        )
+        for _ in range(rng.randint(0, 14))
+    ]
+    presences = [
+        positioned({"subject_id": rng.choice(entities), "object_id": rng.choice(places)})
+        for _ in range(rng.randint(0, 6))
+    ]
+    return placements, presences
+
+
+@pytest.mark.part("M4", "FR-STORE-3")
+def test_i_01__structured_scene_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#887: the fold's one sweep over the turns answers, at every turn, exactly the scene
+    ``scene`` computes over every row (2,000 random histories, turns with gaps, story time
+    flat or rising, and falling, where the sweep falls back), and calls ``scene`` only where
+    the rows in force change, so a fold of a long story is linear in it."""
+    rng = random.Random(887)  # noqa: S311 - test data
+    for case in range(2_000):
+        count = rng.randint(1, 30)
+        numbers = sorted(rng.sample(range(1, 3 * count + 1), count))
+        turns = [(n, rng.randint(1, 3), f"op{n}") for n in numbers]
+        nows = sorted(rng.randint(0, 10 * count) for _ in turns)
+        if case % 10 == 0:
+            rng.shuffle(nows)
+        placements, presences = _random_scene_rows(rng, 3 * count)
+        expected = [
+            structured.scene(placements, presences, "actor", structured.turn_position(n), now)
+            for n, now in zip(numbers, nows, strict=True)
+        ]
+        assert structured._swept(placements, presences, "actor", turns, nows) == expected, case
+
+    calls = Counter[str]()
+    original = structured.scene
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls["rows"] += len(args[0]) + len(args[1])
+        return original(*args, **kwargs)
+
+    long = 2_000
+    placements = [
+        {
+            "entity_id": "actor" if i % 2 else "e1",
+            "location_id": "p1",
+            "since_turn": i,
+            "since_slot": 0,
+            "closed_by_fact_id": None,
+            "closed_turn": None,
+            "closed_slot": None,
+            "valid_from": 10 * i,
+            "valid_to": 10 * i + 25,
+            "source_fact_id": f"{i:05d}",
+        }
+        for i in range(1, long + 1)
+    ]
+    turns = [(n, 1, f"op{n}") for n in range(1, long + 1)]
+    nows = [10 * n + 5 for n in range(1, long + 1)]
+    monkeypatch.setattr(structured, "scene", counted)
+    swept = structured._swept(placements, [], "actor", turns, nows)
+    assert len(swept) == long
+    assert swept[-1] == structured.Scene("p1", ("actor", "e1"))
+    assert calls["rows"] <= 4 * long, calls

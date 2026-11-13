@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, ClassVar
 
-from sqlalchemy import Table
+from sqlalchemy import ColumnElement, Table, and_, insert, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from epistrel.core.enums import EventCategory, Membership, OperationKind, Provenance
@@ -62,12 +62,19 @@ class LogEvent:
 
 
 class Rows:
-    """One story's rows of one projection table, keyed by the table's primary key."""
+    """One story's rows of one projection table, keyed by the table's primary key.
+
+    ``keys_where`` answers the keys of the rows with a column's value through an index built on
+    its first use and kept by ``put``, so a fold's per-event lookups do not scan every row
+    (#887). A projection may change a row's dict or list value in place (``story_heads``' map,
+    #887); ``snapshot`` copies those values, so the incremental path still sees the change.
+    """
 
     def __init__(self, table: Table, rows: Iterable[Row] = ()) -> None:
         self.table = table
         self.key_columns: tuple[str, ...] = tuple(c.name for c in table.primary_key.columns)
         self._rows: dict[Key, Row] = {}
+        self._indexes: dict[str, dict[Any, dict[Key, None]]] = {}
         for row in rows:
             self.put(row)
 
@@ -80,7 +87,27 @@ class Rows:
 
     def put(self, row: Row) -> None:
         """Insert or replace the row with ``row``'s key."""
-        self._rows[self.key(row)] = dict(row)
+        key = self.key(row)
+        if self._indexes:
+            old = self._rows.get(key)
+            for column, index in self._indexes.items():
+                value = row[column]
+                if old is not None:
+                    if old[column] == value:
+                        continue
+                    _drop(index, old[column], key)
+                index.setdefault(value, {})[key] = None
+        self._rows[key] = dict(row)
+
+    def keys_where(self, column: str, value: Any) -> list[Key]:
+        """The keys of the rows whose ``column`` equals ``value``, in no particular order."""
+        index = self._indexes.get(column)
+        if index is None:
+            index = {}
+            for key, row in self._rows.items():
+                index.setdefault(row[column], {})[key] = None
+            self._indexes[column] = index
+        return list(index.get(value, ()))
 
     def __iter__(self) -> Iterator[Row]:
         return (dict(row) for row in self._rows.values())
@@ -89,7 +116,20 @@ class Rows:
         return len(self._rows)
 
     def snapshot(self) -> dict[Key, Row]:
-        return {key: dict(row) for key, row in self._rows.items()}
+        return {key: _copied(row) for key, row in self._rows.items()}
+
+
+def _drop(index: dict[Any, dict[Key, None]], value: Any, key: Key) -> None:
+    keys = index.get(value)
+    if keys is not None:
+        keys.pop(key, None)
+        if not keys:
+            del index[value]
+
+
+def _copied(row: Row) -> Row:
+    """``row`` with its dict and list values copied (what ``apply`` may change in place)."""
+    return {k: (v.copy() if isinstance(v, dict | list) else v) for k, v in row.items()}
 
 
 class Projection(ABC):
@@ -112,11 +152,34 @@ class Projection(ABC):
     async def load(self, conn: AsyncConnection, story_id: str, events: Sequence[LogEvent]) -> Rows:
         """The rows of ``story_id`` that applying ``events`` can read or change."""
 
+    async def write(self, conn: AsyncConnection, rows: Rows, before: dict[Key, Row]) -> None:
+        """Write what ``apply`` changed since ``before`` (``rows.snapshot()`` taken after
+        ``load``): the default inserts the rows it added and updates the columns it changed."""
+        await write_difference(conn, rows, before)
+
     async def fold_state(self, conn: AsyncConnection, story_id: str) -> Rows | None:
         """The story's rows folded from stored state, for a projection that is not a fold of
         the log; ``None`` (the default): fold the log through ``apply``."""
         del conn, story_id
         return None
+
+
+async def write_difference(conn: AsyncConnection, rows: Rows, before: dict[Key, Row]) -> None:
+    """Insert the rows ``apply`` added and update the ones it changed (``apply`` never removes)."""
+    table = rows.table
+    after = rows.snapshot()
+
+    def where(key: Key) -> ColumnElement[bool]:
+        pairs = zip(rows.key_columns, key, strict=True)
+        return and_(*(table.c[name] == value for name, value in pairs))
+
+    added = sorted(after.keys() - before.keys())
+    if added:
+        await conn.execute(insert(table), [after[key] for key in added])
+    for key in before.keys() & after.keys():
+        if before[key] != after[key]:
+            changed = {k: v for k, v in after[key].items() if before[key].get(k) != v}
+            await conn.execute(update(table).where(where(key)).values(**changed))
 
 
 _PROJECTIONS: dict[str, Projection] = {}
